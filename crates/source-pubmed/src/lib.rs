@@ -9,15 +9,16 @@
 //! an enumerated attribute is an enum in [`attr`]; cardinality is enforced.
 //! Order of children is not enforced yet.
 //!
-//! Nothing is normalized here. Dates stay text, identifiers stay text; the
-//! normalizer turns them into `model` types and is where the strict value
-//! rules bite. This layer's strictness is structural: an element, attribute
+//! Nothing is normalized in [`record`]. Dates stay text, identifiers stay
+//! text; [`normalize`] turns them into `model` types and is where the strict
+//! value rules bite. This layer's strictness is structural: an element, attribute
 //! or attribute value the DTD does not allow stops the run with a byte
 //! offset, an element path and the record's PMID.
 
 pub mod attr;
 pub mod error;
 pub mod gz;
+pub mod normalize;
 mod parse;
 pub mod record;
 pub mod text;

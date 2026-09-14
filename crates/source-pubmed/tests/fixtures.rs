@@ -189,3 +189,133 @@ fn structural_disagreements_fail_with_location() {
     let err = ArticleSet::new(&bad).next_record().unwrap_err();
     assert!(matches!(err.kind, ErrorKind::Escape(_)), "{err}");
 }
+
+mod normalized {
+    use super::{fixture, only_article};
+    use model::{Claim, Month, PartialDate, Pmid};
+    use source_pubmed::attr::RefType;
+    use source_pubmed::normalize::{Citation, Emit, Reference, normalize};
+
+    #[derive(Default)]
+    struct Collect<'n> {
+        citations: Vec<Citation<'n>>,
+        references: Vec<Reference<'n>>,
+    }
+
+    impl<'n> Emit<'n> for Collect<'n> {
+        fn citation(&mut self, citation: &Citation<'n>) {
+            self.citations.push(citation.clone());
+        }
+        fn reference(&mut self, reference: &Reference<'n>) {
+            self.references.push(reference.clone());
+        }
+    }
+
+    #[test]
+    fn shortest_record_normalizes() {
+        let input = fixture("shortest");
+        let article = only_article(&input);
+        let mut out = Collect::default();
+        normalize(&article, &mut out).expect("normalizes");
+        assert_eq!(out.citations.len(), 1);
+        let c = &out.citations[0];
+        assert_eq!(c.pmid, Pmid::new(41_609_757).unwrap());
+        assert_eq!(c.version, 1);
+        let doi = c.doi.as_ref().unwrap().valid().unwrap();
+        assert_eq!(doi.as_str(), "10.1001/jama.2025.15703");
+        assert!(doi.is_borrowed());
+        assert_eq!(c.elocation_doi.as_ref().unwrap().valid(), Some(doi));
+        assert_eq!(c.pii, Some("2844550"));
+        assert_eq!(c.pmc, None);
+        assert!(
+            matches!(c.published, PartialDate::Day(d) if d.month() == Month::January && d.day().get() == 29)
+        );
+        assert_eq!(c.electronic.unwrap().to_string(), "2026-01-29");
+        assert_eq!(c.revised.unwrap().to_string(), "2026-01-29");
+        assert_eq!(c.completed, None);
+        assert_eq!(c.languages.len(), 1);
+        assert_eq!(c.languages[0].alpha_3(), "eng");
+        assert_eq!(c.publication_types.len(), 1);
+        assert_eq!(c.publication_types[0].ui.as_str(), "D016428");
+        assert_eq!(c.publication_types[0].name, "Journal Article");
+        assert!(c.relations.is_empty());
+        assert!(out.references.is_empty());
+    }
+
+    #[test]
+    fn medline_date_becomes_a_span_or_quarter() {
+        let input = fixture("medline_date");
+        let article = only_article(&input);
+        let mut out = Collect::default();
+        normalize(&article, &mut out).expect("normalizes");
+        assert!(matches!(
+            out.citations[0].published,
+            PartialDate::Span(_) | PartialDate::YearQuarter(..)
+        ));
+    }
+
+    #[test]
+    fn references_and_relations_come_through() {
+        let input = fixture("refs_pmcid_corrections");
+        let article = only_article(&input);
+        let mut out = Collect::default();
+        normalize(&article, &mut out).expect("normalizes");
+        let c = &out.citations[0];
+        assert!(!out.references.is_empty());
+        assert!(out.references.iter().all(|r| r.from == c.pmid));
+        assert!(out.references.iter().any(|r| r.pmc.is_some()));
+        assert!(out.references.iter().any(|r| r.pmid.is_some()));
+        assert!(
+            out.references
+                .iter()
+                .any(|r| matches!(r.doi, Some(Claim::Valid(_))))
+        );
+        assert!(!c.relations.is_empty());
+        assert!(RefType::TOKENS.contains(&c.relations[0].kind.token()));
+        assert!(c.relations[0].pmid.is_some());
+    }
+
+    #[test]
+    fn a_malformed_doi_is_a_claim_not_a_crash() {
+        let input = fixture("shortest").replace(
+            "<ArticleId IdType=\"doi\">10.1001/jama.2025.15703</ArticleId>",
+            "<ArticleId IdType=\"doi\">DOI</ArticleId>",
+        );
+        let article = only_article(&input);
+        let mut out = Collect::default();
+        normalize(&article, &mut out).expect("normalizes");
+        let c = &out.citations[0];
+        assert!(matches!(c.doi, Some(Claim::Malformed { raw: "DOI", .. })));
+        assert!(c.elocation_doi.as_ref().unwrap().valid().is_some());
+    }
+
+    #[test]
+    fn two_valid_but_different_dois_fail_fast() {
+        let input = fixture("shortest").replace(
+            "<ArticleId IdType=\"doi\">10.1001/jama.2025.15703</ArticleId>",
+            "<ArticleId IdType=\"doi\">10.1001/jama.2025.99999</ArticleId>",
+        );
+        let article = only_article(&input);
+        let err = normalize(&article, &mut Collect::default()).unwrap_err();
+        assert_eq!(err.pmid, Some(Pmid::new(41_609_757).unwrap()));
+        assert_eq!(err.field, "ELocationID[doi]");
+        assert!(
+            err.to_string()
+                .contains("differs from the valid ArticleId doi"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn an_unknown_date_form_fails_with_the_raw_text() {
+        let input = fixture("shortest").replace(
+            "<Month>Jan</Month>\n              <Day>29</Day>",
+            "<Month>Janvier</Month>\n              <Day>29</Day>",
+        );
+        assert!(input.contains("Janvier"), "fixture edit applied");
+        let article = only_article(&input);
+        let err = normalize(&article, &mut Collect::default()).unwrap_err();
+        assert_eq!(err.raw, "Janvier");
+        assert_eq!(err.field, "JournalIssue/PubDate");
+    }
+}

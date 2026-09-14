@@ -441,6 +441,18 @@ What does not: a field the source's own schema makes optional, absent. That is
 `None`, and the stats report counts it per field and source. Every `Option`
 in the model must be justified by the source schema, not by convenience.
 
+One more thing that does not fail the run, decided on the first normalizer
+(2026-09-14) and open to veto: a value in an identifier-typed field that is
+not that identifier, when the category is known, counted and modelled. PubMed
+puts an e-location string or the literal word `DOI` in one DOI slot per ~500
+records, and typos or URLs in one reference DOI per ~20,000 — 0.2 %, which
+at full scale is ~70k records, a data file rather than an exclusion list. The
+strict `Doi` type never holds such a value; the record holds a
+`Claim<Doi> = Valid(Doi) | Malformed { raw, error }`, so downstream code has
+to match on it and the stats report counts it. That is not an `Other` on a
+closed vocabulary — the DOI syntax is fixed by the DOI Handbook and cannot be
+extended to admit `DOI` — it is the data itself being the bug, kept visible.
+
 The failure report is precise enough to act on without re-running: source,
 raw file, record ordinal and byte offset, native ID if recoverable, field path
 (JSON pointer / XPath), raw value excerpt, reason, and the command that
@@ -582,7 +594,14 @@ in your environment, never in the repo or in this conversation.
   is an explicit error), attribute vocabularies are closed enums, cardinality
   is enforced, child order is not yet. Mixed content is kept as the raw
   inner markup. The whole real file parses with zero failures; the DTD and
-  five real records are the crate's fixtures. Normalizer next.*
+  five real records are the crate's fixtures.*
+  *Normalizer first cut landed the same day: `Pmid`, `PmcId`, `Doi`,
+  `Date`/`PartialDate` (with the `MedlineDate` grammar), `Lang` (ISO 639-2
+  from Debian iso-codes), `MeshUi` — plus the record's identifiers, dates,
+  languages, publication types, comments/corrections relations, and one
+  `Reference` edge per reference-list entry, pushed to an `Emit`. The whole
+  file normalizes; the stats report is the first real one. Title, abstract,
+  authors, journal and MeSH headings next.*
 - **M5** — `source-s2` (three streams). Paused until a key exists; the slot
   stays, and M6 can move ahead of it.
 - **M6** — `source-arxiv` (OAI-PMH).
@@ -623,6 +642,14 @@ cross-IDs and a second edge namespace early.
   `OpenAlexId` (`u64`, forced by the observed maximum 4,410,348,178);
   `hello` removed; `ol-rht id` runs one parser over stdin. Crossref sample
   torrent stalled at zero bytes; fallbacks recorded in §7.
+- 2026-09-14, normalizer first cut — value-level layer over the native
+  record; the `Claim<Doi>` decision above (§6); `Lang` from ISO 639-2 via
+  Debian iso-codes (NLM's own language page is retired); publication types
+  carry MeSH UI + name, the MeSH vocabulary itself deferred. Whole file
+  normalizes at 28.4k records/s, i.e. normalization is free next to parsing.
+  First stats report: 3,338 day / 895 year-month / 709 year / 40 span /
+  6 season / 1 quarter publication dates; 74 % of references carry no
+  identifier at all; 7 % of DOIs need lowercasing.
 - 2026-09-14, M4 first cut — first external dependencies: `quick-xml`,
   `flate2`. Native layer is DTD-faithful text (dates, identifiers stay text;
   the normalizer applies `model` types), which keeps the two layers'

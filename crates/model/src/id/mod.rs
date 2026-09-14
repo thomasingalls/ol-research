@@ -10,11 +10,13 @@
 //! emitting the other form fails at the source that changed.
 
 mod openalex;
+mod pmc;
 mod pmid;
 
 use std::fmt;
 
 pub use openalex::OpenAlexId;
+pub use pmc::PmcId;
 pub use pmid::Pmid;
 
 /// Why an identifier failed to parse.
@@ -102,6 +104,19 @@ fn parse_digits(s: &str, max: u64) -> Result<u64, ParseError> {
         });
     }
     Ok(value)
+}
+
+/// Parses a positive decimal that fits `u32` under the identifiers' rule:
+/// ASCII digits only, no sign, no leading zero, no surrounding whitespace.
+/// For small counters that ride along with identifiers, such as the
+/// `Version` of a PMID.
+///
+/// # Errors
+///
+/// As for [`Pmid::from_digits`].
+pub fn strict_u32(s: &str) -> Result<u32, ParseError> {
+    parse_digits(s, u64::from(u32::MAX))
+        .and_then(|v| u32::try_from(v).map_err(|_| ParseError::Overflow))
 }
 
 /// Deterministic xorshift64 stream for roundtrip tests; `seed` must be
