@@ -118,3 +118,130 @@ fn a_new_key_anywhere_fails_with_its_name() {
     let err = serde_json::from_str::<Work<'_>>(&input).unwrap_err();
     assert!(err.to_string().contains("unknown variant `X"), "{err}");
 }
+
+mod normalized {
+    use super::{fixture, work};
+    use model::{Claim, Doi};
+    use source_crossref::normalize::{AuthorName, Emit, Reference, Work, normalize};
+    use source_crossref::vocab::{UpdateType, WorkType};
+
+    #[derive(Default)]
+    struct Collect<'n> {
+        works: Vec<Work<'n>>,
+        references: Vec<(String, Reference<'n>)>,
+    }
+
+    impl<'n> Emit<'n> for Collect<'n> {
+        fn work(&mut self, w: &Work<'n>) {
+            self.works.push(w.clone());
+        }
+        fn reference(&mut self, from: &Doi<'n>, r: &Reference<'n>) {
+            self.references.push((from.to_string(), r.clone()));
+        }
+    }
+
+    fn run(name: &str) -> (String, Collect<'static>) {
+        let input = Box::leak(fixture(name).into_boxed_str());
+        let native = Box::leak(Box::new(work(input)));
+        let mut out = Collect::default();
+        normalize(native, &mut out).expect("normalizes");
+        (input.to_owned(), out)
+    }
+
+    #[test]
+    fn journal_article_normalizes_with_edges() {
+        let (_, out) = run("journal_article_full");
+        assert_eq!(out.works.len(), 1);
+        let w = &out.works[0];
+        assert_eq!(w.kind, WorkType::JournalArticle);
+        assert_eq!(w.doi.as_str(), "10.1002/jha2.1033");
+        assert!(
+            w.created.epoch_seconds() > 1_000_000_000,
+            "a real 21st-century instant"
+        );
+        assert!(w.issued.is_some());
+        assert!(!w.issns.is_empty());
+        assert!(
+            w.authors
+                .iter()
+                .all(|a| matches!(a.name, AuthorName::Person { .. }))
+        );
+        assert!(w.title.is_some());
+        assert!(w.r#abstract.is_some());
+        assert_eq!(
+            Some(out.references.len()),
+            w.references_count.map(|n| n as usize)
+        );
+        assert!(
+            out.references
+                .iter()
+                .all(|(from, _)| from == "10.1002/jha2.1033")
+        );
+        assert!(
+            out.references
+                .iter()
+                .any(|(_, r)| matches!(r.doi, Some(Claim::Valid(_))))
+        );
+    }
+
+    #[test]
+    fn grant_and_null_issued() {
+        let (_, out) = run("grant_project");
+        assert_eq!(out.works[0].kind, WorkType::Grant);
+        assert_eq!(out.works[0].references_count, None);
+        assert!(out.references.is_empty());
+        let (_, out) = run("issued_null_component");
+        assert_eq!(out.works[0].issued, None);
+    }
+
+    #[test]
+    fn updates_and_relations() {
+        let (_, out) = run("updated_by_retraction");
+        assert!(
+            out.works[0]
+                .updated_by
+                .iter()
+                .any(|u| u.kind == UpdateType::Retraction)
+        );
+        let (_, out) = run("relation_has_preprint");
+        assert!(
+            out.works[0]
+                .relations
+                .iter()
+                .any(|r| r.kind == "has-preprint")
+        );
+    }
+
+    #[test]
+    fn invariants_fail_fast_with_the_doi() {
+        for (from, to, field) in [
+            (
+                "\"URL\":\"https://doi.org/10.1002/jha2.1033\"",
+                "\"URL\":\"https://doi.org/10.1002/jha2.1034\"",
+                "URL",
+            ),
+            ("\"prefix\":\"10.1002\"", "\"prefix\":\"10.0002\"", "prefix"),
+        ] {
+            let input = fixture("journal_article_full").replacen(from, to, 1);
+            assert!(input.contains(to), "{field}: edit applied");
+            let native = work(&input);
+            let err = normalize(&native, &mut Collect::default()).unwrap_err();
+            assert_eq!(err.field, field, "{err}");
+            assert_eq!(err.doi.as_deref(), Some("10.1002/jha2.1033"));
+        }
+    }
+
+    #[test]
+    fn a_timestamp_off_by_a_second_is_caught() {
+        let input = fixture("journal_article_full");
+        let start = input.find("\"created\":{").unwrap();
+        let ts_at = input[start..].find("\"timestamp\":").unwrap() + start + "\"timestamp\":".len();
+        let end = input[ts_at..].find(|c: char| !c.is_ascii_digit()).unwrap() + ts_at;
+        let bumped: i64 = input[ts_at..end].parse::<i64>().unwrap() + 1000;
+        let input = format!("{}{}{}", &input[..ts_at], bumped, &input[end..]);
+        let native = work(&input);
+        let err = normalize(&native, &mut Collect::default()).unwrap_err();
+        assert_eq!(err.field, "created", "{err}");
+        assert!(err.to_string().contains("timestamp disagrees"), "{err}");
+    }
+}

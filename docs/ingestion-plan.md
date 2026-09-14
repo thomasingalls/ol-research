@@ -80,6 +80,17 @@ wart is a claim the POC run confirms or refutes, not a commitment.
   `[null]`. Three vocabularies have an authoritative source (`/types`, the
   Crossmark update types, the deposit schema's identifier types); the rest
   of the enums are exactly what was observed.
+- Value level, same sample: every DOI, ORCID (447), ISSN (1,230) and ISBN
+  (186) passes its checksum; every timestamp's `date-parts`, `date-time`
+  and `timestamp` agree; `URL` is exactly `https://doi.org/` + DOI;
+  `references-count` equals the array; `published` equals `issued`. Those
+  are strict types and enforced invariants in the normalizer. `prefix` is
+  the DOI's *current owner*, not its registrant — they differ on 67 works,
+  because DOIs move between publishers. 47 reference DOIs (0.2 %) carry a
+  Unicode hyphen (U+2010) for an ASCII one: the `Claim<Doi>` category
+  again. `updated-by` appears on affected works, so retraction status needs
+  no inversion pass after all — §2's earlier claim about `update-to` stands
+  for the notice side only.
 - Terms: metadata is free to reuse and not subject to copyright; abstracts
   carry some limitations.
 
@@ -616,7 +627,20 @@ in your environment, never in the repo or in this conversation.
   1,000 sample works parse with zero unknown fields at 22k works/s; the one
   divergence on the way was a modelling mistake (a grant's investigators
   reused the contributor type, which requires `sequence`), which is how the
-  loop is supposed to feel. Normalizer next.*
+  loop is supposed to feel.*
+  *Normalizer landed 2026-09-15: `Registrant`, `Orcid`, `Issn`, `Isbn`,
+  `DateTime` joined `model` (every one checksum- or shape-strict, because
+  the sample earned it); the normalized `Work` carries the DOI, owner
+  prefix, member, type, three instants, the partial dates, titles, abstract,
+  serials, authors with ORCIDs and ROR affiliations, language, counts,
+  licenses, updates both ways, relations and alternative ids; one
+  `Reference` edge per entry with a `Claim<Doi>`. Invariants enforced:
+  `URL` is the DOI's, each instant's three representations agree,
+  `published` equals `issued`, `references-count` equals the array, typed
+  serial lists equal the plain ones, an author has exactly one of
+  `family`/`name`, a reference's DOI and `doi-asserted-by` come together.
+  All 1,000 works normalize at 22.6k works/s. Title/abstract markup still
+  raw. Next: the `ingest` traits, now that two normalizers exist.*
 - **M3** — `source-openalex` (widest schema, second edge source, cross-IDs).
 - **M4** — `source-pubmed` (streaming XML, the largest modelling surface).
   *First cut landed 2026-09-14: native types mirror the DTD field for field
@@ -683,6 +707,13 @@ cross-IDs and a second edge namespace early.
   places. Three closed vocabularies with an authoritative source, the rest
   observed. `ingest` crate started with the shared gzip reader. First real
   run: 654 works, one modelling error, then all 1,000.
+- 2026-09-15, Crossref normalizer — strict `Orcid`/`Issn`/`Isbn`/`Registrant`
+  /`DateTime` types with checksums, justified by a sample in which every
+  value passed. Stats: 18,345 valid reference DOIs, 47 malformed (all
+  U+2010), 5,952 without a DOI, 52 empty references; 67 owner-prefix
+  transfers; issued precision 466 day / 351 year-month / 149 year / 34 none;
+  eight relation kinds; Crossref's own DOIs are already lowercase — zero
+  lowercasing copies.
 - 2026-09-14, normalizer first cut — value-level layer over the native
   record; the `Claim<Doi>` decision above (§6); `Lang` from ISO 639-2 via
   Debian iso-codes (NLM's own language page is retired); publication types

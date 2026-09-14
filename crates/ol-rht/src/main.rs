@@ -8,6 +8,8 @@
 //! * `crossref check <file>...` parses API envelope pages (`.json`) or
 //!   public-data-file lines (`.jsonl`, `.jsonl.gz`) with the strict Crossref
 //!   types and reports counts and throughput.
+//! * `crossref normalize <file>...` parses and normalizes, and prints the
+//!   stats report.
 //!
 //! All exit non-zero on the first failure and say exactly where it was: the
 //! seed of the "reproduce against one record" command the failure report
@@ -21,6 +23,7 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 use model::{Claim, Doi, OpenAlexId, ParseError, Pmid};
+use source_crossref::normalize::Emit as CrossrefEmit;
 use source_pubmed::ArticleSet;
 use source_pubmed::normalize::{Citation, Emit, Reference, normalize};
 use source_pubmed::record::Record;
@@ -29,7 +32,8 @@ const USAGE: &str = "usage:
   ol-rht id <pmid|pmid-url|openalex|openalex-url> < values.txt
   ol-rht pubmed check <file.xml.gz> [--limit N]
   ol-rht pubmed normalize <file.xml.gz> [--limit N]
-  ol-rht crossref check <file>...";
+  ol-rht crossref check <file>...
+  ol-rht crossref normalize <file>...";
 
 type Parser = fn(&str) -> Result<(), ParseError>;
 
@@ -62,6 +66,7 @@ fn main() -> ExitCode {
             Err(_) => usage(),
         },
         ["crossref", "check", paths @ ..] if !paths.is_empty() => crossref_check(paths),
+        ["crossref", "normalize", paths @ ..] if !paths.is_empty() => crossref_normalize(paths),
         _ => usage(),
     }
 }
@@ -336,6 +341,38 @@ fn pubmed_normalize(path: &Path, limit: Option<u64>) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// Runs `f` on every work of one container.
+fn crossref_drive<'a>(
+    works: impl Iterator<Item = Result<source_crossref::Work<'a>, source_crossref::Error>>,
+    f: &mut impl FnMut(&source_crossref::Work<'_>) -> Result<(), String>,
+) -> Result<(), String> {
+    for w in works {
+        f(&w.map_err(|e| e.to_string())?)?;
+    }
+    Ok(())
+}
+
+/// Reads a Crossref file of either container and runs `f` on every work;
+/// returns the decompressed size.
+fn crossref_each(
+    path: &Path,
+    f: &mut impl FnMut(&source_crossref::Work<'_>) -> Result<(), String>,
+) -> Result<usize, String> {
+    let input = if path.extension().is_some_and(|e| e == "gz") {
+        source_crossref::gz::read_to_string(path)
+    } else {
+        std::fs::read_to_string(path)
+    }
+    .map_err(|e| e.to_string())?;
+    if input.trim_start().starts_with("{\"status\"") {
+        let page = source_crossref::Page::parse(&input).map_err(|e| e.to_string())?;
+        crossref_drive(page.works(), f)?;
+    } else {
+        crossref_drive(source_crossref::jsonl(&input), f)?;
+    }
+    Ok(input.len())
+}
+
 #[allow(clippy::cast_precision_loss)] // reporting only
 fn crossref_check(paths: &[&str]) -> ExitCode {
     let started = Instant::now();
@@ -343,37 +380,20 @@ fn crossref_check(paths: &[&str]) -> ExitCode {
     let mut types: BTreeMap<String, u64> = BTreeMap::new();
     for path in paths {
         let path = Path::new(path);
-        let input = if path.extension().is_some_and(|e| e == "gz") {
-            source_crossref::gz::read_to_string(path)
-        } else {
-            std::fs::read_to_string(path)
-        };
-        let input = match input {
-            Ok(input) => input,
-            Err(err) => {
-                eprintln!("{}: {err}", path.display());
-                return ExitCode::from(2);
-            }
-        };
-        bytes += input.len();
-        let mut count = |w: &source_crossref::Work<'_>| {
+        let result = crossref_each(path, &mut |w| {
             works += 1;
             references += w.reference.as_ref().map_or(0, Vec::len) as u64;
             authors += w.author.as_ref().map_or(0, Vec::len) as u64;
             *types.entry(format!("{:?}", w.r#type)).or_default() += 1;
-        };
-        let result = if input.trim_start().starts_with("{\"status\"") {
-            match source_crossref::Page::parse(&input) {
-                Ok(page) => page.works().try_for_each(|w| w.map(|w| count(&w))),
-                Err(err) => Err(err),
+            Ok(())
+        });
+        match result {
+            Ok(n) => bytes += n,
+            Err(err) => {
+                eprintln!("{}: {err}", path.display());
+                eprintln!("after {works} works");
+                return ExitCode::FAILURE;
             }
-        } else {
-            source_crossref::jsonl(&input).try_for_each(|w| w.map(|w| count(&w)))
-        };
-        if let Err(err) = result {
-            eprintln!("{}: {err}", path.display());
-            eprintln!("after {works} works");
-            return ExitCode::FAILURE;
         }
     }
     let elapsed = started.elapsed();
@@ -388,6 +408,174 @@ fn crossref_check(paths: &[&str]) -> ExitCode {
         elapsed.as_secs_f64(),
         works as f64 / elapsed.as_secs_f64(),
         mib / elapsed.as_secs_f64()
+    );
+    ExitCode::SUCCESS
+}
+
+/// The Crossref stats report: what every normalized field held.
+#[derive(Default)]
+struct CrossrefStats {
+    works: u64,
+    types: BTreeMap<String, u64>,
+    doi_lowercased: u64,
+    owner_differs: u64,
+    issued: BTreeMap<&'static str, u64>,
+    title: [u64; 3],
+    alternate_titles: u64,
+    subtitle_empty: u64,
+    abstracts: [u64; 3],
+    persons: u64,
+    orgs: u64,
+    with_orcid: u64,
+    affiliations_with_ror: u64,
+    issns: u64,
+    isbns: u64,
+    languages: BTreeMap<&'static str, u64>,
+    references: u64,
+    reference_doi: [u64; 3],
+    reference_empty: u64,
+    updates: BTreeMap<String, u64>,
+    relations: BTreeMap<String, u64>,
+    licenses: BTreeMap<String, u64>,
+    malformed_samples: Vec<String>,
+}
+
+impl<'n> CrossrefEmit<'n> for CrossrefStats {
+    fn work(&mut self, w: &source_crossref::normalize::Work<'n>) {
+        self.works += 1;
+        *self.types.entry(format!("{:?}", w.kind)).or_default() += 1;
+        self.doi_lowercased += u64::from(!w.doi.is_borrowed());
+        self.owner_differs += u64::from(w.owner != w.doi.registrant());
+        *self
+            .issued
+            .entry(w.issued.map_or("none", |d| d.precision()))
+            .or_default() += 1;
+        match w.title {
+            None => self.title[2] += 1,
+            Some(t) if t.contains('<') => self.title[1] += 1,
+            Some(_) => self.title[0] += 1,
+        }
+        self.alternate_titles += w.alternate_titles.len() as u64;
+        self.subtitle_empty += u64::from(w.subtitle.is_some_and(str::is_empty));
+        match w.r#abstract {
+            None => self.abstracts[2] += 1,
+            Some(a) if a.trim_start().starts_with("<jats:") => self.abstracts[0] += 1,
+            Some(_) => self.abstracts[1] += 1,
+        }
+        for a in &w.authors {
+            match a.name {
+                source_crossref::normalize::AuthorName::Person { .. } => self.persons += 1,
+                source_crossref::normalize::AuthorName::Org(_) => self.orgs += 1,
+            }
+            self.with_orcid += u64::from(a.orcid.is_some());
+            self.affiliations_with_ror +=
+                a.affiliations.iter().filter(|x| x.ror.is_some()).count() as u64;
+        }
+        self.issns += w.issns.len() as u64;
+        self.isbns += w.isbns.len() as u64;
+        if let Some(l) = w.language {
+            *self.languages.entry(l.alpha_3()).or_default() += 1;
+        }
+        for u in w.updates_to.iter().chain(&w.updated_by) {
+            *self.updates.entry(format!("{:?}", u.kind)).or_default() += 1;
+        }
+        for r in &w.relations {
+            *self.relations.entry(r.kind.to_owned()).or_default() += 1;
+        }
+        for l in &w.licenses {
+            *self.licenses.entry(format!("{:?}", l.version)).or_default() += 1;
+        }
+    }
+
+    fn reference(&mut self, _from: &Doi<'n>, r: &source_crossref::normalize::Reference<'n>) {
+        self.references += 1;
+        match &r.doi {
+            None => self.reference_doi[2] += 1,
+            Some(Claim::Valid(_)) => self.reference_doi[0] += 1,
+            Some(Claim::Malformed { raw, error }) => {
+                self.reference_doi[1] += 1;
+                if self.malformed_samples.len() < 6 {
+                    self.malformed_samples.push(format!("{raw:?}: {error}"));
+                }
+            }
+        }
+        if r.doi.is_none()
+            && r.unstructured.is_none()
+            && r.article_title.is_none()
+            && r.journal_title.is_none()
+            && r.volume_title.is_none()
+            && r.author.is_none()
+        {
+            self.reference_empty += 1;
+        }
+    }
+}
+
+impl CrossrefStats {
+    fn report(&self) {
+        eprintln!("works {}", self.works);
+        eprintln!("  types {:?}", self.types);
+        eprintln!(
+            "  doi lowercased (allocations) {}  owner prefix != registrant {}",
+            self.doi_lowercased, self.owner_differs
+        );
+        eprintln!("  issued {:?}", self.issued);
+        eprintln!(
+            "  title plain {} markup {} none {}  alternate titles {}  empty subtitles {}",
+            self.title[0], self.title[1], self.title[2], self.alternate_titles, self.subtitle_empty
+        );
+        eprintln!(
+            "  abstract jats {} other {} none {}",
+            self.abstracts[0], self.abstracts[1], self.abstracts[2]
+        );
+        eprintln!(
+            "  authors persons {} orgs {} with orcid {}  affiliations with ror {}",
+            self.persons, self.orgs, self.with_orcid, self.affiliations_with_ror
+        );
+        eprintln!("  issns {}  isbns {}", self.issns, self.isbns);
+        eprintln!("  languages {:?}", self.languages);
+        eprintln!("  updates {:?}", self.updates);
+        eprintln!("  relations {:?}", self.relations);
+        eprintln!("  licenses {:?}", self.licenses);
+        eprintln!("references {}", self.references);
+        eprintln!(
+            "  doi valid {} malformed {} none {}  empty {}",
+            self.reference_doi[0],
+            self.reference_doi[1],
+            self.reference_doi[2],
+            self.reference_empty
+        );
+        if !self.malformed_samples.is_empty() {
+            eprintln!("  malformed samples:");
+            for s in &self.malformed_samples {
+                eprintln!("    {s}");
+            }
+        }
+    }
+}
+
+#[allow(clippy::cast_precision_loss)] // reporting only
+fn crossref_normalize(paths: &[&str]) -> ExitCode {
+    let started = Instant::now();
+    let mut stats = CrossrefStats::default();
+    for path in paths {
+        let path = Path::new(path);
+        let result = crossref_each(path, &mut |w| {
+            source_crossref::normalize::normalize(w, &mut stats).map_err(|e| e.to_string())
+        });
+        if let Err(err) = result {
+            eprintln!("{}: {err}", path.display());
+            eprintln!("after {} works", stats.works);
+            stats.report();
+            return ExitCode::FAILURE;
+        }
+    }
+    let elapsed = started.elapsed();
+    stats.report();
+    eprintln!(
+        "read+parse+normalize {:.2}s = {:.0} works/s",
+        elapsed.as_secs_f64(),
+        stats.works as f64 / elapsed.as_secs_f64()
     );
     ExitCode::SUCCESS
 }

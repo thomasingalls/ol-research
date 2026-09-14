@@ -8,15 +8,21 @@ pub mod claim;
 pub mod date;
 pub mod doi;
 pub mod id;
+pub mod isbn;
+pub mod issn;
 pub mod lang;
 pub mod mesh;
+pub mod orcid;
 
 pub use claim::Claim;
 pub use date::{
-    Date, Day, Error as DateError, MedlineError as MedlineDateError, Month, PartialDate, Quarter,
-    Season, Year,
+    Date, DateTime, Day, Error as DateError, MedlineError as MedlineDateError, Month, PartialDate,
+    Quarter, Season, Year,
 };
-pub use doi::{Doi, Error as DoiError};
+pub use doi::{Doi, Error as DoiError, Registrant};
 pub use id::{OpenAlexId, ParseError, PmcId, Pmid};
+pub use isbn::{Error as IsbnError, Isbn};
+pub use issn::{Error as IssnError, Issn};
 pub use lang::{Error as LangError, Lang};
 pub use mesh::{Error as MeshUiError, MeshUi};
+pub use orcid::{Error as OrcidError, Orcid};

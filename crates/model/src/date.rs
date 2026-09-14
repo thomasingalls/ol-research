@@ -119,6 +119,10 @@ pub enum Error {
     Season,
     /// The day does not exist in that month of that year.
     Calendar,
+    /// A date-time is `YYYY-MM-DDThh:mm:ssZ`.
+    DateTimeShape,
+    /// Hours, minutes or seconds out of range.
+    Time,
 }
 
 impl fmt::Display for Error {
@@ -130,6 +134,8 @@ impl fmt::Display for Error {
             Self::Day => "day is not 1..31",
             Self::Season => "season is not Winter, Spring, Summer or Fall",
             Self::Calendar => "day does not exist in that month",
+            Self::DateTimeShape => "date-time is not YYYY-MM-DDThh:mm:ssZ",
+            Self::Time => "time of day out of range",
         })
     }
 }
@@ -376,6 +382,112 @@ impl Date {
     pub const fn day(self) -> Day {
         self.day
     }
+
+    /// From integers as JSON sources write them.
+    ///
+    /// # Errors
+    ///
+    /// The part that is out of range, or [`Error::Calendar`].
+    pub fn from_numbers(year: u32, month: u32, day: u32) -> Result<Self, Error> {
+        let year = u16::try_from(year)
+            .ok()
+            .and_then(Year::new)
+            .ok_or(Error::YearRange)?;
+        let month = u8::try_from(month)
+            .ok()
+            .and_then(Month::from_number)
+            .ok_or(Error::Month)?;
+        let day = u8::try_from(day)
+            .ok()
+            .and_then(Day::new)
+            .ok_or(Error::Day)?;
+        Self::new(year, month, day)
+    }
+
+    /// Days since 1970-01-01, negative before it (Howard Hinnant's
+    /// `days_from_civil`).
+    #[must_use]
+    pub const fn days_since_epoch(self) -> i64 {
+        let m = self.month.number() as i64;
+        let d = self.day.get() as i64;
+        let y = self.year.get() as i64 - if m <= 2 { 1 } else { 0 };
+        let era = y.div_euclid(400);
+        let yoe = y - era * 400;
+        let mp = (m + 9) % 12;
+        let doy = (153 * mp + 2) / 5 + d - 1;
+        let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+        era * 146_097 + doe - 719_468
+    }
+}
+
+/// An instant in UTC to the second, from `2014-07-05T15:19:03Z`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DateTime {
+    date: Date,
+    second_of_day: u32,
+}
+
+impl DateTime {
+    /// Parses exactly `YYYY-MM-DDThh:mm:ssZ`.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::DateTimeShape`], a bad date part, or [`Error::Time`].
+    pub fn parse_utc(s: &str) -> Result<Self, Error> {
+        let b = s.as_bytes();
+        if b.len() != 20
+            || b[4] != b'-'
+            || b[7] != b'-'
+            || b[10] != b'T'
+            || b[13] != b':'
+            || b[16] != b':'
+            || b[19] != b'Z'
+        {
+            return Err(Error::DateTimeShape);
+        }
+        let num = |range: std::ops::Range<usize>| -> Result<u32, Error> {
+            let part = &s[range];
+            if !part.bytes().all(|c| c.is_ascii_digit()) {
+                return Err(Error::DateTimeShape);
+            }
+            part.parse().map_err(|_| Error::DateTimeShape)
+        };
+        let date = Date::from_numbers(num(0..4)?, num(5..7)?, num(8..10)?)?;
+        let (h, m, sec) = (num(11..13)?, num(14..16)?, num(17..19)?);
+        if h > 23 || m > 59 || sec > 59 {
+            return Err(Error::Time);
+        }
+        Ok(Self {
+            date,
+            second_of_day: h * 3600 + m * 60 + sec,
+        })
+    }
+
+    /// The calendar date.
+    #[must_use]
+    pub const fn date(self) -> Date {
+        self.date
+    }
+
+    /// Seconds since the Unix epoch.
+    #[must_use]
+    pub const fn epoch_seconds(self) -> i64 {
+        self.date.days_since_epoch() * 86_400 + self.second_of_day as i64
+    }
+}
+
+impl fmt::Display for DateTime {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = self.second_of_day;
+        write!(
+            f,
+            "{}T{:02}:{:02}:{:02}Z",
+            self.date,
+            s / 3600,
+            s / 60 % 60,
+            s % 60
+        )
+    }
 }
 
 impl fmt::Display for Date {
@@ -503,6 +615,32 @@ impl PartialDate {
         }))
     }
 
+    /// From integers as JSON sources write them: a year, optionally a
+    /// month, optionally a day.
+    ///
+    /// # Errors
+    ///
+    /// The part that is out of range, or [`Error::Calendar`]; a day without
+    /// a month is [`Error::Month`].
+    pub fn from_numbers(year: u32, month: Option<u32>, day: Option<u32>) -> Result<Self, Error> {
+        let y = u16::try_from(year)
+            .ok()
+            .and_then(Year::new)
+            .ok_or(Error::YearRange)?;
+        match (month, day) {
+            (None, None) => Ok(Self::Year(y)),
+            (Some(m), None) => {
+                let m = u8::try_from(m)
+                    .ok()
+                    .and_then(Month::from_number)
+                    .ok_or(Error::Month)?;
+                Ok(Self::YearMonth(y, m))
+            }
+            (Some(m), Some(d)) => Ok(Self::Day(Date::from_numbers(year, m, d)?)),
+            (None, Some(_)) => Err(Error::Month),
+        }
+    }
+
     /// A short label for the precision, for reports.
     #[must_use]
     pub const fn precision(&self) -> &'static str {
@@ -520,7 +658,8 @@ impl PartialDate {
 #[cfg(test)]
 mod tests {
     use super::{
-        Bound, Date, Day, Error, MedlineError, Month, PartialDate, Quarter, Season, Span, Year,
+        Bound, Date, DateTime, Day, Error, MedlineError, Month, PartialDate, Quarter, Season, Span,
+        Year,
     };
 
     fn y(v: u16) -> Year {
@@ -581,6 +720,57 @@ mod tests {
                 .unwrap()
                 .to_string(),
             "2026-01-29"
+        );
+    }
+
+    #[test]
+    fn epoch_days_and_date_times() {
+        assert_eq!(
+            Date::from_numbers(1970, 1, 1).unwrap().days_since_epoch(),
+            0
+        );
+        assert_eq!(
+            Date::from_numbers(2000, 1, 1).unwrap().days_since_epoch(),
+            10_957
+        );
+        assert_eq!(
+            Date::from_numbers(2024, 2, 29).unwrap().days_since_epoch(),
+            19_782
+        );
+        assert_eq!(
+            Date::from_numbers(1969, 12, 31).unwrap().days_since_epoch(),
+            -1
+        );
+        let dt = DateTime::parse_utc("2014-07-05T15:19:03Z").unwrap();
+        assert_eq!(dt.epoch_seconds(), 1_404_573_543);
+        assert_eq!(dt.to_string(), "2014-07-05T15:19:03Z");
+        assert_eq!(
+            DateTime::parse_utc("1928-10-01T00:00:00Z")
+                .unwrap()
+                .epoch_seconds(),
+            -1_301_788_800
+        );
+        for bad in [
+            "2014-07-05T15:19:03",
+            "2014-07-05 15:19:03Z",
+            "2014-07-05T24:00:00Z",
+            "2014-13-05T15:19:03Z",
+            "2014-07-05T15:19:60Z",
+            "",
+        ] {
+            assert!(DateTime::parse_utc(bad).is_err(), "{bad}");
+        }
+        assert_eq!(
+            PartialDate::from_numbers(2020, Some(3), None),
+            Ok(PartialDate::YearMonth(y(2020), Month::March))
+        );
+        assert_eq!(
+            PartialDate::from_numbers(2020, None, Some(3)),
+            Err(Error::Month)
+        );
+        assert_eq!(
+            PartialDate::from_numbers(2020, Some(13), None),
+            Err(Error::Month)
         );
     }
 

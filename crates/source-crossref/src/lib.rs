@@ -14,10 +14,11 @@
 //!
 //! Two containers hold the same record: the REST API envelope
 //! (`message.items[]`, the POC input) and the public data file's JSON lines.
-//! Nothing is normalized here.
+//! [`normalize`] is where values become `model` types.
 
 pub mod date;
 pub mod error;
+pub mod normalize;
 pub mod parse;
 pub mod record;
 pub mod vocab;

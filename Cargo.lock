@@ -157,6 +157,7 @@ name = "source-crossref"
 version = "0.1.0"
 dependencies = [
  "ingest",
+ "model",
  "serde",
  "serde_json",
 ]
