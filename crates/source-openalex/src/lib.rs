@@ -11,9 +11,10 @@
 //!
 //! The abstract arrives as an inverted index (word → positions); it is kept
 //! as the raw JSON slice, uninterpreted, in the same spirit as the other
-//! sources' raw markup. Nothing is normalized here.
+//! sources' raw markup. [`normalize`] is the value-level layer over it.
 
 pub mod error;
+pub mod normalize;
 pub mod parse;
 pub mod record;
 pub mod vocab;

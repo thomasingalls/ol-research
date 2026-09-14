@@ -12,6 +12,8 @@
 //!   stats report.
 //! * `openalex check <part.gz>...` parses snapshot part files with the strict
 //!   OpenAlex types and reports counts and throughput.
+//! * `openalex normalize <part.gz>...` parses and normalizes, and prints the
+//!   stats report.
 //!
 //! All exit non-zero on the first failure and say exactly where it was: the
 //! seed of the "reproduce against one record" command the failure report
@@ -26,6 +28,7 @@ use std::time::Instant;
 
 use model::{Claim, Doi, OpenAlexId, ParseError, Pmid};
 use source_crossref::normalize::Emit as CrossrefEmit;
+use source_openalex::normalize::{Emit as OpenAlexEmit, LocationId};
 use source_pubmed::ArticleSet;
 use source_pubmed::normalize::{Citation, Emit, Reference, normalize};
 use source_pubmed::record::Record;
@@ -36,7 +39,8 @@ const USAGE: &str = "usage:
   ol-rht pubmed normalize <file.xml.gz> [--limit N]
   ol-rht crossref check <file>...
   ol-rht crossref normalize <file>...
-  ol-rht openalex check <part.gz>...";
+  ol-rht openalex check <part.gz>...
+  ol-rht openalex normalize <part.gz>...";
 
 type Parser = fn(&str) -> Result<(), ParseError>;
 
@@ -71,6 +75,7 @@ fn main() -> ExitCode {
         ["crossref", "check", paths @ ..] if !paths.is_empty() => crossref_check(paths),
         ["crossref", "normalize", paths @ ..] if !paths.is_empty() => crossref_normalize(paths),
         ["openalex", "check", paths @ ..] if !paths.is_empty() => openalex_check(paths),
+        ["openalex", "normalize", paths @ ..] if !paths.is_empty() => openalex_normalize(paths),
         _ => usage(),
     }
 }
@@ -705,6 +710,22 @@ fn crossref_normalize(paths: &[&str]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// Reads a part file, gzipped or not.
+fn openalex_read(path: &Path) -> Option<String> {
+    let input = if path.extension().is_some_and(|e| e == "gz") {
+        source_openalex::gz::read_to_string(path)
+    } else {
+        std::fs::read_to_string(path)
+    };
+    match input {
+        Ok(input) => Some(input),
+        Err(err) => {
+            eprintln!("{}: {err}", path.display());
+            None
+        }
+    }
+}
+
 #[allow(clippy::cast_precision_loss)] // reporting only
 fn openalex_check(paths: &[&str]) -> ExitCode {
     let started = Instant::now();
@@ -714,17 +735,8 @@ fn openalex_check(paths: &[&str]) -> ExitCode {
     let mut oa: BTreeMap<String, u64> = BTreeMap::new();
     for path in paths {
         let path = Path::new(path);
-        let input = if path.extension().is_some_and(|e| e == "gz") {
-            source_openalex::gz::read_to_string(path)
-        } else {
-            std::fs::read_to_string(path)
-        };
-        let input = match input {
-            Ok(input) => input,
-            Err(err) => {
-                eprintln!("{}: {err}", path.display());
-                return ExitCode::from(2);
-            }
+        let Some(input) = openalex_read(path) else {
+            return ExitCode::from(2);
         };
         bytes += input.len();
         for w in source_openalex::jsonl(&input) {
@@ -758,6 +770,301 @@ fn openalex_check(paths: &[&str]) -> ExitCode {
         "read+parse {:.2}s = {:.0} works/s, {:.0} MiB/s",
         elapsed.as_secs_f64(),
         works as f64 / elapsed.as_secs_f64(),
+        mib / elapsed.as_secs_f64()
+    );
+    ExitCode::SUCCESS
+}
+
+/// The OpenAlex stats report: what every normalized field held.
+#[derive(Default)]
+struct OpenAlexStats {
+    works: u64,
+    types: BTreeMap<String, u64>,
+    doi: [u64; 3],
+    doi_lowercased: u64,
+    pmid: u64,
+    mag: [u64; 2],
+    languages: BTreeMap<&'static str, u64>,
+    language_malformed: u64,
+    title: [u64; 3],
+    oa_status: BTreeMap<String, u64>,
+    oa_url: u64,
+    with_best_oa: u64,
+    authorships: u64,
+    authors_with_id: u64,
+    with_orcid: u64,
+    with_raw_orcid: u64,
+    orcid_conflicts: u64,
+    corresponding: u64,
+    institutions: u64,
+    institution_countries: u64,
+    authorship_countries: u64,
+    affiliations: u64,
+    locations: u64,
+    provenance: BTreeMap<String, u64>,
+    location_ids: BTreeMap<&'static str, u64>,
+    with_source: u64,
+    issn_l: u64,
+    issn: [u64; 2],
+    host_lineage: u64,
+    licenses: BTreeMap<String, u64>,
+    versions: BTreeMap<String, u64>,
+    topics: u64,
+    keywords: u64,
+    concepts: u64,
+    mesh: u64,
+    sdgs: u64,
+    awards: u64,
+    funders: u64,
+    funders_with_ror: u64,
+    apc: [u64; 2],
+    abstracts: u64,
+    counts_by_year: u64,
+    indexed_in: BTreeMap<String, u64>,
+    flags: [u64; 3],
+    references: u64,
+    self_references: u64,
+    related: u64,
+    malformed_samples: Vec<String>,
+}
+
+impl OpenAlexStats {
+    fn sample(&mut self, raw: &str, error: &impl Display) {
+        if self.malformed_samples.len() < 8 {
+            self.malformed_samples.push(format!("{raw:?}: {error}"));
+        }
+    }
+
+    fn report(&self) {
+        eprintln!("works {}", self.works);
+        eprintln!("  types {:?}", self.types);
+        eprintln!(
+            "  doi valid {} malformed {} none {}  lowercased (allocations) {}",
+            self.doi[0], self.doi[1], self.doi[2], self.doi_lowercased
+        );
+        eprintln!(
+            "  pmid {}  mag {} (not the W number {})",
+            self.pmid, self.mag[0], self.mag[1]
+        );
+        eprintln!(
+            "  languages {:?}  malformed {}",
+            self.languages, self.language_malformed
+        );
+        eprintln!(
+            "  title plain {} markup {} empty {}",
+            self.title[0], self.title[1], self.title[2]
+        );
+        eprintln!(
+            "  oa status {:?}  oa_url {}  with best oa location {}",
+            self.oa_status, self.oa_url, self.with_best_oa
+        );
+        eprintln!(
+            "  authorships {}  with author id {}  orcid {} raw orcid {} conflicting {}  corresponding {}",
+            self.authorships,
+            self.authors_with_id,
+            self.with_orcid,
+            self.with_raw_orcid,
+            self.orcid_conflicts,
+            self.corresponding
+        );
+        eprintln!(
+            "  institutions {} (with country {})  authorship countries {}  affiliations {}",
+            self.institutions,
+            self.institution_countries,
+            self.authorship_countries,
+            self.affiliations
+        );
+        eprintln!(
+            "  locations {}  provenance {:?}  ids {:?}",
+            self.locations, self.provenance, self.location_ids
+        );
+        eprintln!(
+            "  sources {}  issn_l {}  issn valid {} malformed {}  host lineage entries {}",
+            self.with_source, self.issn_l, self.issn[0], self.issn[1], self.host_lineage
+        );
+        eprintln!("  licenses {:?}", self.licenses);
+        eprintln!("  versions {:?}", self.versions);
+        eprintln!(
+            "  topics {}  keywords {}  concepts {}  mesh {}  sdgs {}",
+            self.topics, self.keywords, self.concepts, self.mesh, self.sdgs
+        );
+        eprintln!(
+            "  awards {}  funders {} (with ror {})  apc list {} paid {}",
+            self.awards, self.funders, self.funders_with_ror, self.apc[0], self.apc[1]
+        );
+        eprintln!(
+            "  abstracts {}  counts_by_year entries {}  indexed_in {:?}",
+            self.abstracts, self.counts_by_year, self.indexed_in
+        );
+        eprintln!(
+            "  retracted {}  xpac {}  has_fulltext {}  related works {}",
+            self.flags[0], self.flags[1], self.flags[2], self.related
+        );
+        eprintln!(
+            "references {} (self references {})",
+            self.references, self.self_references
+        );
+        if !self.malformed_samples.is_empty() {
+            eprintln!("  malformed samples:");
+            for s in &self.malformed_samples {
+                eprintln!("    {s}");
+            }
+        }
+    }
+}
+
+impl<'n> OpenAlexEmit<'n> for OpenAlexStats {
+    #[allow(clippy::too_many_lines)] // one counter per field group
+    fn work(&mut self, w: &source_openalex::normalize::Work<'n>) {
+        self.works += 1;
+        *self.types.entry(format!("{:?}", w.kind)).or_default() += 1;
+        match &w.doi {
+            None => self.doi[2] += 1,
+            Some(Claim::Valid(d)) => {
+                self.doi[0] += 1;
+                self.doi_lowercased += u64::from(!d.is_borrowed());
+            }
+            Some(Claim::Malformed { raw, error }) => {
+                self.doi[1] += 1;
+                self.sample(raw, error);
+            }
+        }
+        self.pmid += u64::from(w.pmid.is_some());
+        if let Some(m) = w.mag {
+            self.mag[0] += 1;
+            self.mag[1] += u64::from(u64::from(m.get()) != w.id.get());
+        }
+        match &w.language {
+            None => {}
+            Some(Claim::Valid(l)) => *self.languages.entry(l.alpha_3()).or_default() += 1,
+            Some(Claim::Malformed { raw, error }) => {
+                self.language_malformed += 1;
+                self.sample(raw, error);
+            }
+        }
+        if w.title.is_empty() {
+            self.title[2] += 1;
+        } else if w.title.contains('<') {
+            self.title[1] += 1;
+        } else {
+            self.title[0] += 1;
+        }
+        *self
+            .oa_status
+            .entry(format!("{:?}", w.open_access.status))
+            .or_default() += 1;
+        self.oa_url += u64::from(w.open_access.oa_url.is_some());
+        self.with_best_oa += u64::from(w.best_oa_location().is_some());
+        for a in &w.authorships {
+            self.authorships += 1;
+            self.authors_with_id += u64::from(a.author.id.is_some());
+            self.with_orcid += u64::from(a.author.orcid.is_some());
+            self.with_raw_orcid += u64::from(a.raw_orcid.is_some());
+            self.orcid_conflicts += u64::from(matches!(
+                (a.author.orcid, a.raw_orcid),
+                (Some(x), Some(y)) if x != y
+            ));
+            self.corresponding += u64::from(a.is_corresponding);
+            self.institutions += a.institutions.len() as u64;
+            self.institution_countries += a
+                .institutions
+                .iter()
+                .filter(|i| i.country.is_some())
+                .count() as u64;
+            self.authorship_countries += a.countries.len() as u64;
+            self.affiliations += a.affiliations.len() as u64;
+        }
+        for l in &w.locations {
+            self.locations += 1;
+            *self
+                .provenance
+                .entry(format!("{:?}", l.provenance))
+                .or_default() += 1;
+            let kind = match l.id {
+                LocationId::Mag(_) => "mag",
+                LocationId::Pmid(_) => "pmid",
+                LocationId::Doi(_) => "doi",
+                LocationId::Repo(_) => "repo",
+            };
+            *self.location_ids.entry(kind).or_default() += 1;
+            if let Some(s) = &l.source {
+                self.with_source += 1;
+                self.issn_l += u64::from(s.issn_l.is_some());
+                for c in &s.issns {
+                    match c {
+                        Claim::Valid(_) => self.issn[0] += 1,
+                        Claim::Malformed { raw, error } => {
+                            self.issn[1] += 1;
+                            self.sample(raw, error);
+                        }
+                    }
+                }
+                self.host_lineage += s.host_organization_lineage.len() as u64;
+            }
+            if let Some(license) = l.license {
+                *self.licenses.entry(license.token().to_owned()).or_default() += 1;
+            }
+            if let Some(v) = l.version {
+                *self.versions.entry(format!("{v:?}")).or_default() += 1;
+            }
+        }
+        self.topics += w.topics.len() as u64;
+        self.keywords += w.keywords.len() as u64;
+        self.concepts += w.concepts.len() as u64;
+        self.mesh += w.mesh.len() as u64;
+        self.sdgs += w.sustainable_development_goals.len() as u64;
+        self.awards += w.awards.len() as u64;
+        self.funders += w.funders.len() as u64;
+        self.funders_with_ror += w.funders.iter().filter(|f| f.ror.is_some()).count() as u64;
+        self.apc[0] += u64::from(w.apc_list.is_some());
+        self.apc[1] += u64::from(w.apc_paid.is_some());
+        self.abstracts += u64::from(w.abstract_inverted_index.is_some());
+        self.counts_by_year += w.counts_by_year.len() as u64;
+        for i in w.indexed_in.iter() {
+            *self.indexed_in.entry(format!("{i:?}")).or_default() += 1;
+        }
+        self.flags[0] += u64::from(w.is_retracted);
+        self.flags[1] += u64::from(w.is_xpac);
+        self.flags[2] += u64::from(w.has_fulltext);
+        self.related += w.related_works.len() as u64;
+    }
+
+    fn reference(&mut self, from: OpenAlexId, to: OpenAlexId) {
+        self.references += 1;
+        self.self_references += u64::from(from == to);
+    }
+}
+
+#[allow(clippy::cast_precision_loss)] // reporting only
+fn openalex_normalize(paths: &[&str]) -> ExitCode {
+    let started = Instant::now();
+    let mut stats = OpenAlexStats::default();
+    let mut bytes = 0usize;
+    for path in paths {
+        let path = Path::new(path);
+        let Some(input) = openalex_read(path) else {
+            return ExitCode::from(2);
+        };
+        bytes += input.len();
+        for w in source_openalex::jsonl(&input) {
+            let result = w.map_err(|e| e.to_string()).and_then(|w| {
+                source_openalex::normalize::normalize(&w, &mut stats).map_err(|e| e.to_string())
+            });
+            if let Err(err) = result {
+                eprintln!("{}: {err}", path.display());
+                eprintln!("after {} works", stats.works);
+                stats.report();
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+    let elapsed = started.elapsed();
+    let mib = bytes as f64 / (1024.0 * 1024.0);
+    stats.report();
+    eprintln!(
+        "read+parse+normalize {:.2}s = {:.0} works/s, {:.0} MiB/s",
+        elapsed.as_secs_f64(),
+        stats.works as f64 / elapsed.as_secs_f64(),
         mib / elapsed.as_secs_f64()
     );
     ExitCode::SUCCESS

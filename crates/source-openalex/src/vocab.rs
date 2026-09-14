@@ -76,6 +76,27 @@ pub enum License {
     UnspecifiedOa,
 }
 
+impl License {
+    /// The value as OpenAlex spells it, which is also the last path segment
+    /// of `license_id`.
+    #[must_use]
+    pub const fn token(self) -> &'static str {
+        match self {
+            Self::CcBy => "cc-by",
+            Self::CcBySa => "cc-by-sa",
+            Self::CcByNd => "cc-by-nd",
+            Self::CcByNc => "cc-by-nc",
+            Self::CcByNcSa => "cc-by-nc-sa",
+            Self::CcByNcNd => "cc-by-nc-nd",
+            Self::Cc0 => "cc0",
+            Self::PublicDomain => "public-domain",
+            Self::OtherOa => "other-oa",
+            Self::PublisherSpecificOa => "publisher-specific-oa",
+            Self::UnspecifiedOa => "unspecified-oa",
+        }
+    }
+}
+
 /// `provenance` on a location: which upstream supplied it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -98,6 +119,17 @@ pub enum Index {
     Datacite,
     Doaj,
     Pubmed,
+}
+
+impl Index {
+    /// Every index, in declaration order.
+    pub const ALL: [Self; 5] = [
+        Self::Arxiv,
+        Self::Crossref,
+        Self::Datacite,
+        Self::Doaj,
+        Self::Pubmed,
+    ];
 }
 
 /// `source.type`.
@@ -169,5 +201,25 @@ mod tests {
             SourceType::EbookPlatform
         );
         assert!(serde_json::from_str::<Version>("\"published\"").is_err());
+    }
+
+    #[test]
+    fn license_tokens_are_the_serde_spellings() {
+        for license in [
+            License::CcBy,
+            License::CcBySa,
+            License::CcByNd,
+            License::CcByNc,
+            License::CcByNcSa,
+            License::CcByNcNd,
+            License::Cc0,
+            License::PublicDomain,
+            License::OtherOa,
+            License::PublisherSpecificOa,
+            License::UnspecifiedOa,
+        ] {
+            let json = format!("\"{}\"", license.token());
+            assert_eq!(serde_json::from_str::<License>(&json).unwrap(), license);
+        }
     }
 }

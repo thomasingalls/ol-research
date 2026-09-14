@@ -121,6 +121,10 @@ pub enum Error {
     Calendar,
     /// A date-time is `YYYY-MM-DDThh:mm:ssZ`.
     DateTimeShape,
+    /// A date-time with milliseconds is `YYYY-MM-DDThh:mm:ss.fffZ`.
+    DateTimeMillisShape,
+    /// A date is `YYYY-MM-DD`.
+    DateShape,
     /// Hours, minutes or seconds out of range.
     Time,
 }
@@ -135,6 +139,8 @@ impl fmt::Display for Error {
             Self::Season => "season is not Winter, Spring, Summer or Fall",
             Self::Calendar => "day does not exist in that month",
             Self::DateTimeShape => "date-time is not YYYY-MM-DDThh:mm:ssZ",
+            Self::DateTimeMillisShape => "date-time is not YYYY-MM-DDThh:mm:ss.fffZ",
+            Self::DateShape => "date is not YYYY-MM-DD",
             Self::Time => "time of day out of range",
         })
     }
@@ -404,6 +410,26 @@ impl Date {
         Self::new(year, month, day)
     }
 
+    /// Parses exactly `YYYY-MM-DD`, as OpenAlex writes `publication_date`.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::DateShape`], then as [`Self::from_numbers`].
+    pub fn parse_iso(s: &str) -> Result<Self, Error> {
+        let b = s.as_bytes();
+        if b.len() != 10 || b[4] != b'-' || b[7] != b'-' {
+            return Err(Error::DateShape);
+        }
+        let num = |range: std::ops::Range<usize>| -> Result<u32, Error> {
+            let part = &s[range];
+            if !part.bytes().all(|c| c.is_ascii_digit()) {
+                return Err(Error::DateShape);
+            }
+            part.parse().map_err(|_| Error::DateShape)
+        };
+        Self::from_numbers(num(0..4)?, num(5..7)?, num(8..10)?)
+    }
+
     /// Days since 1970-01-01, negative before it (Howard Hinnant's
     /// `days_from_civil`).
     #[must_use]
@@ -458,11 +484,12 @@ impl fmt::Display for TimeOfDay {
     }
 }
 
-/// An instant in UTC to the second, from `2014-07-05T15:19:03Z`.
+/// An instant in UTC to the millisecond, from `2014-07-05T15:19:03Z`
+/// (Crossref) or `2025-07-25T07:35:27.710Z` (OpenAlex). Eight bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct DateTime {
     date: Date,
-    second_of_day: u32,
+    millis_of_day: u32,
 }
 
 impl DateTime {
@@ -472,32 +499,53 @@ impl DateTime {
     ///
     /// [`Error::DateTimeShape`], a bad date part, or [`Error::Time`].
     pub fn parse_utc(s: &str) -> Result<Self, Error> {
+        Self::parse(s, false)
+    }
+
+    /// Parses exactly `YYYY-MM-DDThh:mm:ss.fffZ`.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::DateTimeMillisShape`], a bad date part, or [`Error::Time`].
+    pub fn parse_utc_millis(s: &str) -> Result<Self, Error> {
+        Self::parse(s, true)
+    }
+
+    fn parse(s: &str, fraction: bool) -> Result<Self, Error> {
+        let shape = if fraction {
+            Error::DateTimeMillisShape
+        } else {
+            Error::DateTimeShape
+        };
         let b = s.as_bytes();
-        if b.len() != 20
+        let len = if fraction { 24 } else { 20 };
+        if b.len() != len
             || b[4] != b'-'
             || b[7] != b'-'
             || b[10] != b'T'
             || b[13] != b':'
             || b[16] != b':'
-            || b[19] != b'Z'
+            || b[len - 1] != b'Z'
+            || (fraction && b[19] != b'.')
         {
-            return Err(Error::DateTimeShape);
+            return Err(shape);
         }
         let num = |range: std::ops::Range<usize>| -> Result<u32, Error> {
             let part = &s[range];
             if !part.bytes().all(|c| c.is_ascii_digit()) {
-                return Err(Error::DateTimeShape);
+                return Err(shape);
             }
-            part.parse().map_err(|_| Error::DateTimeShape)
+            part.parse().map_err(|_| shape)
         };
         let date = Date::from_numbers(num(0..4)?, num(5..7)?, num(8..10)?)?;
         let (h, m, sec) = (num(11..13)?, num(14..16)?, num(17..19)?);
         if h > 23 || m > 59 || sec > 59 {
             return Err(Error::Time);
         }
+        let millis = if fraction { num(20..23)? } else { 0 };
         Ok(Self {
             date,
-            second_of_day: h * 3600 + m * 60 + sec,
+            millis_of_day: (h * 3600 + m * 60 + sec) * 1000 + millis,
         })
     }
 
@@ -507,24 +555,41 @@ impl DateTime {
         self.date
     }
 
-    /// Seconds since the Unix epoch.
+    /// Seconds since the Unix epoch, rounded down.
     #[must_use]
     pub const fn epoch_seconds(self) -> i64 {
-        self.date.days_since_epoch() * 86_400 + self.second_of_day as i64
+        self.date.days_since_epoch() * 86_400 + (self.millis_of_day / 1000) as i64
+    }
+
+    /// Milliseconds since the Unix epoch.
+    #[must_use]
+    pub const fn epoch_millis(self) -> i64 {
+        self.date.days_since_epoch() * 86_400_000 + self.millis_of_day as i64
+    }
+
+    /// The sub-second part, `0..=999`.
+    #[must_use]
+    #[allow(clippy::cast_possible_truncation)] // below 1000
+    pub const fn millis(self) -> u16 {
+        (self.millis_of_day % 1000) as u16
     }
 }
 
 impl fmt::Display for DateTime {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let s = self.second_of_day;
+        let s = self.millis_of_day / 1000;
         write!(
             f,
-            "{}T{:02}:{:02}:{:02}Z",
+            "{}T{:02}:{:02}:{:02}",
             self.date,
             s / 3600,
             s / 60 % 60,
             s % 60
-        )
+        )?;
+        if !self.millis_of_day.is_multiple_of(1000) {
+            write!(f, ".{:03}", self.millis_of_day % 1000)?;
+        }
+        f.write_str("Z")
     }
 }
 
@@ -898,5 +963,63 @@ mod tests {
             PartialDate::parse_medline("0999 Jan-Dec"),
             Err(MedlineError::Part(Error::YearRange))
         );
+    }
+
+    #[test]
+    fn millisecond_date_times() {
+        let dt = DateTime::parse_utc_millis("2025-07-25T07:35:27.710Z").unwrap();
+        assert_eq!(dt.millis(), 710);
+        assert_eq!(dt.epoch_seconds(), 1_753_428_927);
+        assert_eq!(dt.epoch_millis(), 1_753_428_927_710);
+        assert_eq!(dt.to_string(), "2025-07-25T07:35:27.710Z");
+        let midnight = DateTime::parse_utc_millis("2020-06-05T00:00:00.000Z").unwrap();
+        assert_eq!(
+            midnight,
+            DateTime::parse_utc("2020-06-05T00:00:00Z").unwrap()
+        );
+        assert_eq!(midnight.to_string(), "2020-06-05T00:00:00Z");
+        assert!(dt > midnight);
+        for bad in [
+            "2025-07-25T07:35:27Z",
+            "2025-07-25T07:35:27.71Z",
+            "2025-07-25T07:35:27.7100Z",
+            "2025-07-25T07:35:27,710Z",
+            "2025-07-25T07:35:27.710",
+            "",
+        ] {
+            assert_eq!(
+                DateTime::parse_utc_millis(bad),
+                Err(Error::DateTimeMillisShape),
+                "{bad}"
+            );
+        }
+        assert_eq!(
+            DateTime::parse_utc("2025-07-25T07:35:27.710Z"),
+            Err(Error::DateTimeShape)
+        );
+        assert_eq!(
+            DateTime::parse_utc_millis("2025-02-30T00:00:00.000Z"),
+            Err(Error::Calendar)
+        );
+        assert_eq!(size_of::<DateTime>(), 8);
+    }
+
+    #[test]
+    fn iso_dates() {
+        let d = Date::parse_iso("2008-01-01").unwrap();
+        assert_eq!(d, Date::from_numbers(2008, 1, 1).unwrap());
+        assert_eq!(d.to_string(), "2008-01-01");
+        for bad in [
+            "2008-1-01",
+            "2008-01-1",
+            "20080101",
+            "2008-01-01T",
+            " 2008-01-01",
+            "",
+        ] {
+            assert_eq!(Date::parse_iso(bad), Err(Error::DateShape), "{bad}");
+        }
+        assert_eq!(Date::parse_iso("2008-02-30"), Err(Error::Calendar));
+        assert_eq!(Date::parse_iso("0999-02-03"), Err(Error::YearRange));
     }
 }

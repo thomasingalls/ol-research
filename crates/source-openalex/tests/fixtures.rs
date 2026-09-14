@@ -17,7 +17,7 @@ fn work(input: &str) -> Work<'_> {
     serde_json::from_str(input).expect("parses")
 }
 
-const ALL: [&str; 7] = [
+const ALL: [&str; 14] = [
     "smallest",
     "pubmed_with_mesh",
     "dissertation_repo_pdf",
@@ -25,6 +25,13 @@ const ALL: [&str; 7] = [
     "apc_paid",
     "null_author_id_no_abstract",
     "closed_no_oa_location",
+    "empty_doi",
+    "bad_issn",
+    "language_sh",
+    "language_ceb",
+    "mag_differs",
+    "lone_last_author",
+    "self_reference",
 ];
 
 #[test]

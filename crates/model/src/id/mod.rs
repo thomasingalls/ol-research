@@ -15,7 +15,10 @@ mod pmid;
 
 use std::fmt;
 
-pub use openalex::OpenAlexId;
+pub use openalex::{
+    AuthorId, AwardId, ConceptId, EntityId, FunderId, HostOrganization, InstitutionId, OpenAlexId,
+    PublisherId, SourceId, TopicId,
+};
 pub use pmc::PmcId;
 pub use pmid::Pmid;
 
@@ -42,7 +45,8 @@ pub enum ParseError {
 impl ParseError {
     /// Moves a [`ParseError::NotDigit`] offset by `by` bytes, for callers
     /// that stripped a prefix before parsing the digits.
-    const fn shift(self, by: usize) -> Self {
+    #[must_use]
+    pub const fn shift(self, by: usize) -> Self {
         match self {
             Self::NotDigit { offset } => Self::NotDigit {
                 offset: offset + by,

@@ -193,6 +193,29 @@ wart is a claim the POC run confirms or refutes, not a commitment.
   floats; `abstract_inverted_index` is present on 8,831 with 951k words and
   1.5M positions, all sorted. `referenced_works` are `W…` ids: 50,724 edges
   in the file, 2,800 works with any.
+- Value-level census (2026-09-15, `openalex_values.py`): every ORCID (12,555
+  resolved, 6,931 raw), every ROR (8,366) and every MeSH UI passed its
+  check; 15 `doi` values are the bare `https://doi.org/`; 4 source ISSNs
+  fail their check digit; `language` is `sh` once and `ceb` once.
+  Derivable, and now checked rather than stored: `ids.openalex`, `ids.doi`,
+  `display_name`, `publication_year`, `authors_count`,
+  `corresponding_author_ids`, `corresponding_institution_ids`,
+  `countries_distinct_count` (from the institutions' codes, not the
+  authorships'), `institutions_distinct_count`, `locations_count`,
+  `primary_location`, `best_oa_location` (always the first `is_oa`
+  location), `primary_topic`, `open_access.is_oa`, `license_id`,
+  `is_accepted`, `is_published`, `is_paratext`, `referenced_works_count`,
+  each award's `funder_display_name`, each source's `host_organization`.
+  Not derivable, kept: `author_position` (30 single-author works say
+  `last`), `raw_orcid` (differs from the resolved one on 5; each occurs
+  without the other), authorship `countries` (a superset of the
+  institutions'), `ids.mag` (not the `W` number on 2), `oa_url` (absent on
+  172 open works), `has_fulltext` (independent of `has_content` on 1,993).
+  A location's `id` is typed by its `provenance`: a MAG id (9,973; not this
+  work's on 43), a PMID (409; not this work's on 181), a bare DOI (4,960;
+  not this work's on 992) or the repository's own string (5,957). Scores
+  are not float32-exact except the SDGs', so they stay `f64`. Two works
+  cite themselves.
 
 ### Semantic Scholar — paused
 
@@ -622,6 +645,13 @@ in your environment, never in the repo or in this conversation.
 3. Semantic Scholar API key — paused; M5 resumes when one exists.
 4. ~~`--survey` opt-in is assumed (§6).~~ Confirmed 2026-09-15: keep it,
    opt-in, default stop-at-first.
+5. Country (ISO 3166-1) and currency (ISO 4217) vocabularies: `CountryCode`
+   and `CurrencyCode` check shape only (two or three uppercase letters). A
+   generated table like `Lang`'s, from Debian iso-codes, would close them;
+   small, and worth doing the first time a bad code shows.
+6. `Claim<Lang>` for OpenAlex's deprecated `sh` (one work in 10,873) and
+   `Claim<Issn>` for its four wrong check digits: the DOI-claim policy (§6)
+   applied to two more categories, open to veto.
 
 ## 9. Milestones
 
@@ -664,6 +694,18 @@ in your environment, never in the repo or in this conversation.
   position, the abstract's inverted index kept as a raw JSON slice, a
   separate all-nullable `BestOaLocation`. All 10,873 works parse at 22.5k
   works/s; seven real fixtures. Normalizer next.*
+  *Normalizer landed 2026-09-15 from a value-level census: `model` gained
+  `EntityId<KIND>` (one parser per OpenAlex entity letter; `OpenAlexId` is
+  `EntityId<'W'>`, unchanged), `HostOrganization`, `Ror` (ISO 7064 MOD
+  97-10; all 8,366 in the sample passed), `CountryCode` / `CurrencyCode`
+  (shape only), `Date::parse_iso`, and millisecond `DateTime`s at no size
+  cost. Locations carry an id typed by provenance. Twenty-one fields the
+  census proved derivable are checked and dropped. Three `Claim`s: 15 DOIs
+  that are the bare prefix, 4 ISSNs with a wrong check digit, 1 deprecated
+  language code. All 10,873 works normalize at 22.9k works/s, 233 MiB/s —
+  the parse-only rate — and every count reconciles with the census (30,825
+  authorships, 21,299 locations, 16,110 sources, 50,724 edges, 2
+  self-citations). Fourteen real fixtures. Next: the `ingest` traits.*
 - **M4** — `source-pubmed` (streaming XML, the largest modelling surface).
   *First cut landed 2026-09-14: native types mirror the DTD field for field
   (everything under `PubmedArticle` and `DeleteCitation`; `PubmedBookArticle`
@@ -770,6 +812,18 @@ cross-IDs and a second edge namespace early.
   unavailable. The inverted-index abstract stays raw, consistent with the
   markup decision. Unpaywall found to be folded into OpenAlex; no separate
   source.
+- 2026-09-15, OpenAlex normalizer — a field the census shows to be a
+  function of others is an invariant, not a field: it is checked and
+  dropped, and a record breaking it fails (twenty-one such fields, §2).
+  Location ids are typed by `provenance`. The `Claim` policy extended, on
+  the same rule (known, counted, modelled), to ISSNs with a wrong check
+  digit and to a language code outside ISO 639-2 (`sh`); open to veto (§8).
+  `language` is read as ISO 639-1, or ISO 639-2 for a language with no
+  two-letter code (`ceb`) — the form OpenAlex actually writes; a three-letter
+  code for a language that has two would fail. Country and currency codes
+  shape-checked only until a vocabulary table exists (§8). Entity ids
+  generalized over the letter with the committed `OpenAlexId` unchanged;
+  the other letters live inside the OpenAlex record and are not native ids.
 - 2026-09-14, M4 first cut — first external dependencies: `quick-xml`,
   `flate2`. Native layer is DTD-faithful text (dates, identifiers stay text;
   the normalizer applies `model` types), which keeps the two layers'
