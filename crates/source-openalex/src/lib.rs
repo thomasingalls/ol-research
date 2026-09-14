@@ -25,3 +25,29 @@ pub use ingest::gz;
 pub use error::Error;
 pub use parse::jsonl;
 pub use record::Work;
+
+/// The source, for the ingest traits: snapshot part files, one work per
+/// line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct OpenAlex;
+
+impl ingest::Source for OpenAlex {
+    const NAME: &'static str = "openalex";
+    type Native<'a> = Work<'a>;
+    type Id<'n> = model::OpenAlexId;
+    type Work<'n> = normalize::Work<'n>;
+    type Reference<'n> = model::OpenAlexId;
+    type ParseError = Error;
+    type NormalizeError = normalize::Error;
+
+    fn records(input: &str) -> impl Iterator<Item = Result<Work<'_>, Error>> + '_ {
+        jsonl(input)
+    }
+
+    fn normalize<'n, K: ingest::Sink<'n, Self>>(
+        native: &'n Work<'_>,
+        sink: &mut K,
+    ) -> Result<(), normalize::Error> {
+        normalize::normalize(native, sink)
+    }
+}

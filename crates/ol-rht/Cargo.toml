@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+ingest.workspace = true
 model.workspace = true
 source-crossref.workspace = true
 source-openalex.workspace = true

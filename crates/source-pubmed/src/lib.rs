@@ -27,3 +27,33 @@ pub mod text;
 pub use error::{Error, ErrorKind};
 pub use parse::ArticleSet;
 pub use text::{RawXml, Text};
+
+/// The source, for the ingest traits: baseline and update files, each a
+/// `PubmedArticleSet` of citations and, in update files, deletions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Pubmed;
+
+impl ingest::Source for Pubmed {
+    const NAME: &'static str = "pubmed";
+    type Native<'a> = record::Record<'a>;
+    type Id<'n> = model::Pmid;
+    type Work<'n> = normalize::Citation<'n>;
+    type Reference<'n> = normalize::Reference<'n>;
+    type ParseError = Error;
+    type NormalizeError = normalize::Error;
+
+    fn records(input: &str) -> impl Iterator<Item = Result<record::Record<'_>, Error>> + '_ {
+        let mut set = ArticleSet::new(input);
+        std::iter::from_fn(move || set.next_record().transpose())
+    }
+
+    fn normalize<'n, K: ingest::Sink<'n, Self>>(
+        native: &'n record::Record<'_>,
+        sink: &mut K,
+    ) -> Result<(), normalize::Error> {
+        match native {
+            record::Record::Article(article) => normalize::normalize(article, sink),
+            record::Record::DeleteCitation(deleted) => normalize::deletions(deleted, sink),
+        }
+    }
+}

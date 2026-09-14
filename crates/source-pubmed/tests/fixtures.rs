@@ -192,25 +192,64 @@ fn structural_disagreements_fail_with_location() {
 
 mod normalized {
     use super::{fixture, only_article};
+    use ingest::{Sink, Source};
     use model::{Claim, Month, PartialDate, Pmid};
+    use source_pubmed::Pubmed;
     use source_pubmed::attr::{
         AffiliationIdSource, IssnType, PubStatus, PublicationStatus, RefType,
     };
-    use source_pubmed::normalize::{AuthorName, Citation, Emit, Reference, normalize};
+    use source_pubmed::normalize::{AuthorName, Citation, Reference, normalize};
+    use source_pubmed::record::Record;
 
     #[derive(Default)]
     struct Collect<'n> {
         citations: Vec<Citation<'n>>,
+        froms: Vec<Pmid>,
         references: Vec<Reference<'n>>,
+        deletions: Vec<Pmid>,
     }
 
-    impl<'n> Emit<'n> for Collect<'n> {
-        fn citation(&mut self, citation: &Citation<'n>) {
+    impl<'n> Sink<'n, Pubmed> for Collect<'n> {
+        fn work(&mut self, citation: &Citation<'n>) {
             self.citations.push(citation.clone());
         }
-        fn reference(&mut self, reference: &Reference<'n>) {
+        fn reference(&mut self, from: &Pmid, reference: &Reference<'n>) {
+            self.froms.push(*from);
             self.references.push(reference.clone());
         }
+        fn deletion(&mut self, id: &Pmid) {
+            self.deletions.push(*id);
+        }
+    }
+
+    #[test]
+    fn deletions_are_a_stream_of_pmids() {
+        let input = fixture("shortest").replacen(
+            "</PubmedArticleSet>",
+            "<DeleteCitation><PMID Version=\"1\">41609757</PMID><PMID Version=\"1\">12</PMID></DeleteCitation></PubmedArticleSet>",
+            1,
+        );
+        let records: Vec<Record<'_>> = Pubmed::records(&input)
+            .map(|r| r.expect("parses"))
+            .collect();
+        assert_eq!(records.len(), 2);
+        let mut out = Collect::default();
+        for r in &records {
+            Pubmed::normalize(r, &mut out).expect("normalizes");
+        }
+        assert_eq!(out.citations.len(), 1);
+        assert_eq!(
+            out.deletions,
+            [Pmid::new(41_609_757).unwrap(), Pmid::new(12).unwrap()]
+        );
+        let bad = input.replacen(
+            "<PMID Version=\"1\">12</PMID>",
+            "<PMID Version=\"1\">012</PMID>",
+            1,
+        );
+        let records: Vec<Record<'_>> = Pubmed::records(&bad).map(|r| r.expect("parses")).collect();
+        let err = Pubmed::normalize(&records[1], &mut Collect::default()).unwrap_err();
+        assert_eq!(err.field, "DeleteCitation/PMID");
     }
 
     fn run(name: &str) -> Collect<'static> {
@@ -305,7 +344,8 @@ mod normalized {
     fn references_and_relations_come_through() {
         let out = run("refs_pmcid_corrections");
         let c = &out.citations[0];
-        assert!(out.references.iter().all(|r| r.from == c.pmid));
+        assert!(out.froms.iter().all(|from| *from == c.pmid));
+        assert_eq!(out.froms.len(), out.references.len());
         assert!(out.references.iter().any(|r| r.pmc.is_some()));
         assert!(
             out.references

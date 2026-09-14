@@ -71,6 +71,7 @@ version = "0.1.0"
 name = "ol-rht"
 version = "0.1.0"
 dependencies = [
+ "ingest",
  "model",
  "source-crossref",
  "source-openalex",

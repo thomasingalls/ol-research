@@ -2,8 +2,10 @@
 //! types hold what the census said they would, and a broken invariant stops
 //! with the work's id and the field (plan §6).
 
+use ingest::Sink;
 use model::{Claim, DoiError, IssnError, OpenAlexId, OrcidError, Ror};
-use source_openalex::normalize::{Emit, Error, ErrorKind, LocationId, Work, normalize};
+use source_openalex::OpenAlex;
+use source_openalex::normalize::{Error, ErrorKind, LocationId, Work, normalize};
 use source_openalex::vocab::{AuthorPosition, Index, OaStatus, Provenance, WorkType};
 
 fn fixture(name: &str) -> String {
@@ -19,23 +21,25 @@ fn parse(input: &str) -> source_openalex::Work<'_> {
 }
 
 #[derive(Default)]
-struct Sink<'n> {
+struct Collect<'n> {
     works: Vec<Work<'n>>,
     edges: Vec<(OpenAlexId, OpenAlexId)>,
 }
 
-impl<'n> Emit<'n> for Sink<'n> {
+impl<'n> Sink<'n, OpenAlex> for Collect<'n> {
     fn work(&mut self, work: &Work<'n>) {
         self.works.push(work.clone());
     }
 
-    fn reference(&mut self, from: OpenAlexId, to: OpenAlexId) {
-        self.edges.push((from, to));
+    fn reference(&mut self, from: &OpenAlexId, to: &OpenAlexId) {
+        self.edges.push((*from, *to));
     }
+
+    fn deletion(&mut self, _: &OpenAlexId) {}
 }
 
-fn run<'n>(native: &'n source_openalex::Work<'_>) -> Result<Sink<'n>, Error> {
-    let mut sink = Sink::default();
+fn run<'n>(native: &'n source_openalex::Work<'_>) -> Result<Collect<'n>, Error> {
+    let mut sink = Collect::default();
     normalize(native, &mut sink)?;
     Ok(sink)
 }

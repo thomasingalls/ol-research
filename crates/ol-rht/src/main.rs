@@ -1,46 +1,35 @@
 //! Command line for the pipeline.
 //!
 //! * `id <kind>` runs one identifier parser over stdin, one value per line.
-//! * `pubmed check <file.xml.gz> [--limit N]` parses a baseline or update
-//!   file with the strict PubMed parser and reports counts and throughput.
-//! * `pubmed normalize <file.xml.gz> [--limit N]` parses and normalizes,
-//!   and prints the first stats report: what every field held.
-//! * `crossref check <file>...` parses API envelope pages (`.json`) or
-//!   public-data-file lines (`.jsonl`, `.jsonl.gz`) with the strict Crossref
-//!   types and reports counts and throughput.
-//! * `crossref normalize <file>...` parses and normalizes, and prints the
-//!   stats report.
-//! * `openalex check <part.gz>...` parses snapshot part files with the strict
-//!   OpenAlex types and reports counts and throughput.
-//! * `openalex normalize <part.gz>...` parses and normalizes, and prints the
-//!   stats report.
+//! * `<source> check <file>... [--limit N]` reads raw files through the
+//!   source's strict native types and reports counts and throughput.
+//! * `<source> normalize <file>... [--limit N]` parses and normalizes, and
+//!   prints the source's stats report: what every field held.
 //!
-//! All exit non-zero on the first failure and say exactly where it was: the
-//! seed of the "reproduce against one record" command the failure report
-//! promises (plan §6), and the quickest way to let a real file vote.
+//! Sources are `pubmed`, `crossref` and `openalex`. Every one goes through
+//! the same runner (`ingest::normalize`); what differs per source is one
+//! registration line and its stats sink. All exit non-zero on the first
+//! failure and say exactly where it was — source, file, record ordinal,
+//! stage, native id, field, raw value — the seed of the "reproduce against
+//! one record" command the failure report promises (plan §6).
 
 use std::collections::BTreeMap;
 use std::fmt::Display;
 use std::io::{self, BufRead};
-use std::path::Path;
 use std::process::ExitCode;
-use std::time::Instant;
 
+use ingest::{Failure, Sink, Source, Stage};
 use model::{Claim, Doi, OpenAlexId, ParseError, Pmid};
-use source_crossref::normalize::Emit as CrossrefEmit;
-use source_openalex::normalize::{Emit as OpenAlexEmit, LocationId};
-use source_pubmed::ArticleSet;
-use source_pubmed::normalize::{Citation, Emit, Reference, normalize};
-use source_pubmed::record::Record;
+use source_crossref::Crossref;
+use source_openalex::OpenAlex;
+use source_openalex::normalize::LocationId;
+use source_pubmed::Pubmed;
+use source_pubmed::normalize::{Citation, Reference};
 
 const USAGE: &str = "usage:
   ol-rht id <pmid|pmid-url|openalex|openalex-url> < values.txt
-  ol-rht pubmed check <file.xml.gz> [--limit N]
-  ol-rht pubmed normalize <file.xml.gz> [--limit N]
-  ol-rht crossref check <file>...
-  ol-rht crossref normalize <file>...
-  ol-rht openalex check <part.gz>...
-  ol-rht openalex normalize <part.gz>...";
+  ol-rht <pubmed|crossref|openalex> check <file>... [--limit N]
+  ol-rht <pubmed|crossref|openalex> normalize <file>... [--limit N]";
 
 type Parser = fn(&str) -> Result<(), ParseError>;
 
@@ -62,21 +51,34 @@ fn main() -> ExitCode {
             Some(parse) => ids(parse),
             None => usage(),
         },
-        ["pubmed", "check", path] => pubmed_check(Path::new(path), None),
-        ["pubmed", "check", path, "--limit", n] => match n.parse() {
-            Ok(limit) => pubmed_check(Path::new(path), Some(limit)),
-            Err(_) => usage(),
-        },
-        ["pubmed", "normalize", path] => pubmed_normalize(Path::new(path), None),
-        ["pubmed", "normalize", path, "--limit", n] => match n.parse() {
-            Ok(limit) => pubmed_normalize(Path::new(path), Some(limit)),
-            Err(_) => usage(),
-        },
-        ["crossref", "check", paths @ ..] if !paths.is_empty() => crossref_check(paths),
-        ["crossref", "normalize", paths @ ..] if !paths.is_empty() => crossref_normalize(paths),
-        ["openalex", "check", paths @ ..] if !paths.is_empty() => openalex_check(paths),
-        ["openalex", "normalize", paths @ ..] if !paths.is_empty() => openalex_normalize(paths),
+        [source, action, rest @ ..] => {
+            let Some((paths, limit)) = split_limit(rest) else {
+                return usage();
+            };
+            match (*source, *action) {
+                ("pubmed", "check") => check::<Pubmed>(&paths, limit),
+                ("pubmed", "normalize") => normalize::<Pubmed, PubmedStats>(&paths, limit),
+                ("crossref", "check") => check::<Crossref>(&paths, limit),
+                ("crossref", "normalize") => normalize::<Crossref, CrossrefStats>(&paths, limit),
+                ("openalex", "check") => check::<OpenAlex>(&paths, limit),
+                ("openalex", "normalize") => normalize::<OpenAlex, OpenAlexStats>(&paths, limit),
+                _ => usage(),
+            }
+        }
         _ => usage(),
+    }
+}
+
+/// Splits a trailing `--limit N` off the paths. `None` when there are no
+/// paths or the flag is malformed.
+fn split_limit<'a>(rest: &[&'a str]) -> Option<(Vec<&'a str>, Option<u64>)> {
+    match rest {
+        [] => None,
+        [paths @ .., "--limit", n] => {
+            (!paths.is_empty()).then_some((paths.to_vec(), Some(n.parse().ok()?)))
+        }
+        paths if paths.contains(&"--limit") => None,
+        paths => Some((paths.to_vec(), None)),
     }
 }
 
@@ -111,76 +113,61 @@ fn ids(parse: Parser) -> ExitCode {
     }
 }
 
-fn read(path: &Path) -> Option<String> {
-    match source_pubmed::gz::read_to_string(path) {
-        Ok(input) => Some(input),
-        Err(err) => {
-            eprintln!("{}: {err}", path.display());
-            None
+/// A source's stats report (plan §6): what every normalized field held.
+trait StatsReport: Default {
+    fn report(&self);
+}
+
+fn check<S: Source>(paths: &[&str], limit: Option<u64>) -> ExitCode {
+    match ingest::parse::<S>(paths, limit) {
+        Ok(report) => {
+            eprintln!("{}: {report}", S::NAME);
+            ExitCode::SUCCESS
+        }
+        Err(failure) => failed(&failure),
+    }
+}
+
+fn normalize<S, K>(paths: &[&str], limit: Option<u64>) -> ExitCode
+where
+    S: Source,
+    K: StatsReport + for<'n> Sink<'n, S>,
+{
+    let mut stats = K::default();
+    match ingest::normalize::<S, K>(paths, limit, &mut stats) {
+        Ok(report) => {
+            stats.report();
+            eprintln!("{}: {report}", S::NAME);
+            ExitCode::SUCCESS
+        }
+        Err(failure) => {
+            stats.report();
+            failed(&failure)
         }
     }
 }
 
-#[allow(clippy::cast_precision_loss)] // reporting only
-fn pubmed_check(path: &Path, limit: Option<u64>) -> ExitCode {
-    let started = Instant::now();
-    let Some(input) = read(path) else {
-        return ExitCode::from(2);
-    };
-    let inflated = started.elapsed();
-    let bytes = input.len();
-
-    let parsing = Instant::now();
-    let mut set = ArticleSet::new(&input);
-    let (mut articles, mut deletes, mut references, mut article_ids) = (0u64, 0u64, 0u64, 0u64);
-    loop {
-        if limit.is_some_and(|n| articles + deletes >= n) {
-            break;
-        }
-        match set.next_record() {
-            Ok(Some(Record::Article(a))) => {
-                articles += 1;
-                if let Some(d) = &a.pubmed_data {
-                    article_ids += d.article_ids.len() as u64;
-                    references += count_references(&d.reference_lists);
-                }
-            }
-            Ok(Some(Record::DeleteCitation(d))) => deletes += d.pmids.len() as u64,
-            Ok(None) => break,
-            Err(err) => {
-                eprintln!("{}: {err}", path.display());
-                eprintln!("after {articles} articles");
-                return ExitCode::FAILURE;
-            }
-        }
+fn failed(failure: &Failure) -> ExitCode {
+    eprintln!("{failure}");
+    if failure.stage == Stage::Read {
+        ExitCode::from(2)
+    } else {
+        ExitCode::FAILURE
     }
-    let parsed = parsing.elapsed();
-    let mib = bytes as f64 / (1024.0 * 1024.0);
-    eprintln!(
-        "{}: {articles} articles, {deletes} deletions, {article_ids} article ids, {references} references",
-        path.display()
-    );
-    eprintln!(
-        "inflate {:.2}s ({mib:.1} MiB); parse {:.2}s = {:.0} records/s, {:.0} MiB/s",
-        inflated.as_secs_f64(),
-        parsed.as_secs_f64(),
-        (articles + deletes) as f64 / parsed.as_secs_f64(),
-        mib / parsed.as_secs_f64()
-    );
-    ExitCode::SUCCESS
 }
 
-fn count_references(lists: &[source_pubmed::record::ReferenceList<'_>]) -> u64 {
-    lists
-        .iter()
-        .map(|l| l.references.len() as u64 + count_references(&l.sub_lists))
-        .sum()
+/// Keeps the first few malformed values for the report.
+fn sample(samples: &mut Vec<String>, raw: &str, error: &impl Display) {
+    if samples.len() < 8 {
+        samples.push(format!("{raw:?}: {error}"));
+    }
 }
 
-/// The PubMed stats report (plan §6): what every normalized field held.
+/// The PubMed stats report.
 #[derive(Default)]
-struct Stats {
+struct PubmedStats {
     citations: u64,
+    deletions: u64,
     doi: [u64; 3],
     elocation_doi: [u64; 3],
     doi_lowercased: u64,
@@ -223,7 +210,7 @@ struct Stats {
     malformed_samples: Vec<String>,
 }
 
-impl Stats {
+impl PubmedStats {
     /// Counts one DOI claim as valid / malformed / absent.
     fn doi_claim<E: Display>(&mut self, slot: usize, claim: Option<&Claim<'_, Doi<'_>, E>>) {
         let counters = if slot == 0 {
@@ -241,15 +228,15 @@ impl Stats {
             }
             Some(Claim::Malformed { raw, error }) => {
                 counters[1] += 1;
-                if self.malformed_samples.len() < 8 {
-                    self.malformed_samples.push(format!("{raw:?}: {error}"));
-                }
+                sample(&mut self.malformed_samples, raw, error);
             }
         }
     }
+}
 
+impl StatsReport for PubmedStats {
     fn report(&self) {
-        eprintln!("citations {}", self.citations);
+        eprintln!("citations {}  deletions {}", self.citations, self.deletions);
         eprintln!(
             "  doi           valid {} malformed {} none {}",
             self.doi[0], self.doi[1], self.doi[2]
@@ -320,8 +307,8 @@ impl Stats {
     }
 }
 
-impl<'n> Emit<'n> for Stats {
-    fn citation(&mut self, c: &Citation<'n>) {
+impl<'n> Sink<'n, Pubmed> for PubmedStats {
+    fn work(&mut self, c: &Citation<'n>) {
         use source_pubmed::normalize::AuthorName;
         self.citations += 1;
         self.doi_claim(0, c.ids.doi.as_ref());
@@ -373,9 +360,7 @@ impl<'n> Emit<'n> for Stats {
                 Some(Claim::Valid(_)) => self.orcid[0] += 1,
                 Some(Claim::Malformed { raw, error }) => {
                     self.orcid[1] += 1;
-                    if self.malformed_samples.len() < 8 {
-                        self.malformed_samples.push(format!("{raw:?}: {error}"));
-                    }
+                    sample(&mut self.malformed_samples, raw, error);
                 }
             }
             self.affiliations += a.affiliations.len() as u64;
@@ -408,7 +393,7 @@ impl<'n> Emit<'n> for Stats {
         }
     }
 
-    fn reference(&mut self, r: &Reference<'n>) {
+    fn reference(&mut self, _from: &Pmid, r: &Reference<'n>) {
         self.references += 1;
         let key = match (r.pmid.is_some(), r.doi.is_some(), r.pmc.is_some()) {
             (false, false, false) => "none",
@@ -423,129 +408,20 @@ impl<'n> Emit<'n> for Stats {
         *self.reference_ids.entry(key).or_default() += 1;
         if let Some(Claim::Malformed { raw, error }) = &r.doi {
             self.reference_doi_malformed += 1;
-            if self.malformed_samples.len() < 8 {
-                self.malformed_samples.push(format!("{raw:?}: {error}"));
-            }
+            sample(&mut self.malformed_samples, raw, error);
         }
     }
+
+    fn deletion(&mut self, _: &Pmid) {
+        self.deletions += 1;
+    }
 }
 
-#[allow(clippy::cast_precision_loss)] // reporting only
-fn pubmed_normalize(path: &Path, limit: Option<u64>) -> ExitCode {
-    let Some(input) = read(path) else {
-        return ExitCode::from(2);
-    };
-    let started = Instant::now();
-    let mut set = ArticleSet::new(&input);
-    let mut stats = Stats::default();
-    let mut records = 0u64;
-    loop {
-        if limit.is_some_and(|n| records >= n) {
-            break;
-        }
-        match set.next_record() {
-            Ok(Some(Record::Article(a))) => {
-                records += 1;
-                if let Err(err) = normalize(&a, &mut stats) {
-                    eprintln!("{}: {err}", path.display());
-                    eprintln!("after {records} records");
-                    stats.report();
-                    return ExitCode::FAILURE;
-                }
-            }
-            Ok(Some(Record::DeleteCitation(_))) => records += 1,
-            Ok(None) => break,
-            Err(err) => {
-                eprintln!("{}: {err}", path.display());
-                return ExitCode::FAILURE;
-            }
-        }
-    }
-    let elapsed = started.elapsed();
-    stats.report();
-    eprintln!(
-        "parse+normalize {:.2}s = {:.0} records/s",
-        elapsed.as_secs_f64(),
-        records as f64 / elapsed.as_secs_f64()
-    );
-    ExitCode::SUCCESS
-}
-
-/// Runs `f` on every work of one container.
-fn crossref_drive<'a>(
-    works: impl Iterator<Item = Result<source_crossref::Work<'a>, source_crossref::Error>>,
-    f: &mut impl FnMut(&source_crossref::Work<'_>) -> Result<(), String>,
-) -> Result<(), String> {
-    for w in works {
-        f(&w.map_err(|e| e.to_string())?)?;
-    }
-    Ok(())
-}
-
-/// Reads a Crossref file of either container and runs `f` on every work;
-/// returns the decompressed size.
-fn crossref_each(
-    path: &Path,
-    f: &mut impl FnMut(&source_crossref::Work<'_>) -> Result<(), String>,
-) -> Result<usize, String> {
-    let input = if path.extension().is_some_and(|e| e == "gz") {
-        source_crossref::gz::read_to_string(path)
-    } else {
-        std::fs::read_to_string(path)
-    }
-    .map_err(|e| e.to_string())?;
-    if input.trim_start().starts_with("{\"status\"") {
-        let page = source_crossref::Page::parse(&input).map_err(|e| e.to_string())?;
-        crossref_drive(page.works(), f)?;
-    } else {
-        crossref_drive(source_crossref::jsonl(&input), f)?;
-    }
-    Ok(input.len())
-}
-
-#[allow(clippy::cast_precision_loss)] // reporting only
-fn crossref_check(paths: &[&str]) -> ExitCode {
-    let started = Instant::now();
-    let (mut works, mut references, mut authors, mut bytes) = (0u64, 0u64, 0u64, 0usize);
-    let mut types: BTreeMap<String, u64> = BTreeMap::new();
-    for path in paths {
-        let path = Path::new(path);
-        let result = crossref_each(path, &mut |w| {
-            works += 1;
-            references += w.reference.as_ref().map_or(0, Vec::len) as u64;
-            authors += w.author.as_ref().map_or(0, Vec::len) as u64;
-            *types.entry(format!("{:?}", w.r#type)).or_default() += 1;
-            Ok(())
-        });
-        match result {
-            Ok(n) => bytes += n,
-            Err(err) => {
-                eprintln!("{}: {err}", path.display());
-                eprintln!("after {works} works");
-                return ExitCode::FAILURE;
-            }
-        }
-    }
-    let elapsed = started.elapsed();
-    let mib = bytes as f64 / (1024.0 * 1024.0);
-    eprintln!(
-        "{works} works, {references} references, {authors} authors from {} files",
-        paths.len()
-    );
-    eprintln!("types {types:?}");
-    eprintln!(
-        "read+parse {:.2}s = {:.0} works/s, {:.0} MiB/s",
-        elapsed.as_secs_f64(),
-        works as f64 / elapsed.as_secs_f64(),
-        mib / elapsed.as_secs_f64()
-    );
-    ExitCode::SUCCESS
-}
-
-/// The Crossref stats report: what every normalized field held.
+/// The Crossref stats report.
 #[derive(Default)]
 struct CrossrefStats {
     works: u64,
+    deletions: u64,
     types: BTreeMap<String, u64>,
     doi_lowercased: u64,
     owner_differs: u64,
@@ -570,7 +446,7 @@ struct CrossrefStats {
     malformed_samples: Vec<String>,
 }
 
-impl<'n> CrossrefEmit<'n> for CrossrefStats {
+impl<'n> Sink<'n, Crossref> for CrossrefStats {
     fn work(&mut self, w: &source_crossref::normalize::Work<'n>) {
         self.works += 1;
         *self.types.entry(format!("{:?}", w.kind)).or_default() += 1;
@@ -624,9 +500,7 @@ impl<'n> CrossrefEmit<'n> for CrossrefStats {
             Some(Claim::Valid(_)) => self.reference_doi[0] += 1,
             Some(Claim::Malformed { raw, error }) => {
                 self.reference_doi[1] += 1;
-                if self.malformed_samples.len() < 6 {
-                    self.malformed_samples.push(format!("{raw:?}: {error}"));
-                }
+                sample(&mut self.malformed_samples, raw, error);
             }
         }
         if r.doi.is_none()
@@ -639,11 +513,15 @@ impl<'n> CrossrefEmit<'n> for CrossrefStats {
             self.reference_empty += 1;
         }
     }
+
+    fn deletion(&mut self, _: &Doi<'n>) {
+        self.deletions += 1;
+    }
 }
 
-impl CrossrefStats {
+impl StatsReport for CrossrefStats {
     fn report(&self) {
-        eprintln!("works {}", self.works);
+        eprintln!("works {}  deletions {}", self.works, self.deletions);
         eprintln!("  types {:?}", self.types);
         eprintln!(
             "  doi lowercased (allocations) {}  owner prefix != registrant {}",
@@ -684,101 +562,11 @@ impl CrossrefStats {
     }
 }
 
-#[allow(clippy::cast_precision_loss)] // reporting only
-fn crossref_normalize(paths: &[&str]) -> ExitCode {
-    let started = Instant::now();
-    let mut stats = CrossrefStats::default();
-    for path in paths {
-        let path = Path::new(path);
-        let result = crossref_each(path, &mut |w| {
-            source_crossref::normalize::normalize(w, &mut stats).map_err(|e| e.to_string())
-        });
-        if let Err(err) = result {
-            eprintln!("{}: {err}", path.display());
-            eprintln!("after {} works", stats.works);
-            stats.report();
-            return ExitCode::FAILURE;
-        }
-    }
-    let elapsed = started.elapsed();
-    stats.report();
-    eprintln!(
-        "read+parse+normalize {:.2}s = {:.0} works/s",
-        elapsed.as_secs_f64(),
-        stats.works as f64 / elapsed.as_secs_f64()
-    );
-    ExitCode::SUCCESS
-}
-
-/// Reads a part file, gzipped or not.
-fn openalex_read(path: &Path) -> Option<String> {
-    let input = if path.extension().is_some_and(|e| e == "gz") {
-        source_openalex::gz::read_to_string(path)
-    } else {
-        std::fs::read_to_string(path)
-    };
-    match input {
-        Ok(input) => Some(input),
-        Err(err) => {
-            eprintln!("{}: {err}", path.display());
-            None
-        }
-    }
-}
-
-#[allow(clippy::cast_precision_loss)] // reporting only
-fn openalex_check(paths: &[&str]) -> ExitCode {
-    let started = Instant::now();
-    let (mut works, mut references, mut authorships, mut abstracts, mut bytes) =
-        (0u64, 0u64, 0u64, 0u64, 0usize);
-    let mut types: BTreeMap<String, u64> = BTreeMap::new();
-    let mut oa: BTreeMap<String, u64> = BTreeMap::new();
-    for path in paths {
-        let path = Path::new(path);
-        let Some(input) = openalex_read(path) else {
-            return ExitCode::from(2);
-        };
-        bytes += input.len();
-        for w in source_openalex::jsonl(&input) {
-            match w {
-                Ok(w) => {
-                    works += 1;
-                    references += w.referenced_works.len() as u64;
-                    authorships += w.authorships.len() as u64;
-                    abstracts += u64::from(w.abstract_inverted_index.is_some());
-                    *types.entry(format!("{:?}", w.r#type)).or_default() += 1;
-                    *oa.entry(format!("{:?}", w.open_access.oa_status))
-                        .or_default() += 1;
-                }
-                Err(err) => {
-                    eprintln!("{}: {err}", path.display());
-                    eprintln!("after {works} works");
-                    return ExitCode::FAILURE;
-                }
-            }
-        }
-    }
-    let elapsed = started.elapsed();
-    let mib = bytes as f64 / (1024.0 * 1024.0);
-    eprintln!(
-        "{works} works, {references} referenced works, {authorships} authorships, {abstracts} abstracts from {} files",
-        paths.len()
-    );
-    eprintln!("types {types:?}");
-    eprintln!("oa status {oa:?}");
-    eprintln!(
-        "read+parse {:.2}s = {:.0} works/s, {:.0} MiB/s",
-        elapsed.as_secs_f64(),
-        works as f64 / elapsed.as_secs_f64(),
-        mib / elapsed.as_secs_f64()
-    );
-    ExitCode::SUCCESS
-}
-
-/// The OpenAlex stats report: what every normalized field held.
+/// The OpenAlex stats report.
 #[derive(Default)]
 struct OpenAlexStats {
     works: u64,
+    deletions: u64,
     types: BTreeMap<String, u64>,
     doi: [u64; 3],
     doi_lowercased: u64,
@@ -828,15 +616,9 @@ struct OpenAlexStats {
     malformed_samples: Vec<String>,
 }
 
-impl OpenAlexStats {
-    fn sample(&mut self, raw: &str, error: &impl Display) {
-        if self.malformed_samples.len() < 8 {
-            self.malformed_samples.push(format!("{raw:?}: {error}"));
-        }
-    }
-
+impl StatsReport for OpenAlexStats {
     fn report(&self) {
-        eprintln!("works {}", self.works);
+        eprintln!("works {}  deletions {}", self.works, self.deletions);
         eprintln!("  types {:?}", self.types);
         eprintln!(
             "  doi valid {} malformed {} none {}  lowercased (allocations) {}",
@@ -913,7 +695,7 @@ impl OpenAlexStats {
     }
 }
 
-impl<'n> OpenAlexEmit<'n> for OpenAlexStats {
+impl<'n> Sink<'n, OpenAlex> for OpenAlexStats {
     #[allow(clippy::too_many_lines)] // one counter per field group
     fn work(&mut self, w: &source_openalex::normalize::Work<'n>) {
         self.works += 1;
@@ -926,7 +708,7 @@ impl<'n> OpenAlexEmit<'n> for OpenAlexStats {
             }
             Some(Claim::Malformed { raw, error }) => {
                 self.doi[1] += 1;
-                self.sample(raw, error);
+                sample(&mut self.malformed_samples, raw, error);
             }
         }
         self.pmid += u64::from(w.pmid.is_some());
@@ -939,7 +721,7 @@ impl<'n> OpenAlexEmit<'n> for OpenAlexStats {
             Some(Claim::Valid(l)) => *self.languages.entry(l.alpha_3()).or_default() += 1,
             Some(Claim::Malformed { raw, error }) => {
                 self.language_malformed += 1;
-                self.sample(raw, error);
+                sample(&mut self.malformed_samples, raw, error);
             }
         }
         if w.title.is_empty() {
@@ -995,7 +777,7 @@ impl<'n> OpenAlexEmit<'n> for OpenAlexStats {
                         Claim::Valid(_) => self.issn[0] += 1,
                         Claim::Malformed { raw, error } => {
                             self.issn[1] += 1;
-                            self.sample(raw, error);
+                            sample(&mut self.malformed_samples, raw, error);
                         }
                     }
                 }
@@ -1029,43 +811,12 @@ impl<'n> OpenAlexEmit<'n> for OpenAlexStats {
         self.related += w.related_works.len() as u64;
     }
 
-    fn reference(&mut self, from: OpenAlexId, to: OpenAlexId) {
+    fn reference(&mut self, from: &OpenAlexId, to: &OpenAlexId) {
         self.references += 1;
         self.self_references += u64::from(from == to);
     }
-}
 
-#[allow(clippy::cast_precision_loss)] // reporting only
-fn openalex_normalize(paths: &[&str]) -> ExitCode {
-    let started = Instant::now();
-    let mut stats = OpenAlexStats::default();
-    let mut bytes = 0usize;
-    for path in paths {
-        let path = Path::new(path);
-        let Some(input) = openalex_read(path) else {
-            return ExitCode::from(2);
-        };
-        bytes += input.len();
-        for w in source_openalex::jsonl(&input) {
-            let result = w.map_err(|e| e.to_string()).and_then(|w| {
-                source_openalex::normalize::normalize(&w, &mut stats).map_err(|e| e.to_string())
-            });
-            if let Err(err) = result {
-                eprintln!("{}: {err}", path.display());
-                eprintln!("after {} works", stats.works);
-                stats.report();
-                return ExitCode::FAILURE;
-            }
-        }
+    fn deletion(&mut self, _: &OpenAlexId) {
+        self.deletions += 1;
     }
-    let elapsed = started.elapsed();
-    let mib = bytes as f64 / (1024.0 * 1024.0);
-    stats.report();
-    eprintln!(
-        "read+parse+normalize {:.2}s = {:.0} works/s, {:.0} MiB/s",
-        elapsed.as_secs_f64(),
-        stats.works as f64 / elapsed.as_secs_f64(),
-        mib / elapsed.as_secs_f64()
-    );
-    ExitCode::SUCCESS
 }

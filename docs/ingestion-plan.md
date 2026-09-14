@@ -242,6 +242,32 @@ wart is a claim the POC run confirms or refutes, not a commitment.
 - Terms: ODC-BY with attribution to Kinney et al. 2023 (arXiv:2301.10140) —
   a product-facing obligation, not just a download formality.
 
+### Long tail — assessed 2026-09-15
+
+Scoped to articles and their edges, books excluded. Two worth a slot; the
+rest not.
+
+- **OpenCitations Index**: CC0, bulk CSV dumps, ~2 × 10^9 citing-DOI →
+  cited-DOI edges built from Crossref, DataCite and NIH's open citation
+  collection. The most direct edge source there is and an independent check
+  on Crossref's reference DOIs. A POC slot after S2.
+- **Europe PMC** (and PMC's own OA subset): bulk full-text XML on FTP with
+  parsed reference lists carrying PMIDs and DOIs, plus preprints. Metadata
+  overlaps PubMed and OpenAlex almost entirely; the value is at the
+  full-text stage of the funnel, not for the graph.
+- **CORE**, **BASE**: aggregators over the repositories OpenAlex already
+  harvests. CORE's one distinctive asset is its full-text corpus (a later
+  stage); BASE adds nothing. Neither offers a bulk dump without an
+  application.
+- **JSTOR**, **Dimensions**, **Google Scholar**: closed. JSTOR's article
+  metadata is in Crossref under its prefix; Dimensions has no bulk access
+  and a proprietary graph; Scholar has no API and forbids scraping.
+- **OAI-PMH** is a protocol, not a source: the route to arXiv (§2), and how
+  the aggregators above are harvested.
+- Small extras: **DBLP** (CC0 dump, computer science, no citations);
+  **Retraction Watch**, which Crossref now carries free and which the
+  funnel's retraction filter will want.
+
 ### Consequences
 
 Edges now come from three overlapping producers — Crossref (publisher
@@ -287,14 +313,28 @@ require re-fetching.
   (`mailto`, keys), and every response is written to raw so nothing is
   fetched twice.
 
-Trait shapes — illustrative, not code. The lifetimes are the point (§5):
+Trait shapes, as landed on 2026-09-15 (`crates/ingest/src/source.rs`,
+factored from the three normalizers that came first). The lifetimes are
+the point (§5):
 
 ```text
-Source      name, native-ID type, enumerate origins, read records into a reusable buffer
-Parser      &'a [u8]  →  Native<'a>                       borrows; strict
-Normalizer  Native<'a>, &mut impl Emit  →  ()             consumes; pushes normalized records by reference
-Sink        implements Emit; serializes immediately; owns output buffers and symbol tables
+Source    NAME; Native<'a>, Id<'n>, Work<'n>, Reference<'n>; ParseError, NormalizeError
+          records(&'a str) → Iterator<Result<Native<'a>>>        borrows; strict (structural)
+          normalize(&'n Native, &mut impl Sink<'n>) → Result<()>  pushes by reference; strict (value-level)
+Sink<'n>  work(&Work<'n>)   reference(&Id<'n>, &Reference<'n>)   deletion(&Id<'n>)
+Runner    ingest::normalize::<S>(paths, limit, &mut sink) → Report, or
+          Failure { source, path, record ordinal, stage, the source's error }
 ```
+
+Parser and normalizer are two methods of one `Source` trait: they share
+the native type and nothing else needed a boundary between them. Each
+source crate exports a marker type (`Pubmed`, `Crossref`, `OpenAlex`)
+implementing it; the binary registers each in one line. `'n` is the
+lifetime of the native record; the runner requires a sink for every `'n`,
+so a sink can keep nothing it is handed — it serializes immediately, as §5
+rule 3 wants. Three record kinds so far — work, edge, deletion — because
+that is what three sources emit; S2's abstracts will add a fourth when a
+normalizer produces one.
 
 A source may emit several record streams (S2 ships papers, abstracts and
 citations as separate datasets, so it emits separate streams). It never joins
@@ -687,6 +727,11 @@ in your environment, never in the repo or in this conversation.
   `family`/`name`, a reference's DOI and `doi-asserted-by` come together.
   All 1,000 works normalize at 22.6k works/s. Title/abstract markup raw by
   decision. Next: the `ingest` traits, now that two normalizers exist.*
+  *Traits landed 2026-09-15 (§3.2): `Source` and `Sink` in `ingest`, the
+  three sources registered as marker types, one runner and one `Failure`
+  shape for all three, a deletion stream for PubMed. Still here: fetch with
+  manifests, the binary sink, the counting allocator, parallelism over
+  files — and with them the first budget number.*
 - **M3** — `source-openalex` (widest schema, second edge source, cross-IDs).
   *Native struct landed 2026-09-15 from the census: every object
   `deny_unknown_fields`, closed enums for type / OA status / version /
@@ -779,6 +824,15 @@ cross-IDs and a second edge namespace early.
   transfers; issued precision 466 day / 351 year-month / 149 year / 34 none;
   eight relation kinds; Crossref's own DOIs are already lowercase — zero
   lowercasing copies.
+- 2026-09-15, ingest traits — `Source` (records + normalize) and
+  `Sink<'n, S>` (work, reference, deletion), factored from the three
+  per-source `Emit` traits, which are gone. One runner drives every source
+  and replaces three hand-written loops in the binary; `--limit` works for
+  all. A `Failure` names source, file, record ordinal and stage around the
+  source's own error. PubMed's `DeleteCitation` becomes a deletion stream.
+  The citing id travels beside the edge, not inside it, for every source.
+  Long tail of sources assessed (§2): OpenCitations and Europe PMC worth a
+  slot; the rest not.
 - 2026-09-14, normalizer first cut — value-level layer over the native
   record; the `Claim<Doi>` decision above (§6); `Lang` from ISO 639-2 via
   Debian iso-codes (NLM's own language page is retired); publication types

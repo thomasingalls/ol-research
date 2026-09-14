@@ -141,6 +141,17 @@ impl<'a> Page<'a> {
             .enumerate()
             .map(|(index, raw)| work(raw.get(), Context::Item(index)))
     }
+
+    /// The works, each parsed on demand, borrowing from the input; the
+    /// page is consumed, so the iterator outlives it.
+    pub fn into_works(self) -> impl Iterator<Item = Result<Work<'a>, Error>> + 'a {
+        self.envelope
+            .message
+            .items
+            .into_iter()
+            .enumerate()
+            .map(|(index, raw)| work(raw.get(), Context::Item(index)))
+    }
 }
 
 /// Parses one work with context for the error.
@@ -163,9 +174,24 @@ pub fn jsonl(input: &str) -> impl Iterator<Item = Result<Work<'_>, Error>> + '_ 
         .map(|(index, line)| work(line, Context::Line(index + 1)))
 }
 
+/// The records of a raw file in either container, told apart by its first
+/// bytes: an API page starts with `{"status"`, a public data file with a
+/// work. A malformed envelope is the first and only record's error.
+#[must_use]
+pub fn records(input: &str) -> Box<dyn Iterator<Item = Result<Work<'_>, Error>> + '_> {
+    if input.trim_start().starts_with("{\"status\"") {
+        match Page::parse(input) {
+            Ok(page) => Box::new(page.into_works()),
+            Err(e) => Box::new(std::iter::once(Err(e))),
+        }
+    } else {
+        Box::new(jsonl(input))
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Page, jsonl};
+    use super::{Page, jsonl, records};
     use crate::error::Context;
 
     const WORK: &str = r#"{"DOI":"10.1000/x","URL":"https://doi.org/10.1000/x","type":"journal-article","source":"Crossref","prefix":"10.1000","member":"1","score":0.0,"created":{"date-parts":[[2020,1,2]],"date-time":"2020-01-02T00:00:00Z","timestamp":1577923200000},"deposited":{"date-parts":[[2020,1,2]],"date-time":"2020-01-02T00:00:00Z","timestamp":1577923200000},"indexed":{"date-parts":[[2020,1,2]],"date-time":"2020-01-02T00:00:00Z","timestamp":1577923200000},"issued":{"date-parts":[[2020]]},"publisher":"P","resource":{"primary":{"URL":"https://example.org/x"}}}"#;
@@ -188,6 +214,9 @@ mod tests {
         let lines = format!("{WORK}\n\n{WORK}\n");
         let works: Vec<_> = jsonl(&lines).map(Result::unwrap).collect();
         assert_eq!(works.len(), 2);
+        assert_eq!(records(&input).count(), 1);
+        assert_eq!(records(&lines).count(), 2);
+        assert!(records("{\"status\":\"failed\"}").next().unwrap().is_err());
     }
 
     #[test]

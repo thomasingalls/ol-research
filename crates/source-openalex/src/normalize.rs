@@ -23,12 +23,13 @@
 //! that breaks one of those stops the run with its id, the field and the
 //! raw text.
 //!
-//! Records are pushed to an [`Emit`] by reference as they are built; the
+//! Records are pushed to a [`Sink`] by reference as they are built; the
 //! citation edges follow the work, one call each.
 
 use std::fmt;
 use std::num::NonZeroU32;
 
+use ingest::Sink;
 use model::id::{
     AuthorId, AwardId, ConceptId, EntityId, FunderId, HostOrganization, InstitutionId, SourceId,
     TopicId, strict_u32,
@@ -39,6 +40,7 @@ use model::{
     Pmid, Ror, RorError, Year,
 };
 
+use crate::OpenAlex;
 use crate::record::{
     self, BestOaLocation, CitationNormalizedPercentile, HasContent, PercentileYear, Text,
     Work as Native,
@@ -127,7 +129,7 @@ pub struct Work<'n> {
     pub awards: Vec<Award<'n>>,
     #[allow(missing_docs)]
     pub funders: Vec<Funder<'n>>,
-    /// How many edges follow this work through [`Emit::reference`].
+    /// How many edges follow this work through [`Sink::reference`].
     pub referenced_works_count: u32,
     #[allow(missing_docs)]
     pub related_works: Vec<OpenAlexId>,
@@ -481,14 +483,6 @@ impl IndexedIn {
     pub fn iter(self) -> impl Iterator<Item = Index> {
         Index::ALL.into_iter().filter(move |i| self.contains(*i))
     }
-}
-
-/// Where normalized records go. Called by reference, once per record.
-pub trait Emit<'n> {
-    /// One work.
-    fn work(&mut self, work: &Work<'n>);
-    /// One citation edge from the work most recently emitted.
-    fn reference(&mut self, from: OpenAlexId, to: OpenAlexId);
 }
 
 /// A value that did not fit the model.
@@ -960,7 +954,7 @@ impl Ctx {
 /// The first value that does not fit the model; see [`ErrorKind`]. The
 /// emitter may already have received the work when an edge fails.
 #[allow(clippy::too_many_lines)] // one block per field group; the field set is the point
-pub fn normalize<'n, E: Emit<'n>>(w: &'n Native<'_>, emit: &mut E) -> Result<(), Error> {
+pub fn normalize<'n, K: Sink<'n, OpenAlex>>(w: &'n Native<'_>, emit: &mut K) -> Result<(), Error> {
     let mut ctx = Ctx { id: None };
     let id: OpenAlexId = ctx.entity("id", &w.id)?;
     ctx.id = Some(id);
@@ -1404,7 +1398,7 @@ pub fn normalize<'n, E: Emit<'n>>(w: &'n Native<'_>, emit: &mut E) -> Result<(),
 
     for r in &w.referenced_works {
         let to: OpenAlexId = ctx.entity("referenced_works", r)?;
-        emit.reference(id, to);
+        emit.reference(&id, &to);
     }
     Ok(())
 }

@@ -121,8 +121,10 @@ fn a_new_key_anywhere_fails_with_its_name() {
 
 mod normalized {
     use super::{fixture, work};
+    use ingest::Sink;
     use model::{Claim, Doi};
-    use source_crossref::normalize::{AuthorName, Emit, Reference, Work, normalize};
+    use source_crossref::Crossref;
+    use source_crossref::normalize::{AuthorName, Reference, Work, normalize};
     use source_crossref::vocab::{UpdateType, WorkType};
 
     #[derive(Default)]
@@ -131,13 +133,14 @@ mod normalized {
         references: Vec<(String, Reference<'n>)>,
     }
 
-    impl<'n> Emit<'n> for Collect<'n> {
+    impl<'n> Sink<'n, Crossref> for Collect<'n> {
         fn work(&mut self, w: &Work<'n>) {
             self.works.push(w.clone());
         }
         fn reference(&mut self, from: &Doi<'n>, r: &Reference<'n>) {
             self.references.push((from.to_string(), r.clone()));
         }
+        fn deletion(&mut self, _: &Doi<'n>) {}
     }
 
     fn run(name: &str) -> (String, Collect<'static>) {

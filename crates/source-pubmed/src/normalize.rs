@@ -18,12 +18,14 @@
 
 use std::fmt;
 
+use ingest::Sink;
 use model::{
     Claim, Date, DateError, Day, Doi, DoiError, Issn, IssnError, Lang, LangError, MedlineDateError,
     MeshUi, MeshUiError, Month, Orcid, OrcidError, ParseError, PartialDate, PmcId, Pmid, Season,
     TimeOfDay, Year,
 };
 
+use crate::Pubmed;
 use crate::attr::{
     AffiliationIdSource, CitedMedium, EIdType, IdType, IssnType, KeywordOwner, NlmCategory,
     OtherAbstractType, Owner, PubModel, PubStatus, PublicationStatus, RefType, Status,
@@ -31,8 +33,8 @@ use crate::attr::{
 };
 use crate::record::{
     self, AbstractText, ArticleId, AuthorName as NativeAuthorName, Date as DateText,
-    MedlineCitation, Pagination as NativePagination, PersonName as NativePersonName, PubDate,
-    PubmedArticle, ReferenceList as ReferenceListRecord,
+    DeleteCitation, MedlineCitation, Pagination as NativePagination,
+    PersonName as NativePersonName, PubDate, PubmedArticle, ReferenceList as ReferenceListRecord,
 };
 use crate::text::RawXml;
 
@@ -416,8 +418,6 @@ pub struct Relation {
 /// identified by whichever of three namespaces the source supplied.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Reference<'n> {
-    /// The citing record.
-    pub from: Pmid,
     /// `ArticleId IdType="pubmed"`.
     pub pmid: Option<Pmid>,
     /// `ArticleId IdType="doi"`.
@@ -426,14 +426,6 @@ pub struct Reference<'n> {
     pub pmc: Option<PmcId>,
     /// The citation text, raw markup.
     pub citation: &'n str,
-}
-
-/// Where normalized records go. Called once per record, by reference.
-pub trait Emit<'n> {
-    /// One citation.
-    fn citation(&mut self, citation: &Citation<'n>);
-    /// One reference of the most recently emitted citation.
-    fn reference(&mut self, reference: &Reference<'n>);
 }
 
 /// A value that did not fit the model.
@@ -967,9 +959,9 @@ fn unmodelled(ctx: &Ctx, article: &PubmedArticle<'_>) -> Result<(), Error> {
 /// The first value that does not fit the model; see [`ErrorKind`]. The
 /// emitter may already have received the citation when a reference fails.
 #[allow(clippy::too_many_lines)] // one block per field group; the field set is the point
-pub fn normalize<'n, E: Emit<'n>>(
+pub fn normalize<'n, K: Sink<'n, Pubmed>>(
     article: &'n PubmedArticle<'_>,
-    emit: &mut E,
+    emit: &mut K,
 ) -> Result<(), Error> {
     let c = &article.medline_citation;
     let mut ctx = Ctx { pmid: None };
@@ -1167,7 +1159,7 @@ pub fn normalize<'n, E: Emit<'n>>(
         None => (Vec::new(), None),
     };
 
-    emit.citation(&Citation {
+    emit.work(&Citation {
         pmid,
         version,
         status: c.status,
@@ -1203,11 +1195,31 @@ pub fn normalize<'n, E: Emit<'n>>(
     Ok(())
 }
 
-fn references<'n, E: Emit<'n>>(
+/// Normalizes a `DeleteCitation`, emitting one deletion per PMID.
+///
+/// # Errors
+///
+/// A PMID or version that is not one.
+pub fn deletions<'n, K: Sink<'n, Pubmed>>(
+    deleted: &'n DeleteCitation<'_>,
+    emit: &mut K,
+) -> Result<(), Error> {
+    let ctx = Ctx { pmid: None };
+    for p in &deleted.pmids {
+        let pmid = Pmid::from_digits(&p.value)
+            .map_err(|e| ctx.err("DeleteCitation/PMID", &p.value, ErrorKind::Id(e)))?;
+        model::id::strict_u32(&p.version)
+            .map_err(|e| ctx.err("DeleteCitation/PMID@Version", &p.version, ErrorKind::Id(e)))?;
+        emit.deletion(&pmid);
+    }
+    Ok(())
+}
+
+fn references<'n, K: Sink<'n, Pubmed>>(
     ctx: &Ctx,
     from: Pmid,
     lists: &'n [ReferenceListRecord<'_>],
-    emit: &mut E,
+    emit: &mut K,
 ) -> Result<(), Error> {
     const FIELD: &str = "Reference/ArticleIdList/ArticleId";
     for list in lists {
@@ -1248,13 +1260,15 @@ fn references<'n, E: Emit<'n>>(
                     ));
                 }
             }
-            emit.reference(&Reference {
-                from,
-                pmid,
-                doi,
-                pmc,
-                citation: r.citation.as_str(),
-            });
+            emit.reference(
+                &from,
+                &Reference {
+                    pmid,
+                    doi,
+                    pmc,
+                    citation: r.citation.as_str(),
+                },
+            );
         }
         references(ctx, from, &list.sub_lists, emit)?;
     }

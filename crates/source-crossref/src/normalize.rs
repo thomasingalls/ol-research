@@ -8,15 +8,17 @@
 //! its DOI, the field and the raw text. Reference DOIs are the exception,
 //! as a [`Claim`]: one in five hundred carries a Unicode hyphen.
 //!
-//! Records are pushed to an [`Emit`] by reference as they are built.
+//! Records are pushed to a [`Sink`] by reference as they are built.
 
 use std::fmt;
 
+use ingest::Sink;
 use model::{
     Claim, Date, DateError, DateTime, Doi, DoiError, Isbn, IsbnError, Issn, IssnError, Lang,
     LangError, Orcid, OrcidError, ParseError, PartialDate, Registrant,
 };
 
+use crate::Crossref;
 use crate::date::{DateParts, PartialDate as PartialDateParts};
 use crate::record::{Contributor, Serial, Work as Native};
 use crate::vocab::{
@@ -219,14 +221,6 @@ pub struct Reference<'n> {
     pub issue: Option<&'n str>,
     #[allow(missing_docs)]
     pub first_page: Option<&'n str>,
-}
-
-/// Where normalized records go. Called by reference, once per record.
-pub trait Emit<'n> {
-    /// One work.
-    fn work(&mut self, work: &Work<'n>);
-    /// One reference of the work `from`, most recently emitted.
-    fn reference(&mut self, from: &Doi<'n>, reference: &Reference<'n>);
 }
 
 /// A value that did not fit the model.
@@ -476,7 +470,7 @@ fn first<'n>(list: Option<&'n Vec<crate::record::Text<'_>>>) -> Option<&'n str> 
 /// The first value that does not fit the model; see [`ErrorKind`]. The
 /// emitter may already have received the work when a reference fails.
 #[allow(clippy::too_many_lines)] // one block per field group; the field set is the point
-pub fn normalize<'n, E: Emit<'n>>(w: &'n Native<'_>, emit: &mut E) -> Result<(), Error> {
+pub fn normalize<'n, K: Sink<'n, Crossref>>(w: &'n Native<'_>, emit: &mut K) -> Result<(), Error> {
     let mut ctx = Ctx { doi: None };
     let doi = Doi::parse(&w.doi).map_err(|e| ctx.err("DOI", &w.doi, ErrorKind::Doi(e)))?;
     ctx.doi = Some(doi.as_str().to_owned());

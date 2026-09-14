@@ -27,5 +27,31 @@ pub mod vocab;
 pub use ingest::gz;
 
 pub use error::Error;
-pub use parse::{Page, jsonl};
+pub use parse::{Page, jsonl, records};
 pub use record::Work;
+
+/// The source, for the ingest traits: API pages or public-data-file lines,
+/// one record schema.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Crossref;
+
+impl ingest::Source for Crossref {
+    const NAME: &'static str = "crossref";
+    type Native<'a> = Work<'a>;
+    type Id<'n> = model::Doi<'n>;
+    type Work<'n> = normalize::Work<'n>;
+    type Reference<'n> = normalize::Reference<'n>;
+    type ParseError = Error;
+    type NormalizeError = normalize::Error;
+
+    fn records(input: &str) -> impl Iterator<Item = Result<Work<'_>, Error>> + '_ {
+        records(input)
+    }
+
+    fn normalize<'n, K: ingest::Sink<'n, Self>>(
+        native: &'n Work<'_>,
+        sink: &mut K,
+    ) -> Result<(), normalize::Error> {
+        normalize::normalize(native, sink)
+    }
+}
