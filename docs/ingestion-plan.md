@@ -177,6 +177,22 @@ wart is a claim the POC run confirms or refutes, not a commitment.
 - `is_authors_truncated`: the API truncates very long author lists; check
   whether the snapshot does.
 - Terms: CC0.
+- Unpaywall is not a separate dataset any more: since OurResearch's rewrite
+  it is a legacy-compatible format served from the same OpenAlex data, and
+  "the OA facts in an Unpaywall record and in an OpenAlex work's
+  `open_access` object come from the same pipeline". `open_access`,
+  `best_oa_location` and each `locations[]` entry's `is_oa` / `license` /
+  `version` / `pdf_url` are that data. No separate sample is needed
+  (checked 2026-09-15).
+- Observed in the 10,873-work part file (249 JSON paths): the Work object
+  documentation has moved and its new home 404s, so the census is the
+  document. `best_oa_location` is never null but is an object of nulls when
+  there is no OA copy (6,869); `institutions` is always an empty array;
+  `is_xpac` is undocumented; `author.id` is null on 1,321 of 30,825
+  authorships; `apc_list` holds integers where the one `apc_paid` holds
+  floats; `abstract_inverted_index` is present on 8,831 with 951k words and
+  1.5M positions, all sorted. `referenced_works` are `W…` ids: 50,724 edges
+  in the file, 2,800 works with any.
 
 ### Semantic Scholar — paused
 
@@ -604,8 +620,8 @@ in your environment, never in the repo or in this conversation.
    checked per crate as each is started, not up front.
 2. NLM and arXiv data terms (§2) — gate product use, not the POC.
 3. Semantic Scholar API key — paused; M5 resumes when one exists.
-4. `--survey` opt-in is assumed (§6). Veto if it smells like a lenient mode
-   in disguise.
+4. ~~`--survey` opt-in is assumed (§6).~~ Confirmed 2026-09-15: keep it,
+   opt-in, default stop-at-first.
 
 ## 9. Milestones
 
@@ -639,16 +655,23 @@ in your environment, never in the repo or in this conversation.
   `published` equals `issued`, `references-count` equals the array, typed
   serial lists equal the plain ones, an author has exactly one of
   `family`/`name`, a reference's DOI and `doi-asserted-by` come together.
-  All 1,000 works normalize at 22.6k works/s. Title/abstract markup still
-  raw. Next: the `ingest` traits, now that two normalizers exist.*
+  All 1,000 works normalize at 22.6k works/s. Title/abstract markup raw by
+  decision. Next: the `ingest` traits, now that two normalizers exist.*
 - **M3** — `source-openalex` (widest schema, second edge source, cross-IDs).
+  *Native struct landed 2026-09-15 from the census: every object
+  `deny_unknown_fields`, closed enums for type / OA status / version /
+  license / provenance / index / source and institution types / author
+  position, the abstract's inverted index kept as a raw JSON slice, a
+  separate all-nullable `BestOaLocation`. All 10,873 works parse at 22.5k
+  works/s; seven real fixtures. Normalizer next.*
 - **M4** — `source-pubmed` (streaming XML, the largest modelling surface).
   *First cut landed 2026-09-14: native types mirror the DTD field for field
   (everything under `PubmedArticle` and `DeleteCitation`; `PubmedBookArticle`
   is an explicit error), attribute vocabularies are closed enums, cardinality
   is enforced, child order is not yet. Mixed content is kept as the raw
   inner markup. The whole real file parses with zero failures; the DTD and
-  five real records are the crate's fixtures.*
+  five real records are the crate's fixtures.* *Normalizer complete for
+  every field the file contains (2026-09-15).*
   *Normalizer first cut landed the same day: `Pmid`, `PmcId`, `Doi`,
   `Date`/`PartialDate` (with the `MedlineDate` grammar), `Lang` (ISO 639-2
   from Debian iso-codes), `MeshUi` — plus the record's identifiers, dates,
@@ -722,6 +745,31 @@ cross-IDs and a second edge namespace early.
   First stats report: 3,338 day / 895 year-month / 709 year / 40 span /
   6 season / 1 quarter publication dates; 74 % of references carry no
   identifier at all; 7 % of DOIs need lowercasing.
+- 2026-09-15, markup decision — mixed-content fields (title, abstract,
+  keywords, affiliations, citation text, COI, suffix, collective names)
+  are kept as the raw inner markup in the normalized layer too, borrowed,
+  with no flattening method anywhere: the markup matters, and dealing with
+  it is deferred until something needs to explicitly. Then the flattening
+  can live close to the raw type. Observed inline vocabulary in PubMed:
+  `b`, `i`, `sub`, `sup`, MathML; never `u` or `DispFormula`.
+- 2026-09-15, PubMed normalizer, all fields — journal (ISSN with type,
+  ISSN-linking, NLM id, country, pagination), title, abstract sections with
+  labels and NLM categories, other abstracts, authors with ORCIDs in their
+  three forms (2,873 bare, 1,995 `http://`, 2,739 `https://`; 17 truncated
+  to fifteen characters → `Claim<Orcid>`), affiliations with ROR/GRID/ISNI/
+  Ringgold ids, investigators, MeSH headings and qualifiers, supplementary
+  concepts, chemicals, keywords, grants (empty `Country` → `None`), data
+  banks, COI, history with local times, publication status. DTD content the
+  file never contained fails on first sight. Whole file at 25.9k records/s;
+  every count in the stats report reconciles with the census (34,978
+  authors, 42,448 affiliations, 11,460 MeSH headings, 19,167 keywords,
+  2,074 investigators, 9,603 abstract sections).
+- 2026-09-15 — `--survey` confirmed as an opt-in diagnostic mode (§6);
+  default remains stop-at-first, output never written on any failure.
+- 2026-09-15, OpenAlex native struct — census-driven, documentation
+  unavailable. The inverted-index abstract stays raw, consistent with the
+  markup decision. Unpaywall found to be folded into OpenAlex; no separate
+  source.
 - 2026-09-14, M4 first cut — first external dependencies: `quick-xml`,
   `flate2`. Native layer is DTD-faithful text (dates, identifiers stay text;
   the normalizer applies `model` types), which keeps the two layers'

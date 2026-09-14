@@ -1,0 +1,15 @@
+[package]
+name = "source-openalex"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "OpenAlex works snapshot JSON lines: native record types and a strict, zero-copy reader."
+
+[dependencies]
+ingest.workspace = true
+model.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

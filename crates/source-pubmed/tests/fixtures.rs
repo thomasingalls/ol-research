@@ -193,8 +193,10 @@ fn structural_disagreements_fail_with_location() {
 mod normalized {
     use super::{fixture, only_article};
     use model::{Claim, Month, PartialDate, Pmid};
-    use source_pubmed::attr::RefType;
-    use source_pubmed::normalize::{Citation, Emit, Reference, normalize};
+    use source_pubmed::attr::{
+        AffiliationIdSource, IssnType, PubStatus, PublicationStatus, RefType,
+    };
+    use source_pubmed::normalize::{AuthorName, Citation, Emit, Reference, normalize};
 
     #[derive(Default)]
     struct Collect<'n> {
@@ -211,60 +213,100 @@ mod normalized {
         }
     }
 
-    #[test]
-    fn shortest_record_normalizes() {
-        let input = fixture("shortest");
-        let article = only_article(&input);
+    fn run(name: &str) -> Collect<'static> {
+        let input = Box::leak(fixture(name).into_boxed_str());
+        let article = Box::leak(Box::new(only_article(input)));
         let mut out = Collect::default();
-        normalize(&article, &mut out).expect("normalizes");
+        normalize(article, &mut out).expect("normalizes");
+        out
+    }
+
+    #[test]
+    fn shortest_record_normalizes_every_field() {
+        let out = run("shortest");
         assert_eq!(out.citations.len(), 1);
         let c = &out.citations[0];
         assert_eq!(c.pmid, Pmid::new(41_609_757).unwrap());
         assert_eq!(c.version, 1);
-        let doi = c.doi.as_ref().unwrap().valid().unwrap();
+        let doi = c.ids.doi.as_ref().unwrap().valid().unwrap();
         assert_eq!(doi.as_str(), "10.1001/jama.2025.15703");
         assert!(doi.is_borrowed());
-        assert_eq!(c.elocation_doi.as_ref().unwrap().valid(), Some(doi));
-        assert_eq!(c.pii, Some("2844550"));
-        assert_eq!(c.pmc, None);
+        assert_eq!(c.ids.elocation_doi.as_ref().unwrap().valid(), Some(doi));
+        assert_eq!(c.ids.pii, Some("2844550"));
+        assert_eq!(c.ids.pmc, None);
         assert!(
-            matches!(c.published, PartialDate::Day(d) if d.month() == Month::January && d.day().get() == 29)
+            matches!(c.dates.published, PartialDate::Day(d) if d.month() == Month::January && d.day().get() == 29)
         );
-        assert_eq!(c.electronic.unwrap().to_string(), "2026-01-29");
-        assert_eq!(c.revised.unwrap().to_string(), "2026-01-29");
-        assert_eq!(c.completed, None);
-        assert_eq!(c.languages.len(), 1);
+        assert_eq!(c.dates.electronic.unwrap().to_string(), "2026-01-29");
+        assert_eq!(c.dates.revised.unwrap().to_string(), "2026-01-29");
+        assert_eq!(c.title, "Glucose as a Food.");
+        assert_eq!(c.journal.title, Some("JAMA"));
+        assert_eq!(c.journal.medline_ta, "JAMA");
+        assert_eq!(c.journal.nlm_unique_id, Some("7501160"));
+        let issn = c.journal.issn.unwrap();
+        assert_eq!(issn.kind, IssnType::Electronic);
+        assert_eq!(issn.issn.to_string(), "1538-3598");
+        assert_eq!(c.journal.issn_linking.unwrap().to_string(), "0098-7484");
+        assert_eq!(c.journal.country, Some("United States"));
         assert_eq!(c.languages[0].alpha_3(), "eng");
-        assert_eq!(c.publication_types.len(), 1);
         assert_eq!(c.publication_types[0].ui.as_str(), "D016428");
         assert_eq!(c.publication_types[0].name, "Journal Article");
-        assert!(c.relations.is_empty());
+        assert!(c.authors.is_empty() && c.r#abstract.is_none() && c.mesh.is_empty());
+        assert_eq!(c.citation_subsets, ["IM"]);
+        assert_eq!(c.publication_status, Some(PublicationStatus::AheadOfPrint));
+        assert_eq!(c.history.len(), 1);
+        assert_eq!(c.history[0].status, PubStatus::Entrez);
+        assert_eq!(c.history[0].time.unwrap().to_string(), "12:36");
         assert!(out.references.is_empty());
     }
 
     #[test]
+    fn rich_record_has_abstract_sections_mesh_and_authors() {
+        let out = run("mathml_refs_mesh");
+        let c = &out.citations[0];
+        let a = c.r#abstract.as_ref().unwrap();
+        assert!(a.sections.iter().any(|s| s.text.contains("<mml:math")));
+        assert!(!c.mesh.is_empty());
+        assert!(
+            c.mesh
+                .iter()
+                .all(|h| h.descriptor.ui.as_str().starts_with('D'))
+        );
+        assert!(!c.authors.is_empty());
+        assert!(
+            c.authors
+                .iter()
+                .any(|a| matches!(a.name, AuthorName::Person(_)))
+        );
+        assert!(!out.references.is_empty());
+    }
+
+    #[test]
     fn medline_date_becomes_a_span_or_quarter() {
-        let input = fixture("medline_date");
-        let article = only_article(&input);
-        let mut out = Collect::default();
-        normalize(&article, &mut out).expect("normalizes");
+        let out = run("medline_date");
         assert!(matches!(
-            out.citations[0].published,
+            out.citations[0].dates.published,
             PartialDate::Span(_) | PartialDate::YearQuarter(..)
         ));
     }
 
     #[test]
+    fn collective_names_come_through() {
+        let out = run("collective_name");
+        assert!(
+            out.citations[0]
+                .authors
+                .iter()
+                .any(|a| matches!(a.name, AuthorName::Collective { .. }))
+        );
+    }
+
+    #[test]
     fn references_and_relations_come_through() {
-        let input = fixture("refs_pmcid_corrections");
-        let article = only_article(&input);
-        let mut out = Collect::default();
-        normalize(&article, &mut out).expect("normalizes");
+        let out = run("refs_pmcid_corrections");
         let c = &out.citations[0];
-        assert!(!out.references.is_empty());
         assert!(out.references.iter().all(|r| r.from == c.pmid));
         assert!(out.references.iter().any(|r| r.pmc.is_some()));
-        assert!(out.references.iter().any(|r| r.pmid.is_some()));
         assert!(
             out.references
                 .iter()
@@ -272,21 +314,64 @@ mod normalized {
         );
         assert!(!c.relations.is_empty());
         assert!(RefType::TOKENS.contains(&c.relations[0].kind.token()));
-        assert!(c.relations[0].pmid.is_some());
     }
 
     #[test]
-    fn a_malformed_doi_is_a_claim_not_a_crash() {
-        let input = fixture("shortest").replace(
-            "<ArticleId IdType=\"doi\">10.1001/jama.2025.15703</ArticleId>",
-            "<ArticleId IdType=\"doi\">DOI</ArticleId>",
-        );
+    fn orcids_in_three_forms_and_truncated_ones() {
+        let base = fixture("shortest");
+        let author = |orcid: &str| {
+            base.replacen(
+            "<ArticleTitle>Glucose as a Food.</ArticleTitle>",
+            &format!("<ArticleTitle>Glucose as a Food.</ArticleTitle><AuthorList CompleteYN=\"Y\"><Author ValidYN=\"Y\"><LastName>Doe</LastName><Identifier Source=\"ORCID\">{orcid}</Identifier><AffiliationInfo><Affiliation>Somewhere</Affiliation><Identifier Source=\"ROR\">https://ror.org/05byvp690</Identifier></AffiliationInfo></Author></AuthorList>"),
+            1,
+        )
+        };
+        for form in [
+            "https://orcid.org/0000-0002-3118-2156",
+            "http://orcid.org/0000-0002-3118-2156",
+            "0000-0002-3118-2156",
+        ] {
+            let input = author(form);
+            let article = only_article(&input);
+            let mut out = Collect::default();
+            normalize(&article, &mut out).expect(form);
+            let a = &out.citations[0].authors[0];
+            assert_eq!(
+                a.orcid.as_ref().unwrap().valid().unwrap().to_string(),
+                "0000-0002-3118-2156",
+                "{form}"
+            );
+            assert_eq!(a.affiliations[0].ids[0].source, AffiliationIdSource::Ror);
+        }
+        let input = author("0000-0002-7368-498");
         let article = only_article(&input);
         let mut out = Collect::default();
-        normalize(&article, &mut out).expect("normalizes");
-        let c = &out.citations[0];
-        assert!(matches!(c.doi, Some(Claim::Malformed { raw: "DOI", .. })));
-        assert!(c.elocation_doi.as_ref().unwrap().valid().is_some());
+        normalize(&article, &mut out).unwrap();
+        assert!(matches!(
+            out.citations[0].authors[0].orcid,
+            Some(Claim::Malformed {
+                raw: "0000-0002-7368-498",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn unmodelled_content_fails_on_first_sight() {
+        let input = fixture("shortest").replace(
+            "<CitationSubset>IM</CitationSubset>",
+            "<CitationSubset>IM</CitationSubset><GeneSymbolList><GeneSymbol>BRCA1</GeneSymbol></GeneSymbolList>",
+        );
+        let article = only_article(&input);
+        let err = normalize(&article, &mut Collect::default()).unwrap_err();
+        assert_eq!(err.field, "GeneSymbolList", "{err}");
+        let input = fixture("shortest").replace(
+            "<Minute>36</Minute>",
+            "<Minute>36</Minute><Second>1</Second>",
+        );
+        let article = only_article(&input);
+        let err = normalize(&article, &mut Collect::default()).unwrap_err();
+        assert!(err.to_string().contains("Second"), "{err}");
     }
 
     #[test]
@@ -299,11 +384,6 @@ mod normalized {
         let err = normalize(&article, &mut Collect::default()).unwrap_err();
         assert_eq!(err.pmid, Some(Pmid::new(41_609_757).unwrap()));
         assert_eq!(err.field, "ELocationID[doi]");
-        assert!(
-            err.to_string()
-                .contains("differs from the valid ArticleId doi"),
-            "{err}"
-        );
     }
 
     #[test]

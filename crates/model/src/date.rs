@@ -420,6 +420,44 @@ impl Date {
     }
 }
 
+/// A time of day to the minute with no zone, as PubMed's history dates
+/// carry it. One byte each.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct TimeOfDay {
+    hour: u8,
+    minute: u8,
+}
+
+impl TimeOfDay {
+    /// `0..=23` and `0..=59`.
+    #[must_use]
+    pub const fn new(hour: u8, minute: u8) -> Option<Self> {
+        if hour <= 23 && minute <= 59 {
+            Some(Self { hour, minute })
+        } else {
+            None
+        }
+    }
+
+    /// The hour.
+    #[must_use]
+    pub const fn hour(self) -> u8 {
+        self.hour
+    }
+
+    /// The minute.
+    #[must_use]
+    pub const fn minute(self) -> u8 {
+        self.minute
+    }
+}
+
+impl fmt::Display for TimeOfDay {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:02}:{:02}", self.hour, self.minute)
+    }
+}
+
 /// An instant in UTC to the second, from `2014-07-05T15:19:03Z`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct DateTime {

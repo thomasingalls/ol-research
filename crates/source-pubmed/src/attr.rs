@@ -231,6 +231,27 @@ attr_enum! {
     }
 }
 
+attr_enum! {
+    /// The text of `PublicationStatus`: not an attribute, but a closed list
+    /// all the same (NLM documents these three).
+    pub enum PublicationStatus {
+        PrintPublished = "ppublish",
+        ElectronicPublished = "epublish",
+        AheadOfPrint = "aheadofprint",
+    }
+}
+
+attr_enum! {
+    /// `AffiliationInfo/Identifier@Source`: `CDATA` in the DTD, these four in
+    /// the data.
+    pub enum AffiliationIdSource {
+        Ror = "ROR",
+        Grid = "GRID",
+        Isni = "ISNI",
+        Ringgold = "RINGGOLD",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{IdType, RefType, Status, YesNo};

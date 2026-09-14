@@ -105,6 +105,21 @@ impl Orcid {
         Self::from_hyphenated(rest)
     }
 
+    /// Parses whichever of the three forms a free-text field holds:
+    /// `https://orcid.org/…`, `http://orcid.org/…` or bare. PubMed's
+    /// `Identifier Source="ORCID"` carries all three, as authors typed them.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::from_hyphenated`] after any prefix is removed.
+    pub fn from_url_or_bare(s: &str) -> Result<Self, Error> {
+        let rest = s
+            .strip_prefix(Self::HTTPS_PREFIX)
+            .or_else(|| s.strip_prefix(Self::HTTP_PREFIX))
+            .unwrap_or(s);
+        Self::from_hyphenated(rest)
+    }
+
     /// The fifteen-digit number without the check character.
     #[must_use]
     pub const fn base(self) -> u64 {
@@ -182,6 +197,26 @@ mod tests {
         assert_eq!(
             Orcid::from_https_url("0000-0002-3118-2156"),
             Err(Error::BadPrefix)
+        );
+    }
+
+    #[test]
+    fn free_text_fields_carry_three_forms() {
+        for form in [
+            "https://orcid.org/0000-0002-3118-2156",
+            "http://orcid.org/0000-0002-3118-2156",
+            "0000-0002-3118-2156",
+        ] {
+            assert_eq!(
+                Orcid::from_url_or_bare(form),
+                Orcid::from_hyphenated("0000-0002-3118-2156"),
+                "{form}"
+            );
+        }
+        // PubMed's truncated ones.
+        assert_eq!(
+            Orcid::from_url_or_bare("0000-0002-7368-498"),
+            Err(Error::Shape)
         );
     }
 }

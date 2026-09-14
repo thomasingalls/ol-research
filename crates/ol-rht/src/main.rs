@@ -10,6 +10,8 @@
 //!   types and reports counts and throughput.
 //! * `crossref normalize <file>...` parses and normalizes, and prints the
 //!   stats report.
+//! * `openalex check <part.gz>...` parses snapshot part files with the strict
+//!   OpenAlex types and reports counts and throughput.
 //!
 //! All exit non-zero on the first failure and say exactly where it was: the
 //! seed of the "reproduce against one record" command the failure report
@@ -33,7 +35,8 @@ const USAGE: &str = "usage:
   ol-rht pubmed check <file.xml.gz> [--limit N]
   ol-rht pubmed normalize <file.xml.gz> [--limit N]
   ol-rht crossref check <file>...
-  ol-rht crossref normalize <file>...";
+  ol-rht crossref normalize <file>...
+  ol-rht openalex check <part.gz>...";
 
 type Parser = fn(&str) -> Result<(), ParseError>;
 
@@ -67,6 +70,7 @@ fn main() -> ExitCode {
         },
         ["crossref", "check", paths @ ..] if !paths.is_empty() => crossref_check(paths),
         ["crossref", "normalize", paths @ ..] if !paths.is_empty() => crossref_normalize(paths),
+        ["openalex", "check", paths @ ..] if !paths.is_empty() => openalex_check(paths),
         _ => usage(),
     }
 }
@@ -168,7 +172,7 @@ fn count_references(lists: &[source_pubmed::record::ReferenceList<'_>]) -> u64 {
         .sum()
 }
 
-/// The first stats report (plan §6): what every normalized field held.
+/// The PubMed stats report (plan §6): what every normalized field held.
 #[derive(Default)]
 struct Stats {
     citations: u64,
@@ -184,6 +188,29 @@ struct Stats {
     status: BTreeMap<&'static str, u64>,
     languages: BTreeMap<&'static str, u64>,
     publication_types: BTreeMap<String, u64>,
+    title: [u64; 3],
+    abstracts: u64,
+    sections: u64,
+    sections_markup: u64,
+    sections_math: u64,
+    other_abstracts: u64,
+    journal_issn: u64,
+    journal_issn_linking: u64,
+    persons: u64,
+    collectives: u64,
+    orcid: [u64; 3],
+    affiliations: u64,
+    affiliation_ids: BTreeMap<&'static str, u64>,
+    investigators: u64,
+    mesh_headings: u64,
+    mesh_major: u64,
+    chemicals: u64,
+    keywords: u64,
+    grants: u64,
+    grants_with_country: u64,
+    data_banks: u64,
+    history: BTreeMap<&'static str, u64>,
+    publication_status: BTreeMap<&'static str, u64>,
     relations: BTreeMap<&'static str, u64>,
     references: u64,
     reference_ids: BTreeMap<&'static str, u64>,
@@ -239,6 +266,42 @@ impl Stats {
             "  publication types: {} distinct",
             self.publication_types.len()
         );
+        eprintln!(
+            "  title plain {} markup {} empty {}",
+            self.title[0], self.title[1], self.title[2]
+        );
+        eprintln!(
+            "  abstracts {} sections {} (markup {} math {})  other abstracts {}",
+            self.abstracts,
+            self.sections,
+            self.sections_markup,
+            self.sections_math,
+            self.other_abstracts
+        );
+        eprintln!(
+            "  journal issn {}  issn linking {}",
+            self.journal_issn, self.journal_issn_linking
+        );
+        eprintln!(
+            "  authors persons {} collectives {}  orcid valid {} malformed {} none {}",
+            self.persons, self.collectives, self.orcid[0], self.orcid[1], self.orcid[2]
+        );
+        eprintln!(
+            "  affiliations {}  ids {:?}  investigators {}",
+            self.affiliations, self.affiliation_ids, self.investigators
+        );
+        eprintln!(
+            "  mesh headings {} (major {})  chemicals {}  keywords {}  grants {} (with country {})  data banks {}",
+            self.mesh_headings,
+            self.mesh_major,
+            self.chemicals,
+            self.keywords,
+            self.grants,
+            self.grants_with_country,
+            self.data_banks
+        );
+        eprintln!("  history {:?}", self.history);
+        eprintln!("  publication status {:?}", self.publication_status);
         eprintln!("  relations {:?}", self.relations);
         eprintln!("references {}", self.references);
         eprintln!("  ids {:?}", self.reference_ids);
@@ -254,15 +317,19 @@ impl Stats {
 
 impl<'n> Emit<'n> for Stats {
     fn citation(&mut self, c: &Citation<'n>) {
+        use source_pubmed::normalize::AuthorName;
         self.citations += 1;
-        self.doi_claim(0, c.doi.as_ref());
-        self.doi_claim(1, c.elocation_doi.as_ref());
-        self.pii += u64::from(c.pii.is_some());
-        self.pmc += u64::from(c.pmc.is_some());
-        *self.published.entry(c.published.precision()).or_default() += 1;
-        self.electronic += u64::from(c.electronic.is_some());
-        self.revised += u64::from(c.revised.is_some());
-        self.completed += u64::from(c.completed.is_some());
+        self.doi_claim(0, c.ids.doi.as_ref());
+        self.doi_claim(1, c.ids.elocation_doi.as_ref());
+        self.pii += u64::from(c.ids.pii.is_some());
+        self.pmc += u64::from(c.ids.pmc.is_some());
+        *self
+            .published
+            .entry(c.dates.published.precision())
+            .or_default() += 1;
+        self.electronic += u64::from(c.dates.electronic.is_some());
+        self.revised += u64::from(c.dates.revised.is_some());
+        self.completed += u64::from(c.dates.completed.is_some());
         *self.status.entry(c.status.token()).or_default() += 1;
         for l in &c.languages {
             *self.languages.entry(l.alpha_3()).or_default() += 1;
@@ -272,6 +339,64 @@ impl<'n> Emit<'n> for Stats {
                 .publication_types
                 .entry(format!("{} {}", pt.ui, pt.name))
                 .or_default() += 1;
+        }
+        if c.title.is_empty() {
+            self.title[2] += 1;
+        } else if c.title.contains('<') {
+            self.title[1] += 1;
+        } else {
+            self.title[0] += 1;
+        }
+        if let Some(a) = &c.r#abstract {
+            self.abstracts += 1;
+            for s in &a.sections {
+                self.sections += 1;
+                self.sections_markup += u64::from(s.text.contains('<'));
+                self.sections_math += u64::from(s.text.contains("<mml:"));
+            }
+        }
+        self.other_abstracts += c.other_abstracts.len() as u64;
+        self.journal_issn += u64::from(c.journal.issn.is_some());
+        self.journal_issn_linking += u64::from(c.journal.issn_linking.is_some());
+        for a in &c.authors {
+            match a.name {
+                AuthorName::Person(_) => self.persons += 1,
+                AuthorName::Collective { .. } => self.collectives += 1,
+            }
+            match &a.orcid {
+                None => self.orcid[2] += 1,
+                Some(Claim::Valid(_)) => self.orcid[0] += 1,
+                Some(Claim::Malformed { raw, error }) => {
+                    self.orcid[1] += 1;
+                    if self.malformed_samples.len() < 8 {
+                        self.malformed_samples.push(format!("{raw:?}: {error}"));
+                    }
+                }
+            }
+            self.affiliations += a.affiliations.len() as u64;
+            for af in &a.affiliations {
+                for id in &af.ids {
+                    *self.affiliation_ids.entry(id.source.token()).or_default() += 1;
+                }
+            }
+        }
+        self.investigators += c
+            .investigator_lists
+            .iter()
+            .map(|l| l.investigators.len() as u64)
+            .sum::<u64>();
+        self.mesh_headings += c.mesh.len() as u64;
+        self.mesh_major += c.mesh.iter().filter(|h| h.major).count() as u64;
+        self.chemicals += c.chemicals.len() as u64;
+        self.keywords += c.keywords.len() as u64;
+        self.grants += c.grants.len() as u64;
+        self.grants_with_country += c.grants.iter().filter(|g| g.country.is_some()).count() as u64;
+        self.data_banks += c.data_banks.len() as u64;
+        for h in &c.history {
+            *self.history.entry(h.status.token()).or_default() += 1;
+        }
+        if let Some(ps) = c.publication_status {
+            *self.publication_status.entry(ps.token()).or_default() += 1;
         }
         for r in &c.relations {
             *self.relations.entry(r.kind.token()).or_default() += 1;
@@ -576,6 +701,64 @@ fn crossref_normalize(paths: &[&str]) -> ExitCode {
         "read+parse+normalize {:.2}s = {:.0} works/s",
         elapsed.as_secs_f64(),
         stats.works as f64 / elapsed.as_secs_f64()
+    );
+    ExitCode::SUCCESS
+}
+
+#[allow(clippy::cast_precision_loss)] // reporting only
+fn openalex_check(paths: &[&str]) -> ExitCode {
+    let started = Instant::now();
+    let (mut works, mut references, mut authorships, mut abstracts, mut bytes) =
+        (0u64, 0u64, 0u64, 0u64, 0usize);
+    let mut types: BTreeMap<String, u64> = BTreeMap::new();
+    let mut oa: BTreeMap<String, u64> = BTreeMap::new();
+    for path in paths {
+        let path = Path::new(path);
+        let input = if path.extension().is_some_and(|e| e == "gz") {
+            source_openalex::gz::read_to_string(path)
+        } else {
+            std::fs::read_to_string(path)
+        };
+        let input = match input {
+            Ok(input) => input,
+            Err(err) => {
+                eprintln!("{}: {err}", path.display());
+                return ExitCode::from(2);
+            }
+        };
+        bytes += input.len();
+        for w in source_openalex::jsonl(&input) {
+            match w {
+                Ok(w) => {
+                    works += 1;
+                    references += w.referenced_works.len() as u64;
+                    authorships += w.authorships.len() as u64;
+                    abstracts += u64::from(w.abstract_inverted_index.is_some());
+                    *types.entry(format!("{:?}", w.r#type)).or_default() += 1;
+                    *oa.entry(format!("{:?}", w.open_access.oa_status))
+                        .or_default() += 1;
+                }
+                Err(err) => {
+                    eprintln!("{}: {err}", path.display());
+                    eprintln!("after {works} works");
+                    return ExitCode::FAILURE;
+                }
+            }
+        }
+    }
+    let elapsed = started.elapsed();
+    let mib = bytes as f64 / (1024.0 * 1024.0);
+    eprintln!(
+        "{works} works, {references} referenced works, {authorships} authorships, {abstracts} abstracts from {} files",
+        paths.len()
+    );
+    eprintln!("types {types:?}");
+    eprintln!("oa status {oa:?}");
+    eprintln!(
+        "read+parse {:.2}s = {:.0} works/s, {:.0} MiB/s",
+        elapsed.as_secs_f64(),
+        works as f64 / elapsed.as_secs_f64(),
+        mib / elapsed.as_secs_f64()
     );
     ExitCode::SUCCESS
 }

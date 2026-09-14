@@ -17,7 +17,7 @@ pub mod orcid;
 pub use claim::Claim;
 pub use date::{
     Date, DateTime, Day, Error as DateError, MedlineError as MedlineDateError, Month, PartialDate,
-    Quarter, Season, Year,
+    Quarter, Season, TimeOfDay, Year,
 };
 pub use doi::{Doi, Error as DoiError, Registrant};
 pub use id::{OpenAlexId, ParseError, PmcId, Pmid};

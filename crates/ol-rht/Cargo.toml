@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 model.workspace = true
 source-crossref.workspace = true
+source-openalex.workspace = true
 source-pubmed.workspace = true
 
 [lints]

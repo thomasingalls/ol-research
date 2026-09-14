@@ -3,29 +3,46 @@
 //! This is where value-level strictness lives (plan §6): identifiers,
 //! dates and vocabularies become `model` types, and a value that does not
 //! fit stops the run with the PMID, the field and the raw text. The field
-//! set is what the evidence has justified so far (plan §4a) and grows one
-//! field at a time; anything not here is still in the raw layer.
+//! set covers everything observed in the first baseline file; DTD content
+//! the file did not contain (`GeneSymbolList`, `OtherID`, `ObjectList`, a
+//! `Second` in a history date, …) is an error on first sight, which is how
+//! it gets modelled.
 //!
-//! Records are pushed to an [`Emit`] by reference as they are built — no
-//! per-record collections beyond the record itself (plan §5).
+//! Mixed-content fields — title, abstract, keywords, affiliations, citation
+//! text — hold the raw inner markup, borrowed, with no interpretation:
+//! `<sub>`, `<sup>`, `<i>` and MathML are kept exactly as serialized. What
+//! to make of them is deferred until something needs to (decided
+//! 2026-09-15).
+//!
+//! Records are pushed to an [`Emit`] by reference as they are built.
 
 use std::fmt;
 
 use model::{
-    Claim, Date, DateError, Day, Doi, DoiError, Lang, LangError, MedlineDateError, MeshUi,
-    MeshUiError, Month, ParseError, PartialDate, PmcId, Pmid, Season, Year,
+    Claim, Date, DateError, Day, Doi, DoiError, Issn, IssnError, Lang, LangError, MedlineDateError,
+    MeshUi, MeshUiError, Month, Orcid, OrcidError, ParseError, PartialDate, PmcId, Pmid, Season,
+    TimeOfDay, Year,
 };
 
-use crate::attr::{EIdType, IdType, RefType, Status, YesNo};
-use crate::record::{
-    ArticleId, Date as DateText, MedlineCitation, PubDate, PubmedArticle,
-    ReferenceList as ReferenceListRecord,
+use crate::attr::{
+    AffiliationIdSource, CitedMedium, EIdType, IdType, IssnType, KeywordOwner, NlmCategory,
+    OtherAbstractType, Owner, PubModel, PubStatus, PublicationStatus, RefType, Status,
+    SupplMeshType, YesNo,
 };
+use crate::record::{
+    self, AbstractText, ArticleId, AuthorName as NativeAuthorName, Date as DateText,
+    MedlineCitation, Pagination as NativePagination, PersonName as NativePersonName, PubDate,
+    PubmedArticle, ReferenceList as ReferenceListRecord,
+};
+use crate::text::RawXml;
 
 /// A DOI as a source asserted it.
 pub type DoiClaim<'n> = Claim<'n, Doi<'n>, DoiError>;
+/// An ORCID as an author typed it: 17 of 7,607 in the first file were
+/// truncated to fifteen characters.
+pub type OrcidClaim<'n> = Claim<'n, Orcid, OrcidError>;
 
-/// One PubMed record, normalized: the fields with evidence behind them.
+/// One PubMed record, normalized.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Citation<'n> {
     /// The record's identifier.
@@ -34,41 +51,356 @@ pub struct Citation<'n> {
     pub version: u32,
     /// Indexing status: `Publisher`, `In-Process`, `MEDLINE`, …
     pub status: Status,
+    /// `MedlineCitation@Owner`.
+    pub owner: Owner,
+    /// `MedlineCitation@IndexingMethod`: `Automated` or `Curated`, free text
+    /// in the DTD.
+    pub indexing_method: Option<&'n str>,
+    /// The record's other identifiers.
+    pub ids: Identifiers<'n>,
+    /// The record's dates.
+    pub dates: Dates,
+    /// The journal and issue.
+    pub journal: Journal<'n>,
+    /// `ArticleTitle`, raw markup; empty on 14 of 4,989.
+    pub title: &'n str,
+    /// `VernacularTitle`, raw markup.
+    pub vernacular_title: Option<&'n str>,
+    /// `Abstract`.
+    pub r#abstract: Option<Abstract<'n>>,
+    /// `OtherAbstract*`.
+    pub other_abstracts: Vec<OtherAbstract<'n>>,
+    /// `Language+`, ISO 639-2 bibliographic codes.
+    pub languages: Vec<Lang>,
+    /// `PublicationType+`.
+    pub publication_types: Vec<MeshTerm<'n>>,
+    /// `AuthorList/Author*`.
+    pub authors: Vec<Author<'n>>,
+    /// `InvestigatorList*`, each with the `ID` a `CollectiveName` may point at.
+    pub investigator_lists: Vec<InvestigatorList<'n>>,
+    /// `MeshHeadingList`.
+    pub mesh: Vec<MeshHeading<'n>>,
+    /// `SupplMeshList`.
+    pub suppl_mesh: Vec<SupplMesh<'n>>,
+    /// `ChemicalList`.
+    pub chemicals: Vec<Chemical<'n>>,
+    /// Every `Keyword` of every `KeywordList`, with its list's owner.
+    pub keywords: Vec<Keyword<'n>>,
+    /// `GrantList`.
+    pub grants: Vec<Grant<'n>>,
+    /// `DataBankList`.
+    pub data_banks: Vec<DataBank<'n>>,
+    /// `CoiStatement`, raw markup.
+    pub coi_statement: Option<&'n str>,
+    /// `CitationSubset*`: `IM` and friends.
+    pub citation_subsets: Vec<&'n str>,
+    /// `PubmedData/History`.
+    pub history: Vec<HistoryEntry>,
+    /// `PubmedData/PublicationStatus`.
+    pub publication_status: Option<PublicationStatus>,
+    /// `CommentsCorrections*`: errata, retractions, comments, by kind.
+    pub relations: Vec<Relation>,
+}
+
+/// The record's identifiers beyond its PMID.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Identifiers<'n> {
     /// `ArticleId IdType="doi"` — the record's own DOI as it asserts it.
     pub doi: Option<DoiClaim<'n>>,
     /// `ELocationID EIdType="doi"` — the same identifier from the article
     /// block. Agrees with `doi` whenever both are valid; when they differ,
-    /// one is malformed (nine e-location strings and one literal `DOI` in
-    /// the first file).
+    /// one is malformed.
     pub elocation_doi: Option<DoiClaim<'n>>,
     /// `ArticleId IdType="pii"`, an opaque publisher item identifier.
     pub pii: Option<&'n str>,
+    /// `ELocationID EIdType="pii"`, which need not equal `pii`.
+    pub elocation_pii: Option<&'n str>,
     /// `ArticleId IdType="pmc"`.
     pub pmc: Option<PmcId>,
+}
+
+/// The record's dates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Dates {
     /// `JournalIssue/PubDate`, at the precision the record gave.
     pub published: PartialDate,
-    /// `ArticleDate`, the electronic publication date. At most one is
-    /// modelled; a second is an error until one is observed.
+    /// `ArticleDate`, the electronic publication date; at most one is
+    /// modelled.
     pub electronic: Option<Date>,
     /// `DateRevised`.
     pub revised: Option<Date>,
     /// `DateCompleted`.
     pub completed: Option<Date>,
-    /// `Language+`, ISO 639-2 bibliographic codes.
-    pub languages: Vec<Lang>,
-    /// `PublicationType+`, keyed by MeSH UI.
-    pub publication_types: Vec<PublicationType<'n>>,
-    /// `CommentsCorrections*`: errata, retractions, comments, by kind.
-    pub relations: Vec<Relation>,
 }
 
-/// A `PublicationType`: MeSH descriptor UI plus the term.
+/// The journal and the issue the article appeared in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Journal<'n> {
+    /// `Journal/Title`.
+    pub title: Option<&'n str>,
+    /// `Journal/ISOAbbreviation`.
+    pub iso_abbreviation: Option<&'n str>,
+    /// `MedlineJournalInfo/MedlineTA`.
+    pub medline_ta: &'n str,
+    /// `MedlineJournalInfo/NlmUniqueID`: digits, sometimes with a trailing
+    /// letter.
+    pub nlm_unique_id: Option<&'n str>,
+    /// `Journal/ISSN` with its type.
+    pub issn: Option<TypedIssn>,
+    /// `MedlineJournalInfo/ISSNLinking`.
+    pub issn_linking: Option<Issn>,
+    /// `MedlineJournalInfo/Country`, NLM's spelling (`United States`,
+    /// `England`, `Korea (South)`).
+    pub country: Option<&'n str>,
+    /// `Article@PubModel`.
+    pub pub_model: PubModel,
+    /// `JournalIssue@CitedMedium`.
+    pub cited_medium: CitedMedium,
+    #[allow(missing_docs)]
+    pub volume: Option<&'n str>,
+    #[allow(missing_docs)]
+    pub issue: Option<&'n str>,
+    #[allow(missing_docs)]
+    pub pagination: Option<Pagination<'n>>,
+}
+
+/// An ISSN with its type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PublicationType<'n> {
-    /// The descriptor UI, e.g. `D016428`.
+pub struct TypedIssn {
+    #[allow(missing_docs)]
+    pub kind: IssnType,
+    #[allow(missing_docs)]
+    pub issn: Issn,
+}
+
+/// `Pagination`, as text: `1-8`, `e2025072830`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pagination<'n> {
+    /// `StartPage`, `EndPage?`, `MedlinePgn?`.
+    Pages {
+        #[allow(missing_docs)]
+        start: &'n str,
+        #[allow(missing_docs)]
+        end: Option<&'n str>,
+        #[allow(missing_docs)]
+        medline: Option<&'n str>,
+    },
+    /// `MedlinePgn` alone.
+    Medline(&'n str),
+}
+
+/// `Abstract`: labelled sections plus a copyright line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Abstract<'n> {
+    /// `AbstractText+`.
+    pub sections: Vec<Section<'n>>,
+    /// `CopyrightInformation?`.
+    pub copyright: Option<&'n str>,
+}
+
+/// One `AbstractText`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Section<'n> {
+    /// `Label`, the publisher's heading (`RESULTS`, `Résultats`).
+    pub label: Option<&'n str>,
+    /// `NlmCategory`, NLM's normalization of the heading.
+    pub category: Option<NlmCategory>,
+    /// The paragraph, raw markup.
+    pub text: &'n str,
+}
+
+/// `OtherAbstract`: a publisher's or plain-language abstract.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OtherAbstract<'n> {
+    #[allow(missing_docs)]
+    pub kind: OtherAbstractType,
+    /// `Language`, ISO 639-2 bibliographic.
+    pub language: Lang,
+    #[allow(missing_docs)]
+    pub sections: Vec<Section<'n>>,
+    #[allow(missing_docs)]
+    pub copyright: Option<&'n str>,
+}
+
+/// A MeSH-keyed term: publication types, descriptors, qualifiers,
+/// substances, supplementary concepts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MeshTerm<'n> {
+    #[allow(missing_docs)]
     pub ui: MeshUi<'n>,
-    /// The term, e.g. `Journal Article`.
+    #[allow(missing_docs)]
     pub name: &'n str,
+}
+
+/// An author.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Author<'n> {
+    #[allow(missing_docs)]
+    pub name: AuthorName<'n>,
+    /// `Identifier Source="ORCID"`, in any of its three forms.
+    pub orcid: Option<OrcidClaim<'n>>,
+    /// `EqualContrib`.
+    pub equal_contrib: Option<bool>,
+    /// `ValidYN`.
+    pub valid: bool,
+    #[allow(missing_docs)]
+    pub affiliations: Vec<Affiliation<'n>>,
+}
+
+/// A person or a collective.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthorName<'n> {
+    #[allow(missing_docs)]
+    Person(PersonName<'n>),
+    /// `CollectiveName`, raw markup, and the `InvestigatorList` it points at.
+    Collective {
+        #[allow(missing_docs)]
+        name: &'n str,
+        #[allow(missing_docs)]
+        investigators: Option<&'n str>,
+    },
+}
+
+/// `LastName, ForeName?, Initials?, Suffix?`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PersonName<'n> {
+    #[allow(missing_docs)]
+    pub last: &'n str,
+    #[allow(missing_docs)]
+    pub fore: Option<&'n str>,
+    #[allow(missing_docs)]
+    pub initials: Option<&'n str>,
+    /// Raw markup.
+    pub suffix: Option<&'n str>,
+}
+
+/// `AffiliationInfo`: the text and its identifiers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Affiliation<'n> {
+    /// Raw markup.
+    pub text: &'n str,
+    #[allow(missing_docs)]
+    pub ids: Vec<AffiliationId<'n>>,
+}
+
+/// An affiliation identifier, as written: ROR URL, GRID id, spaced ISNI,
+/// Ringgold number. Unvalidated here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AffiliationId<'n> {
+    #[allow(missing_docs)]
+    pub source: AffiliationIdSource,
+    #[allow(missing_docs)]
+    pub value: &'n str,
+}
+
+/// `InvestigatorList`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvestigatorList<'n> {
+    /// `ID`, the target of a `CollectiveName@Investigators`.
+    pub id: Option<&'n str>,
+    #[allow(missing_docs)]
+    pub investigators: Vec<Investigator<'n>>,
+}
+
+/// An investigator: a person with the same identifiers an author has.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Investigator<'n> {
+    #[allow(missing_docs)]
+    pub name: PersonName<'n>,
+    #[allow(missing_docs)]
+    pub orcid: Option<OrcidClaim<'n>>,
+    #[allow(missing_docs)]
+    pub valid: bool,
+    #[allow(missing_docs)]
+    pub affiliations: Vec<Affiliation<'n>>,
+}
+
+/// A MeSH heading: descriptor plus qualifiers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MeshHeading<'n> {
+    #[allow(missing_docs)]
+    pub descriptor: MeshTerm<'n>,
+    /// `MajorTopicYN` on the descriptor.
+    pub major: bool,
+    /// `Type="Geographic"`.
+    pub geographic: bool,
+    /// `AutoHM`: assigned by NLM's automated indexer.
+    pub auto: bool,
+    #[allow(missing_docs)]
+    pub qualifiers: Vec<Qualifier<'n>>,
+}
+
+/// A MeSH qualifier on a heading.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Qualifier<'n> {
+    #[allow(missing_docs)]
+    pub term: MeshTerm<'n>,
+    #[allow(missing_docs)]
+    pub major: bool,
+    #[allow(missing_docs)]
+    pub auto: bool,
+}
+
+/// A supplementary concept.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SupplMesh<'n> {
+    #[allow(missing_docs)]
+    pub kind: SupplMeshType,
+    #[allow(missing_docs)]
+    pub term: MeshTerm<'n>,
+}
+
+/// A chemical.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Chemical<'n> {
+    /// `0`, a CAS number, an EC number or a UNII, as text.
+    pub registry_number: &'n str,
+    #[allow(missing_docs)]
+    pub substance: MeshTerm<'n>,
+}
+
+/// A keyword.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Keyword<'n> {
+    /// The owner of the list it came from.
+    pub owner: KeywordOwner,
+    /// Raw markup; edge whitespace and empties occur.
+    pub text: &'n str,
+    #[allow(missing_docs)]
+    pub major: bool,
+}
+
+/// A grant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Grant<'n> {
+    #[allow(missing_docs)]
+    pub id: Option<&'n str>,
+    #[allow(missing_docs)]
+    pub acronym: Option<&'n str>,
+    #[allow(missing_docs)]
+    pub agency: &'n str,
+    /// `Country`; an empty element (92 % of grants) is `None`.
+    pub country: Option<&'n str>,
+}
+
+/// A data bank with accession numbers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DataBank<'n> {
+    /// `ClinicalTrials.gov`, `Dryad`, `GEO`, …
+    pub name: &'n str,
+    #[allow(missing_docs)]
+    pub accessions: Vec<&'n str>,
+}
+
+/// One `PubMedPubDate`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HistoryEntry {
+    #[allow(missing_docs)]
+    pub status: PubStatus,
+    #[allow(missing_docs)]
+    pub date: Date,
+    /// Local time with no zone, when given.
+    pub time: Option<TimeOfDay>,
 }
 
 /// A `CommentsCorrections` entry: how this record relates to another.
@@ -81,8 +413,7 @@ pub struct Relation {
 }
 
 /// One entry of a record's reference list: an edge whose target is
-/// identified by whichever of three namespaces the source supplied — in
-/// the first file 74 % supplied none, and the rest any combination.
+/// identified by whichever of three namespaces the source supplied.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Reference<'n> {
     /// The citing record.
@@ -93,7 +424,7 @@ pub struct Reference<'n> {
     pub doi: Option<DoiClaim<'n>>,
     /// `ArticleId IdType="pmcid"`.
     pub pmc: Option<PmcId>,
-    /// The citation text, raw markup included.
+    /// The citation text, raw markup.
     pub citation: &'n str,
 }
 
@@ -120,17 +451,16 @@ pub struct Error {
 
 /// Why a value did not fit.
 #[derive(Debug)]
+#[allow(missing_docs)]
 pub enum ErrorKind {
-    /// An identifier.
     Id(ParseError),
-    /// A date part.
     Date(DateError),
-    /// A `MedlineDate`.
     MedlineDate(MedlineDateError),
-    /// A MeSH UI.
     MeshUi(MeshUiError),
-    /// A language code.
+    Issn(IssnError),
     Lang(LangError),
+    /// A closed vocabulary that the value is not in.
+    Vocabulary(&'static str),
     /// Two fields that must agree do not.
     Inconsistent(&'static str),
     /// Allowed by the DTD, not modelled here yet.
@@ -149,7 +479,9 @@ impl fmt::Display for Error {
             ErrorKind::Date(e) => write!(f, "{e}"),
             ErrorKind::MedlineDate(e) => write!(f, "{e}"),
             ErrorKind::MeshUi(e) => write!(f, "{e}"),
+            ErrorKind::Issn(e) => write!(f, "{e}"),
             ErrorKind::Lang(e) => write!(f, "{e}"),
+            ErrorKind::Vocabulary(what) => write!(f, "not in the vocabulary of {what}"),
             ErrorKind::Inconsistent(what) => write!(f, "inconsistent: {what}"),
             ErrorKind::Unmodelled(what) => write!(f, "not modelled yet: {what}"),
         }
@@ -231,9 +563,194 @@ impl Ctx {
             }
         })
     }
+
+    fn mesh_term<'n>(
+        &self,
+        field: &'static str,
+        keyed: &'n record::Keyed<'_>,
+    ) -> Result<MeshTerm<'n>, Error> {
+        Ok(MeshTerm {
+            ui: MeshUi::parse(&keyed.ui)
+                .map_err(|e| self.err(field, &keyed.ui, ErrorKind::MeshUi(e)))?,
+            name: &keyed.value,
+        })
+    }
+
+    fn issn(&self, field: &'static str, s: &str) -> Result<Issn, Error> {
+        Issn::parse(s).map_err(|e| self.err(field, s, ErrorKind::Issn(e)))
+    }
+
+    fn lang(&self, field: &'static str, s: &str) -> Result<Lang, Error> {
+        Lang::from_bibliographic(s).map_err(|e| self.err(field, s, ErrorKind::Lang(e)))
+    }
+
+    fn sections<'n>(texts: &'n [AbstractText<'_>]) -> Vec<Section<'n>> {
+        texts
+            .iter()
+            .map(|t| Section {
+                label: t.label.as_deref(),
+                category: t.nlm_category,
+                text: t.content.as_str(),
+            })
+            .collect()
+    }
+
+    fn person<'n>(name: &'n NativePersonName<'_>) -> PersonName<'n> {
+        PersonName {
+            last: &name.last_name,
+            fore: name.fore_name.as_deref(),
+            initials: name.initials.as_deref(),
+            suffix: name.suffix.map(RawXml::as_str),
+        }
+    }
+
+    /// The single ORCID an `Identifier*` list may carry.
+    fn orcid<'n>(
+        &self,
+        ids: &'n [record::Identifier<'_>],
+    ) -> Result<Option<OrcidClaim<'n>>, Error> {
+        let mut orcid = None;
+        for id in ids {
+            if &*id.source != "ORCID" {
+                return Err(self.err(
+                    "Identifier@Source",
+                    &id.source,
+                    ErrorKind::Unmodelled("an author identifier that is not an ORCID"),
+                ));
+            }
+            if orcid
+                .replace(Claim::from_parse(
+                    &id.value,
+                    Orcid::from_url_or_bare(&id.value),
+                ))
+                .is_some()
+            {
+                return Err(self.err(
+                    "Identifier",
+                    &id.value,
+                    ErrorKind::Inconsistent("more than one ORCID"),
+                ));
+            }
+        }
+        Ok(orcid)
+    }
+
+    fn affiliations<'n>(
+        &self,
+        infos: &'n [record::AffiliationInfo<'_>],
+    ) -> Result<Vec<Affiliation<'n>>, Error> {
+        infos
+            .iter()
+            .map(|info| {
+                let ids = info
+                    .identifiers
+                    .iter()
+                    .map(|id| {
+                        let source = AffiliationIdSource::parse(&id.source).ok_or_else(|| {
+                            self.err(
+                                "AffiliationInfo/Identifier@Source",
+                                &id.source,
+                                ErrorKind::Vocabulary("affiliation identifier sources"),
+                            )
+                        })?;
+                        Ok(AffiliationId {
+                            source,
+                            value: &id.value,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, Error>>()?;
+                Ok(Affiliation {
+                    text: info.affiliation.as_str(),
+                    ids,
+                })
+            })
+            .collect()
+    }
+
+    fn author<'n>(&self, a: &'n record::Author<'_>) -> Result<Author<'n>, Error> {
+        let name = match &a.name {
+            NativeAuthorName::Person(p) => AuthorName::Person(Self::person(p)),
+            NativeAuthorName::Collective(c) => AuthorName::Collective {
+                name: c.content.as_str(),
+                investigators: c.investigators.as_deref(),
+            },
+        };
+        Ok(Author {
+            name,
+            orcid: self.orcid(&a.identifiers)?,
+            equal_contrib: a.equal_contrib.map(|v| v == YesNo::Yes),
+            valid: a.valid == YesNo::Yes,
+            affiliations: self.affiliations(&a.affiliations)?,
+        })
+    }
+
+    fn investigator<'n>(&self, i: &'n record::Investigator<'_>) -> Result<Investigator<'n>, Error> {
+        Ok(Investigator {
+            name: Self::person(&i.name),
+            orcid: self.orcid(&i.identifiers)?,
+            valid: i.valid == YesNo::Yes,
+            affiliations: self.affiliations(&i.affiliations)?,
+        })
+    }
+
+    fn history(&self, h: &record::PubMedPubDate<'_>) -> Result<HistoryEntry, Error> {
+        const FIELD: &str = "History/PubMedPubDate";
+        if let Some(second) = &h.second {
+            return Err(self.err(
+                FIELD,
+                second,
+                ErrorKind::Unmodelled("a Second in a history date"),
+            ));
+        }
+        let date = self.date(FIELD, &h.date)?;
+        let time = match (h.hour.as_deref(), h.minute.as_deref()) {
+            (None, None) => None,
+            (Some(hour), Some(minute)) => {
+                let parse = |s: &str| -> Option<u8> {
+                    if s.is_empty() || s.len() > 2 || !s.bytes().all(|b| b.is_ascii_digit()) {
+                        return None;
+                    }
+                    s.parse().ok()
+                };
+                let (Some(hh), Some(mm)) = (parse(hour), parse(minute)) else {
+                    return Err(self.err(
+                        FIELD,
+                        &format!("{hour}:{minute}"),
+                        ErrorKind::Date(DateError::Time),
+                    ));
+                };
+                Some(TimeOfDay::new(hh, mm).ok_or_else(|| {
+                    self.err(
+                        FIELD,
+                        &format!("{hour}:{minute}"),
+                        ErrorKind::Date(DateError::Time),
+                    )
+                })?)
+            }
+            (Some(hour), None) => {
+                return Err(self.err(
+                    FIELD,
+                    hour,
+                    ErrorKind::Unmodelled("an Hour without a Minute"),
+                ));
+            }
+            (None, Some(minute)) => {
+                return Err(self.err(
+                    FIELD,
+                    minute,
+                    ErrorKind::Inconsistent("Minute without Hour"),
+                ));
+            }
+        };
+        Ok(HistoryEntry {
+            status: h.pub_status,
+            date,
+            time,
+        })
+    }
 }
 
-/// The record's own identifiers, from its `ArticleIdList` and `ELocationID`s.
+/// The record's own `ArticleId`s, at most one per type.
 #[derive(Default)]
 struct Own<'n> {
     pubmed: Option<&'n str>,
@@ -270,14 +787,6 @@ impl<'n> Own<'n> {
     }
 }
 
-/// The identifier fields of a citation.
-struct Identifiers<'n> {
-    doi: Option<DoiClaim<'n>>,
-    elocation_doi: Option<DoiClaim<'n>>,
-    pii: Option<&'n str>,
-    pmc: Option<PmcId>,
-}
-
 fn identifiers<'n>(
     ctx: &Ctx,
     article: &'n PubmedArticle<'_>,
@@ -306,23 +815,25 @@ fn identifiers<'n>(
         })
         .transpose()?;
 
-    let mut elocation_doi = None;
+    let (mut elocation_doi, mut elocation_pii) = (None, None);
     for e in &article.medline_citation.article.elocation_ids {
-        const FIELD: &str = "ELocationID[doi]";
-        if e.eid_type != EIdType::Doi {
-            continue;
-        }
+        const FIELD: &str = "ELocationID";
         if e.valid == YesNo::No {
             return Err(ctx.err(FIELD, &e.value, ErrorKind::Unmodelled("ValidYN=\"N\"")));
         }
-        if elocation_doi.is_some() {
+        let taken = match e.eid_type {
+            EIdType::Doi => elocation_doi
+                .replace(Claim::from_parse(&e.value, Doi::parse(&e.value)))
+                .is_some(),
+            EIdType::Pii => elocation_pii.replace(&*e.value).is_some(),
+        };
+        if taken {
             return Err(ctx.err(
                 FIELD,
                 &e.value,
-                ErrorKind::Inconsistent("more than one ELocationID doi"),
+                ErrorKind::Inconsistent("more than one ELocationID of one type"),
             ));
         }
-        elocation_doi = Some(Claim::from_parse(&e.value, Doi::parse(&e.value)));
     }
     if let (Some(Claim::Valid(a)), Some(Claim::Valid(b))) = (&doi, &elocation_doi)
         && a != b
@@ -337,16 +848,9 @@ fn identifiers<'n>(
         doi,
         elocation_doi,
         pii: own.pii,
+        elocation_pii,
         pmc,
     })
-}
-
-/// The date fields of a citation.
-struct Dates {
-    published: PartialDate,
-    electronic: Option<Date>,
-    revised: Option<Date>,
-    completed: Option<Date>,
 }
 
 fn dates(ctx: &Ctx, c: &MedlineCitation<'_>) -> Result<Dates, Error> {
@@ -378,12 +882,91 @@ fn dates(ctx: &Ctx, c: &MedlineCitation<'_>) -> Result<Dates, Error> {
     })
 }
 
+fn journal<'n>(ctx: &Ctx, c: &'n MedlineCitation<'_>) -> Result<Journal<'n>, Error> {
+    let j = &c.article.journal;
+    let info = &c.medline_journal_info;
+    let issn = j
+        .issn
+        .as_ref()
+        .map(|i| {
+            Ok(TypedIssn {
+                kind: i.issn_type,
+                issn: ctx.issn("Journal/ISSN", &i.value)?,
+            })
+        })
+        .transpose()?;
+    let pagination = c.article.pagination.as_ref().map(|p| match p {
+        NativePagination::Pages {
+            start_page,
+            end_page,
+            medline_pgn,
+        } => Pagination::Pages {
+            start: start_page,
+            end: end_page.as_deref(),
+            medline: medline_pgn.as_deref(),
+        },
+        NativePagination::MedlinePgn(p) => Pagination::Medline(p),
+    });
+    Ok(Journal {
+        title: j.title.as_deref(),
+        iso_abbreviation: j.iso_abbreviation.as_deref(),
+        medline_ta: &info.medline_ta,
+        nlm_unique_id: info.nlm_unique_id.as_deref(),
+        issn,
+        issn_linking: info
+            .issn_linking
+            .as_deref()
+            .map(|s| ctx.issn("MedlineJournalInfo/ISSNLinking", s))
+            .transpose()?,
+        country: info.country.as_deref(),
+        pub_model: c.article.pub_model,
+        cited_medium: j.journal_issue.cited_medium,
+        volume: j.journal_issue.volume.as_deref(),
+        issue: j.journal_issue.issue.as_deref(),
+        pagination,
+    })
+}
+
+/// DTD content the file has never contained: an error on first sight.
+fn unmodelled(ctx: &Ctx, article: &PubmedArticle<'_>) -> Result<(), Error> {
+    let c = &article.medline_citation;
+    let checks: [(&'static str, bool); 7] = [
+        ("GeneSymbolList", !c.gene_symbols.is_empty()),
+        (
+            "PersonalNameSubjectList",
+            !c.personal_name_subjects.is_empty(),
+        ),
+        ("OtherID", !c.other_ids.is_empty()),
+        ("SpaceFlightMission", !c.space_flight_missions.is_empty()),
+        ("GeneralNote", !c.general_notes.is_empty()),
+        ("NumberOfReferences", c.number_of_references.is_some()),
+        (
+            "ObjectList",
+            article
+                .pubmed_data
+                .as_ref()
+                .is_some_and(|d| !d.objects.is_empty()),
+        ),
+    ];
+    for (name, present) in checks {
+        if present {
+            return Err(ctx.err(
+                name,
+                "",
+                ErrorKind::Unmodelled("this element, present for the first time"),
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Normalizes one record, emitting its citation and then its references.
 ///
 /// # Errors
 ///
 /// The first value that does not fit the model; see [`ErrorKind`]. The
 /// emitter may already have received the citation when a reference fails.
+#[allow(clippy::too_many_lines)] // one block per field group; the field set is the point
 pub fn normalize<'n, E: Emit<'n>>(
     article: &'n PubmedArticle<'_>,
     emit: &mut E,
@@ -395,26 +978,159 @@ pub fn normalize<'n, E: Emit<'n>>(
     ctx.pmid = Some(pmid);
     let version = model::id::strict_u32(&c.pmid.version)
         .map_err(|e| ctx.err("PMID@Version", &c.pmid.version, ErrorKind::Id(e)))?;
+    unmodelled(&ctx, article)?;
 
     let ids = identifiers(&ctx, article, pmid)?;
     let dates = dates(&ctx, c)?;
+    let journal = journal(&ctx, c)?;
 
-    let mut languages = Vec::with_capacity(c.article.languages.len());
-    for l in &c.article.languages {
-        languages.push(
-            Lang::from_bibliographic(l).map_err(|e| ctx.err("Language", l, ErrorKind::Lang(e)))?,
-        );
-    }
+    let r#abstract = c.article.r#abstract.as_ref().map(|a| Abstract {
+        sections: Ctx::sections(&a.texts),
+        copyright: a.copyright_information.as_deref(),
+    });
+    let other_abstracts = c
+        .other_abstracts
+        .iter()
+        .map(|o| {
+            Ok(OtherAbstract {
+                kind: o.r#type,
+                language: ctx.lang("OtherAbstract@Language", &o.language)?,
+                sections: Ctx::sections(&o.texts),
+                copyright: o.copyright_information.as_deref(),
+            })
+        })
+        .collect::<Result<Vec<_>, Error>>()?;
 
-    let mut publication_types = Vec::with_capacity(c.article.publication_types.len());
-    for pt in &c.article.publication_types {
-        let ui = MeshUi::parse(&pt.ui)
-            .map_err(|e| ctx.err("PublicationType@UI", &pt.ui, ErrorKind::MeshUi(e)))?;
-        publication_types.push(PublicationType {
-            ui,
-            name: &pt.value,
-        });
-    }
+    let languages = c
+        .article
+        .languages
+        .iter()
+        .map(|l| ctx.lang("Language", l))
+        .collect::<Result<Vec<_>, _>>()?;
+    let publication_types = c
+        .article
+        .publication_types
+        .iter()
+        .map(|pt| ctx.mesh_term("PublicationType@UI", pt))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let authors = c
+        .article
+        .author_list
+        .as_ref()
+        .map(|l| {
+            l.authors
+                .iter()
+                .map(|a| ctx.author(a))
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .transpose()?
+        .unwrap_or_default();
+    let investigator_lists = c
+        .investigator_lists
+        .iter()
+        .map(|l| {
+            Ok(InvestigatorList {
+                id: l.id.as_deref(),
+                investigators: l
+                    .investigators
+                    .iter()
+                    .map(|i| ctx.investigator(i))
+                    .collect::<Result<Vec<_>, _>>()?,
+            })
+        })
+        .collect::<Result<Vec<_>, Error>>()?;
+
+    let mesh = c
+        .mesh_headings
+        .iter()
+        .map(|h| {
+            let d = &h.descriptor;
+            Ok(MeshHeading {
+                descriptor: MeshTerm {
+                    ui: MeshUi::parse(&d.ui)
+                        .map_err(|e| ctx.err("DescriptorName@UI", &d.ui, ErrorKind::MeshUi(e)))?,
+                    name: &d.value,
+                },
+                major: d.major_topic == YesNo::Yes,
+                geographic: d.r#type.is_some(),
+                auto: d.auto_hm,
+                qualifiers: h
+                    .qualifiers
+                    .iter()
+                    .map(|q| {
+                        Ok(Qualifier {
+                            term: MeshTerm {
+                                ui: MeshUi::parse(&q.ui).map_err(|e| {
+                                    ctx.err("QualifierName@UI", &q.ui, ErrorKind::MeshUi(e))
+                                })?,
+                                name: &q.value,
+                            },
+                            major: q.major_topic == YesNo::Yes,
+                            auto: q.auto_hm,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, Error>>()?,
+            })
+        })
+        .collect::<Result<Vec<_>, Error>>()?;
+    let suppl_mesh = c
+        .suppl_mesh
+        .iter()
+        .map(|s| {
+            Ok(SupplMesh {
+                kind: s.r#type,
+                term: MeshTerm {
+                    ui: MeshUi::parse(&s.ui)
+                        .map_err(|e| ctx.err("SupplMeshName@UI", &s.ui, ErrorKind::MeshUi(e)))?,
+                    name: &s.value,
+                },
+            })
+        })
+        .collect::<Result<Vec<_>, Error>>()?;
+    let chemicals = c
+        .chemicals
+        .iter()
+        .map(|ch| {
+            Ok(Chemical {
+                registry_number: &ch.registry_number,
+                substance: ctx.mesh_term("NameOfSubstance@UI", &ch.name_of_substance)?,
+            })
+        })
+        .collect::<Result<Vec<_>, Error>>()?;
+    let keywords = c
+        .keyword_lists
+        .iter()
+        .flat_map(|l| {
+            l.keywords.iter().map(move |k| Keyword {
+                owner: l.owner,
+                text: k.content.as_str(),
+                major: k.major_topic == YesNo::Yes,
+            })
+        })
+        .collect();
+    let grants = c
+        .article
+        .grant_list
+        .iter()
+        .flat_map(|l| l.grants.iter())
+        .map(|g| Grant {
+            id: g.grant_id.as_deref(),
+            acronym: g.acronym.as_deref(),
+            agency: &g.agency,
+            country: g.country.as_deref().filter(|s| !s.is_empty()),
+        })
+        .collect();
+    let data_banks = c
+        .article
+        .data_bank_list
+        .iter()
+        .flat_map(|l| l.data_banks.iter())
+        .map(|b| DataBank {
+            name: &b.name,
+            accessions: b.accession_numbers.iter().map(|a| &**a).collect(),
+        })
+        .collect();
 
     let mut relations = Vec::with_capacity(c.comments_corrections.len());
     for cc in &c.comments_corrections {
@@ -432,20 +1148,52 @@ pub fn normalize<'n, E: Emit<'n>>(
         });
     }
 
+    let (history, publication_status) = match &article.pubmed_data {
+        Some(d) => (
+            d.history
+                .iter()
+                .map(|h| ctx.history(h))
+                .collect::<Result<Vec<_>, _>>()?,
+            Some(
+                PublicationStatus::parse(&d.publication_status).ok_or_else(|| {
+                    ctx.err(
+                        "PublicationStatus",
+                        &d.publication_status,
+                        ErrorKind::Vocabulary("publication statuses"),
+                    )
+                })?,
+            ),
+        ),
+        None => (Vec::new(), None),
+    };
+
     emit.citation(&Citation {
         pmid,
         version,
         status: c.status,
-        doi: ids.doi,
-        elocation_doi: ids.elocation_doi,
-        pii: ids.pii,
-        pmc: ids.pmc,
-        published: dates.published,
-        electronic: dates.electronic,
-        revised: dates.revised,
-        completed: dates.completed,
+        owner: c.owner,
+        indexing_method: c.indexing_method.as_deref(),
+        ids,
+        dates,
+        journal,
+        title: c.article.article_title.content.as_str(),
+        vernacular_title: c.article.vernacular_title.map(RawXml::as_str),
+        r#abstract,
+        other_abstracts,
         languages,
         publication_types,
+        authors,
+        investigator_lists,
+        mesh,
+        suppl_mesh,
+        chemicals,
+        keywords,
+        grants,
+        data_banks,
+        coi_statement: c.coi_statement.map(RawXml::as_str),
+        citation_subsets: c.citation_subsets.iter().map(|s| &**s).collect(),
+        history,
+        publication_status,
         relations,
     });
 
