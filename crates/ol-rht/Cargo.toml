@@ -1,0 +1,11 @@
+[package]
+name = "ol-rht"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+hello.workspace = true
+
+[lints]
+workspace = true

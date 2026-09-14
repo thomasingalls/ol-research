@@ -1,0 +1,6 @@
+# `cargo check` skips codegen and linking entirely, so it is several times
+# faster than `build`. Make it the cheap default in the edit loop.
+[alias]
+c = "check --workspace --all-targets"
+l = "clippy --workspace --all-targets"
+t = "test --workspace"

@@ -1,0 +1,36 @@
+[workspace]
+members = ["crates/*"]
+resolver = "3"
+
+# Inherited by members via `version.workspace = true`, etc.
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+# Internal crates are declared once here so members share one source of truth.
+[workspace.dependencies]
+hello = { path = "crates/hello" }
+
+[workspace.lints.rust]
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"
+unused_qualifications = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+
+# --- compile time ---------------------------------------------------------
+# Profiles are only honoured in the workspace root manifest.
+
+[profile.dev]
+# Full debuginfo is a large share of both codegen and link time. Line tables
+# keep file/line in backtraces and panics; they drop local-variable info, so
+# step-debugging in lldb gets thinner. Set `debug = true` if you need that.
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+# You rarely step into third-party code, so don't pay to generate its
+# debuginfo. Applies to dependencies only, never to workspace members.
+debug = false
