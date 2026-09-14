@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-hello.workspace = true
+model.workspace = true
 
 [lints]
 workspace = true

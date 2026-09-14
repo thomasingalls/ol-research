@@ -10,7 +10,7 @@ license = "MIT OR Apache-2.0"
 
 # Internal crates are declared once here so members share one source of truth.
 [workspace.dependencies]
-hello = { path = "crates/hello" }
+model = { path = "crates/model" }
 
 [workspace.lints.rust]
 missing_debug_implementations = "warn"
