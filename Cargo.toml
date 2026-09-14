@@ -11,11 +11,15 @@ license = "MIT OR Apache-2.0"
 # Internal crates are declared once here so members share one source of truth.
 [workspace.dependencies]
 model = { path = "crates/model" }
+ingest = { path = "crates/ingest" }
+source-crossref = { path = "crates/source-crossref" }
 source-pubmed = { path = "crates/source-pubmed" }
 
 # External. One version for the whole workspace.
 flate2 = "1"
 quick-xml = "0.42"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["raw_value"] }
 
 [workspace.lints.rust]
 missing_debug_implementations = "warn"

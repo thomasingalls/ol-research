@@ -69,6 +69,17 @@ wart is a claim the POC run confirms or refutes, not a commitment.
   stage; ingestion just types the relation.
 - `subject` is deprecated. `relation` (`has-preprint`, …) and
   `alternative-id` are cross-links. arXiv is not a Crossref member.
+- Observed in the 1,000-work API sample (355 distinct JSON paths):
+  `api_format.md` is behind the data — it does not know `role[]`,
+  `award-info`, `funder.id[]`, `affiliation.id[]`, `resource`, `project`,
+  `indexed.version`, `stm-asf`, `syndication` or `updated-by`, and it calls
+  `issn-type` values `pissn`/`eissn` where the data says
+  `print`/`electronic`. `date-parts` is always one inner array of one to
+  three integers, or `[[null]]` (34 works, all `issued`). Names are absent
+  on some affiliations, funders and institutions; `contributor[].role` is
+  `[null]`. Three vocabularies have an authoritative source (`/types`, the
+  Crossmark update types, the deposit schema's identifier types); the rest
+  of the enums are exactly what was observed.
 - Terms: metadata is free to reuse and not subject to copyright; abstracts
   carry some limitations.
 
@@ -487,7 +498,7 @@ installed and run by you, not by me; the plan gives commands.
 
 | Source           | What to fetch                                                                    | ≈ size     | Notes                                                              |
 |------------------|----------------------------------------------------------------------------------|------------|--------------------------------------------------------------------|
-| Crossref         | the official random-sample torrent: 100 `.jsonl.gz` — **stalled, no seeders**; fallbacks below | 31 MB | `aria2c`; byte-identical; zero API load |
+| Crossref         | **arrived via the API fallback**: 10 × `sample=100` (5 plain, 5 `has-references:true`) — 1,000 works, 733 with references, 19 types, 71 top-level keys | 9 MB | the sample torrent is unreachable: `No route to host` to both seeders; see below |
 | PubMed           | `pubmed26n1334.xml.gz`, the highest-numbered baseline file (most recent records)  | 13 MB      | direct HTTPS; `--limit` for 10k                                    |
 | arXiv            | OAI-PMH `ListRecords`, ~10 pages, one date window or `set`                        | 10–20 MB   | each page saved verbatim                                           |
 | OpenAlex         | `updated_date=2025-07-25/part_0000.gz`, 10,873 records                            | 20 MB      | direct HTTPS; byte-identical                                       |
@@ -521,7 +532,16 @@ aria2c --file-allocation=none --seed-time=0 -d data/raw/crossref \
 
 Drop `--seed-time=0` to seed back for a while; it is 31 MB.
 
-If it stalls (it did: no web seed, two trackers), in order of preference:
+It stalled, and the reason is now exact (aria2 info log, 2026-09-14): both
+trackers answer, exactly two peers exist — residential addresses — and
+connecting to either fails with `No route to host`. They are behind NAT; so
+are we, with the macOS application firewall on; aria2 has no UPnP/NAT-PMP, so
+neither side can accept a connection and no number of trackers changes that.
+The torrent path needs one connectable side: a router port-forward to aria2's
+listen port, or a client with UPnP (Transmission, qBittorrent) on a router
+that allows it. Not worth it for a 31 MB sample; the API fallback below was
+used instead, and the same fix applies to the 223 GB full file if that is
+ever wanted by torrent. In order of preference the alternatives were:
 
 1. Retry from the saved `.torrent` with extra public trackers; aria2 resumes
    from its control file. aria2 uses only the trackers inside the `.torrent`
@@ -587,6 +607,16 @@ in your environment, never in the repo or in this conversation.
 - **M2** — `ingest` core: traits, runner, fetch with manifests, fail-fast
   reporting, binary sink, counting allocator. `source-crossref` on the POC
   sample. First throughput and allocation numbers; they become the budget.
+  *Started 2026-09-14: `source-crossref` native types from the census,
+  `deny_unknown_fields` everywhere, `Cow` strings, a strict `date-parts`
+  deserializer, both containers (API envelope with per-item DOI context,
+  JSON lines), seven real fixtures. `ingest` crate created with the shared
+  gzip reader; the traits wait for a second normalizer to show the common
+  shape. `serde`/`serde_json` are the third and fourth dependencies. All
+  1,000 sample works parse with zero unknown fields at 22k works/s; the one
+  divergence on the way was a modelling mistake (a grant's investigators
+  reused the contributor type, which requires `sequence`), which is how the
+  loop is supposed to feel. Normalizer next.*
 - **M3** — `source-openalex` (widest schema, second edge source, cross-IDs).
 - **M4** — `source-pubmed` (streaming XML, the largest modelling surface).
   *First cut landed 2026-09-14: native types mirror the DTD field for field
@@ -642,6 +672,17 @@ cross-IDs and a second edge namespace early.
   `OpenAlexId` (`u64`, forced by the observed maximum 4,410,348,178);
   `hello` removed; `ol-rht id` runs one parser over stdin. Crossref sample
   torrent stalled at zero bytes; fallbacks recorded in §7.
+- 2026-09-14, Crossref raw — torrent diagnosed as unreachable (NAT on both
+  sides, `No route to host`); API fallback used with permission: 1,000
+  random works via `sample=100`, public pool, no email. Raw files are API
+  envelopes, so the Crossref parser accepts two containers around one record
+  schema (§3.2). Manifests with sha256 written for all three sources under
+  `manifests/`, backfilled from disk as §7 said they would be.
+- 2026-09-14, Crossref native struct — pure-discovery path, 355 JSON paths
+  from the census, `api_format.md` used as a hint and found stale in nine
+  places. Three closed vocabularies with an authoritative source, the rest
+  observed. `ingest` crate started with the shared gzip reader. First real
+  run: 654 works, one modelling error, then all 1,000.
 - 2026-09-14, normalizer first cut — value-level layer over the native
   record; the `Claim<Doi>` decision above (§6); `Lang` from ISO 639-2 via
   Debian iso-codes (NLM's own language page is retired); publication types

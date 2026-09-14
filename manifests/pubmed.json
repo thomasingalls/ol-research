@@ -1,0 +1,22 @@
+{
+  "source": "pubmed",
+  "channel": "baseline 2026, direct HTTPS",
+  "files": [
+    {
+      "path": "pubmed/pubmed26n1334.xml.gz",
+      "url": "https://ftp.ncbi.nlm.nih.gov/pubmed/baseline/pubmed26n1334.xml.gz",
+      "bytes": 13837691,
+      "sha256": "d241061caa1b5631aa5a0bb429da04b8a6a3a7b6240ffa275008a07924f79aee",
+      "fetched_at": "2026-09-14T19:31:02Z",
+      "note": "highest-numbered baseline file; 4,989 records"
+    },
+    {
+      "path": "pubmed/pubmed_250101.dtd",
+      "url": "http://dtd.nlm.nih.gov/ncbi/pubmed/out/pubmed_250101.dtd",
+      "bytes": 14430,
+      "sha256": "8c9a3c520259bb79ca87c04021671eb47fd300646aa1813bd884c418217d1573",
+      "fetched_at": "2026-09-14T20:08:38Z",
+      "note": "the DTD the file's DOCTYPE names; copied into crates/source-pubmed/fixtures/"
+    }
+  ]
+}

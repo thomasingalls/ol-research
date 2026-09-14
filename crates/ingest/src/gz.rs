@@ -1,4 +1,4 @@
-//! Reading a gzipped baseline or update file into memory.
+//! Reading a gzipped raw file into memory.
 
 use std::fs::File;
 use std::io::{self, BufReader, Read};
@@ -6,7 +6,7 @@ use std::path::Path;
 
 use flate2::read::MultiGzDecoder;
 
-/// Decompresses a `.xml.gz` file into one UTF-8 string.
+/// Decompresses a `.gz` file into one UTF-8 string.
 ///
 /// Multi-member gzip is handled: a single-member decoder would stop
 /// silently after the first member and the run would "succeed" on a

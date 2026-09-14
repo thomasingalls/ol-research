@@ -17,7 +17,8 @@
 
 pub mod attr;
 pub mod error;
-pub mod gz;
+/// Reading raw files; shared with the other sources.
+pub use ingest::gz;
 pub mod normalize;
 mod parse;
 pub mod record;

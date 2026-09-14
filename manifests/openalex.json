@@ -1,0 +1,14 @@
+{
+  "source": "openalex",
+  "channel": "S3 snapshot 2026-06-26, direct HTTPS, no account",
+  "files": [
+    {
+      "path": "openalex/updated_date=2025-07-25/part_0000.gz",
+      "url": "https://openalex.s3.amazonaws.com/data/jsonl/works/updated_date=2025-07-25/part_0000.gz",
+      "bytes": 20094169,
+      "sha256": "e0f937aaf7c243167f3de7322587d8c9d34c6c1a6b2356cac913a46160ae7da7",
+      "fetched_at": "2026-09-14T19:31:09Z",
+      "note": "10,873 works per the snapshot manifest"
+    }
+  ]
+}

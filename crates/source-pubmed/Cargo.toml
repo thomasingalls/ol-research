@@ -6,8 +6,8 @@ license.workspace = true
 description = "PubMed baseline/update XML: native record types and a strict, zero-copy streaming parser."
 
 [dependencies]
+ingest.workspace = true
 model.workspace = true
-flate2.workspace = true
 quick-xml.workspace = true
 
 [lints]

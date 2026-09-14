@@ -5,6 +5,9 @@
 //!   file with the strict PubMed parser and reports counts and throughput.
 //! * `pubmed normalize <file.xml.gz> [--limit N]` parses and normalizes,
 //!   and prints the first stats report: what every field held.
+//! * `crossref check <file>...` parses API envelope pages (`.json`) or
+//!   public-data-file lines (`.jsonl`, `.jsonl.gz`) with the strict Crossref
+//!   types and reports counts and throughput.
 //!
 //! All exit non-zero on the first failure and say exactly where it was: the
 //! seed of the "reproduce against one record" command the failure report
@@ -25,7 +28,8 @@ use source_pubmed::record::Record;
 const USAGE: &str = "usage:
   ol-rht id <pmid|pmid-url|openalex|openalex-url> < values.txt
   ol-rht pubmed check <file.xml.gz> [--limit N]
-  ol-rht pubmed normalize <file.xml.gz> [--limit N]";
+  ol-rht pubmed normalize <file.xml.gz> [--limit N]
+  ol-rht crossref check <file>...";
 
 type Parser = fn(&str) -> Result<(), ParseError>;
 
@@ -57,6 +61,7 @@ fn main() -> ExitCode {
             Ok(limit) => pubmed_normalize(Path::new(path), Some(limit)),
             Err(_) => usage(),
         },
+        ["crossref", "check", paths @ ..] if !paths.is_empty() => crossref_check(paths),
         _ => usage(),
     }
 }
@@ -327,6 +332,62 @@ fn pubmed_normalize(path: &Path, limit: Option<u64>) -> ExitCode {
         "parse+normalize {:.2}s = {:.0} records/s",
         elapsed.as_secs_f64(),
         records as f64 / elapsed.as_secs_f64()
+    );
+    ExitCode::SUCCESS
+}
+
+#[allow(clippy::cast_precision_loss)] // reporting only
+fn crossref_check(paths: &[&str]) -> ExitCode {
+    let started = Instant::now();
+    let (mut works, mut references, mut authors, mut bytes) = (0u64, 0u64, 0u64, 0usize);
+    let mut types: BTreeMap<String, u64> = BTreeMap::new();
+    for path in paths {
+        let path = Path::new(path);
+        let input = if path.extension().is_some_and(|e| e == "gz") {
+            source_crossref::gz::read_to_string(path)
+        } else {
+            std::fs::read_to_string(path)
+        };
+        let input = match input {
+            Ok(input) => input,
+            Err(err) => {
+                eprintln!("{}: {err}", path.display());
+                return ExitCode::from(2);
+            }
+        };
+        bytes += input.len();
+        let mut count = |w: &source_crossref::Work<'_>| {
+            works += 1;
+            references += w.reference.as_ref().map_or(0, Vec::len) as u64;
+            authors += w.author.as_ref().map_or(0, Vec::len) as u64;
+            *types.entry(format!("{:?}", w.r#type)).or_default() += 1;
+        };
+        let result = if input.trim_start().starts_with("{\"status\"") {
+            match source_crossref::Page::parse(&input) {
+                Ok(page) => page.works().try_for_each(|w| w.map(|w| count(&w))),
+                Err(err) => Err(err),
+            }
+        } else {
+            source_crossref::jsonl(&input).try_for_each(|w| w.map(|w| count(&w)))
+        };
+        if let Err(err) = result {
+            eprintln!("{}: {err}", path.display());
+            eprintln!("after {works} works");
+            return ExitCode::FAILURE;
+        }
+    }
+    let elapsed = started.elapsed();
+    let mib = bytes as f64 / (1024.0 * 1024.0);
+    eprintln!(
+        "{works} works, {references} references, {authors} authors from {} files",
+        paths.len()
+    );
+    eprintln!("types {types:?}");
+    eprintln!(
+        "read+parse {:.2}s = {:.0} works/s, {:.0} MiB/s",
+        elapsed.as_secs_f64(),
+        works as f64 / elapsed.as_secs_f64(),
+        mib / elapsed.as_secs_f64()
     );
     ExitCode::SUCCESS
 }
