@@ -11,6 +11,11 @@ license = "MIT OR Apache-2.0"
 # Internal crates are declared once here so members share one source of truth.
 [workspace.dependencies]
 model = { path = "crates/model" }
+source-pubmed = { path = "crates/source-pubmed" }
+
+# External. One version for the whole workspace.
+flate2 = "1"
+quick-xml = "0.42"
 
 [workspace.lints.rust]
 missing_debug_implementations = "warn"

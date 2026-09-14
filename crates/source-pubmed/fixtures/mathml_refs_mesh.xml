@@ -1,0 +1,584 @@
+  <PubmedArticle>
+    <MedlineCitation Status="MEDLINE" IndexingMethod="Automated" Owner="NLM">
+      <PMID Version="1">41606151</PMID>
+      <DateCompleted>
+        <Year>2026</Year>
+        <Month>01</Month>
+        <Day>28</Day>
+      </DateCompleted>
+      <DateRevised>
+        <Year>2026</Year>
+        <Month>01</Month>
+        <Day>28</Day>
+      </DateRevised>
+      <Article PubModel="Print-Electronic">
+        <Journal>
+          <ISSN IssnType="Electronic">1476-4687</ISSN>
+          <JournalIssue CitedMedium="Internet">
+            <Volume>649</Volume>
+            <Issue>8099</Issue>
+            <PubDate>
+              <Year>2026</Year>
+              <Month>Jan</Month>
+            </PubDate>
+          </JournalIssue>
+          <Title>Nature</Title>
+          <ISOAbbreviation>Nature</ISOAbbreviation>
+        </Journal>
+        <ArticleTitle>An X-ray-emitting protocluster at z ≈ 5.7 reveals rapid structure growth.</ArticleTitle>
+        <Pagination>
+          <MedlinePgn>1134-1138</MedlinePgn>
+        </Pagination>
+        <ELocationID EIdType="doi" ValidYN="Y">10.1038/s41586-025-09973-1</ELocationID>
+        <Abstract>
+          <AbstractText>Galaxy clusters are the most massive gravitationally bound structures in the universe and serve as tracers of the assembly of large-scale structure<sup>1</sup>. Studying their progenitors, protoclusters, sheds light on the earliest stages of cluster formation. However, detecting protoclusters is demanding: their member galaxies are loosely bound and the emerging hot intracluster medium (ICM) may only be in the initial stages of virialization<sup>2-4</sup>. Recent James Webb Space Telescope (JWST) observations located several protocluster candidates by identifying overdensities of z ≳ 5 galaxies<sup>5-9</sup>. However, none of these candidates was detected by X-ray observations, which offer a powerful way to unveil the hot ICM. Here we report the combined Chandra and JWST detection of a protocluster, JADES-ID1, at z ≈ 5.68, merely one billion years after the Big Bang. We measure a bolometric X-ray luminosity of <mml:math xmlns:mml="http://www.w3.org/1998/Math/MathML"> <mml:msub><mml:mrow><mml:mi>L</mml:mi></mml:mrow> <mml:mrow> <mml:mrow><mml:mrow><mml:mi>bol</mml:mi></mml:mrow> </mml:mrow> </mml:mrow> </mml:msub> <mml:mo>=</mml:mo> <mml:mrow><mml:mo>(</mml:mo> <mml:mrow><mml:mn>1.</mml:mn> <mml:msubsup><mml:mrow><mml:mn>5</mml:mn></mml:mrow> <mml:mrow><mml:mo>-</mml:mo> <mml:mn>0.6</mml:mn></mml:mrow> <mml:mrow><mml:mo>+</mml:mo> <mml:mn>0.5</mml:mn></mml:mrow> </mml:msubsup> </mml:mrow> <mml:mo>)</mml:mo></mml:mrow> <mml:mo>×</mml:mo> <mml:mn>1</mml:mn> <mml:msup><mml:mrow><mml:mn>0</mml:mn></mml:mrow> <mml:mrow><mml:mn>44</mml:mn></mml:mrow> </mml:msup> <mml:mspace/> <mml:mrow><mml:mrow><mml:mi>erg</mml:mi></mml:mrow> </mml:mrow> <mml:mspace/> <mml:msup> <mml:mrow> <mml:mrow><mml:mrow><mml:mi>s</mml:mi></mml:mrow> </mml:mrow> </mml:mrow> <mml:mrow><mml:mo>-</mml:mo> <mml:mn>1</mml:mn></mml:mrow> </mml:msup> </mml:math> and infer a total gravitating mass of <mml:math xmlns:mml="http://www.w3.org/1998/Math/MathML"> <mml:msub><mml:mrow><mml:mi>M</mml:mi></mml:mrow> <mml:mrow><mml:mn>500</mml:mn></mml:mrow> </mml:msub> <mml:mo>=</mml:mo> <mml:mrow><mml:mo>(</mml:mo> <mml:mrow><mml:mn>1.</mml:mn> <mml:msubsup><mml:mrow><mml:mn>8</mml:mn></mml:mrow> <mml:mrow><mml:mo>-</mml:mo> <mml:mn>0.7</mml:mn></mml:mrow> <mml:mrow><mml:mo>+</mml:mo> <mml:mn>0.6</mml:mn></mml:mrow> </mml:msubsup> </mml:mrow> <mml:mo>)</mml:mo></mml:mrow> <mml:mo>×</mml:mo> <mml:mn>1</mml:mn> <mml:msup><mml:mrow><mml:mn>0</mml:mn></mml:mrow> <mml:mrow><mml:mn>13</mml:mn></mml:mrow> </mml:msup> <mml:mspace/> <mml:msub><mml:mrow><mml:mi>M</mml:mi></mml:mrow> <mml:mrow><mml:mo>⊙</mml:mo></mml:mrow> </mml:msub> </mml:math> , making this system a progenitor of today's most massive galaxy clusters. The detection of extended, shock-heated gas indicates that substantial ICM heating can occur in massive halos as early as z ≈ 5.7. Also, given the limited survey volume, the discovery of such a massive cluster is statistically unlikely<sup>10</sup>, implying that the formation of the large-scale structure must have occurred more rapidly in some regions of the early universe than standard cosmological models predict.</AbstractText>
+          <CopyrightInformation>© 2026. The Author(s).</CopyrightInformation>
+        </Abstract>
+        <AuthorList CompleteYN="Y">
+          <Author ValidYN="Y">
+            <LastName>Bogdán</LastName>
+            <ForeName>Ákos</ForeName>
+            <Initials>Á</Initials>
+            <Identifier Source="ORCID">http://orcid.org/0000-0003-0573-7733</Identifier>
+            <AffiliationInfo>
+              <Affiliation>Center for Astrophysics | Harvard &amp; Smithsonian, Cambridge, MA, USA. abogdan@cfa.harvard.edu.</Affiliation>
+            </AffiliationInfo>
+          </Author>
+          <Author ValidYN="Y">
+            <LastName>Schellenberger</LastName>
+            <ForeName>Gerrit</ForeName>
+            <Initials>G</Initials>
+            <Identifier Source="ORCID">http://orcid.org/0000-0002-4962-0740</Identifier>
+            <AffiliationInfo>
+              <Affiliation>Center for Astrophysics | Harvard &amp; Smithsonian, Cambridge, MA, USA.</Affiliation>
+            </AffiliationInfo>
+          </Author>
+          <Author ValidYN="Y">
+            <LastName>Li</LastName>
+            <ForeName>Qiong</ForeName>
+            <Initials>Q</Initials>
+            <Identifier Source="ORCID">http://orcid.org/0000-0002-3119-9003</Identifier>
+            <AffiliationInfo>
+              <Affiliation>Jodrell Bank Centre for Astrophysics, The University of Manchester, Manchester, UK.</Affiliation>
+            </AffiliationInfo>
+          </Author>
+          <Author ValidYN="Y">
+            <LastName>Conselice</LastName>
+            <ForeName>Christopher J</ForeName>
+            <Initials>CJ</Initials>
+            <Identifier Source="ORCID">http://orcid.org/0000-0003-1949-7638</Identifier>
+            <AffiliationInfo>
+              <Affiliation>Jodrell Bank Centre for Astrophysics, The University of Manchester, Manchester, UK.</Affiliation>
+            </AffiliationInfo>
+          </Author>
+        </AuthorList>
+        <Language>eng</Language>
+        <PublicationTypeList>
+          <PublicationType UI="D016428">Journal Article</PublicationType>
+        </PublicationTypeList>
+        <ArticleDate DateType="Electronic">
+          <Year>2026</Year>
+          <Month>01</Month>
+          <Day>28</Day>
+        </ArticleDate>
+      </Article>
+      <MedlineJournalInfo>
+        <Country>England</Country>
+        <MedlineTA>Nature</MedlineTA>
+        <NlmUniqueID>0410462</NlmUniqueID>
+        <ISSNLinking>0028-0836</ISSNLinking>
+      </MedlineJournalInfo>
+      <CitationSubset>IM</CitationSubset>
+      <MeshHeadingList>
+        <MeshHeading>
+          <DescriptorName UI="D014965" MajorTopicYN="N">X-Rays</DescriptorName>
+        </MeshHeading>
+        <MeshHeading>
+          <DescriptorName UI="D055609" MajorTopicYN="Y">Stars, Celestial</DescriptorName>
+          <QualifierName UI="Q000737" MajorTopicYN="N">chemistry</QualifierName>
+        </MeshHeading>
+        <MeshHeading>
+          <DescriptorName UI="D061351" MajorTopicYN="N">Telescopes</DescriptorName>
+        </MeshHeading>
+        <MeshHeading>
+          <DescriptorName UI="D005118" MajorTopicYN="Y">Extraterrestrial Environment</DescriptorName>
+          <QualifierName UI="Q000737" MajorTopicYN="N">chemistry</QualifierName>
+        </MeshHeading>
+        <MeshHeading>
+          <DescriptorName UI="D013997" MajorTopicYN="N">Time Factors</DescriptorName>
+        </MeshHeading>
+      </MeshHeadingList>
+      <CoiStatement>Competing interests: The authors declare no competing interests.</CoiStatement>
+    </MedlineCitation>
+    <PubmedData>
+      <History>
+        <PubMedPubDate PubStatus="received">
+          <Year>2025</Year>
+          <Month>03</Month>
+          <Day>07</Day>
+        </PubMedPubDate>
+        <PubMedPubDate PubStatus="accepted">
+          <Year>2025</Year>
+          <Month>11</Month>
+          <Day>28</Day>
+        </PubMedPubDate>
+        <PubMedPubDate PubStatus="medline">
+          <Year>2026</Year>
+          <Month>1</Month>
+          <Day>29</Day>
+          <Hour>1</Hour>
+          <Minute>50</Minute>
+        </PubMedPubDate>
+        <PubMedPubDate PubStatus="pubmed">
+          <Year>2026</Year>
+          <Month>1</Month>
+          <Day>29</Day>
+          <Hour>1</Hour>
+          <Minute>49</Minute>
+        </PubMedPubDate>
+        <PubMedPubDate PubStatus="entrez">
+          <Year>2026</Year>
+          <Month>1</Month>
+          <Day>28</Day>
+          <Hour>23</Hour>
+          <Minute>27</Minute>
+        </PubMedPubDate>
+      </History>
+      <PublicationStatus>ppublish</PublicationStatus>
+      <ArticleIdList>
+        <ArticleId IdType="pubmed">41606151</ArticleId>
+        <ArticleId IdType="doi">10.1038/s41586-025-09973-1</ArticleId>
+        <ArticleId IdType="pii">10.1038/s41586-025-09973-1</ArticleId>
+      </ArticleIdList>
+      <ReferenceList>
+        <Reference>
+          <Citation>Kravtsov, A. V. &amp; Borgani, S. Formation of galaxy clusters. Annu. Rev. Astron. Astrophys. 50, 353–409 (2012).</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="doi">10.1146/annurev-astro-081811-125502</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Chiang, Y.-K., Overzier, R. &amp; Gebhardt, K. Ancient light from young cosmic cities: physical and observational signatures of galaxy proto-clusters. Astrophys. J. 779, 127 (2013).</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="doi">10.1088/0004-637X/779/2/127</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Overzier, R. A. The realm of the galaxy protoclusters. A review. Astron. Astrophys. Rev. 24, 14 (2016).</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="doi">10.1007/s00159-016-0100-3</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Chiang, Y.-K., Overzier, R. A., Gebhardt, K. &amp; Henriques, B. Galaxy protoclusters as drivers of cosmic star formation history in the first 2 Gyr. Astrophys. J. Lett. 844, L23 (2017).</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="doi">10.3847/2041-8213/aa7e7b</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Laporte, N. et al. A lensed protocluster candidate at z = 7.66 identified in JWST observations of the galaxy cluster SMACS0723−7327. Astron. Astrophys. 667, L3 (2022).</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="doi">10.1051/0004-6361/202244719</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Morishita, T. et al. Early results from GLASS-JWST. XIV. A spectroscopically confirmed protocluster 650 million years after the Big Bang. Astrophys. J. Lett. 947, L24 (2023).</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="doi">10.3847/2041-8213/acb99e</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Helton, J. M. et al. Identification of high-redshift galaxy overdensities in GOODS-N and GOODS-S. Astrophys. J. 974, 41 (2024).</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="doi">10.3847/1538-4357/ad6867</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Li, Q. et al. EPOCHS paper – X. Environmental effects on Galaxy formation and protocluster Galaxy candidates at 4.5 &lt; z &lt; 10 from JWST observations. Mon. Not. R. Astron. Soc. 539, 1796–1819 (2025).</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="doi">10.1093/mnras/staf543</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Herard-Demanche, T. et al. Mapping dusty galaxy growth at z &gt; 5 with FRESCO: detection of Hα in submm galaxy HDF850.1 and the surrounding overdense structures. Mon. Not. R. Astron. Soc. 537, 788–808 (2025).</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="doi">10.1093/mnras/staf030</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Tinker, J. et al. Toward a halo mass function for precision cosmology: the limits of universality. Astrophys. J. 688, 709–728 (2008).</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="doi">10.1086/591439</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Staniszewski, Z. et al. Galaxy clusters discovered with a Sunyaev–Zel’dovich effect survey. Astrophys. J. 701, 32–41 (2009).</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="doi">10.1088/0004-637X/701/1/32</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Gobat, R. et al. A mature cluster with X-ray emission at z = 2.07. Astron. Astrophys. 526, A133 (2011).</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="doi">10.1051/0004-6361/201016084</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Brodwin, M. et al. IDCS J1426.5+3508: the most massive galaxy cluster at z &gt; 1.5. Astrophys. J. 817, 122 (2016).</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="doi">10.3847/0004-637X/817/2/122</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Mantz, A. B. et al. The XXL Survey. XVII. X-ray and Sunyaev-Zel’dovich properties of the redshift 2.0 galaxy cluster XLSSC 122. Astron. Astrophys. 620, A2 (2018).</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="doi">10.1051/0004-6361/201630096</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Dicker, S. R. et al. The massive and distant clusters of WISE Survey. X. Initial results from a Sunyaev–Zeldovich effect study of massive galaxy clusters at z &gt; 1 using MUSTANG2 on the GBT. Astrophys. J. 902, 144 (2020).</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="doi">10.3847/1538-4357/abb673</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Mantz, A. B. et al. Deep XMM-Newton observations of the most distant SPT-SZ galaxy cluster. Mon. Not. R. Astron. Soc. 496, 1554–1564 (2020).</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="doi">10.1093/mnras/staa1581</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Bleem, L. E. et al. The SPTpol Extended Cluster Survey. Astrophys. J. Suppl. Ser. 247, 25 (2020).</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="doi">10.3847/1538-4365/ab6993</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Hilton, M. et al. The Atacama Cosmology Telescope: a catalog of &gt;4000 Sunyaev–Zel’dovich galaxy clusters. Astrophys. J. Suppl. Ser. 253, 3 (2021).</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="doi">10.3847/1538-4365/abd023</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Di Mascolo, L. et al. Forming intracluster gas in a galaxy protocluster at a redshift of 2.16. Nature 615, 809–812 (2023).</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">36991192</ArticleId>
+            <ArticleId IdType="pmcid">10060161</ArticleId>
+            <ArticleId IdType="doi">10.1038/s41586-023-05761-x</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Fassbender, R. et al. The x-ray luminous galaxy cluster population at 0.9 &lt; z ≱ 1.6 as revealed by the XMM-Newton Distant Cluster Project. New J. Phys. 13, 125014 (2011).</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="doi">10.1088/1367-2630/13/12/125014</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Trudeau, A. et al. The XXL Survey. XLII. Detection and characterisation of the galaxy population of distant galaxy clusters in the XXL-N/VIDEO field: a tale of variety. Astron. Astrophys. 642, A124 (2020).</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="doi">10.1051/0004-6361/202038982</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Xu, W. et al. XMM-SERVS X-ray extended Galaxy Cluster (XVXGC) catalog. Astron. Astrophys. 691, A300 (2024).</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="doi">10.1051/0004-6361/202451064</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Labbé, I. et al. A population of red candidate massive galaxies 600 Myr after the Big Bang. Nature 616, 266–269 (2023).</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">36812940</ArticleId>
+            <ArticleId IdType="doi">10.1038/s41586-023-05786-2</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Boylan-Kolchin, M. Stress testing ΛCDM with high-redshift galaxy candidates. Nat. Astron. 7, 731–735 (2023).</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">37351007</ArticleId>
+            <ArticleId IdType="pmcid">10281863</ArticleId>
+            <ArticleId IdType="doi">10.1038/s41550-023-01937-7</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Castellano, M. et al. Early results from GLASS-JWST. III. Galaxy candidates at z ~ 9–15. Astrophys. J. Lett. 938, L15 (2022).</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="doi">10.3847/2041-8213/ac94d0</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Eisenstein, D. J. et al. Overview of the JWST Advanced Deep Extragalactic Survey (JADES). Preprint at https://arxiv.org/abs/2306.02465 (2023).</Citation>
+        </Reference>
+        <Reference>
+          <Citation>Giacconi, R. et al. Chandra Deep Field South: the 1 Ms catalog. Astrophys. J. Suppl. Ser. 139, 369–410 (2002).</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="doi">10.1086/338927</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Luo, B. et al. The Chandra Deep Field-South Survey: 7 Ms source catalogs. Astrophys. J. Suppl. Ser. 228, 2 (2017).</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="doi">10.3847/1538-4365/228/1/2</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Fruscione, A. et al. in Observatory Operations: Strategies, Processes, and Systems (eds Silva, D. R. &amp; Doxsey, R. E.) 586–597 (SPIE, 2006).</Citation>
+        </Reference>
+        <Reference>
+          <Citation>Mann, A. W. &amp; Ebeling, H. X-ray-optical classification of cluster mergers and the evolution of the cluster merger fraction. Mon. Not. R. Astron. Soc. 420, 2120–2138 (2012).</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="doi">10.1111/j.1365-2966.2011.20170.x</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Rossetti, M. et al. Measuring the dynamical state of Planck SZ-selected clusters: X-ray peak – BCG offset. Mon. Not. R. Astron. Soc. 457, 4515–4524 (2016).</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="doi">10.1093/mnras/stw265</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Seppi, R. et al. Offset between X-ray and optical centers in clusters of galaxies: connecting eROSITA data with simulations. Astron. Astrophys. 671, A57 (2023).</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="doi">10.1051/0004-6361/202245138</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>McDonald, M. et al. The evolution of the intracluster medium metallicity in Sunyaev Zel’dovich-selected galaxy clusters at 0 &lt; z &lt; 1.5. Astrophys. J. 826, 124 (2016).</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="doi">10.3847/0004-637X/826/2/124</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Bennett, J. S., Sijacki, D., Costa, T., Laporte, N. &amp; Witten, C. The growth of the gargantuan black holes powering high-redshift quasars and their impact on the formation of early galaxies and protoclusters. Mon. Not. R. Astron. Soc. 527, 1033–1054 (2024).</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="doi">10.1093/mnras/stad3179</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>HI4PI Collaboration et al. HI4PI: a full-sky H I survey based on EBHIS and GASS. Astron. Astrophys. 594, A116 (2016).</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="doi">10.1051/0004-6361/201629178</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Lovisari, L. et al. X-ray scaling relations for a representative sample of Planck-selected clusters observed with XMM-Newton. Astrophys. J. 892, 102 (2020).</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="doi">10.3847/1538-4357/ab7997</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Ricker, P. M. &amp; Sarazin, C. L. Off-axis cluster mergers: effects of a strongly peaked dark matter profile. Astrophys. J. 561, 621–644 (2001).</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="doi">10.1086/323365</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Ritchie, B. W. &amp; Thomas, P. A. Hydrodynamic simulations of merging clusters of galaxies. Mon. Not. R. Astron. Soc. 329, 675–688 (2002).</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="doi">10.1046/j.1365-8711.2002.05027.x</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Markevitch, M. &amp; Vikhlinin, A. Shocks and cold fronts in galaxy clusters. Phys. Rep. 443, 1–53 (2007).</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="doi">10.1016/j.physrep.2007.01.001</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Ogrean, G. A. et al. XMM-Newton observations of the merging galaxy cluster CIZA J2242.8+5301. Mon. Not. R. Astron. Soc. 429, 2617–2633 (2013).</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="doi">10.1093/mnras/sts538</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Schellenberger, G. et al. The unusually weak and exceptionally steep radio relic in A2108. Astrophys. J. 925, 91 (2022).</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="doi">10.3847/1538-4357/ac3b5a</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Chadayammuri, U., Bogdán, Á., Schellenberger, G. &amp; ZuHone, J. Closing Pandora’s Box – the deepest X-ray observations of Abell 2744 and a multi-wavelength merger picture. Preprint at https://arxiv.org/abs/2407.03142 (2024).</Citation>
+        </Reference>
+        <Reference>
+          <Citation>O’Hara, T. B., Mohr, J. J., Bialek, J. J. &amp; Evrard, A. E. Effects of mergers and core structure on the bulk properties of nearby galaxy clusters. Astrophys. J. 639, 64–80 (2006).</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="doi">10.1086/499327</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Rasia, E. et al. Scaling relation in two situations of extreme mergers. Astrophys. J. 729, 45 (2011).</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="doi">10.1088/0004-637X/729/1/45</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Battaglia, N., Bond, J. R., Pfrommer, C. &amp; Sievers, J. L. On the cluster physics of Sunyaev–Zel’dovich and X-ray surveys. I. The influence of feedback, non-thermal pressure, and cluster shapes on Y–M scaling relations. Astrophys. J. 758, 74 (2012).</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="doi">10.1088/0004-637X/758/2/74</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Shi, X., Komatsu, E., Nagai, D. &amp; Lau, E. T. Analytical model for non-thermal pressure in galaxy clusters – III. Removing the hydrostatic mass bias. Mon. Not. R. Astron. Soc. 455, 2936–2944 (2016).</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="doi">10.1093/mnras/stv2504</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Costa, T., Sijacki, D., Trenti, M. &amp; Haehnelt, M. G. The environment of bright QSOs at z ~ 6: star-forming galaxies and X-ray emission. Mon. Not. R. Astron. Soc. 439, 2146–2174 (2014).</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="doi">10.1093/mnras/stu101</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Planck Collaboration et al. Planck 2018 results. VI. Cosmological parameters. Astron. Astrophys. 641, A6 (2020).</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="doi">10.1051/0004-6361/201833910</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Chemerynska, I. et al. JWST UNCOVER: the overabundance of ultraviolet-luminous galaxies at z &gt; 9. Mon. Not. R. Astron. Soc. 531, 2615–2625 (2024).</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="doi">10.1093/mnras/stae1260</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Conselice, C. J. et al. EPOCHS I. The discovery and star forming properties of galaxies in the epoch of reionization at 6.5 &lt; z &lt; 18 with PEARLS and public JWST data. Astrophys. J. 983, 30 (2025).</Citation>
+        </Reference>
+        <Reference>
+          <Citation>Lu, S. et al. A comparison of pre-existing ΛCDM predictions with the abundance of JWST galaxies at high redshift. Mon. Not. R. Astron. Soc. 536, 1018–1034 (2025).</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="doi">10.1093/mnras/stae2646</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Gaskin, J. A. et al. Lynx X-ray observatory: an overview. J. Astron. Telesc. Instrum. Syst. 5, 021001 (2019).</Citation>
+        </Reference>
+        <Reference>
+          <Citation>Kraft, R. et al. Line Emission Mapper (LEM): probing the physics of cosmic ecosystems. Preprint at https://arxiv.org/abs/2211.09827 (2023).</Citation>
+        </Reference>
+        <Reference>
+          <Citation>Cruise, M. et al. The NewAthena mission concept in the context of the next decade of X-ray astronomy. Nat. Astron. 9, 36–44 (2025).</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="doi">10.1038/s41550-024-02416-3</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Sehgal, N. et al. CMB-HD: an ultra-deep, high-resolution millimeter-wave survey over half the sky. Preprint at https://arxiv.org/abs/1906.10134 (2019).</Citation>
+        </Reference>
+        <Reference>
+          <Citation>Carpenter, J., Brogan, C., Iono, D. &amp; Mroczkowski, T. in Physics and Chemistry of Star Formation: The Dynamical ISM Across Time and Spatial Scales (eds Ossenkopf-Okada, V., Schaaf, R., Breloy, I. &amp; Stutzki, J.) 304 (Universitäts- und Stadtbibliothek Köln, 2023).</Citation>
+        </Reference>
+        <Reference>
+          <Citation>Mroczkowski, T. et al. The conceptual design of the 50-meter Atacama Large Aperture Submillimeter Telescope (AtLAST). Astron. Astrophys. 694, A142 (2025).</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="doi">10.1051/0004-6361/202449786</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Gehrels, N. Confidence limits for small numbers of events in astrophysical data. Astrophys. J. 303, 336–346 (1986).</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="doi">10.1086/164079</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Sarron, F. &amp; Conselice, C. J. DETECTIFz galaxy groups in the REFINE survey – I. Group detection and quenched fraction evolution at z &lt; 2.5. Mon. Not. R. Astron. Soc. 506, 2136–2155 (2021).</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="doi">10.1093/mnras/stab1844</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Trapp, A. C. &amp; Furlanetto, S. R. A flexible analytic model of cosmic variance in the first billion years. Mon. Not. R. Astron. Soc. 499, 2401–2415 (2020).</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="doi">10.1093/mnras/staa2828</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Bogdán, Á et al. Exploring gravitationally lensed z ≳ 6 X-ray active galactic nuclei behind the RELICS clusters. Astrophys. J. 927, 34 (2022).</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="doi">10.3847/1538-4357/ac4ae5</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Bogdán, Á et al. Evidence for heavy-seed origin of early supermassive black holes from a z ≈ 10 X-ray quasar. Nat. Astron. 8, 126–133 (2024).</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="doi">10.1038/s41550-023-02111-9</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Plucinsky, P. P., Bogdan, A., Marshall, H. L. &amp; Tice, N. W. in Space Telescopes and Instrumentation 2018: Ultraviolet to Gamma Ray (eds den Herder, J.-W. A., Nikzad, S. &amp; Nakazawa, K.) 106996B (SPIE, 2018).</Citation>
+        </Reference>
+        <Reference>
+          <Citation>Plucinsky, P. P., Bogdan, A. &amp; Marshall, H. L. in Space Telescopes and Instrumentation 2022: Ultraviolet to Gamma Ray (eds den Herder, J.-W. A., Nikzad, S. &amp; Nakazawa, K.) 121816X (SPIE, 2022).</Citation>
+        </Reference>
+        <Reference>
+          <Citation>Bartalucci, I., Mazzotta, P., Bourdin, H. &amp; Vikhlinin, A. Chandra ACIS-I particle background: an analytical model. Astron. Astrophys. 566, A25 (2014).</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="doi">10.1051/0004-6361/201423443</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Suzuki, H., Plucinsky, P. P., Gaetz, T. J. &amp; Bamba, A. Spatial and temporal variations of the Chandra ACIS particle-induced background and development of a spectral-model generation tool. Astron. Astrophys. 655, A116 (2021).</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="doi">10.1051/0004-6361/202141458</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Park, T. et al. Bayesian estimation of hardness ratios: modeling and computations. Astrophys. J. 652, 610–628 (2006).</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="doi">10.1086/507406</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Ananna, T. T., Bogdán, Á, Kovács, O. E., Natarajan, P. &amp; Hickox, R. C. X-ray view of little red dots: do they host supermassive black holes? Astrophys. J. Lett. 969, L18 (2024).</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="doi">10.3847/2041-8213/ad5669</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Maiolino, R. et al. JWST meets Chandra: a large population of Compton thick, feedback-free, and intrinsically X-ray weak AGN, with a sprinkle of SNe. Mon. Not. R. Astron. Soc. 538, 1921–1943 (2025).</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="doi">10.1093/mnras/staf359</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Sacchi, A. &amp; Bogdán, A. Chandra rules out super-Eddington accretion models for little red dots. Astrophys. J. Lett. 989, L30 (2025).</Citation>
+        </Reference>
+        <Reference>
+          <Citation>Kovács, O. E. et al. A candidate supermassive black hole in a gravitationally lensed galaxy at Z ≈ 10. Astrophys. J. Lett. 965, L21 (2024).</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="doi">10.3847/2041-8213/ad391f</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Champagne, J. B. et al. Comprehensive gas characterization of a z = 2.5 protocluster: a cluster core caught in the beginning of virialization? Astrophys. J. 913, 110 (2021).</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="doi">10.3847/1538-4357/abf4e6</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Hale, C. L. et al. MIGHTEE: the continuum survey Data Release 1. Mon. Not. R. Astron. Soc. 536, 2187–2211 (2025).</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="doi">10.1093/mnras/stae2528</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Bonafede, A. et al. The Coma cluster magnetic field from Faraday rotation measures. Astron. Astrophys. 513, A30 (2010).</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="doi">10.1051/0004-6361/200913696</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Di Gennaro, G. et al. Fast magnetic field amplification in distant galaxy clusters. Nat. Astron. 5, 268–275 (2021).</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="doi">10.1038/s41550-020-01244-5</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Miller, T. B., van Dokkum, P. &amp; Mowla, L. Color gradients and half-mass radii of galaxies out to z = 2 in the CANDELS/3D-HST fields: further evidence for important differences in the evolution of mass-weighted and light-weighted sizes. Astrophys. J. 945, 155 (2023).</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="doi">10.3847/1538-4357/acbc74</ArticleId>
+          </ArticleIdList>
+        </Reference>
+      </ReferenceList>
+    </PubmedData>
+  </PubmedArticle>

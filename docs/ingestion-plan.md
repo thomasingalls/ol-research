@@ -90,9 +90,18 @@ wart is a claim the POC run confirms or refutes, not a commitment.
 - Retraction is on the affected record: `PublicationType` "Retracted
   Publication", `CommentsCorrectionsList` `RefType="RetractionIn"`.
 - MeSH headings: richest topic signal of the five.
-- Observed in `pubmed26n1334.xml.gz`: `<PMID Version="1">` on every record;
-  `ArticleId` uses both `IdType="pmcid"` (7,309) and `IdType="pmc"` (1,380)
-  for the same identifier — the first wart logged for the PubMed struct.
+- Observed in `pubmed26n1334.xml.gz` (4,989 records, 250 distinct element
+  paths): `<PMID Version="1">` on every record. `IdType="pmc"` and
+  `IdType="pmcid"` are one identifier in two serializations by role — the
+  record's own PMC ID is `pmc` with a `PMC` prefix (`PMC12834818`), a
+  reference's is `pmcid` as bare digits (`5349499`); never both on one
+  record. A `PmcId` type needs two entry points, like `Pmid`.
+- The 2026 baseline still declares the 2025 DTD (`pubmed_250101.dtd`) over
+  plain `http://`. `AbstractText`, `ArticleTitle`, `Citation`, `Keyword`,
+  `CoiStatement` are mixed content — inline `b`/`i`/`sub`/`sup` and MathML
+  trees up to six deep appear in real abstracts. `Language` occurs twice on
+  one record (`Language+` in the DTD). `Grant/Country` is present but empty
+  on 92 % of grants.
 - The DTD is large. Strict modelling of it is the biggest single modelling
   surface in this plan; the POC file will show how much of it is exercised.
 - Terms: NLM provides the data freely; some abstracts may be under copyright
@@ -329,6 +338,12 @@ core-hours; at 2k/s it is two days. The difference is entirely the rules
 below. M2 replaces the illustration with a measured number, and that number
 becomes a budget checked on every change.
 
+First measurement, 2026-09-14 — PubMed, first cut of `source-pubmed`,
+release build, one core, Apple Silicon: **28.8k records/s, 393 MiB/s** of
+decompressed XML through the strict zero-copy parser, with gzip inflation
+running at the same rate ahead of it. Extrapolated, the full 37M-record
+baseline is ~22 core-minutes. Allocations per record are not yet counted.
+
 The rules are committed. The specific types named inside them —
 `PartialDate`, `WorkKind`, interned venue names — are Appendix A
 illustrations of a rule, not commitments.
@@ -497,8 +512,12 @@ Drop `--seed-time=0` to seed back for a while; it is 31 MB.
 If it stalls (it did: no web seed, two trackers), in order of preference:
 
 1. Retry from the saved `.torrent` with extra public trackers; aria2 resumes
-   from its control file. Leave it running in the background — a sample
-   torrent may have one intermittent seeder.
+   from its control file. aria2 uses only the trackers inside the `.torrent`
+   plus DHT and never adds public lists by itself; `--bt-tracker` does.
+   A tracker scrape on 2026-09-14 showed 2 seeders and 11 completed
+   downloads for the 2026 sample on opentrackr (none of the samples are
+   registered with Academic Torrents' own tracker), so seeders exist and
+   reachability is the problem; leave it running in the background.
 
    ```bash
    aria2c --file-allocation=none --seed-time=0 -d data/raw/crossref \
@@ -558,6 +577,12 @@ in your environment, never in the repo or in this conversation.
   sample. First throughput and allocation numbers; they become the budget.
 - **M3** — `source-openalex` (widest schema, second edge source, cross-IDs).
 - **M4** — `source-pubmed` (streaming XML, the largest modelling surface).
+  *First cut landed 2026-09-14: native types mirror the DTD field for field
+  (everything under `PubmedArticle` and `DeleteCitation`; `PubmedBookArticle`
+  is an explicit error), attribute vocabularies are closed enums, cardinality
+  is enforced, child order is not yet. Mixed content is kept as the raw
+  inner markup. The whole real file parses with zero failures; the DTD and
+  five real records are the crate's fixtures. Normalizer next.*
 - **M5** — `source-s2` (three streams). Paused until a key exists; the slot
   stays, and M6 can move ahead of it.
 - **M6** — `source-arxiv` (OAI-PMH).
@@ -598,6 +623,12 @@ cross-IDs and a second edge namespace early.
   `OpenAlexId` (`u64`, forced by the observed maximum 4,410,348,178);
   `hello` removed; `ol-rht id` runs one parser over stdin. Crossref sample
   torrent stalled at zero bytes; fallbacks recorded in §7.
+- 2026-09-14, M4 first cut — first external dependencies: `quick-xml`,
+  `flate2`. Native layer is DTD-faithful text (dates, identifiers stay text;
+  the normalizer applies `model` types), which keeps the two layers'
+  strictness separate: structural here, value-level there. `ol-rht pubmed
+  check` parses a file and reports throughput. `pmc`/`pmcid` resolved as one
+  identifier in two serializations.
 
 ## 11. Dependencies
 

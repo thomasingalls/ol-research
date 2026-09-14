@@ -1,0 +1,59 @@
+  <PubmedArticle>
+    <MedlineCitation Status="Publisher" IndexingMethod="Automated" Owner="NLM">
+      <PMID Version="1">41609757</PMID>
+      <DateRevised>
+        <Year>2026</Year>
+        <Month>01</Month>
+        <Day>29</Day>
+      </DateRevised>
+      <Article PubModel="Print-Electronic">
+        <Journal>
+          <ISSN IssnType="Electronic">1538-3598</ISSN>
+          <JournalIssue CitedMedium="Internet">
+            <PubDate>
+              <Year>2026</Year>
+              <Month>Jan</Month>
+              <Day>29</Day>
+            </PubDate>
+          </JournalIssue>
+          <Title>JAMA</Title>
+          <ISOAbbreviation>JAMA</ISOAbbreviation>
+        </Journal>
+        <ArticleTitle>Glucose as a Food.</ArticleTitle>
+        <ELocationID EIdType="doi" ValidYN="Y">10.1001/jama.2025.15703</ELocationID>
+        <Language>eng</Language>
+        <PublicationTypeList>
+          <PublicationType UI="D016428">Journal Article</PublicationType>
+        </PublicationTypeList>
+        <ArticleDate DateType="Electronic">
+          <Year>2026</Year>
+          <Month>01</Month>
+          <Day>29</Day>
+        </ArticleDate>
+      </Article>
+      <MedlineJournalInfo>
+        <Country>United States</Country>
+        <MedlineTA>JAMA</MedlineTA>
+        <NlmUniqueID>7501160</NlmUniqueID>
+        <ISSNLinking>0098-7484</ISSNLinking>
+      </MedlineJournalInfo>
+      <CitationSubset>IM</CitationSubset>
+    </MedlineCitation>
+    <PubmedData>
+      <History>
+        <PubMedPubDate PubStatus="entrez">
+          <Year>2026</Year>
+          <Month>1</Month>
+          <Day>29</Day>
+          <Hour>12</Hour>
+          <Minute>36</Minute>
+        </PubMedPubDate>
+      </History>
+      <PublicationStatus>aheadofprint</PublicationStatus>
+      <ArticleIdList>
+        <ArticleId IdType="pubmed">41609757</ArticleId>
+        <ArticleId IdType="pii">2844550</ArticleId>
+        <ArticleId IdType="doi">10.1001/jama.2025.15703</ArticleId>
+      </ArticleIdList>
+    </PubmedData>
+  </PubmedArticle>

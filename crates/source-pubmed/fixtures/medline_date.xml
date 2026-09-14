@@ -1,0 +1,91 @@
+  <PubmedArticle>
+    <MedlineCitation Status="PubMed-not-MEDLINE" IndexingMethod="Automated" Owner="NLM">
+      <PMID Version="1">41607512</PMID>
+      <DateCompleted>
+        <Year>2026</Year>
+        <Month>01</Month>
+        <Day>29</Day>
+      </DateCompleted>
+      <DateRevised>
+        <Year>2026</Year>
+        <Month>01</Month>
+        <Day>29</Day>
+      </DateRevised>
+      <Article PubModel="Electronic-eCollection">
+        <Journal>
+          <ISSN IssnType="Print">1445-5781</ISSN>
+          <JournalIssue CitedMedium="Print">
+            <Volume>25</Volume>
+            <Issue>1</Issue>
+            <PubDate>
+              <MedlineDate>2026 Jan-Dec</MedlineDate>
+            </PubDate>
+          </JournalIssue>
+          <Title>Reproductive medicine and biology</Title>
+          <ISOAbbreviation>Reprod Med Biol</ISOAbbreviation>
+        </Journal>
+        <ArticleTitle>Correction to "Sperm Selection Using Cumulus Cell Column Improves Sperm DNA Integrity, Embryo Morphokinetics, and Clinical Outcomes Following ICSI: A Randomized Clinical Trial".</ArticleTitle>
+        <Pagination>
+          <MedlinePgn>e70019</MedlinePgn>
+        </Pagination>
+        <ELocationID EIdType="doi" ValidYN="Y">10.1002/rmb2.70019</ELocationID>
+        <Abstract>
+          <AbstractText>[This corrects the article DOI: 10.1002/rmb2.70000.].</AbstractText>
+          <CopyrightInformation>© 2026 The Author(s). Reproductive Medicine and Biology published by John Wiley &amp; Sons Australia, Ltd on behalf of Japan Society for Reproductive Medicine.</CopyrightInformation>
+        </Abstract>
+        <Language>eng</Language>
+        <PublicationTypeList>
+          <PublicationType UI="D016425">Published Erratum</PublicationType>
+        </PublicationTypeList>
+        <ArticleDate DateType="Electronic">
+          <Year>2026</Year>
+          <Month>01</Month>
+          <Day>27</Day>
+        </ArticleDate>
+      </Article>
+      <MedlineJournalInfo>
+        <Country>Japan</Country>
+        <MedlineTA>Reprod Med Biol</MedlineTA>
+        <NlmUniqueID>101213278</NlmUniqueID>
+        <ISSNLinking>1445-5781</ISSNLinking>
+      </MedlineJournalInfo>
+      <CommentsCorrectionsList>
+        <CommentsCorrections RefType="ErratumFor">
+          <RefSource>Reprod Med Biol. 2025 Nov 19;24(1):e70000. doi: 10.1002/rmb2.70000.</RefSource>
+          <PMID Version="1">41283062</PMID>
+        </CommentsCorrections>
+      </CommentsCorrectionsList>
+    </MedlineCitation>
+    <PubmedData>
+      <History>
+        <PubMedPubDate PubStatus="medline">
+          <Year>2026</Year>
+          <Month>1</Month>
+          <Day>29</Day>
+          <Hour>7</Hour>
+          <Minute>35</Minute>
+        </PubMedPubDate>
+        <PubMedPubDate PubStatus="pubmed">
+          <Year>2026</Year>
+          <Month>1</Month>
+          <Day>29</Day>
+          <Hour>7</Hour>
+          <Minute>34</Minute>
+        </PubMedPubDate>
+        <PubMedPubDate PubStatus="entrez">
+          <Year>2026</Year>
+          <Month>1</Month>
+          <Day>29</Day>
+          <Hour>4</Hour>
+          <Minute>45</Minute>
+        </PubMedPubDate>
+      </History>
+      <PublicationStatus>epublish</PublicationStatus>
+      <ArticleIdList>
+        <ArticleId IdType="pubmed">41607512</ArticleId>
+        <ArticleId IdType="doi">10.1002/rmb2.70019</ArticleId>
+        <ArticleId IdType="pii">RMB270019</ArticleId>
+        <ArticleId IdType="pmc">PMC12839499</ArticleId>
+      </ArticleIdList>
+    </PubmedData>
+  </PubmedArticle>

@@ -1,0 +1,14 @@
+[package]
+name = "source-pubmed"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "PubMed baseline/update XML: native record types and a strict, zero-copy streaming parser."
+
+[dependencies]
+model.workspace = true
+flate2.workspace = true
+quick-xml.workspace = true
+
+[lints]
+workspace = true

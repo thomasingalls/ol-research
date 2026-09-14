@@ -1,0 +1,127 @@
+  <PubmedArticle>
+    <MedlineCitation Status="Publisher" IndexingMethod="Automated" Owner="NLM">
+      <PMID Version="1">41606387</PMID>
+      <DateRevised>
+        <Year>2026</Year>
+        <Month>01</Month>
+        <Day>28</Day>
+      </DateRevised>
+      <Article PubModel="Print-Electronic">
+        <Journal>
+          <ISSN IssnType="Electronic">1438-8359</ISSN>
+          <JournalIssue CitedMedium="Internet">
+            <PubDate>
+              <Year>2026</Year>
+              <Month>Jan</Month>
+              <Day>28</Day>
+            </PubDate>
+          </JournalIssue>
+          <Title>Journal of anesthesia</Title>
+          <ISOAbbreviation>J Anesth</ISOAbbreviation>
+        </Journal>
+        <ArticleTitle>Clarifying respiratory safety end points in nonintubated hysteroscopic anesthesia.</ArticleTitle>
+        <ELocationID EIdType="doi" ValidYN="Y">10.1007/s00540-026-03668-1</ELocationID>
+        <AuthorList CompleteYN="Y">
+          <Author ValidYN="Y">
+            <LastName>He</LastName>
+            <ForeName>Jiliang</ForeName>
+            <Initials>J</Initials>
+            <Identifier Source="ORCID">http://orcid.org/0000-0002-4263-172X</Identifier>
+            <AffiliationInfo>
+              <Affiliation>Department of Anesthesiology, Affiliated Cixi Hospital, Wenzhou Medical University, 999, South Second Ring Road, Hushan Street, Cixi, 315300, Zhejiang, China. hejilianglove@163.com.</Affiliation>
+            </AffiliationInfo>
+          </Author>
+        </AuthorList>
+        <Language>eng</Language>
+        <PublicationTypeList>
+          <PublicationType UI="D016422">Letter</PublicationType>
+          <PublicationType UI="D016420">Comment</PublicationType>
+        </PublicationTypeList>
+        <ArticleDate DateType="Electronic">
+          <Year>2026</Year>
+          <Month>01</Month>
+          <Day>28</Day>
+        </ArticleDate>
+      </Article>
+      <MedlineJournalInfo>
+        <Country>Japan</Country>
+        <MedlineTA>J Anesth</MedlineTA>
+        <NlmUniqueID>8905667</NlmUniqueID>
+        <ISSNLinking>0913-8668</ISSNLinking>
+      </MedlineJournalInfo>
+      <CitationSubset>IM</CitationSubset>
+      <CommentsCorrectionsList>
+        <CommentsCorrections RefType="CommentOn">
+          <RefSource>J Anesth. 2025 Sep 14. doi: 10.1007/s00540-025-03578-8.</RefSource>
+          <PMID Version="1">40946263</PMID>
+        </CommentsCorrections>
+      </CommentsCorrectionsList>
+      <CoiStatement>Declarations. Conflict of interest: The author declares no competing interests.</CoiStatement>
+    </MedlineCitation>
+    <PubmedData>
+      <History>
+        <PubMedPubDate PubStatus="received">
+          <Year>2026</Year>
+          <Month>01</Month>
+          <Day>08</Day>
+        </PubMedPubDate>
+        <PubMedPubDate PubStatus="accepted">
+          <Year>2026</Year>
+          <Month>01</Month>
+          <Day>11</Day>
+        </PubMedPubDate>
+        <PubMedPubDate PubStatus="medline">
+          <Year>2026</Year>
+          <Month>1</Month>
+          <Day>29</Day>
+          <Hour>1</Hour>
+          <Minute>49</Minute>
+        </PubMedPubDate>
+        <PubMedPubDate PubStatus="pubmed">
+          <Year>2026</Year>
+          <Month>1</Month>
+          <Day>29</Day>
+          <Hour>1</Hour>
+          <Minute>49</Minute>
+        </PubMedPubDate>
+        <PubMedPubDate PubStatus="entrez">
+          <Year>2026</Year>
+          <Month>1</Month>
+          <Day>28</Day>
+          <Hour>23</Hour>
+          <Minute>32</Minute>
+        </PubMedPubDate>
+      </History>
+      <PublicationStatus>aheadofprint</PublicationStatus>
+      <ArticleIdList>
+        <ArticleId IdType="pubmed">41606387</ArticleId>
+        <ArticleId IdType="doi">10.1007/s00540-026-03668-1</ArticleId>
+        <ArticleId IdType="pii">10.1007/s00540-026-03668-1</ArticleId>
+      </ArticleIdList>
+      <ReferenceList>
+        <Reference>
+          <Citation>Ke Z, He Y, Hu Q, Zheng D, Yao Z, Zhou W. A comparison of the effects of oliceridine and sufentanil on the quality of recovery after hysteroscopic surgery: a prospective double-blind randomized controlled trial. J Anesth. 2025. https://doi.org/10.1007/s00540-025-03578-8 .</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="doi">10.1007/s00540-025-03578-8</ArticleId>
+            <ArticleId IdType="pubmed">40946263</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Weaver J. The latest ASA mandate: CO(2) monitoring for moderate and deep sedation. Anesth Prog. 2011;58(3):111–2.</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="doi">10.2344/0003-3006-58.3.111</ArticleId>
+            <ArticleId IdType="pubmed">21882985</ArticleId>
+            <ArticleId IdType="pmcid">3167153</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Saunders R, Struys M, Pollock RF, Mestek M, Lightdale JR. Patient safety during procedural sedation using capnography monitoring: a systematic review and meta-analysis. BMJ Open. 2017;7(6):e013402.</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="doi">10.1136/bmjopen-2016-013402</ArticleId>
+            <ArticleId IdType="pubmed">28667196</ArticleId>
+            <ArticleId IdType="pmcid">5734204</ArticleId>
+          </ArticleIdList>
+        </Reference>
+      </ReferenceList>
+    </PubmedData>
+  </PubmedArticle>
