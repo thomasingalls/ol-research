@@ -30,8 +30,8 @@ use model::{
 use crate::Pubmed;
 use crate::attr::{
     AffiliationIdSource, CitedMedium, EIdType, IdType, IssnType, KeywordOwner, NlmCategory,
-    OtherAbstractType, Owner, PubModel, PubStatus, PublicationStatus, RefType, Status,
-    SupplMeshType, YesNo,
+    NoteOwner, OtherAbstractType, OtherIdSource, Owner, PubModel, PubStatus, PublicationStatus,
+    RefType, Status, SupplMeshType, YesNo,
 };
 use crate::record::{
     self, AbstractText, ArticleId, AuthorName as NativeAuthorName, Date as DateText,
@@ -55,6 +55,9 @@ pub type PmcClaim<'n> = Claim<'n, PmcId, ParseError>;
 /// An ISSN as the record asserted it; pubmed26n1333 had one with a wrong
 /// check digit, the DOI-claim policy of plan §6 applied.
 pub type IssnClaim<'n> = Claim<'n, Issn, IssnError>;
+/// A language code as the source wrote it, or why it is not ISO 639-2:
+/// `sp` on one `OtherAbstract` in 15,432 looked-up records (2026-09-15).
+pub type LangClaim<'n> = Claim<'n, Lang, LangError>;
 /// An ORCID as an author typed it: 17 of 7,607 in the first file were
 /// truncated to fifteen characters.
 pub type OrcidClaim<'n> = Claim<'n, Orcid, OrcidError>;
@@ -124,6 +127,23 @@ pub struct Citation<'n> {
     /// `CoiStatement`, raw markup.
     #[serde(borrow)]
     pub coi_statement: Option<&'n str>,
+    /// `NumberOfReferences`, on older MEDLINE records (362 of 15,432
+    /// looked up on 2026-09-15).
+    pub number_of_references: Option<u32>,
+    /// `GeneSymbolList/GeneSymbol+`, on records of the 1990s (9 of 15,432).
+    #[serde(borrow)]
+    pub gene_symbols: Few<&'n str, 4>,
+    /// `PersonalNameSubjectList`: who a biographical record is about (1 of
+    /// 15,432).
+    #[serde(borrow)]
+    pub personal_name_subjects: Few<PersonName<'n>, 1>,
+    /// `OtherID*`: identifiers from other databases, by source (59 of
+    /// 15,432).
+    #[serde(borrow)]
+    pub other_ids: Few<OtherId<'n>, 1>,
+    /// `GeneralNote*`, by owner, on records of the 1990s (6 of 15,432).
+    #[serde(borrow)]
+    pub general_notes: Few<GeneralNote<'n>, 1>,
     /// `CitationSubset*`: `IM` and friends.
     #[serde(borrow)]
     pub citation_subsets: Few<&'n str, 2>,
@@ -135,6 +155,24 @@ pub struct Citation<'n> {
     pub relations: Few<Relation, 4>,
 }
 
+/// `GeneralNote`: free text with an owner.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GeneralNote<'n> {
+    /// `Owner`.
+    pub owner: NoteOwner,
+    #[allow(missing_docs)]
+    pub text: &'n str,
+}
+
+/// `OtherID`: an identifier from another database.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OtherId<'n> {
+    /// `Source`.
+    pub source: OtherIdSource,
+    #[allow(missing_docs)]
+    pub value: &'n str,
+}
+
 /// The record's identifiers beyond its PMID.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct Identifiers<'n> {
@@ -142,10 +180,11 @@ pub struct Identifiers<'n> {
     #[serde(borrow)]
     pub doi: Option<DoiClaim<'n>>,
     /// `ELocationID EIdType="doi"` — the same identifier from the article
-    /// block. Agrees with `doi` whenever both are valid; when they differ,
-    /// one is malformed.
+    /// block, once or, on 5 of 15,432 looked-up records, twice (a case
+    /// variant, or a value that is not a DOI beside one that is). Every
+    /// valid one agrees with `doi`.
     #[serde(borrow)]
-    pub elocation_doi: Option<DoiClaim<'n>>,
+    pub elocation_doi: Few<DoiClaim<'n>, 1>,
     /// `ArticleId IdType="pii"`, an opaque publisher item identifier.
     #[serde(borrow)]
     pub pii: Option<&'n str>,
@@ -153,11 +192,18 @@ pub struct Identifiers<'n> {
     /// NIH's `NIHMS…` or Europe PMC's `EMS…` (both first seen in
     /// pubmed26n1333, PMIDs 41576088 and 41583386).
     pub mid: Option<&'n str>,
-    /// `ELocationID EIdType="pii"`, which need not equal `pii`.
+    /// `ELocationID EIdType="pii"`, which need not equal `pii`; twice on
+    /// 87 of 15,432 looked-up records.
     #[serde(borrow)]
-    pub elocation_pii: Option<&'n str>,
+    pub elocation_pii: Few<&'n str, 1>,
     /// `ArticleId IdType="pmc"`.
     pub pmc: Option<PmcId>,
+    /// `ArticleId IdType="medline"`: an old MEDLINE unique identifier (28
+    /// of 15,432).
+    pub medline: Option<&'n str>,
+    /// `ArticleId IdType="sici"`: a Serial Item and Contribution
+    /// Identifier (11 of 15,432).
+    pub sici: Option<&'n str>,
 }
 
 /// The record's dates.
@@ -271,8 +317,10 @@ pub struct Section<'n> {
 pub struct OtherAbstract<'n> {
     #[allow(missing_docs)]
     pub kind: OtherAbstractType,
-    /// `Language`, ISO 639-2 bibliographic.
-    pub language: Lang,
+    /// `Language`, ISO 639-2 bibliographic, or what the source wrote when
+    /// it is not one.
+    #[serde(borrow)]
+    pub language: LangClaim<'n>,
     #[allow(missing_docs)]
     #[serde(borrow)]
     pub sections: Few<Section<'n>, 4>,
@@ -635,6 +683,19 @@ impl Ctx {
             .as_deref()
             .map(|d| Day::parse(d).map_err(|e| self.err(FIELD, d, ErrorKind::Date(e))))
             .transpose()?;
+        // `Season` holds a month range as often as a season on older
+        // records — `Sep-Oct`, `Jan-Dec`, `Apr-Jun`, and `Mar/Apr` with a
+        // slash, 336 of 15,432 looked up on 2026-09-15 — the forms
+        // MedlineDate spells with the year in front, so those go through
+        // its grammar with the slash read as the hyphen it stands for.
+        if let Some(s) = season.as_deref()
+            && m.is_none()
+            && d.is_none()
+            && Season::from_name(s).is_none()
+        {
+            return PartialDate::parse_medline(&format!("{year} {}", s.replace('/', "-")))
+                .map_err(|e| self.err(FIELD, s, ErrorKind::MedlineDate(e)));
+        }
         let s = season
             .as_deref()
             .map(|s| Season::parse(s).map_err(|e| self.err(FIELD, s, ErrorKind::Date(e))))
@@ -846,6 +907,8 @@ struct Own<'n> {
     pii: Option<&'n str>,
     pmc: Option<&'n str>,
     mid: Option<&'n str>,
+    medline: Option<&'n str>,
+    sici: Option<&'n str>,
 }
 
 impl<'n> Own<'n> {
@@ -857,19 +920,22 @@ impl<'n> Own<'n> {
             IdType::Pii => &mut self.pii,
             IdType::Pmc => &mut self.pmc,
             IdType::Mid => {
-                let digits = ["NIHMS", "EMS"]
-                    .iter()
-                    .find_map(|prefix| id.value.strip_prefix(prefix))
-                    .unwrap_or("");
-                if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+                // A manuscript system's letters, then digits: NIHMS, EMS,
+                // UKMS, CAMS and HALMS seen (2026-09-15).
+                let letters = id.value.bytes().take_while(u8::is_ascii_uppercase).count();
+                let digits = &id.value[letters..];
+                if letters == 0 || digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit())
+                {
                     return Err(ctx.err(
                         FIELD,
                         &id.value,
-                        ErrorKind::Unmodelled("a mid that is not NIHMS or EMS followed by digits"),
+                        ErrorKind::Unmodelled("a mid that is not uppercase letters then digits"),
                     ));
                 }
                 &mut self.mid
             }
+            IdType::Medline => &mut self.medline,
+            IdType::Sici => &mut self.sici,
             _ => {
                 return Err(ctx.err(
                     FIELD,
@@ -918,34 +984,27 @@ fn identifiers<'n>(
         })
         .transpose()?;
 
-    let (mut elocation_doi, mut elocation_pii) = (None, None);
+    let (mut elocation_doi, mut elocation_pii) = (Few::new(), Few::new());
     for e in &article.medline_citation.article.elocation_ids {
         const FIELD: &str = "ELocationID";
         if e.valid == YesNo::No {
             return Err(ctx.err(FIELD, &e.value, ErrorKind::Unmodelled("ValidYN=\"N\"")));
         }
-        let taken = match e.eid_type {
-            EIdType::Doi => elocation_doi
-                .replace(Claim::from_parse(&e.value, Doi::parse(&e.value)))
-                .is_some(),
-            EIdType::Pii => elocation_pii.replace(&*e.value).is_some(),
-        };
-        if taken {
-            return Err(ctx.err(
-                FIELD,
-                &e.value,
-                ErrorKind::Inconsistent("more than one ELocationID of one type"),
-            ));
+        match e.eid_type {
+            EIdType::Doi => elocation_doi.push(Claim::from_parse(&e.value, Doi::parse(&e.value))),
+            EIdType::Pii => elocation_pii.push(&*e.value),
         }
     }
-    if let (Some(Claim::Valid(a)), Some(Claim::Valid(b))) = (&doi, &elocation_doi)
-        && a != b
-    {
-        return Err(ctx.err(
-            "ELocationID[doi]",
-            b.as_str(),
-            ErrorKind::Inconsistent("differs from the valid ArticleId doi"),
-        ));
+    if let Some(Claim::Valid(a)) = &doi {
+        for b in elocation_doi.iter().filter_map(Claim::valid) {
+            if a != b {
+                return Err(ctx.err(
+                    "ELocationID[doi]",
+                    b.as_str(),
+                    ErrorKind::Inconsistent("differs from the valid ArticleId doi"),
+                ));
+            }
+        }
     }
     Ok(Identifiers {
         doi,
@@ -954,6 +1013,8 @@ fn identifiers<'n>(
         mid: own.mid,
         elocation_pii,
         pmc,
+        medline: own.medline,
+        sici: own.sici,
     })
 }
 
@@ -1027,16 +1088,8 @@ fn journal<'n>(c: &'n MedlineCitation<'_>) -> Journal<'n> {
 /// DTD content the file has never contained: an error on first sight.
 fn unmodelled(ctx: &Ctx, article: &PubmedArticle<'_>) -> Result<(), Error> {
     let c = &article.medline_citation;
-    let checks: [(&'static str, bool); 7] = [
-        ("GeneSymbolList", !c.gene_symbols.is_empty()),
-        (
-            "PersonalNameSubjectList",
-            !c.personal_name_subjects.is_empty(),
-        ),
-        ("OtherID", !c.other_ids.is_empty()),
+    let checks: [(&'static str, bool); 2] = [
         ("SpaceFlightMission", !c.space_flight_missions.is_empty()),
-        ("GeneralNote", !c.general_notes.is_empty()),
-        ("NumberOfReferences", c.number_of_references.is_some()),
         (
             "ObjectList",
             article
@@ -1091,7 +1144,7 @@ pub fn normalize<'n, K: Sink<'n, Pubmed>>(
         .map(|o| {
             Ok(OtherAbstract {
                 kind: o.r#type,
-                language: ctx.lang("OtherAbstract@Language", &o.language)?,
+                language: Claim::from_parse(&o.language, Lang::from_bibliographic(&o.language)),
                 sections: Ctx::sections(&o.texts),
                 copyright: o.copyright_information.as_deref(),
             })
@@ -1292,6 +1345,45 @@ pub fn normalize<'n, K: Sink<'n, Pubmed>>(
         grants,
         data_banks,
         coi_statement: c.coi_statement.map(RawXml::as_str),
+        number_of_references: c
+            .number_of_references
+            .as_deref()
+            .map(|n| {
+                // Digits, zero allowed (2 of 15,432 say 0).
+                if n.is_empty() || !n.bytes().all(|b| b.is_ascii_digit()) {
+                    return Err(ctx.err(
+                        "NumberOfReferences",
+                        n,
+                        ErrorKind::Unmodelled("a count that is not digits"),
+                    ));
+                }
+                n.parse::<u32>().map_err(|_| {
+                    ctx.err(
+                        "NumberOfReferences",
+                        n,
+                        ErrorKind::Unmodelled("a count past u32"),
+                    )
+                })
+            })
+            .transpose()?,
+        gene_symbols: c.gene_symbols.iter().map(|g| &**g).collect(),
+        personal_name_subjects: c.personal_name_subjects.iter().map(Ctx::person).collect(),
+        other_ids: c
+            .other_ids
+            .iter()
+            .map(|o| OtherId {
+                source: o.source,
+                value: &o.value,
+            })
+            .collect(),
+        general_notes: c
+            .general_notes
+            .iter()
+            .map(|n| GeneralNote {
+                owner: n.owner,
+                text: &n.value,
+            })
+            .collect(),
         citation_subsets: c.citation_subsets.iter().map(|s| &**s).collect(),
         history,
         publication_status,
@@ -1342,8 +1434,18 @@ fn references<'n, K: Sink<'n, Pubmed>>(
                     IdType::Doi => doi
                         .replace(Claim::from_parse(&id.value, Doi::parse(&id.value)))
                         .is_some(),
+                    // The 2026 baseline files write `pmcid` with bare
+                    // digits; 295,126 reference ids looked up from older
+                    // records (2026-09-15) write `pmc` with the prefix,
+                    // as a record's own id does.
                     IdType::Pmcid => pmc
                         .replace(Claim::from_parse(&id.value, PmcId::from_digits(&id.value)))
+                        .is_some(),
+                    IdType::Pmc => pmc
+                        .replace(Claim::from_parse(
+                            &id.value,
+                            PmcId::from_prefixed(&id.value),
+                        ))
                         .is_some(),
                     _ => {
                         return Err(ctx.err(

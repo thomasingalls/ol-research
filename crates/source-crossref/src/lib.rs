@@ -36,6 +36,26 @@ pub use record::Work;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Crossref;
 
+impl ingest::Keys for Crossref {
+    fn work_keys(work: &normalize::Work<'_>, key: ingest::Key, out: &mut dyn FnMut(String)) {
+        if key == ingest::Key::Doi {
+            out(work.doi.as_str().to_owned());
+        }
+    }
+
+    fn reference_keys(
+        reference: &normalize::Reference<'_>,
+        key: ingest::Key,
+        out: &mut dyn FnMut(String),
+    ) {
+        if key == ingest::Key::Doi
+            && let Some(doi) = reference.doi.as_ref().and_then(model::Claim::valid)
+        {
+            out(doi.as_str().to_owned());
+        }
+    }
+}
+
 impl ingest::Source for Crossref {
     const NAME: &'static str = "crossref";
     type Native<'a> = Work<'a>;

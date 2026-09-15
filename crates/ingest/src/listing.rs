@@ -19,6 +19,10 @@ pub enum Kind {
     Https,
     /// A torrent; `fetch` refuses it and says what to run.
     Torrent,
+    /// One request of a lookup: an API page answering a batch of ids
+    /// (plan §8, item 8). `fetch` paces it, keeps the page whole, and
+    /// never resumes it.
+    Lookup,
 }
 
 /// One file the source offers, with what the source claims about it.
@@ -34,7 +38,8 @@ pub struct Entry {
     /// Its size, when the source says.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bytes: Option<u64>,
-    /// Its record count, when the source says (OpenAlex does).
+    /// Its record count, when the source says (OpenAlex does); for a
+    /// lookup, how many ids the request asks for.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub records: Option<u64>,
     /// A sidecar holding its MD5, when the source publishes one (NCBI).
@@ -79,6 +84,12 @@ impl Entry {
         match self.kind {
             Kind::Https if !self.url.starts_with("https://") => {
                 return Err(bad("an https entry must have an https:// url"));
+            }
+            Kind::Lookup if !self.url.starts_with("https://") => {
+                return Err(bad("a lookup entry must have an https:// url"));
+            }
+            Kind::Lookup if self.records.is_none() => {
+                return Err(bad("a lookup entry must say how many ids it asks for"));
             }
             Kind::Torrent
                 if !self.url.starts_with("https://") && !self.url.starts_with("magnet:") =>

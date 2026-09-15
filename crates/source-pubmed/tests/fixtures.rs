@@ -118,6 +118,23 @@ fn every_fixture_round_trips_through_clone_and_eq() {
         "collective_name",
         "refs_pmcid_corrections",
         "mathml_refs_mesh",
+        "nihms_mid",
+        "ref_pmc_id",
+        "number_of_references",
+        "season_month_range",
+        "season_slash",
+        "season_autumn",
+        "two_piis",
+        "two_dois",
+        "other_id",
+        "medline_id",
+        "gene_symbols",
+        "mid_cams",
+        "other_abstract_lang_sp",
+        "personal_name_subject",
+        "sici",
+        "general_note",
+        "zero_references",
     ] {
         let input = fixture(name);
         let a = only_article(&input);
@@ -274,7 +291,7 @@ mod normalized {
         let doi = c.ids.doi.as_ref().unwrap().valid().unwrap();
         assert_eq!(doi.as_str(), "10.1001/jama.2025.15703");
         assert!(doi.is_borrowed());
-        assert_eq!(c.ids.elocation_doi.as_ref().unwrap().valid(), Some(doi));
+        assert_eq!(c.ids.elocation_doi[0].valid(), Some(doi));
         assert_eq!(c.ids.pii, Some("2844550"));
         assert_eq!(c.ids.pmc, None);
         assert!(
@@ -411,13 +428,15 @@ mod normalized {
 
     #[test]
     fn unmodelled_content_fails_on_first_sight() {
+        // GeneSymbolList was the example until the looked-up records of
+        // 2026-09-15 modelled it; SpaceFlightMission is still unseen.
         let input = fixture("shortest").replace(
             "<CitationSubset>IM</CitationSubset>",
-            "<CitationSubset>IM</CitationSubset><GeneSymbolList><GeneSymbol>BRCA1</GeneSymbol></GeneSymbolList>",
+            "<CitationSubset>IM</CitationSubset><SpaceFlightMission>Apollo 11</SpaceFlightMission>",
         );
         let article = only_article(&input);
         let err = normalize(&article, &mut Collect::default()).unwrap_err();
-        assert_eq!(err.field, "GeneSymbolList", "{err}");
+        assert_eq!(err.field, "SpaceFlightMission", "{err}");
         let input = fixture("shortest").replace(
             "<Minute>36</Minute>",
             "<Minute>36</Minute><Second>1</Second>",

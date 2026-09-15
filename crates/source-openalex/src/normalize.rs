@@ -14,12 +14,14 @@
 //! Fields the census showed to be derivable from others are checked and
 //! not stored: `ids.openalex`, `ids.doi`, `display_name`,
 //! `publication_year`, `authors_count`, `corresponding_author_ids`,
-//! `corresponding_institution_ids`, `countries_distinct_count`,
-//! `institutions_distinct_count`, `locations_count`, `primary_location`,
+//! `corresponding_institution_ids`, `countries_distinct_count` and
+//! `institutions_distinct_count` (those four kept when they disagree, see
+//! [`Work::corresponding_institutions`]), `locations_count`,
+//! `content_urls` (API pages only), `primary_location`,
 //! `best_oa_location` (always the first open location), `primary_topic`,
 //! `open_access.is_oa`, `license_id`, `is_accepted`, `is_published`,
-//! `is_paratext`, `referenced_works_count`, each award's
-//! `funder_display_name` and each source's `host_organization`. A record
+//! `is_paratext`, `referenced_works_count` and each award's
+//! `funder_display_name`. A record
 //! that breaks one of those stops the run with its id, the field and the
 //! raw text.
 //!
@@ -63,6 +65,10 @@ pub type DoiClaim<'n> = Claim<'n, Doi<'n>, DoiError>;
 pub type IssnClaim<'n> = Claim<'n, Issn, IssnError>;
 /// A language code as the source asserted it.
 pub type LangClaim<'n> = Claim<'n, Lang, LangError>;
+/// An ORCID as the source wrote it, or why it is not one: `https://orcid.org/`
+/// with nothing after it, on one author of 34,811 looked-up works
+/// (2026-09-15).
+pub type OrcidClaim<'n> = Claim<'n, Orcid, OrcidError>;
 
 const KEYWORD_PREFIX: &str = "https://openalex.org/keywords/";
 const SUBFIELD_PREFIX: &str = "https://openalex.org/subfields/";
@@ -105,6 +111,27 @@ pub struct Work<'n> {
     #[allow(missing_docs)]
     #[serde(borrow)]
     pub authorships: Few<Authorship<'n>, 8>,
+    /// `corresponding_institution_ids` as the source wrote it, kept only
+    /// when it is not what the corresponding authorships' institutions
+    /// say. The snapshot census found it derivable on every work; the API
+    /// (2026-09) listed one on a work with no corresponding author
+    /// (W7125527140). So the disagreement is visible, neither dropped nor
+    /// fatal; `None` is the consistent case.
+    pub corresponding_institutions: Option<Few<InstitutionId, 2>>,
+    /// `institutions_distinct_count` as the source wrote it, kept only
+    /// when it is not the count of distinct institutions across the
+    /// authorships (47 of 34,811 looked-up works, 2026-09-15); `None` is
+    /// the consistent case.
+    pub institutions_distinct_count: Option<u32>,
+    /// `corresponding_author_ids` as the source wrote it, kept only when
+    /// it is not the distinct corresponding authors of the authorships (7
+    /// of 34,811 looked-up works, 2026-09-15); `None` is the consistent
+    /// case.
+    pub corresponding_authors: Option<Few<AuthorId, 2>>,
+    /// `countries_distinct_count` as the source wrote it, kept only when
+    /// it is not the count of distinct countries across the authorships'
+    /// institutions (5 of 34,811); `None` is the consistent case.
+    pub countries_distinct_count: Option<u32>,
     /// `apc_list`.
     pub apc_list: Option<Apc>,
     /// `apc_paid`.
@@ -239,7 +266,8 @@ pub struct Author<'n> {
     #[allow(missing_docs)]
     pub name: &'n str,
     #[allow(missing_docs)]
-    pub orcid: Option<Orcid>,
+    #[serde(borrow)]
+    pub orcid: Option<OrcidClaim<'n>>,
 }
 
 /// A resolved institution.
@@ -379,9 +407,10 @@ pub struct Qualifier<'n> {
 /// A location: one copy of the work somewhere.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Location<'n> {
-    #[allow(missing_docs)]
+    /// `None` when the source gave no id (one location of 39,000 looked-up
+    /// works, 2026-09-15).
     #[serde(borrow)]
-    pub id: LocationId<'n>,
+    pub id: Option<LocationId<'n>>,
     #[allow(missing_docs)]
     pub is_oa: bool,
     #[allow(missing_docs)]
@@ -403,23 +432,29 @@ pub struct Location<'n> {
     /// Sometimes the empty string.
     #[serde(borrow)]
     pub raw_source_name: Option<Interned<'n>>,
-    #[allow(missing_docs)]
-    pub provenance: Provenance,
+    /// As the snapshot says it; `None` from the API, which says the
+    /// namespace in the id instead (see [`LocationId`]) and leaves
+    /// `doi:` between Crossref and DataCite. Not inferred: the id's type
+    /// carries what the source said.
+    pub provenance: Option<Provenance>,
 }
 
-/// A location's `id`, whose form is its `provenance`'s. None of the three
-/// typed forms is necessarily this work's own identifier: merged duplicates
-/// keep their MAG id, PMID or DOI.
+/// A location's `id`, typed by what the source said about it: the
+/// snapshot's `provenance` with a bare id, or the API's namespace prefix
+/// (`doi:`, `pmid:`, `pmh:`) with the prefix stripped, so the two
+/// serializers yield the same value for the same location. None of the
+/// three typed forms is necessarily this work's own identifier: merged
+/// duplicates keep their MAG id, PMID or DOI.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LocationId<'n> {
-    /// `provenance: mag`.
+    /// `provenance: mag` (snapshot only).
     Mag(NonZeroU32),
-    /// `provenance: pubmed`.
+    /// `provenance: pubmed`, or `pmid:…`.
     Pmid(Pmid),
-    /// `provenance: crossref` or `datacite`, a bare DOI.
+    /// `provenance: crossref` or `datacite`, or `doi:…`: a bare DOI.
     Doi(#[serde(borrow)] Doi<'n>),
-    /// `provenance: repo`: `doi:…`, `oai:…`, digits, or the repository's
-    /// own string.
+    /// `provenance: repo`, or `pmh:…`: `doi:…`, `oai:…`, digits, or the
+    /// repository's own string.
     Repo(&'n str),
 }
 
@@ -431,8 +466,10 @@ pub struct Source<'n> {
     #[allow(missing_docs)]
     #[serde(borrow)]
     pub name: Interned<'n>,
-    /// The linking ISSN, always among `issns` when present.
-    pub issn_l: Option<Issn>,
+    /// The linking ISSN, among `issns` whenever valid; four of 34,811
+    /// looked-up works had one with a wrong check digit (2026-09-15).
+    #[serde(borrow)]
+    pub issn_l: Option<IssnClaim<'n>>,
     /// `issn`, null and `[]` both meaning none; four in the sample had a
     /// wrong check digit.
     #[serde(borrow)]
@@ -443,7 +480,11 @@ pub struct Source<'n> {
     pub is_in_doaj: bool,
     #[allow(missing_docs)]
     pub is_core: bool,
-    /// The host organization is the first of the lineage.
+    /// `host_organization`: the first of the lineage on every snapshot
+    /// source, and null beside a lineage of one on 53 looked-up sources
+    /// (2026-09-15), so it is kept rather than derived.
+    pub host_organization: Option<HostOrganization>,
+    #[allow(missing_docs)]
     pub host_organization_lineage: Few<HostOrganization, 2>,
     #[allow(missing_docs)]
     #[serde(borrow)]
@@ -636,7 +677,7 @@ fn language(code: &str) -> Result<Lang, LangError> {
 /// from the same record: an inline list is invariant in its lifetime, so
 /// the two must be spelled with one.
 fn best_matches<'a>(b: &BestOaLocation<'a>, l: &record::Location<'a>) -> bool {
-    b.id.as_deref() == Some(&*l.id)
+    b.id.as_deref() == l.id.as_deref()
         && b.is_oa == Some(l.is_oa)
         && b.landing_page_url == l.landing_page_url
         && b.pdf_url == l.pdf_url
@@ -645,10 +686,13 @@ fn best_matches<'a>(b: &BestOaLocation<'a>, l: &record::Location<'a>) -> bool {
         && b.license_id == l.license_id
         && b.version == l.version
         && b.is_accepted == Some(l.is_accepted)
-        && b.is_published == l.is_published
+        // The API's best copy writes `false` where the location writes
+        // null for a copy without a version (25 of 9,986 works looked up
+        // by PMID, 2026-09-15); both mean not published.
+        && b.is_published.unwrap_or(false) == l.is_published.unwrap_or(false)
         && b.raw_type == l.raw_type
         && b.raw_source_name == l.raw_source_name
-        && b.provenance == Some(l.provenance)
+        && b.provenance == l.provenance
 }
 
 /// True when `best_oa_location` is the object of nulls.
@@ -725,7 +769,11 @@ impl Ctx {
     }
 
     fn stamp(&self, field: &'static str, s: &str) -> Result<DateTime, Error> {
-        DateTime::parse_utc_millis(s).map_err(|e| self.err(field, s, ErrorKind::Date(e)))
+        // The snapshot writes `…ss.fffZ`; the API (2026-09) writes no zone
+        // and a fraction of none or six digits.
+        DateTime::parse_utc_millis(s)
+            .or_else(|_| DateTime::parse_utc_naive(s))
+            .map_err(|e| self.err(field, s, ErrorKind::Date(e)))
     }
 
     fn orcid(&self, field: &'static str, s: &str) -> Result<Orcid, Error> {
@@ -806,8 +854,7 @@ impl Ctx {
                 .author
                 .orcid
                 .as_deref()
-                .map(|o| self.orcid("author.orcid", o))
-                .transpose()?,
+                .map(|o| Claim::from_parse(o, Orcid::from_https_url(o))),
         };
         let countries: Few<CountryCode, 2> = a
             .countries
@@ -864,16 +911,15 @@ impl Ctx {
         let issn_l = s
             .issn_l
             .as_deref()
-            .map(|x| Issn::parse(x).map_err(|e| self.err("source.issn_l", x, ErrorKind::Issn(e))))
-            .transpose()?;
+            .map(|x| Claim::from_parse(x, Issn::parse(x)));
         let issns: Few<IssnClaim<'n>, 2> = s
             .issn
             .iter()
             .flatten()
             .map(|x| Claim::from_parse(x, Issn::parse(x)))
             .collect();
-        if let Some(l) = issn_l
-            && !issns.iter().any(|c| c.valid() == Some(&l))
+        if let Some(Claim::Valid(l)) = &issn_l
+            && !issns.iter().any(|c| c.valid() == Some(l))
         {
             return Err(self.inconsistent(
                 "source.issn_l",
@@ -889,13 +935,14 @@ impl Ctx {
                     .map_err(|e| self.err("source.host_organization_lineage", h, ErrorKind::Id(e)))
             })
             .collect::<Result<_, _>>()?;
-        if s.host_organization.as_deref() != s.host_organization_lineage.first().map(|t| &**t) {
-            return Err(self.inconsistent(
-                "source.host_organization",
-                s.host_organization.as_deref().unwrap_or(""),
-                "host_organization is not the first of its lineage",
-            ));
-        }
+        let host_organization = s
+            .host_organization
+            .as_deref()
+            .map(|h| {
+                HostOrganization::from_url(h)
+                    .map_err(|e| self.err("source.host_organization", h, ErrorKind::Id(e)))
+            })
+            .transpose()?;
         Ok(Source {
             id: self.entity("source.id", &s.id)?,
             name: Interned::Text(&s.display_name),
@@ -904,6 +951,7 @@ impl Ctx {
             is_oa: s.is_oa,
             is_in_doaj: s.is_in_doaj,
             is_core: s.is_core,
+            host_organization,
             host_organization_lineage: lineage,
             host_organization_name: s.host_organization_name.as_deref().map(Interned::Text),
             host_organization_lineage_names: interned(&s.host_organization_lineage_names),
@@ -912,27 +960,31 @@ impl Ctx {
     }
 
     fn location<'n>(&self, l: &'n record::Location<'_>) -> Result<Location<'n>, Error> {
-        let id = match l.provenance {
-            Provenance::Mag => strict_u32(&l.id)
-                .ok()
-                .and_then(NonZeroU32::new)
-                .map(LocationId::Mag)
-                .ok_or_else(|| {
-                    self.err(
-                        "locations.id",
-                        &l.id,
-                        ErrorKind::Id(strict_u32(&l.id).err().unwrap_or(ParseError::Zero)),
-                    )
-                })?,
-            Provenance::Pubmed => LocationId::Pmid(
-                Pmid::from_digits(&l.id)
-                    .map_err(|e| self.err("locations.id", &l.id, ErrorKind::Id(e)))?,
-            ),
-            Provenance::Crossref | Provenance::Datacite => LocationId::Doi(
-                Doi::parse(&l.id)
-                    .map_err(|e| self.err("locations.id", &l.id, ErrorKind::Doi(e)))?,
-            ),
-            Provenance::Repo => LocationId::Repo(&l.id),
+        let id = match l.id.as_deref() {
+            None => None,
+            Some(raw) => Some(match l.provenance {
+                None => self.namespaced_location_id(raw)?,
+                Some(Provenance::Mag) => strict_u32(raw)
+                    .ok()
+                    .and_then(NonZeroU32::new)
+                    .map(LocationId::Mag)
+                    .ok_or_else(|| {
+                        self.err(
+                            "locations.id",
+                            raw,
+                            ErrorKind::Id(strict_u32(raw).err().unwrap_or(ParseError::Zero)),
+                        )
+                    })?,
+                Some(Provenance::Pubmed) => LocationId::Pmid(
+                    Pmid::from_digits(raw)
+                        .map_err(|e| self.err("locations.id", raw, ErrorKind::Id(e)))?,
+                ),
+                Some(Provenance::Crossref | Provenance::Datacite) => LocationId::Doi(
+                    Doi::parse(raw)
+                        .map_err(|e| self.err("locations.id", raw, ErrorKind::Doi(e)))?,
+                ),
+                Some(Provenance::Repo) => LocationId::Repo(raw),
+            }),
         };
         match (l.license, l.license_id.as_deref()) {
             (None, None) => {}
@@ -972,6 +1024,40 @@ impl Ctx {
             raw_source_name: l.raw_source_name.as_deref().map(Interned::Text),
             provenance: l.provenance,
         })
+    }
+
+    /// A location id in the API's form, `<namespace>:<id>`, typed by the
+    /// namespace — what the snapshot says with `provenance`.
+    fn namespaced_location_id<'n>(&self, id: &'n str) -> Result<LocationId<'n>, Error> {
+        if let Some(doi) = id.strip_prefix("doi:") {
+            Doi::parse(doi)
+                .map(LocationId::Doi)
+                .map_err(|e| self.err("locations.id", id, ErrorKind::Doi(e)))
+        } else if let Some(pmid) = id.strip_prefix("pmid:") {
+            Pmid::from_digits(pmid)
+                .map(LocationId::Pmid)
+                .map_err(|e| self.err("locations.id", id, ErrorKind::Id(e)))
+        } else if let Some(repo) = id.strip_prefix("pmh:") {
+            Ok(LocationId::Repo(repo))
+        } else if let Some(mag) = id.strip_prefix("mag:") {
+            strict_u32(mag)
+                .ok()
+                .and_then(NonZeroU32::new)
+                .map(LocationId::Mag)
+                .ok_or_else(|| {
+                    self.err(
+                        "locations.id",
+                        id,
+                        ErrorKind::Id(strict_u32(mag).err().unwrap_or(ParseError::Zero)),
+                    )
+                })
+        } else {
+            Err(self.err(
+                "locations.id",
+                id,
+                ErrorKind::Unmodelled("a location id namespace"),
+            ))
+        }
     }
 
     fn topic<'n>(&self, t: &'n record::Topic<'_>) -> Result<Topic<'n>, Error> {
@@ -1129,12 +1215,31 @@ pub fn normalize<'n, K: Sink<'n, OpenAlex>>(w: &'n Native<'_>, emit: &mut K) -> 
             ErrorKind::Unmodelled("a top-level institutions entry"),
         ));
     }
+    // The API's content_urls is has_content spelled as URLs of the id:
+    // each URL present exactly when its flag is.
+    if let Some(urls) = &w.content_urls {
+        let expected = |present: bool, suffix: &str| {
+            present.then(|| format!("https://content.openalex.org/works/{id}.{suffix}"))
+        };
+        if urls.pdf.as_deref() != expected(w.has_content.pdf, "pdf").as_deref()
+            || urls.grobid_xml.as_deref()
+                != expected(w.has_content.grobid_xml, "grobid-xml").as_deref()
+        {
+            return Err(ctx.inconsistent(
+                "content_urls",
+                urls.pdf.as_deref().unwrap_or(""),
+                "does not spell has_content for this id",
+            ));
+        }
+    }
 
     // Authorships, and the five fields derived from them.
-    if usize::try_from(w.authors_count).ok() != Some(w.authorships.len()) {
+    if let Some(n) = w.authors_count
+        && usize::try_from(n).ok() != Some(w.authorships.len())
+    {
         return Err(ctx.inconsistent(
             "authors_count",
-            &w.authors_count.to_string(),
+            &n.to_string(),
             "differs from the authorships array",
         ));
     }
@@ -1148,25 +1253,33 @@ pub fn normalize<'n, K: Sink<'n, OpenAlex>>(w: &'n Native<'_>, emit: &mut K) -> 
         .iter()
         .filter(|a| a.is_corresponding)
         .filter_map(|a| a.author.id.as_deref());
-    let mut n = 0;
+    // Distinct: an author listed twice among the authorships (W7125416815)
+    // is one corresponding author.
+    let mut seen_corresponding: Few<&str, 4> = Few::new();
+    let mut corresponding_disagree = false;
     for aid in corresponding {
-        n += 1;
+        if seen_corresponding.contains(&aid) {
+            continue;
+        }
+        seen_corresponding.push(aid);
         if !w.corresponding_author_ids.iter().any(|c| **c == *aid) {
-            return Err(ctx.inconsistent(
-                "corresponding_author_ids",
-                aid,
-                "a corresponding author is missing from it",
-            ));
+            corresponding_disagree = true;
         }
     }
-    if n != w.corresponding_author_ids.len() {
-        return Err(ctx.inconsistent(
-            "corresponding_author_ids",
-            &w.corresponding_author_ids.len().to_string(),
-            "differs from the corresponding authorships",
-        ));
-    }
+    // Kept when it disagrees, like corresponding_institutions.
+    let corresponding_authors =
+        if corresponding_disagree || seen_corresponding.len() != w.corresponding_author_ids.len() {
+            Some(
+                w.corresponding_author_ids
+                    .iter()
+                    .map(|id| ctx.entity("corresponding_author_ids", id))
+                    .collect::<Result<_, _>>()?,
+            )
+        } else {
+            None
+        };
     let mut distinct_corresponding_institutions = 0;
+    let mut corresponding_disagree = false;
     let mut distinct_institutions = 0;
     let mut distinct_countries = 0;
     for (ai, a) in w.authorships.iter().enumerate() {
@@ -1186,11 +1299,7 @@ pub fn normalize<'n, K: Sink<'n, OpenAlex>>(w: &'n Native<'_>, emit: &mut K) -> 
             }
             if a.is_corresponding {
                 if !w.corresponding_institution_ids.contains(&i.id) {
-                    return Err(ctx.inconsistent(
-                        "corresponding_institution_ids",
-                        &i.id,
-                        "a corresponding author's institution is missing from it",
-                    ));
+                    corresponding_disagree = true;
                 }
                 if !seen(&|b| b.is_corresponding) {
                     distinct_corresponding_institutions += 1;
@@ -1208,27 +1317,27 @@ pub fn normalize<'n, K: Sink<'n, OpenAlex>>(w: &'n Native<'_>, emit: &mut K) -> 
             }
         }
     }
-    if distinct_corresponding_institutions != w.corresponding_institution_ids.len() {
-        return Err(ctx.inconsistent(
-            "corresponding_institution_ids",
-            &w.corresponding_institution_ids.len().to_string(),
-            "differs from the corresponding authorships' institutions",
-        ));
-    }
-    if usize::try_from(w.institutions_distinct_count).ok() != Some(distinct_institutions) {
-        return Err(ctx.inconsistent(
-            "institutions_distinct_count",
-            &w.institutions_distinct_count.to_string(),
-            "differs from the distinct institutions",
-        ));
-    }
-    if usize::try_from(w.countries_distinct_count).ok() != Some(distinct_countries) {
-        return Err(ctx.inconsistent(
-            "countries_distinct_count",
-            &w.countries_distinct_count.to_string(),
-            "differs from the institutions' distinct countries",
-        ));
-    }
+    let corresponding_institutions = if corresponding_disagree
+        || distinct_corresponding_institutions != w.corresponding_institution_ids.len()
+    {
+        Some(
+            w.corresponding_institution_ids
+                .iter()
+                .map(|id| ctx.entity("corresponding_institution_ids", id))
+                .collect::<Result<_, _>>()?,
+        )
+    } else {
+        None
+    };
+    // Kept when it disagrees, like corresponding_institutions: 47 of
+    // 34,811 looked-up works (2026-09-15) count what no authorship shows.
+    let institutions_distinct_count = (usize::try_from(w.institutions_distinct_count).ok()
+        != Some(distinct_institutions))
+    .then_some(w.institutions_distinct_count);
+    // Kept when it disagrees, as the two above.
+    let countries_distinct_count = (usize::try_from(w.countries_distinct_count).ok()
+        != Some(distinct_countries))
+    .then_some(w.countries_distinct_count);
 
     // Locations, open access, and the fields derived from them.
     if usize::try_from(w.locations_count).ok() != Some(w.locations.len()) {
@@ -1241,7 +1350,7 @@ pub fn normalize<'n, K: Sink<'n, OpenAlex>>(w: &'n Native<'_>, emit: &mut K) -> 
     if w.locations.first() != Some(&w.primary_location) {
         return Err(ctx.inconsistent(
             "primary_location",
-            &w.primary_location.id,
+            w.primary_location.id.as_deref().unwrap_or(""),
             "is not locations[0]",
         ));
     }
@@ -1251,14 +1360,19 @@ pub fn normalize<'n, K: Sink<'n, OpenAlex>>(w: &'n Native<'_>, emit: &mut K) -> 
         .map(|l| ctx.location(l))
         .collect::<Result<_, _>>()?;
     let first_oa = w.locations.iter().find(|l| l.is_oa);
-    let best_ok = match first_oa {
-        Some(l) => best_matches(&w.best_oa_location, l),
-        None => best_is_null(&w.best_oa_location),
+    let best_ok = match (first_oa, &w.best_oa_location) {
+        (Some(l), Some(b)) => best_matches(b, l),
+        (None, Some(b)) => best_is_null(b),
+        (None, None) => true,
+        (Some(_), None) => false,
     };
     if !best_ok {
         return Err(ctx.inconsistent(
             "best_oa_location",
-            w.best_oa_location.id.as_deref().unwrap_or(""),
+            w.best_oa_location
+                .as_ref()
+                .and_then(|b| b.id.as_deref())
+                .unwrap_or(""),
             "is not the first open location",
         ));
     }
@@ -1441,6 +1555,10 @@ pub fn normalize<'n, K: Sink<'n, OpenAlex>>(w: &'n Native<'_>, emit: &mut K) -> 
             any_repository_has_fulltext: oa.any_repository_has_fulltext,
         },
         authorships,
+        corresponding_institutions,
+        institutions_distinct_count,
+        corresponding_authors,
+        countries_distinct_count,
         apc_list: w
             .apc_list
             .as_ref()

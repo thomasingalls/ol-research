@@ -14,12 +14,21 @@
 //!   with the model version.
 //! * `<source> dump <file.zst>... [--limit N]` prints a normalized file as
 //!   JSON lines, for eyes.
+//! * `<source> keys <set.zst>... --by <doi|pmid|openalex> [--limit N]`
+//!   prints the identifiers a normalized set holds — a work's own, or
+//!   those its references point at — one per line, distinct: the seed of
+//!   a lookup listing (plan §8, item 8).
 //! * `<source> list [--store <root>]` writes what the source offers now as
 //!   a listing under the store (plan §3.5), with the index document it was
-//!   read from beside it.
+//!   read from beside it. With `--seed <file> --by <key>` it writes a
+//!   lookup listing instead: the API requests answering a seed of ids, a
+//!   batch per request, the seed kept beside the listing.
 //! * `<source> fetch <listing> [--store <root>] [--workers N] [--limit N]`
 //!   brings in every entry of the listing that has no receipt yet,
-//!   verified, and appends a receipt per file.
+//!   verified, and appends a receipt per file. Lookups go one request at
+//!   a time at the source's own pace, wait once for what a 429 asks, and
+//!   stop at anything else; `--mailto` reaches the API as the source's
+//!   contact parameter.
 //! * `<source> ingest <listing> [--store <root>] [--workers N] [--limit N]
 //!   [--out <dir>]` does the same while normalizing, each download
 //!   streamed straight through the framer on its own worker; the output
@@ -43,7 +52,7 @@
 //! one record" command the failure report promises (plan §6). A failed run
 //! leaves no output: partial files are removed.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fmt::Display;
 use std::io::{self, BufRead, Write};
 use std::num::NonZeroUsize;
@@ -52,7 +61,9 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use ingest::list::Lister;
-use ingest::{Binary, Client, Failure, Kind, Reader, Sink, Source, Stage, Store, Written};
+use ingest::{
+    Binary, Client, Failure, Key, Keys, Kind, Reader, Sink, Source, Stage, Store, Written,
+};
 use model::{Claim, Doi, OpenAlexId, ParseError, Pmid};
 use source_crossref::Crossref;
 use source_openalex::OpenAlex;
@@ -69,7 +80,8 @@ const USAGE: &str = "usage:
   ol-rht <pubmed|crossref|openalex> check <file>... [--limit N] [--workers N]
   ol-rht <pubmed|crossref|openalex> normalize <file>... [--limit N] [--workers N] [--out <dir> | --survey]
   ol-rht <pubmed|crossref|openalex> dump <file.zst>... [--limit N]
-  ol-rht <pubmed|crossref|openalex> list [--store <root>] [--mailto <address>]
+  ol-rht <pubmed|crossref|openalex> keys <set.zst>... --by <doi|pmid|openalex> [--limit N]
+  ol-rht <pubmed|crossref|openalex> list [--store <root>] [--mailto <address>] [--seed <file> --by <doi|pmid|openalex>]
   ol-rht <pubmed|crossref|openalex> fetch <listing> [--store <root>] [--workers N] [--limit N] [--mailto <address>]
   ol-rht <pubmed|crossref|openalex> ingest <listing> [--store <root>] [--workers N] [--limit N] [--out <dir>] [--mailto <address>]";
 
@@ -107,18 +119,21 @@ fn main() -> ExitCode {
                 ("pubmed", "check") => check::<Pubmed>(&opts),
                 ("pubmed", "normalize") => normalize::<Pubmed, PubmedStats>(&opts),
                 ("pubmed", "dump") => dump::<Pubmed>(&opts),
+                ("pubmed", "keys") => keys::<Pubmed>(&opts),
                 ("pubmed", "list") => list::<Pubmed>(&opts),
                 ("pubmed", "fetch") => fetch::<Pubmed>(&opts),
                 ("pubmed", "ingest") => ingest::<Pubmed, PubmedStats>(&opts),
                 ("crossref", "check") => check::<Crossref>(&opts),
                 ("crossref", "normalize") => normalize::<Crossref, CrossrefStats>(&opts),
                 ("crossref", "dump") => dump::<Crossref>(&opts),
+                ("crossref", "keys") => keys::<Crossref>(&opts),
                 ("crossref", "list") => list::<Crossref>(&opts),
                 ("crossref", "fetch") => fetch::<Crossref>(&opts),
                 ("crossref", "ingest") => ingest::<Crossref, CrossrefStats>(&opts),
                 ("openalex", "check") => check::<OpenAlex>(&opts),
                 ("openalex", "normalize") => normalize::<OpenAlex, OpenAlexStats>(&opts),
                 ("openalex", "dump") => dump::<OpenAlex>(&opts),
+                ("openalex", "keys") => keys::<OpenAlex>(&opts),
                 ("openalex", "list") => list::<OpenAlex>(&opts),
                 ("openalex", "fetch") => fetch::<OpenAlex>(&opts),
                 ("openalex", "ingest") => ingest::<OpenAlex, OpenAlexStats>(&opts),
@@ -138,6 +153,8 @@ struct Options {
     store: Option<PathBuf>,
     mailto: Option<String>,
     survey: bool,
+    seed: Option<PathBuf>,
+    by: Option<Key>,
 }
 
 impl Options {
@@ -145,8 +162,8 @@ impl Options {
     /// appears. Paths may be absent (`list` takes none).
     fn parse(args: &[&str]) -> Option<Self> {
         let mut rest = args;
-        let (mut limit, mut workers, mut out, mut store, mut mailto) =
-            (None, None, None, None, None);
+        let (mut limit, mut workers, mut out, mut store, mut mailto, mut seed, mut by) =
+            (None, None, None, None, None, None, None);
         let mut survey = false;
         loop {
             match rest {
@@ -190,6 +207,18 @@ impl Options {
                     }
                     rest = before;
                 }
+                [before @ .., "--seed", p] => {
+                    if seed.replace(PathBuf::from(p)).is_some() {
+                        return None;
+                    }
+                    rest = before;
+                }
+                [before @ .., "--by", k] => {
+                    if by.replace(Key::parse(k)?).is_some() {
+                        return None;
+                    }
+                    rest = before;
+                }
                 _ => break,
             }
         }
@@ -204,6 +233,8 @@ impl Options {
             store,
             mailto,
             survey,
+            seed,
+            by,
         })
     }
 
@@ -228,7 +259,16 @@ impl Options {
 
     /// The options a reading command does not take.
     fn reads_only(&self) -> bool {
-        self.store.is_none() && self.mailto.is_none() && !self.paths.is_empty()
+        self.store.is_none()
+            && self.mailto.is_none()
+            && self.seed.is_none()
+            && !self.paths.is_empty()
+    }
+
+    /// For lookups: the contact parameter `--mailto` becomes for `S`.
+    fn contact<S: Lister>(&self) -> Option<String> {
+        let address = self.mailto.as_ref()?;
+        S::CONTACT.map(|param| format!("{param}={}", ingest::list::encode(address)))
     }
 
     /// The options a command that does not normalize does not take.
@@ -275,7 +315,7 @@ trait StatsReport: Default + Merge + Send {
 }
 
 fn check<S: Source>(opts: &Options) -> ExitCode {
-    if opts.out.is_some() || !opts.reads_only() || !opts.no_survey() {
+    if opts.out.is_some() || opts.by.is_some() || !opts.reads_only() || !opts.no_survey() {
         return usage();
     }
     match ingest::run::parse_parallel::<S, _>(&opts.paths, opts.limit, opts.workers()) {
@@ -293,7 +333,7 @@ where
     S: Source,
     K: StatsReport + for<'n> Sink<'n, S>,
 {
-    if !opts.reads_only() || (opts.survey && opts.out.is_some()) {
+    if !opts.reads_only() || opts.by.is_some() || (opts.survey && opts.out.is_some()) {
         return usage();
     }
     let prefixes: Option<Arc<[PathBuf]>> = match &opts.out {
@@ -391,7 +431,12 @@ where
 }
 
 fn dump<S: Source>(opts: &Options) -> ExitCode {
-    if opts.out.is_some() || opts.workers.is_some() || !opts.reads_only() || !opts.no_survey() {
+    if opts.out.is_some()
+        || opts.workers.is_some()
+        || opts.by.is_some()
+        || !opts.reads_only()
+        || !opts.no_survey()
+    {
         return usage();
     }
     let mut out = io::BufWriter::new(io::stdout().lock());
@@ -410,7 +455,8 @@ fn dump<S: Source>(opts: &Options) -> ExitCode {
     }
 }
 
-fn dump_one<S: Source>(path: &Path, limit: Option<u64>, out: &mut impl Write) -> io::Result<()> {
+/// A normalized set of `S` at this binary's model version, open.
+fn open_set<S: Source>(path: &Path) -> io::Result<Reader> {
     let reader = Reader::open(path)?;
     let header = reader.header();
     if header.source != S::NAME {
@@ -429,7 +475,17 @@ fn dump_one<S: Source>(path: &Path, limit: Option<u64>, out: &mut impl Write) ->
             ),
         ));
     }
-    let limit = limit.map_or(usize::MAX, |n| usize::try_from(n).unwrap_or(usize::MAX));
+    Ok(reader)
+}
+
+fn records_limit(limit: Option<u64>) -> usize {
+    limit.map_or(usize::MAX, |n| usize::try_from(n).unwrap_or(usize::MAX))
+}
+
+fn dump_one<S: Source>(path: &Path, limit: Option<u64>, out: &mut impl Write) -> io::Result<()> {
+    let reader = open_set::<S>(path)?;
+    let header = reader.header();
+    let limit = records_limit(limit);
     // Interned strings resolve through the set's table while it is installed.
     reader.with_table(|| match header.kind {
         Kind::Works => json_lines::<S::Work<'_>>(&reader, limit, out),
@@ -451,18 +507,121 @@ fn json_lines<'a, T: serde::Deserialize<'a> + serde::Serialize>(
     Ok(())
 }
 
+/// The `--by` keys of every set given, distinct, in first-seen order, one
+/// per line on stdout; non-zero when there are none, since an empty seed
+/// is a mistake.
+fn keys<S: Keys>(opts: &Options) -> ExitCode {
+    let Some(key) = opts.by else {
+        return usage();
+    };
+    if opts.out.is_some() || opts.workers.is_some() || !opts.reads_only() || !opts.no_survey() {
+        return usage();
+    }
+    let mut seen = HashSet::new();
+    let mut order = Vec::new();
+    let mut records = 0u64;
+    for path in &opts.paths {
+        let mut emit = |id: String| {
+            if seen.insert(id.clone()) {
+                order.push(id);
+            }
+        };
+        match keys_one::<S>(path, key, opts.limit, &mut emit) {
+            Ok(n) => records += n,
+            Err(err) => {
+                eprintln!("{}: {err}", path.display());
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+    let mut out = io::BufWriter::new(io::stdout().lock());
+    let written = order
+        .iter()
+        .try_for_each(|id| writeln!(out, "{id}"))
+        .and_then(|()| out.flush());
+    if let Err(err) = written {
+        eprintln!("stdout: {err}");
+        return ExitCode::FAILURE;
+    }
+    eprintln!(
+        "{}: {} distinct {key} keys from {records} records in {} sets",
+        S::NAME,
+        order.len(),
+        opts.paths.len()
+    );
+    if order.is_empty() {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
+/// The `key` keys of one works or references set, each to `emit`; how
+/// many records were read.
+fn keys_one<S: Keys>(
+    path: &Path,
+    key: Key,
+    limit: Option<u64>,
+    emit: &mut dyn FnMut(String),
+) -> io::Result<u64> {
+    let reader = open_set::<S>(path)?;
+    let limit = records_limit(limit);
+    let mut records = 0u64;
+    reader.with_table(|| match reader.header().kind {
+        Kind::Works => {
+            for record in reader.records::<S::Work<'_>>().take(limit) {
+                S::work_keys(&record?, key, emit);
+                records += 1;
+            }
+            Ok(records)
+        }
+        Kind::References => {
+            for record in reader
+                .records::<(S::Id<'_>, S::Reference<'_>)>()
+                .take(limit)
+            {
+                let (_, reference) = record?;
+                S::reference_keys(&reference, key, emit);
+                records += 1;
+            }
+            Ok(records)
+        }
+        Kind::Deletions | Kind::Symbols => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "keys come from a works or references set",
+        )),
+    })
+}
+
 #[allow(clippy::cast_precision_loss)] // reporting only
 fn list<S: Lister>(opts: &Options) -> ExitCode {
     if !opts.paths.is_empty()
         || opts.limit.is_some()
         || opts.workers.is_some()
         || opts.out.is_some()
+        || opts.survey
+        || opts.seed.is_some() != opts.by.is_some()
     {
         return usage();
     }
     let store = opts.store();
-    let client = Client::new(&opts.user_agent());
-    match ingest::list::list::<S>(&store, &client) {
+    let listed = if let (Some(seed), Some(key)) = (&opts.seed, opts.by) {
+        ingest::list::list_seed::<S>(&store, key, seed)
+    } else {
+        let client = Client::new(&opts.user_agent());
+        ingest::list::list::<S>(&store, &client)
+    };
+    match listed {
+        Ok(listed) if opts.seed.is_some() => {
+            let ids: u64 = listed.entries.iter().filter_map(|e| e.records).sum();
+            eprintln!(
+                "{}: listed {} lookups of {ids} ids to {}",
+                S::NAME,
+                listed.entries.len(),
+                listed.path.display()
+            );
+            ExitCode::SUCCESS
+        }
         Ok(listed) => {
             let bytes: u64 = listed.entries.iter().filter_map(|e| e.bytes).sum();
             let records: u64 = listed.entries.iter().filter_map(|e| e.records).sum();
@@ -493,11 +652,11 @@ fn list<S: Lister>(opts: &Options) -> ExitCode {
 }
 
 #[allow(clippy::cast_precision_loss)] // reporting only
-fn fetch<S: Source>(opts: &Options) -> ExitCode {
+fn fetch<S: Lister>(opts: &Options) -> ExitCode {
     let [listing] = opts.paths.as_slice() else {
         return usage();
     };
-    if opts.out.is_some() {
+    if opts.out.is_some() || opts.survey || opts.seed.is_some() || opts.by.is_some() {
         return usage();
     }
     let store = opts.store();
@@ -515,6 +674,8 @@ fn fetch<S: Source>(opts: &Options) -> ExitCode {
         listing,
         workers: opts.workers.unwrap_or(FETCH_WORKERS),
         limit: opts.limit.map(|n| usize::try_from(n).unwrap_or(usize::MAX)),
+        pace: S::PACE,
+        contact: opts.contact::<S>(),
     };
     let result = ingest::fetch::fetch(&run, &entries, &client, |entry, receipt| {
         eprintln!(
@@ -582,13 +743,13 @@ fn prefix_of(out: &Path, entry_path: &str) -> PathBuf {
 #[allow(clippy::cast_precision_loss, clippy::too_many_lines)] // reporting only; one command
 fn ingest<S, K>(opts: &Options) -> ExitCode
 where
-    S: Source,
+    S: Lister,
     K: StatsReport + for<'n> Sink<'n, S>,
 {
     let [listing] = opts.paths.as_slice() else {
         return usage();
     };
-    if opts.survey {
+    if opts.survey || opts.seed.is_some() || opts.by.is_some() {
         return usage();
     }
     let store = opts.store();
@@ -620,6 +781,8 @@ where
         listing,
         workers: opts.workers.unwrap_or(FETCH_WORKERS),
         limit: None,
+        pace: S::PACE,
+        contact: opts.contact::<S>(),
     };
     let result = ingest::stream::ingest_parallel::<S, _, _, _>(
         &run,
@@ -957,7 +1120,9 @@ impl<'n> Sink<'n, Pubmed> for PubmedStats {
         use source_pubmed::normalize::AuthorName;
         self.citations += 1;
         self.doi_claim(0, c.ids.doi.as_ref());
-        self.doi_claim(1, c.ids.elocation_doi.as_ref());
+        for claim in &c.ids.elocation_doi {
+            self.doi_claim(1, Some(claim));
+        }
         self.pii += u64::from(c.ids.pii.is_some());
         self.pmc += u64::from(c.ids.pmc.is_some());
         *self
@@ -1247,13 +1412,14 @@ struct OpenAlexStats {
     with_raw_orcid: u64,
     orcid_conflicts: u64,
     corresponding: u64,
+    corresponding_institutions_disagree: u64,
     institutions: u64,
     institution_countries: u64,
     institutions_without_ror: u64,
     authorship_countries: u64,
     affiliations: u64,
     locations: u64,
-    provenance: BTreeMap<source_openalex::vocab::Provenance, u64>,
+    provenance: BTreeMap<Option<source_openalex::vocab::Provenance>, u64>,
     location_ids: BTreeMap<&'static str, u64>,
     with_source: u64,
     issn_l: u64,
@@ -1305,13 +1471,14 @@ impl StatsReport for OpenAlexStats {
             self.oa_status, self.oa_url, self.with_best_oa
         );
         eprintln!(
-            "  authorships {}  with author id {}  orcid {} raw orcid {} conflicting {}  corresponding {}",
+            "  authorships {}  with author id {}  orcid {} raw orcid {} conflicting {}  corresponding {} (institutions kept as the source's on {})",
             self.authorships,
             self.authors_with_id,
             self.with_orcid,
             self.with_raw_orcid,
             self.orcid_conflicts,
-            self.corresponding
+            self.corresponding,
+            self.corresponding_institutions_disagree
         );
         eprintln!(
             "  institutions {} (with country {}, without ror {})  authorship countries {}  affiliations {}",
@@ -1400,10 +1567,11 @@ impl<'n> Sink<'n, OpenAlex> for OpenAlexStats {
         for a in &w.authorships {
             self.authorships += 1;
             self.authors_with_id += u64::from(a.author.id.is_some());
-            self.with_orcid += u64::from(a.author.orcid.is_some());
+            let orcid = a.author.orcid.as_ref().and_then(Claim::valid);
+            self.with_orcid += u64::from(orcid.is_some());
             self.with_raw_orcid += u64::from(a.raw_orcid.is_some());
             self.orcid_conflicts += u64::from(matches!(
-                (a.author.orcid, a.raw_orcid),
+                (orcid, a.raw_orcid.as_ref()),
                 (Some(x), Some(y)) if x != y
             ));
             self.corresponding += u64::from(a.is_corresponding);
@@ -1418,14 +1586,17 @@ impl<'n> Sink<'n, OpenAlex> for OpenAlexStats {
             self.authorship_countries += a.countries.len() as u64;
             self.affiliations += a.affiliations.len() as u64;
         }
+        self.corresponding_institutions_disagree +=
+            u64::from(w.corresponding_institutions.is_some());
         for l in &w.locations {
             self.locations += 1;
             *self.provenance.entry(l.provenance).or_default() += 1;
             let kind = match l.id {
-                LocationId::Mag(_) => "mag",
-                LocationId::Pmid(_) => "pmid",
-                LocationId::Doi(_) => "doi",
-                LocationId::Repo(_) => "repo",
+                Some(LocationId::Mag(_)) => "mag",
+                Some(LocationId::Pmid(_)) => "pmid",
+                Some(LocationId::Doi(_)) => "doi",
+                Some(LocationId::Repo(_)) => "repo",
+                None => "none",
             };
             *self.location_ids.entry(kind).or_default() += 1;
             if let Some(s) = &l.source {
@@ -1494,6 +1665,6 @@ impl Merge for CrossrefStats {
 
 impl Merge for OpenAlexStats {
     fn merge(&mut self, other: Self) {
-        absorb_all!(self, other: OpenAlexStats { works, deletions, types, doi, doi_lowercased, pmid, mag, languages, language_malformed, title, oa_status, oa_url, with_best_oa, authorships, authors_with_id, with_orcid, with_raw_orcid, orcid_conflicts, corresponding, institutions, institution_countries, institutions_without_ror, authorship_countries, affiliations, locations, provenance, location_ids, with_source, issn_l, issn, host_lineage, licenses, versions, topics, keywords, concepts, mesh, sdgs, awards, funders, funders_with_ror, apc, abstracts, counts_by_year, indexed_in, flags, references, self_references, related, malformed_samples });
+        absorb_all!(self, other: OpenAlexStats { works, deletions, types, doi, doi_lowercased, pmid, mag, languages, language_malformed, title, oa_status, oa_url, with_best_oa, authorships, authors_with_id, with_orcid, with_raw_orcid, orcid_conflicts, corresponding, corresponding_institutions_disagree, institutions, institution_countries, institutions_without_ror, authorship_countries, affiliations, locations, provenance, location_ids, with_source, issn_l, issn, host_lineage, licenses, versions, topics, keywords, concepts, mesh, sdgs, awards, funders, funders_with_ror, apc, abstracts, counts_by_year, indexed_in, flags, references, self_references, related, malformed_samples });
     }
 }

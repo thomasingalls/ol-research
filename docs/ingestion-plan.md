@@ -106,6 +106,13 @@ wart is a claim the POC run confirms or refutes, not a commitment.
 - Terms: metadata is free to reuse and not subject to copyright; abstracts
   carry some limitations.
 
+Records looked up through E-utilities (2026-09-15), older than the 2026
+baseline files, showed forms the baseline never did — `pmc` reference ids
+with the prefix, `NumberOfReferences`, month ranges and slashes in
+`Season`, repeated `ELocationID`s, `OtherID`, `medline` and `sici` ids,
+`GeneSymbolList`, more manuscript-id prefixes, `PersonalNameSubjectList`,
+`GeneralNote` — all modelled (§9 M5).
+
 ### PubMed
 
 - ~3.7 × 10^7 records. Baseline: ~1,300 `pubmedNNnNNNN.xml.gz` files over
@@ -140,6 +147,11 @@ wart is a claim the POC run confirms or refutes, not a commitment.
   surface in this plan; the POC file will show how much of it is exercised.
 - Terms: NLM provides the data freely; some abstracts may be under copyright
   *(confirm the current NLM data terms before product use)*.
+
+The REST API's works for the PubMed seed (2026-09-15) carried forms the
+1,000-work sample lacked — CRediT roles and reviewers, ISNI affiliation
+ids, Retraction Watch as an update source, a reference-type vocabulary of
+its own, award ids — every one now a closed enum or a field (§9 M5).
 
 ### arXiv
 
@@ -228,6 +240,10 @@ wart is a claim the POC run confirms or refutes, not a commitment.
   not this work's on 992) or the repository's own string (5,957). Scores
   are not float32-exact except the SDGs', so they stay `f64`. Two works
   cite themselves.
+
+The API (2026-09) is a newer serializer than the June snapshot: §9 M5
+lists every difference the first 35,000 looked-up works showed, all
+modelled, each with a fixture.
 
 ### Semantic Scholar — paused
 
@@ -485,6 +501,24 @@ receipt and no output set. Three parts, 15 MB, on three workers: 1.3 s
 end to end at 40 MB peak resident. The three POC files moved to their
 sources' own paths and their manifests became receipts in the store;
 `manifests/` is gone from the repository.
+
+Lookups landed 2026-09-15 (§8, item 8; §9, M5), the seeding-only kind.
+`keys` prints the identifiers a normalized set holds — a work's own DOI
+or PMID, the ids its references point at — canonical and distinct, one
+per line. `list --seed <file> --by <key>` chunks that seed into the
+requests that answer it (50 DOIs to OpenAlex or Crossref, 200 PMIDs to
+NCBI's `efetch`), every URL known before a byte moves, as entries of a
+third kind at `lookup/<stamp>/<key>-<n>.<ext>`, the seed kept beside the
+listing the way an index document is. `fetch` takes that listing like any
+other: one request in flight, paced per source (one a second at OpenAlex
+and NCBI, one every two at Crossref), one wait for what a 429 or 503's
+`Retry-After` asks up to five minutes and a stop at anything else, the
+page kept whole and never resumed, receipted with the `Content-Length`
+check when the response carries one; a half-done run resumes through the
+receipts as files do. `--mailto` reaches an API as the source's own
+contact parameter, only when given, and never lands in a listing or a
+receipt. `ingest` refuses a lookup listing: a page is fetched, then
+normalized, so one the parser rejects stays on disk as the evidence.
 
 ## 4. Model — what is committed
 
@@ -834,9 +868,51 @@ Sampling goal for the POC is *schema diversity*, not a connected subgraph.
 Connectedness is the graph experiment's concern and can be assembled later
 from OpenAlex `referenced_works` by seed-and-expand.
 
+Measured 2026-09-15, once three corpora were normalized: the samples are
+exactly as disjoint as that goal implies. Joined on every cross-ID they
+carry (DOI, PMID, OpenAlex id), no work appears in two sources, and the
+edges point almost entirely outside the samples — 280 of 131,074 OpenAlex
+targets, 144 of 511,361 PubMed, 6 of 24,344 Crossref. The merge stage
+would have nothing to merge and the graph experiment no subgraph, so an
+*overlapping sample* comes next (§9, M5): the same works seen from every
+source, seeded from the PubMed files (34,859 of 34,989 records carry a
+DOI) and fetched from OpenAlex and Crossref by ID lookup, then a bounded
+one-hop expansion along PubMed's cited PMIDs for the graph experiment
+(195,435 distinct across the two files; 2,000 seeds reach 14,409).
+Verified the same day with one small request each: OpenAlex answers a
+batch of 50 DOIs per request (`filter=doi:a|b|…`, page size 50; the API
+work carries one key the snapshot does not, `content_urls`, which is §6
+doing its job), Crossref answers 50 repeated `doi:` filters in one
+`work-list` envelope (nothing new to parse), and NCBI's `efetch` returns
+the baseline files' own `PubmedArticleSet` XML. The whole sample is about
+700 requests to each of OpenAlex and Crossref and none to NCBI.
+
+Fetched and normalized the same day, all of it under `lookup/<stamp>/` in
+the store, raw and normalized alike: the seed at OpenAlex (698 pages of
+50 DOIs, 42 of them refetched at a larger page, §8 item 8) and at
+Crossref (698 pages); the expansion's 15,432 cited PMIDs at NCBI (78
+pages) and those works again at Crossref by DOI (304 pages) and at
+OpenAlex by PMID (200 of 309 pages, the rest on a later day). About
+2,000 requests in all, at one a second or slower, none refused. What the
+store then holds, distinct by native id:
+
+| source   | works  | of which the sample's lookups | edges     | edge targets inside the sample |
+|----------|-------:|------------------------------:|----------:|-------------------------------:|
+| PubMed   | 50,404 | 15,432 cited works            | 1,231,899 | 43,684 (3.5 %)                 |
+| OpenAlex | 76,142 | 44,797                        | 2,262,555 | 39,426 (1.7 %)                 |
+| Crossref | 50,620 | 49,637                        | 2,744,441 | 64,862 (2.4 %)                 |
+
+Of the 50,007 PubMed works with a DOI, 49,620 are also at Crossref and
+44,564 at OpenAlex; 44,245 are seen from all three, 68 from PubMed
+alone. That is the overlapping sample the merge plan is written against.
+The first disagreement is already countable: on 61 works OpenAlex's PMID
+names a PubMed record whose DOI is not the one OpenAlex gives. The graph
+experiment has its subgraph: the seed and its cited works with the edges
+between them resolved.
+
 Full-scale raw for all five is over a terabyte (Crossref 208 GB, OpenAlex
 works 666 GB, S2 papers + abstracts + citations ~350 GB, PubMed ~40 GB). That
-is beyond this machine and is a planning item for M8, not a surprise for
+is beyond this machine and is a planning item for M9, not a surprise for
 later.
 
 ### POC fetch commands
@@ -919,7 +995,7 @@ in your environment, never in the repo or in this conversation.
 1. Which sources have a usable normative serialization document (§4a) —
    checked per crate as each is started, not up front.
 2. NLM and arXiv data terms (§2) — gate product use, not the POC.
-3. Semantic Scholar API key — paused; M5 resumes when one exists.
+3. Semantic Scholar API key — paused; M6 resumes when one exists.
 4. ~~`--survey` opt-in is assumed (§6).~~ Confirmed 2026-09-15: keep it,
    opt-in, default stop-at-first. Built the same day: `normalize --survey`
    tallies every distinct failure signature (field and kind, no values)
@@ -946,6 +1022,35 @@ in your environment, never in the repo or in this conversation.
    re-partitioning. The file-level half is cheap and falls out of the
    per-file fetch records (same URL, size and hash: skip); the
    record-level half is the hard part and is deliberately not sketched.
+8. Paged queries — prioritized 2026-09-15 for the overlapping sample (§7,
+   §9 M5); the shape is under discussion. Standing rule, decided the same
+   day: a paged query is *for* seeding the POC (and, later, arXiv, whose
+   sanctioned bulk path is a paged harvest); it is never the main path for
+   a source that offers bulk files, because nobody who runs an API wants
+   it paged until the client holds every record, and every source here
+   publishes its bulk form. Gentle by construction: one request in flight,
+   a fixed pace per provider well inside what it publishes, `Retry-After`
+   honoured, a 429 stops the run (the receipts make the next run resume),
+   nothing re-requested that a receipt covers. What the providers say, as
+   of 2026-09-15: OpenAlex meters the API — a keyless client has 1,000
+   requests a day (`X-RateLimit-Limit`, reset at midnight UTC), a free key
+   ten times that, 100 requests a second and the daily budget both answer
+   with 429, page size at most 100; a key would be yours to obtain and
+   hold, like S2's (§2). Crossref's anonymous pool reports one request a
+   second (`X-Rate-Limit-Limit: 1`, interval 1 s; the polite pool with a
+   `mailto` is the documented way to more, and `--mailto` stays opt-in).
+   NCBI asks for three requests a second without a key, `tool` and `email`
+   registered before it will unblock an address, and large jobs on
+   weekends or 21:00–05:00 Eastern; the FTP baseline for anything large.
+   What running it taught, 2026-09-15: a page the size of the batch loses
+   works — OpenAlex holds more than one work for some DOIs, and 42 of 698
+   batches of 50 answered 51 to 53 — so a lookup's page is twice its
+   batch, and both parsers refuse a page shorter than its own count
+   (OpenAlex's `meta.count`; Crossref's `total-results` when it fits the
+   page). The day's keyless budget at OpenAlex went on 944 requests: 698
+   for the seed, 42 to refetch the short pages, 200 of the 309 the second
+   hop needs, and four probes; the rest of that hop resumes through the
+   receipts on a later day, `fetch` on the same listing.
 
 ## 9. Milestones
 
@@ -1057,13 +1162,31 @@ in your environment, never in the repo or in this conversation.
   `Reference` edge per reference-list entry, pushed to an `Emit`. The whole
   file normalizes; the stats report is the first real one. Title, abstract,
   authors, journal and MeSH headings next.*
-- **M5** — `source-s2` (three streams). Paused until a key exists; the slot
-  stays, and M6 can move ahead of it.
-- **M6** — `source-arxiv` (OAI-PMH).
-- **M7** — full POC run across all five; the fix loop until it is green;
+- **M5** — paged queries and the overlapping sample. *Prioritized
+  2026-09-15 (§7, §10): the three POC corpora share no work, so this
+  comes before the remaining sources. A lookup entry kind in the listing
+  (the requests for a seed list of ids are all known up front, so `list`
+  can write them and `fetch` can bring them in, one page per request, a
+  receipt each, resumable for free), `keys` to draw a seed from our own
+  normalized sets, and the pacing the providers ask for. Then the sample:
+  the PubMed files' DOIs looked up at OpenAlex and Crossref, and a bounded
+  one-hop expansion for the graph experiment.*
+  *Landed 2026-09-15 (§3.5, §10): `keys`, `list --seed --by`, the lookup
+  entry kind, paced `fetch`, `ingest` refusing lookups; the sample
+  fetched, every page surveyed, every wart modelled with a fixture (§10,
+  "the sample's warts"), every cache rebuilt, the sample measured (§7).
+  Left: 109 OpenAlex pages of the second hop, which `fetch` on the same
+  listing resumes once the keyless day resets.*
+- **M6** — `source-s2` (three streams). Paused until a key exists; the slot
+  stays, and M7 can move ahead of it.
+- **M7** — `source-arxiv` (OAI-PMH): the harvest kind of paged query —
+  the next page known only from the last — and the one source whose
+  sanctioned bulk path it is (§2).
+- **M8** — full POC run across all five; the fix loop until it is green;
   review the stats report and the budget.
-- **M8** — full-scale plan: storage, incremental origins (`DeleteCitation`,
-  update files, OAI `from`), model-version invalidation.
+- **M9** — full-scale plan: storage, incremental origins (`DeleteCitation`,
+  update files, OAI `from`), model-version invalidation; the zstd level and
+  frame size, once the box says whether disk or CPU is the scarce one.
 - Then: the merge plan.
 - **Search sinks**, noted 2026-09-15 so they are not forgotten: the
   metadata goes into **Meilisearch** and **Tantivy** at least, and probably
@@ -1265,6 +1388,58 @@ cross-IDs and a second edge namespace early.
   throughput −5 % (§5, fifth measurement). Kept for what it gives the
   merge stage — integers for categorical values — with the field set as
   the knob and the number still owed by that stage.
+- 2026-09-15, overlapping sample first — three normalized corpora share
+  no work and their edges point outside the samples (§7), so the merge
+  plan and the graph experiment are both blocked on an overlapping sample,
+  and it moves ahead of the remaining sources: M5 is now paged queries and
+  the sample; S2, arXiv, the full run and the full-scale plan are M6–M9.
+  Batched lookups verified at all three providers with one small request
+  each; OpenAlex meters its API. Rule: paged queries are for POC seeding
+  (and arXiv's harvest, its own bulk path), never the main path for a
+  source with bulk files; gentle by construction (§8, item 8). zstd knobs
+  not turned: nothing consumes the layout yet and downloading dominates
+  running; they belong to M9. Design under discussion before anything is
+  built.
+- 2026-09-15, lookups — agreed and built the same day (§3.5): a seed of
+  ids from our own normalized sets, chunked into requests known up front,
+  so a lookup listing is an ordinary listing with a third entry kind and
+  `fetch` resumes it for free; paced per source as a constant, not a
+  flag; fetch then normalize, never `ingest`, so a rejected page stays;
+  the full PubMed seed, not a slice; harvests (the next page known only
+  from the last) left for arXiv. What the first 53 OpenAlex API works
+  taught (§9, M5): the API is a newer serializer than the June snapshot,
+  and §6 found every difference before a record was kept — one field
+  added, two gone, a null for an object of nulls, location ids carrying
+  their namespace instead of a `provenance` field, naive date-times, and
+  one work whose corresponding institutions no author accounts for, now
+  kept as written when it disagrees rather than a stop. Crossref's API
+  answers were the envelope already modelled.
+- 2026-09-15, the sample's warts — running the lookups through the
+  normalizers found the drift §6 exists for, source by source, and every
+  one is a fixture now (nine OpenAlex, seventeen PubMed, one Crossref).
+  OpenAlex: five work types the snapshot never showed, `content_urls`,
+  no `authors_count` or `ids.mag`, `best_oa_location` null, location ids
+  with their namespace in front and no `provenance` (typed by the
+  namespace, `mag:` included; a location with no id at all), naive
+  date-times (`DateTime::parse_utc_naive`), an ISSN-L and an ORCID that
+  became claims, and a best copy that spells unpublished as `false` where
+  the location says null. PubMed, older records: `pmc` reference ids with
+  the prefix (a PMID in that slot on 3 % of them is a malformed claim),
+  `NumberOfReferences` down to zero, `Sep-Oct`, `Mar/Apr` and `Autumn` as
+  seasons, two `ELocationID`s of one type, `OtherID`, `medline` and
+  `sici` ids, `GeneSymbolList`, `UKMS`/`CAMS`/`HALMS` manuscript ids, an
+  abstract language that is not a code, `PersonalNameSubjectList`,
+  `GeneralNote`. Crossref: the CRediT roles and `reviewer`, `ISNI`
+  (`model::Isni`, ORCID's checksum), `retraction-watch`, a reference-type
+  vocabulary that is not the work types', award ids, `record-id`, an
+  assertion group without a label. Four census-derived OpenAlex fields
+  are not always derivable in live data and are now kept when they
+  disagree rather than dropped or fatal (corresponding institutions and
+  authors, institutions and countries distinct counts); `host_organization`
+  is stored outright. One of our own checks was wrong once: a
+  corresponding author listed twice counted twice. The normalized shapes
+  changed under every source, so every cache was rebuilt from raw; the
+  layout has no schema evolution by design (§3.5).
 
 ## 11. Dependencies
 

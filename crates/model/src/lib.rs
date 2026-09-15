@@ -17,6 +17,7 @@ pub mod doi;
 mod human;
 pub mod id;
 pub mod isbn;
+pub mod isni;
 pub mod issn;
 pub mod lang;
 pub mod mesh;
@@ -33,6 +34,7 @@ pub use date::{
 pub use doi::{Doi, Error as DoiError, Registrant};
 pub use id::{OpenAlexId, ParseError, PmcId, Pmid};
 pub use isbn::{Error as IsbnError, Isbn};
+pub use isni::{Error as IsniError, Isni};
 pub use issn::{Error as IssnError, Issn};
 pub use lang::{Error as LangError, Lang};
 pub use mesh::{Error as MeshUiError, MeshUi};

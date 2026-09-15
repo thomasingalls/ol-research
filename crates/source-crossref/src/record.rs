@@ -12,9 +12,9 @@ use smallvec::SmallVec;
 
 use crate::date::{IndexedStamp, PartialDate, Stamp};
 use crate::vocab::{
-    AssertedBy, ContentVersion, FundingType, IdKind, IntendedApplication, RelationAssertedBy,
-    RelationIdKind, ReviewRecommendation, ReviewStage, ReviewType, RoleName, Sequence, SerialKind,
-    Source, Subtype, UpdateType, Vocabulary, WorkType,
+    AssertedBy, ContentVersion, FundingType, IdKind, IntendedApplication, ReferenceType,
+    RelationAssertedBy, RelationIdKind, ReviewRecommendation, ReviewStage, ReviewType, RoleName,
+    Sequence, SerialKind, Source, Subtype, UpdateType, Vocabulary, WorkType,
 };
 
 /// A list with room for its usual length inside the record itself (plan
@@ -398,9 +398,9 @@ pub struct Reference<'a> {
     #[serde(borrow)]
     #[allow(missing_docs)]
     pub standards_body: Option<Text<'a>>,
-    /// Rare: 44 references of one work.
+    /// Rare in the sample (44 references of one work); its own vocabulary.
     #[serde(rename = "type")]
-    pub r#type: Option<WorkType>,
+    pub r#type: Option<ReferenceType>,
 }
 
 /// A funder.
@@ -433,6 +433,22 @@ pub struct AwardInfo<'a> {
     #[serde(borrow)]
     #[allow(missing_docs)]
     pub award_number: Few<Text<'a>, 2>,
+    /// An award DOI, on 4 of 34,536 looked-up works (2026-09-15).
+    #[serde(borrow)]
+    pub id: Option<Few<AwardId<'a>, 1>>,
+}
+
+/// An identifier of an award: `{id, id-type, asserted-by}`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct AwardId<'a> {
+    #[serde(borrow)]
+    #[allow(missing_docs)]
+    pub id: Text<'a>,
+    #[allow(missing_docs)]
+    pub id_type: IdKind,
+    #[allow(missing_docs)]
+    pub asserted_by: AssertedBy,
 }
 
 /// A license.
@@ -509,9 +525,10 @@ pub struct AssertionGroup<'a> {
     #[serde(borrow)]
     #[allow(missing_docs)]
     pub name: Text<'a>,
+    /// Absent on a group of one looked-up work (10.18332/tpc/214725,
+    /// 2026-09-15); always present in the sample.
     #[serde(borrow)]
-    #[allow(missing_docs)]
-    pub label: Text<'a>,
+    pub label: Option<Text<'a>>,
 }
 
 /// Crossmark domain.
@@ -650,6 +667,9 @@ pub struct Update<'a> {
     #[serde(borrow)]
     #[allow(missing_docs)]
     pub updated: Stamp<'a>,
+    /// Retraction Watch's record number, with `source: retraction-watch`.
+    #[serde(rename = "record-id", borrow)]
+    pub record_id: Option<Text<'a>>,
 }
 
 /// Peer-review metadata.

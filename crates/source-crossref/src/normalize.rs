@@ -16,8 +16,8 @@ use std::fmt;
 
 use ingest::Sink;
 use model::{
-    Claim, Date, DateError, DateTime, Doi, DoiError, Interned, Isbn, IsbnError, Issn, IssnError,
-    Lang, LangError, Orcid, OrcidError, ParseError, PartialDate, Registrant,
+    Claim, Date, DateError, DateTime, Doi, DoiError, Interned, Isbn, IsbnError, Isni, IsniError,
+    Issn, IssnError, Lang, LangError, Orcid, OrcidError, ParseError, PartialDate, Registrant,
 };
 
 use crate::Crossref;
@@ -35,6 +35,10 @@ pub type Few<T, const N: usize> = SmallVec<[T; N]>;
 
 /// A DOI as a source asserted it.
 pub type DoiClaim<'n> = Claim<'n, Doi<'n>, DoiError>;
+/// An ISSN as the source wrote it, or why its check digit is wrong: two
+/// of 15,165 works looked up by DOI carried one (2026-09-15), the policy
+/// §8 item 6 already applies at OpenAlex and PubMed.
+pub type IssnClaim<'n> = Claim<'n, Issn, IssnError>;
 
 /// One Crossref work, normalized: the fields with evidence behind them.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -77,7 +81,8 @@ pub struct Work<'n> {
     #[serde(borrow)]
     pub container_title: Option<Interned<'n>>,
     /// From `issn-type`, checked against `ISSN`.
-    pub issns: Few<TypedIssn, 2>,
+    #[serde(borrow)]
+    pub issns: Few<TypedIssn<'n>, 2>,
     /// From `isbn-type`, checked against `ISBN`.
     pub isbns: Few<TypedIsbn, 2>,
     #[allow(missing_docs)]
@@ -162,15 +167,19 @@ pub struct Affiliation<'n> {
     /// `https://ror.org/…`, unvalidated here.
     #[serde(borrow)]
     pub ror: Option<&'n str>,
+    /// An ISNI beside the ROR, on 40 affiliations of 34,536 looked-up
+    /// works (2026-09-15), checksum verified.
+    pub isni: Option<Isni>,
 }
 
 /// An ISSN with its kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TypedIssn {
+pub struct TypedIssn<'n> {
     #[allow(missing_docs)]
     pub kind: SerialKind,
     #[allow(missing_docs)]
-    pub issn: Issn,
+    #[serde(borrow)]
+    pub issn: IssnClaim<'n>,
 }
 
 /// An ISBN with its kind.
@@ -284,6 +293,7 @@ pub struct Error {
 pub enum ErrorKind {
     Doi(DoiError),
     Orcid(OrcidError),
+    Isni(IsniError),
     Issn(IssnError),
     Isbn(IsbnError),
     Date(DateError),
@@ -311,6 +321,7 @@ impl fmt::Display for ErrorKind {
         match self {
             ErrorKind::Doi(e) => write!(f, "{e}"),
             ErrorKind::Orcid(e) => write!(f, "{e}"),
+            ErrorKind::Isni(e) => write!(f, "{e}"),
             ErrorKind::Issn(e) => write!(f, "{e}"),
             ErrorKind::Isbn(e) => write!(f, "{e}"),
             ErrorKind::Date(e) => write!(f, "{e}"),
@@ -397,12 +408,12 @@ impl Ctx {
 
     /// `issn-type` / `isbn-type` entries, checked to be the same set as the
     /// plain `ISSN` / `ISBN` list.
-    fn serials<T>(
+    fn serials<'n, T>(
         &self,
         field: &'static str,
-        typed: Option<&[Serial<'_>]>,
-        plain: Option<&[crate::record::Text<'_>]>,
-        parse: impl Fn(&str) -> Result<T, ErrorKind>,
+        typed: Option<&'n [Serial<'_>]>,
+        plain: Option<&'n [crate::record::Text<'_>]>,
+        parse: impl Fn(&'n str) -> Result<T, ErrorKind>,
     ) -> Result<Vec<(SerialKind, T)>, Error> {
         let typed = typed.unwrap_or_default();
         let plain = plain.unwrap_or_default();
@@ -464,26 +475,36 @@ impl Ctx {
             .transpose()?;
         let mut affiliations = Few::new();
         for a in &c.affiliation {
-            let mut ror = None;
+            let (mut ror, mut isni) = (None, None);
             for id in a.id.as_deref().unwrap_or_default() {
-                if id.id_type != IdKind::Ror {
+                let taken =
+                    match id.id_type {
+                        IdKind::Ror => ror.replace(&*id.id).is_some(),
+                        IdKind::Isni => isni
+                            .replace(Isni::from_https_url(&id.id).map_err(|e| {
+                                self.err("affiliation.id", &id.id, ErrorKind::Isni(e))
+                            })?)
+                            .is_some(),
+                        IdKind::Doi => {
+                            return Err(self.err(
+                                "affiliation.id",
+                                &id.id,
+                                ErrorKind::Unmodelled("a DOI as an affiliation id"),
+                            ));
+                        }
+                    };
+                if taken {
                     return Err(self.err(
                         "affiliation.id",
                         &id.id,
-                        ErrorKind::Unmodelled("affiliation id that is not a ROR"),
-                    ));
-                }
-                if ror.replace(&*id.id).is_some() {
-                    return Err(self.err(
-                        "affiliation.id",
-                        &id.id,
-                        ErrorKind::Unmodelled("more than one affiliation id"),
+                        ErrorKind::Unmodelled("more than one affiliation id of one kind"),
                     ));
                 }
             }
             affiliations.push(Affiliation {
                 name: a.name.as_deref().map(Interned::Text),
                 ror,
+                isni,
             });
         }
         Ok(Author {
@@ -597,7 +618,7 @@ pub fn normalize<'n, K: Sink<'n, Crossref>>(w: &'n Native<'_>, emit: &mut K) -> 
             "issn-type",
             w.issn_type.as_deref(),
             w.issn.as_deref(),
-            |s| Issn::parse(s).map_err(ErrorKind::Issn),
+            |s| Ok(Claim::from_parse(s, Issn::parse(s))),
         )?
         .into_iter()
         .map(|(kind, issn)| TypedIssn { kind, issn })

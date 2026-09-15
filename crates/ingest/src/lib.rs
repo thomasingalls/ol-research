@@ -19,14 +19,17 @@
 //! writes what a source offers as a [`listing`]; [`fetch`] brings the
 //! bytes in, verified, and writes a [`receipt`] per file; [`stream`]
 //! does both while normalizing, a download straight through the framer.
-//!
-//! Still to come here: symbol tables.
+//! A lookup listing (plan §8, item 8) is the same shape for API pages
+//! answering a seed of ids — [`keys`] draws the seed from normalized
+//! sets — paced and fetched one at a time; it seeds the POC sample and
+//! is never a source's main path.
 
 pub mod alloc;
 pub mod binary;
 pub mod fetch;
 pub mod frame;
 pub mod http;
+pub mod keys;
 pub mod list;
 pub mod listing;
 pub mod raw;
@@ -41,7 +44,8 @@ pub mod time;
 pub use binary::{Binary, Header, Kind, Reader, Written};
 pub use frame::ReadError;
 pub use http::Client;
-pub use list::{Index, Lister};
+pub use keys::{Key, Keys};
+pub use list::{Index, Lister, Lookup};
 pub use listing::Entry;
 pub use receipt::Receipt;
 pub use run::{Failure, Report, Seen, Stage, Survey, normalize, parse};

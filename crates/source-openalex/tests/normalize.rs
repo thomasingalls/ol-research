@@ -51,7 +51,7 @@ fn one<'n>(native: &'n source_openalex::Work<'_>) -> (Work<'n>, Vec<(OpenAlexId,
     (sink.works.into_iter().next().unwrap(), sink.edges)
 }
 
-const ALL: [&str; 18] = [
+const ALL: [&str; 23] = [
     "smallest",
     "pubmed_with_mesh",
     "dissertation_repo_pdf",
@@ -70,6 +70,11 @@ const ALL: [&str; 18] = [
     "apc_no_usd",
     "null_title_paratext",
     "null_publication_date",
+    "api_content_urls",
+    "api_corresponding_institution_no_author",
+    "api_content_pdf_only",
+    "api_location_without_id",
+    "api_best_is_published_false",
 ];
 
 #[test]
@@ -108,7 +113,10 @@ fn every_fixture_normalizes_with_its_edges() {
         assert_eq!(w.open_access.is_oa(), native.open_access.is_oa, "{name}");
         assert_eq!(
             w.best_oa_location().is_some(),
-            native.best_oa_location.id.is_some(),
+            native
+                .best_oa_location
+                .as_ref()
+                .is_some_and(|b| b.id.is_some()),
             "{name}"
         );
         match (&w.doi, native.doi.as_deref()) {
@@ -141,12 +149,79 @@ fn identifiers_are_strict_types() {
             .filter_map(|m| m.qualifier)
             .all(|q| q.ui.as_str().starts_with('Q'))
     );
-    assert!(
-        w.locations
-            .iter()
-            .any(|l| { matches!(l.id, LocationId::Pmid(_)) && l.provenance == Provenance::Pubmed })
-    );
+    assert!(w.locations.iter().any(|l| {
+        matches!(l.id, Some(LocationId::Pmid(_))) && l.provenance == Some(Provenance::Pubmed)
+    }));
     assert!(w.doi.is_none() && native.doi.is_none());
+}
+
+#[test]
+fn an_api_work_types_its_locations_by_namespace_and_says_no_provenance() {
+    let input = fixture("api_content_urls");
+    let native = parse(&input);
+    let (w, _) = one(&native);
+    assert!(w.locations.iter().all(|l| l.provenance.is_none()));
+    let ids: Vec<&LocationId<'_>> = w.locations.iter().filter_map(|l| l.id.as_ref()).collect();
+    assert!(matches!(ids[0], LocationId::Doi(d) if d.as_str() == "10.1093/acamed/wvaf064"));
+    assert!(matches!(ids[1], LocationId::Pmid(p) if p.get() == 41_575_249));
+    assert!(w.best_oa_location().is_some());
+    let pmh = input.replacen("\"id\":\"pmid:41575249\"", "\"id\":\"pmh:oai:x:1\"", 1);
+    let native = parse(&pmh);
+    let (w, _) = one(&native);
+    assert!(
+        matches!(w.locations[1].id, Some(LocationId::Repo("oai:x:1"))),
+        "pmh: is stripped to the snapshot's oai: form"
+    );
+    // In primary_location, locations[0] and best_oa_location alike, so
+    // the derivable-field checks still pass and the namespace is what fails.
+    let broken = input.replace("\"id\":\"doi:", "\"id\":\"isbn:");
+    let Err(err) = run(&parse(&broken)) else {
+        panic!("an unknown namespace")
+    };
+    assert_eq!(err.field, "locations.id");
+    assert!(matches!(err.kind, ErrorKind::Unmodelled(_)), "{err}");
+    let inconsistent = input.replacen(".grobid-xml\"", ".grobid-xml2\"", 1);
+    let Err(err) = run(&parse(&inconsistent)) else {
+        panic!("a content url off the pattern")
+    };
+    assert_eq!(err.field, "content_urls");
+}
+
+#[test]
+fn a_corresponding_institution_list_that_disagrees_is_kept_as_written() {
+    let input = fixture("api_corresponding_institution_no_author");
+    let native = parse(&input);
+    let (w, _) = one(&native);
+    assert!(w.authorships.iter().all(|a| !a.is_corresponding));
+    let kept = w.corresponding_institutions.as_ref().expect("kept");
+    assert_eq!(kept.len(), 1);
+    assert_eq!(kept[0].to_string(), "I5950314");
+    let input = fixture("api_content_urls");
+    let native = parse(&input);
+    let (w, _) = one(&native);
+    assert!(
+        w.corresponding_institutions.is_none(),
+        "the consistent case"
+    );
+}
+
+#[test]
+fn the_best_copy_may_spell_unpublished_as_false_where_the_location_says_null() {
+    let input = fixture("api_best_is_published_false");
+    let native = parse(&input);
+    let (w, _) = one(&native);
+    let best = w.best_oa_location().expect("open");
+    assert!(best.version.is_none());
+    assert!(matches!(best.id, Some(LocationId::Doi(_))));
+}
+
+#[test]
+fn a_location_may_have_no_id_at_all() {
+    let input = fixture("api_location_without_id");
+    let native = parse(&input);
+    let (w, _) = one(&native);
+    assert_eq!(w.locations.iter().filter(|l| l.id.is_none()).count(), 1);
+    assert!(w.locations.iter().any(|l| l.id.is_some()));
 }
 
 #[test]
@@ -158,7 +233,7 @@ fn locations_carry_their_provenance_typed_id() {
     assert!(
         w.locations
             .iter()
-            .any(|l| matches!(l.id, LocationId::Repo(_)))
+            .any(|l| matches!(l.id, Some(LocationId::Repo(_))))
     );
     let best = w.best_oa_location().expect("open");
     assert!(best.is_oa);
@@ -170,8 +245,11 @@ fn locations_carry_their_provenance_typed_id() {
         w.locations
             .iter()
             .position(|l| l.is_oa)
-            .map(|i| &native.locations[i].id[..]),
-        native.best_oa_location.id.as_deref()
+            .and_then(|i| native.locations[i].id.as_deref()),
+        native
+            .best_oa_location
+            .as_ref()
+            .and_then(|b| b.id.as_deref())
     );
     let input = fixture("closed_no_oa_location");
     let native = parse(&input);
@@ -183,7 +261,7 @@ fn locations_carry_their_provenance_typed_id() {
     assert!(
         w.locations
             .iter()
-            .any(|l| matches!(l.id, LocationId::Mag(_)))
+            .any(|l| matches!(l.id, Some(LocationId::Mag(_))))
     );
 }
 
@@ -411,26 +489,29 @@ fn broken_invariants_stop_with_id_and_field() {
         "{err}"
     );
 
-    // A checksum failure in an ORCID stops the run: the sample earned the
-    // strict type.
+    // A checksum failure in an ORCID is a claim, not a stop, since the
+    // API sent `https://orcid.org/` with nothing after it (2026-09-15).
     let name = ALL
         .iter()
         .find(|n| fixture(n).contains("\"orcid\":\"https://orcid.org/"))
         .expect("a fixture with an ORCID");
-    let err = expect_failure(
-        name,
-        |s| {
-            let at = s.find("\"orcid\":\"https://orcid.org/").unwrap()
-                + "\"orcid\":\"https://orcid.org/".len()
-                + 18;
-            let flipped = if &s[at..=at] == "0" { "1" } else { "0" };
-            format!("{}{flipped}{}", &s[..at], &s[at + 1..])
-        },
-        "author.orcid",
-    );
+    let input = fixture(name);
+    let at = input.find("\"orcid\":\"https://orcid.org/").unwrap()
+        + "\"orcid\":\"https://orcid.org/".len()
+        + 18;
+    let flipped = if &input[at..=at] == "0" { "1" } else { "0" };
+    let mutated = format!("{}{flipped}{}", &input[..at], &input[at + 1..]);
+    let native = parse(&mutated);
+    let (w, _) = one(&native);
     assert!(
-        matches!(err.kind, ErrorKind::Orcid(OrcidError::Checksum)),
-        "{err}"
+        w.authorships.iter().any(|a| matches!(
+            a.author.orcid,
+            Some(Claim::Malformed {
+                error: OrcidError::Checksum,
+                ..
+            })
+        )),
+        "{name}"
     );
 }
 

@@ -1,7 +1,12 @@
 //! What the snapshot offers: the works manifest, one entry per part file,
-//! with the byte and record counts the manifest declares (plan §2).
+//! with the byte and record counts the manifest declares (plan §2). And,
+//! for seeding the POC sample only (plan §8, item 8), the API's answer to
+//! a batch of ids.
 
-use ingest::list::{Error, Index, Lister};
+use std::time::Duration;
+
+use ingest::keys::Key;
+use ingest::list::{Error, Index, Lister, Lookup, encode};
 use ingest::listing::{Entry, Kind};
 use serde::Deserialize;
 
@@ -9,6 +14,16 @@ use crate::OpenAlex;
 
 /// The works manifest of the current snapshot.
 pub const MANIFEST: &str = "https://openalex.s3.amazonaws.com/data/jsonl/works/manifest.json";
+/// The works API, for lookups.
+pub const API: &str = "https://api.openalex.org/works";
+/// Ids per lookup request: a batch of 50 DOIs in one `filter` answered
+/// on 2026-09-15.
+const BATCH: usize = 50;
+/// The page size, twice the batch: OpenAlex holds more than one work for
+/// some DOIs (42 of 698 batches of 50 answered 51 to 53 on 2026-09-15),
+/// and a page equal to the batch drops the rest; the parser refuses a
+/// page smaller than its count, so the loss is loud, not silent.
+const PAGE: usize = 2 * BATCH;
 /// Where the manifest's `s3://` URLs are served over HTTPS.
 const HTTPS: &str = "https://openalex.s3.amazonaws.com/data/jsonl/";
 const S3: &str = "s3://openalex/data/jsonl/";
@@ -88,14 +103,40 @@ pub fn entries(text: &str) -> Result<Vec<Entry>, Error> {
 }
 
 impl Lister for OpenAlex {
+    /// A tenth of the published 10 a second; the daily budget is the
+    /// binding limit (1,000 requests keyless).
+    const PACE: Duration = Duration::from_secs(1);
+    const CONTACT: Option<&'static str> = Some("mailto");
+
     fn list(index: &mut dyn Index) -> Result<Vec<Entry>, Error> {
         entries(&index.document(MANIFEST, "manifest.json")?)
+    }
+
+    fn batch(_: Key) -> Option<usize> {
+        Some(BATCH)
+    }
+
+    fn lookup(key: Key, ids: &[&str]) -> Result<Lookup, Error> {
+        let filter = match key {
+            Key::Doi => "doi",
+            Key::Pmid => "pmid",
+            Key::OpenAlex => "ids.openalex",
+        };
+        let values: Vec<String> = ids.iter().map(|id| encode(id)).collect();
+        Ok(Lookup {
+            url: format!("{API}?filter={filter}:{}&per-page={PAGE}", values.join("|")),
+            extension: "json",
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use ingest::keys::Key;
+    use ingest::list::Lister;
+
     use super::entries;
+    use crate::OpenAlex;
 
     const TEXT: &str = r#"{"date":"2026-06-26","format":"jsonl","entity":"works","record_count":2440,"content_length":3038474,
       "files":[{"url":"s3://openalex/data/jsonl/works/updated_date=2016-06-24/part_0000.gz","meta":{"content_length":3038473,"record_count":2439}},
@@ -146,5 +187,24 @@ mod tests {
             .contains("outside")
         );
         assert!(entries(&TEXT.replacen("\"date\"", "\"dated\"", 1)).is_err());
+    }
+
+    #[test]
+    fn a_lookup_is_one_filter_of_encoded_ids() {
+        let lookup = OpenAlex::lookup(Key::Doi, &["10.1000/a", "10.1000/b,c"]).unwrap();
+        assert_eq!(
+            lookup.url,
+            "https://api.openalex.org/works?filter=doi:10.1000/a|10.1000/b%2Cc&per-page=100"
+        );
+        assert_eq!(lookup.extension, "json");
+        assert_eq!(
+            OpenAlex::lookup(Key::Pmid, &["1", "2"]).unwrap().url,
+            "https://api.openalex.org/works?filter=pmid:1|2&per-page=100"
+        );
+        assert_eq!(
+            OpenAlex::lookup(Key::OpenAlex, &["W1"]).unwrap().url,
+            "https://api.openalex.org/works?filter=ids.openalex:W1&per-page=100"
+        );
+        assert_eq!(OpenAlex::batch(Key::Doi), Some(50));
     }
 }

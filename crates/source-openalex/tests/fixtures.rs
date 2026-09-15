@@ -17,7 +17,7 @@ fn work(input: &str) -> Work<'_> {
     serde_json::from_str(input).expect("parses")
 }
 
-const ALL: [&str; 18] = [
+const ALL: [&str; 23] = [
     "smallest",
     "pubmed_with_mesh",
     "dissertation_repo_pdf",
@@ -36,7 +36,30 @@ const ALL: [&str; 18] = [
     "apc_no_usd",
     "null_title_paratext",
     "null_publication_date",
+    "api_content_urls",
+    "api_corresponding_institution_no_author",
+    "api_content_pdf_only",
+    "api_location_without_id",
+    "api_best_is_published_false",
 ];
+
+#[test]
+fn an_api_work_names_its_content_urls() {
+    let input = fixture("api_content_urls");
+    let w = work(&input);
+    let urls = w.content_urls.as_ref().expect("the API names them");
+    assert_eq!(
+        urls.pdf.as_deref(),
+        Some("https://content.openalex.org/works/W7125525655.pdf")
+    );
+    assert!(w.has_content.pdf && w.has_content.grobid_xml);
+    assert!(work(&fixture("smallest")).content_urls.is_none());
+    let input = fixture("api_content_pdf_only");
+    let w = work(&input);
+    let urls = w.content_urls.as_ref().expect("a PDF alone");
+    assert!(urls.pdf.is_some() && urls.grobid_xml.is_none());
+    assert!(w.has_content.pdf && !w.has_content.grobid_xml);
+}
 
 #[test]
 fn an_institution_may_lack_ror_and_type() {
@@ -69,8 +92,9 @@ fn a_dissertation_in_a_repository_with_a_pdf() {
     let input = fixture("dissertation_repo_pdf");
     let w = work(&input);
     assert_eq!(w.r#type, WorkType::Dissertation);
-    assert!(w.best_oa_location.pdf_url.is_some());
-    assert_eq!(w.best_oa_location.is_oa, Some(true));
+    let best = w.best_oa_location.as_ref().expect("an object, not null");
+    assert!(best.pdf_url.is_some());
+    assert_eq!(best.is_oa, Some(true));
     assert!(w.locations.iter().any(|l| l.version == Some(Version::Submitted) || l.version == Some(Version::Published)));
 }
 
@@ -79,8 +103,9 @@ fn closed_works_have_an_object_of_nulls_for_best_oa_location() {
     let input = fixture("closed_no_oa_location");
     let w = work(&input);
     assert_eq!(w.open_access.oa_status, OaStatus::Closed);
-    assert_eq!(w.best_oa_location.id, None);
-    assert_eq!(w.best_oa_location.is_oa, None);
+    let best = w.best_oa_location.as_ref().expect("an object of nulls");
+    assert_eq!(best.id, None);
+    assert_eq!(best.is_oa, None);
     assert!(!w.referenced_works.is_empty());
     assert_eq!(w.referenced_works.len(), w.referenced_works_count as usize);
 }

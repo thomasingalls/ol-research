@@ -35,6 +35,40 @@ pub use text::{RawXml, Text};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Pubmed;
 
+impl ingest::Keys for Pubmed {
+    fn work_keys(work: &normalize::Citation<'_>, key: ingest::Key, out: &mut dyn FnMut(String)) {
+        match key {
+            ingest::Key::Pmid => out(work.pmid.to_string()),
+            ingest::Key::Doi => {
+                if let Some(doi) = work.ids.doi.as_ref().and_then(model::Claim::valid) {
+                    out(doi.as_str().to_owned());
+                }
+            }
+            ingest::Key::OpenAlex => {}
+        }
+    }
+
+    fn reference_keys(
+        reference: &normalize::Reference<'_>,
+        key: ingest::Key,
+        out: &mut dyn FnMut(String),
+    ) {
+        match key {
+            ingest::Key::Pmid => {
+                if let Some(pmid) = reference.pmid.as_ref().and_then(model::Claim::valid) {
+                    out(pmid.to_string());
+                }
+            }
+            ingest::Key::Doi => {
+                if let Some(doi) = reference.doi.as_ref().and_then(model::Claim::valid) {
+                    out(doi.as_str().to_owned());
+                }
+            }
+            ingest::Key::OpenAlex => {}
+        }
+    }
+}
+
 impl ingest::Source for Pubmed {
     const NAME: &'static str = "pubmed";
     type Native<'a> = record::Record<'a>;

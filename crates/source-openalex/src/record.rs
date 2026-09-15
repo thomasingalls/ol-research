@@ -62,8 +62,8 @@ pub struct Work<'a> {
     /// Up to 547.
     #[serde(borrow)]
     pub authorships: Few<Authorship<'a>, 8>,
-    #[allow(missing_docs)]
-    pub authors_count: u32,
+    /// The snapshot always has it; the API (2026-09) does not.
+    pub authors_count: Option<u32>,
     #[serde(borrow)]
     #[allow(missing_docs)]
     pub corresponding_author_ids: Few<Text<'a>, 2>,
@@ -88,6 +88,13 @@ pub struct Work<'a> {
     pub has_fulltext: bool,
     #[allow(missing_docs)]
     pub has_content: HasContent,
+    /// API responses only: where the PDF and GROBID XML `has_content`
+    /// promises are, each present exactly when its flag is and derivable
+    /// from the id; absent from the snapshot, null when there is no
+    /// content (34,762 works, 2026-09-15: 17,408 with both, 204 with a
+    /// PDF alone, none with GROBID alone).
+    #[serde(borrow)]
+    pub content_urls: Option<ContentUrls<'a>>,
     #[allow(missing_docs)]
     pub cited_by_count: u32,
     #[allow(missing_docs)]
@@ -125,9 +132,10 @@ pub struct Work<'a> {
     pub locations: Few<Location<'a>, 4>,
     #[allow(missing_docs)]
     pub locations_count: u32,
-    /// Never null, but every field null when there is no OA copy (6,869).
+    /// Never null in the snapshot, every field null when there is no OA
+    /// copy (6,869); `null` from the API (2026-09).
     #[serde(borrow)]
-    pub best_oa_location: BestOaLocation<'a>,
+    pub best_oa_location: Option<BestOaLocation<'a>>,
     #[serde(borrow)]
     #[allow(missing_docs)]
     pub sustainable_development_goals: Few<Scored<'a>, 2>,
@@ -150,10 +158,12 @@ pub struct Work<'a> {
     pub abstract_inverted_index: Option<RawJson<'a>>,
     #[allow(missing_docs)]
     pub counts_by_year: Few<YearCount, 8>,
-    /// ISO 8601 with milliseconds.
+    /// `YYYY-MM-DDThh:mm:ss.fffZ` in the snapshot; the API (2026-09)
+    /// writes six fraction digits and no zone.
     #[serde(borrow)]
     pub updated_date: Text<'a>,
-    /// ISO 8601 with milliseconds.
+    /// `YYYY-MM-DDThh:mm:ss.fffZ` in the snapshot; the API (2026-09)
+    /// writes seconds, no fraction, no zone.
     #[serde(borrow)]
     pub created_date: Text<'a>,
     #[allow(missing_docs)]
@@ -226,7 +236,9 @@ pub struct Ids<'a> {
 pub struct Location<'a> {
     /// `doi:…`, `oai:…`, a MAG id, …
     #[serde(borrow)]
-    pub id: Text<'a>,
+    /// Absent on one location of one looked-up work (W2117692326,
+    /// 2026-09-15), whose URLs read like test data.
+    pub id: Option<Text<'a>>,
     #[allow(missing_docs)]
     pub is_oa: bool,
     #[serde(borrow)]
@@ -255,8 +267,11 @@ pub struct Location<'a> {
     #[serde(borrow)]
     #[allow(missing_docs)]
     pub raw_source_name: Option<Text<'a>>,
-    #[allow(missing_docs)]
-    pub provenance: Provenance,
+    /// The snapshot says where a location came from here and writes the
+    /// bare id (digits, a DOI, `oai:…`); the API (2026-09) has no such
+    /// field and says the namespace in the id instead: `doi:…`, `pmid:…`,
+    /// `pmh:oai:…`.
+    pub provenance: Option<Provenance>,
 }
 
 /// `best_oa_location`: the same shape with every field nullable, because
@@ -462,6 +477,18 @@ pub struct ApcPaid<'a> {
     pub currency: Text<'a>,
     #[allow(missing_docs)]
     pub value_usd: f64,
+}
+
+/// `content_urls`.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContentUrls<'a> {
+    #[serde(borrow)]
+    #[allow(missing_docs)]
+    pub pdf: Option<Text<'a>>,
+    #[serde(borrow)]
+    #[allow(missing_docs)]
+    pub grobid_xml: Option<Text<'a>>,
 }
 
 /// `has_content`.

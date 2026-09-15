@@ -5,6 +5,10 @@
 //! renamed, and only then receipted — so a run that stops at its first
 //! failure leaves the files before it complete and the one in flight
 //! resumable. Nothing discovers a URL here: the listing is the input.
+//!
+//! A lookup entry (plan §8, item 8) is an API page answering a batch of
+//! ids: paced, one request in flight, asked once more after the wait a
+//! 429 asks for, kept whole and never resumed, receipted like any file.
 
 use std::error::Error as StdError;
 use std::fmt;
@@ -13,10 +17,14 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Mutex, PoisonError};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use md5::Md5;
 use sha2::{Digest, Sha256};
+
+use ureq::Body;
+use ureq::http::Response;
 
 use crate::http::{self, Client};
 use crate::listing::{Entry, Kind};
@@ -26,6 +34,13 @@ use crate::time;
 
 /// How much is read from the response at once.
 pub(crate) const CHUNK: usize = 256 * 1024;
+
+/// How long a lookup waits after a 429 or 503 with no usable
+/// `Retry-After`.
+const RETRY_DEFAULT: Duration = Duration::from_secs(30);
+/// The longest `Retry-After` a lookup honours; past it the run stops
+/// and says when to come back.
+const RETRY_LIMIT: Duration = Duration::from_secs(300);
 
 /// What a run of `fetch` did.
 #[derive(Debug, Default)]
@@ -69,6 +84,19 @@ pub enum Error {
         #[allow(missing_docs)]
         content_range: Option<String>,
     },
+    /// A lookup request that was not answered with a page, after the one
+    /// wait a `Retry-After` may ask for.
+    Lookup {
+        #[allow(missing_docs)]
+        url: String,
+        #[allow(missing_docs)]
+        status: u16,
+        /// The `Retry-After` the response carried, verbatim.
+        retry_after: Option<String>,
+    },
+    /// Lookups given to `ingest`, which keeps no page a parser rejects:
+    /// fetch them, then normalize.
+    LookupIngest,
     /// The bytes received are not what was promised.
     Verify {
         #[allow(missing_docs)]
@@ -102,6 +130,20 @@ impl fmt::Display for Error {
             Self::Range { url, content_range } => write!(
                 f,
                 "{url}: resumed, but the response does not continue the file (Content-Range {content_range:?})"
+            ),
+            Self::Lookup {
+                url,
+                status,
+                retry_after,
+            } => {
+                write!(f, "{url}: HTTP {status}")?;
+                match retry_after {
+                    Some(after) => write!(f, ", Retry-After {after}"),
+                    None => Ok(()),
+                }
+            }
+            Self::LookupIngest => f.write_str(
+                "the listing holds lookups, which are fetched, then normalized: a page the parser rejects must stay on disk",
             ),
             Self::Verify {
                 path,
@@ -146,6 +188,13 @@ pub struct Run<'a> {
     pub workers: usize,
     /// At most this many transfers this run.
     pub limit: Option<usize>,
+    /// For lookups: the least interval between two requests
+    /// ([`Lister::PACE`](crate::list::Lister::PACE)).
+    pub pace: Duration,
+    /// For lookups: the query parameter carrying a contact address,
+    /// `mailto=…`, when one was given on the command line; never in a
+    /// listing or a receipt.
+    pub contact: Option<String>,
 }
 
 /// Fetches every entry that has no matching receipt, `workers` at a time,
@@ -168,19 +217,25 @@ where
     let started = Instant::now();
     let (todo, skipped) = plan(run, entries)?;
     let receipts_path = run.store.receipts(run.source);
-    let workers = run.workers.clamp(1, todo.len().max(1));
+    // Lookups go one at a time: one request in flight per provider.
+    let workers = if todo.iter().any(|(_, e)| e.kind == Kind::Lookup) {
+        1
+    } else {
+        run.workers.clamp(1, todo.len().max(1))
+    };
+    let pace = Pace::new(run.pace);
     let next = AtomicUsize::new(0);
     let halt = AtomicBool::new(false);
     let failure: Mutex<Option<Error>> = Mutex::new(None);
     let written: Mutex<Vec<Receipt>> = Mutex::new(Vec::new());
     let appending = Mutex::new(());
-    std::thread::scope(|scope| {
+    thread::scope(|scope| {
         for _ in 0..workers {
             scope.spawn(|| {
                 while !halt.load(Ordering::Relaxed) {
                     let i = next.fetch_add(1, Ordering::Relaxed);
                     let Some((_, entry)) = todo.get(i) else { break };
-                    match fetch_one(run, entry, client) {
+                    match fetch_one(run, entry, client, &pace) {
                         Ok(receipt) => {
                             let appended = {
                                 let _guard =
@@ -326,7 +381,7 @@ fn hex(bytes: &[u8]) -> String {
 /// A transfer that has started: the response, and the partial file's
 /// bytes already hashed when it resumes.
 pub(crate) struct Transfer {
-    pub(crate) response: ureq::http::Response<ureq::Body>,
+    pub(crate) response: Response<Body>,
     pub(crate) hashers: Hashers,
     /// Bytes on disk the response continues from.
     pub(crate) resumed_from: Option<u64>,
@@ -436,7 +491,10 @@ impl Promised {
 
 /// One entry: sidecar, transfer (resumed if a partial file exists),
 /// checks, rename, receipt.
-fn fetch_one(run: &Run<'_>, entry: &Entry, client: &Client) -> Result<Receipt, Error> {
+fn fetch_one(run: &Run<'_>, entry: &Entry, client: &Client, pace: &Pace) -> Result<Receipt, Error> {
+    if entry.kind == Kind::Lookup {
+        return fetch_page(run, entry, client, pace);
+    }
     let path = run.store.raw(run.source, &entry.path);
     let part = part_of(&path);
     let io = |error| Error::Io {
@@ -518,6 +576,178 @@ fn fetch_one(run: &Run<'_>, entry: &Entry, client: &Client) -> Result<Receipt, E
     })
 }
 
+/// The pace of lookups: at least `min` between one request and the next,
+/// run-wide.
+pub(crate) struct Pace {
+    min: Duration,
+    last: Mutex<Option<Instant>>,
+}
+
+impl Pace {
+    pub(crate) const fn new(min: Duration) -> Self {
+        Self {
+            min,
+            last: Mutex::new(None),
+        }
+    }
+
+    /// Waits until `min` has passed since the last request, then counts
+    /// this one.
+    pub(crate) fn wait(&self) {
+        let mut last = self.last.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(at) = *last {
+            let since = at.elapsed();
+            if since < self.min {
+                thread::sleep(self.min.saturating_sub(since));
+            }
+        }
+        *last = Some(Instant::now());
+    }
+}
+
+/// One lookup: paced, asked once more after the wait a 429 or 503 asks
+/// for, kept whole, receipted with what the response promised. A partial
+/// page from an earlier run is overwritten, never resumed.
+fn fetch_page(
+    run: &Run<'_>,
+    entry: &Entry,
+    client: &Client,
+    pace: &Pace,
+) -> Result<Receipt, Error> {
+    let path = run.store.raw(run.source, &entry.path);
+    let part = part_of(&path);
+    let io = |error| Error::Io {
+        path: part.clone(),
+        error,
+    };
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir).map_err(io)?;
+    }
+    let url = with_contact(&entry.url, run.contact.as_deref());
+    let fetched_at = time::now();
+    let started = Instant::now();
+    let response = answer(&url, entry, client, pace)?;
+    let etag = http::header(&response, "etag");
+    let last_modified = http::header(&response, "last-modified");
+    let (_, body) = response.into_parts();
+    let content_length = body.content_length();
+    let mut file = File::create(&part).map_err(io)?;
+    let mut reader = body.into_reader();
+    let mut hashers = Hashers::new();
+    let mut received = 0u64;
+    let mut chunk = vec![0u8; CHUNK];
+    loop {
+        let n = reader.read(&mut chunk).map_err(|e| {
+            Error::Http(http::Error {
+                url: entry.url.clone(),
+                kind: http::ErrorKind::Body(e),
+            })
+        })?;
+        if n == 0 {
+            break;
+        }
+        file.write_all(&chunk[..n]).map_err(io)?;
+        hashers.update(&chunk[..n]);
+        received += n as u64;
+    }
+    file.sync_all().map_err(io)?;
+    drop(file);
+    let (sha256, md5) = hashers.finish();
+    let promised = Promised {
+        content_length,
+        listing_bytes: None,
+        sidecar: None,
+        etag_md5: None,
+    };
+    let checks = promised
+        .verify(received, &md5)
+        .map_err(|(check, expected, actual)| {
+            let _ = fs::remove_file(&part);
+            Error::Verify {
+                path: path.clone(),
+                check,
+                expected,
+                actual,
+            }
+        })?;
+    fs::rename(&part, &path).map_err(io)?;
+    Ok(Receipt {
+        path: entry.path.clone(),
+        url: entry.url.clone(),
+        bytes: received,
+        sha256,
+        md5,
+        fetched_at,
+        took_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+        checks,
+        resumed_from: None,
+        etag,
+        last_modified,
+        listing: Some(run.listing.display().to_string()),
+        note: None,
+    })
+}
+
+/// The response to a lookup: the request, paced; on a 429 or 503, the
+/// wait `Retry-After` asks for, then the request once more. Anything but
+/// a 200 after that is the error.
+fn answer(url: &str, entry: &Entry, client: &Client, pace: &Pace) -> Result<Response<Body>, Error> {
+    pace.wait();
+    let response = client.request(url)?;
+    let status = response.status().as_u16();
+    if status == 200 {
+        return Ok(response);
+    }
+    let retry_after = http::header(&response, "retry-after");
+    let refused = |status, retry_after| Error::Lookup {
+        url: entry.url.clone(),
+        status,
+        retry_after,
+    };
+    if status != 429 && status != 503 {
+        return Err(refused(status, retry_after));
+    }
+    let Some(wait) = retry_wait(retry_after.as_deref()) else {
+        return Err(refused(status, retry_after));
+    };
+    drop(response);
+    thread::sleep(wait);
+    pace.wait();
+    let response = client.request(url)?;
+    let status = response.status().as_u16();
+    if status == 200 {
+        return Ok(response);
+    }
+    let retry_after = http::header(&response, "retry-after");
+    Err(refused(status, retry_after))
+}
+
+/// How long to wait before asking again: what `Retry-After` says when it
+/// is a number of seconds within the limit, the default when it is
+/// absent or a date, and `None` when it is past the limit — the run
+/// stops and says so.
+fn retry_wait(retry_after: Option<&str>) -> Option<Duration> {
+    match retry_after.map(str::trim) {
+        None => Some(RETRY_DEFAULT),
+        Some(text) => match text.parse::<u64>() {
+            Ok(secs) if secs <= RETRY_LIMIT.as_secs() => Some(Duration::from_secs(secs)),
+            Ok(_) => None,
+            Err(_) => Some(RETRY_DEFAULT),
+        },
+    }
+}
+
+/// `url` with the contact parameter appended, when there is one.
+fn with_contact(url: &str, contact: Option<&str>) -> String {
+    match contact {
+        Some(contact) => {
+            let joiner = if url.contains('?') { '&' } else { '?' };
+            format!("{url}{joiner}{contact}")
+        }
+        None => url.to_owned(),
+    }
+}
+
 /// `<path>.part`.
 pub(crate) fn part_of(path: &Path) -> PathBuf {
     let mut name = path.file_name().unwrap_or_default().to_os_string();
@@ -573,7 +803,9 @@ pub(crate) fn etag_md5(etag: &str) -> Option<String> {
 mod tests {
     use std::path::Path;
 
-    use super::{etag_md5, hex, name_of, part_of, sidecar_md5};
+    use std::time::{Duration, Instant};
+
+    use super::{Pace, etag_md5, hex, name_of, part_of, retry_wait, sidecar_md5, with_contact};
 
     #[test]
     fn sidecars_and_etags_are_read_strictly() {
@@ -617,5 +849,31 @@ mod tests {
         );
         assert_eq!(name_of("manifest.json"), "manifest.json");
         assert_eq!(hex(&[0, 15, 255]), "000fff");
+    }
+
+    #[test]
+    fn lookups_are_paced_and_wait_what_retry_after_says() {
+        let pace = Pace::new(Duration::from_millis(30));
+        let started = Instant::now();
+        pace.wait();
+        pace.wait();
+        assert!(started.elapsed() >= Duration::from_millis(30));
+        assert_eq!(retry_wait(None), Some(Duration::from_secs(30)));
+        assert_eq!(retry_wait(Some(" 7 ")), Some(Duration::from_secs(7)));
+        assert_eq!(retry_wait(Some("300")), Some(Duration::from_secs(300)));
+        assert_eq!(retry_wait(Some("301")), None, "past the limit: stop");
+        assert_eq!(
+            retry_wait(Some("Wed, 21 Oct 2026 07:28:00 GMT")),
+            Some(Duration::from_secs(30))
+        );
+        assert_eq!(
+            with_contact("https://x/works?filter=a", Some("mailto=a%40b")),
+            "https://x/works?filter=a&mailto=a%40b"
+        );
+        assert_eq!(
+            with_contact("https://x/works", Some("mailto=a%40b")),
+            "https://x/works?mailto=a%40b"
+        );
+        assert_eq!(with_contact("https://x/works?a", None), "https://x/works?a");
     }
 }

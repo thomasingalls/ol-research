@@ -126,6 +126,9 @@ pub enum Error {
     DateTimeShape,
     /// A date-time with milliseconds is `YYYY-MM-DDThh:mm:ss.fffZ`.
     DateTimeMillisShape,
+    /// A naive date-time is `YYYY-MM-DDThh:mm:ss`, with an optional
+    /// fraction of one to six digits and no zone.
+    DateTimeNaiveShape,
     /// A date is `YYYY-MM-DD`.
     DateShape,
     /// Hours, minutes or seconds out of range.
@@ -143,6 +146,9 @@ impl fmt::Display for Error {
             Self::Calendar => "day does not exist in that month",
             Self::DateTimeShape => "date-time is not YYYY-MM-DDThh:mm:ssZ",
             Self::DateTimeMillisShape => "date-time is not YYYY-MM-DDThh:mm:ss.fffZ",
+            Self::DateTimeNaiveShape => {
+                "date-time is not YYYY-MM-DDThh:mm:ss with an optional fraction and no zone"
+            }
             Self::DateShape => "date is not YYYY-MM-DD",
             Self::Time => "time of day out of range",
         })
@@ -341,7 +347,8 @@ impl Season {
             "Winter" => Self::Winter,
             "Spring" => Self::Spring,
             "Summer" => Self::Summer,
-            "Fall" => Self::Fall,
+            // `Autumn` on 2 of 15,432 PubMed records looked up 2026-09-15.
+            "Fall" | "Autumn" => Self::Fall,
             _ => return None,
         })
     }
@@ -514,6 +521,42 @@ impl DateTime {
         Self::parse(s, true)
     }
 
+    /// Parses `YYYY-MM-DDThh:mm:ss` with an optional `.` and one to six
+    /// fraction digits, and no zone designator — the form OpenAlex's API
+    /// writes (2026-09), UTC by its documentation — keeping the fraction
+    /// to the millisecond.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::DateTimeNaiveShape`], a bad date part, or [`Error::Time`].
+    pub fn parse_utc_naive(s: &str) -> Result<Self, Error> {
+        let shape = Error::DateTimeNaiveShape;
+        let (head, fraction) = match s.split_once('.') {
+            Some((head, fraction)) => (head, Some(fraction)),
+            None => (s, None),
+        };
+        let millis = match fraction {
+            None => 0,
+            Some(digits)
+                if (1..=6).contains(&digits.len())
+                    && digits.bytes().all(|c| c.is_ascii_digit()) =>
+            {
+                // The first three digits, right-padded: "5" is 500 ms.
+                digits
+                    .bytes()
+                    .chain(std::iter::repeat(b'0'))
+                    .take(3)
+                    .fold(0, |n, c| n * 10 + u32::from(c - b'0'))
+            }
+            Some(_) => return Err(shape),
+        };
+        let (date, seconds) = Self::parse_head(head, shape)?;
+        Ok(Self {
+            date,
+            millis_of_day: seconds * 1000 + millis,
+        })
+    }
+
     fn parse(s: &str, fraction: bool) -> Result<Self, Error> {
         let shape = if fraction {
             Error::DateTimeMillisShape
@@ -522,19 +565,40 @@ impl DateTime {
         };
         let b = s.as_bytes();
         let len = if fraction { 24 } else { 20 };
-        if b.len() != len
+        if b.len() != len || b[len - 1] != b'Z' || (fraction && b[19] != b'.') {
+            return Err(shape);
+        }
+        let (date, seconds) = Self::parse_head(&s[..19], shape)?;
+        let millis = if fraction {
+            let part = &s[20..23];
+            if !part.bytes().all(|c| c.is_ascii_digit()) {
+                return Err(shape);
+            }
+            part.parse().map_err(|_| shape)?
+        } else {
+            0
+        };
+        Ok(Self {
+            date,
+            millis_of_day: seconds * 1000 + millis,
+        })
+    }
+
+    /// `YYYY-MM-DDThh:mm:ss`, exactly, as the date and the second of the
+    /// day; `shape` is the error for anything else.
+    fn parse_head(head: &str, shape: Error) -> Result<(Date, u32), Error> {
+        let b = head.as_bytes();
+        if b.len() != 19
             || b[4] != b'-'
             || b[7] != b'-'
             || b[10] != b'T'
             || b[13] != b':'
             || b[16] != b':'
-            || b[len - 1] != b'Z'
-            || (fraction && b[19] != b'.')
         {
             return Err(shape);
         }
         let num = |range: std::ops::Range<usize>| -> Result<u32, Error> {
-            let part = &s[range];
+            let part = &head[range];
             if !part.bytes().all(|c| c.is_ascii_digit()) {
                 return Err(shape);
             }
@@ -545,11 +609,7 @@ impl DateTime {
         if h > 23 || m > 59 || sec > 59 {
             return Err(Error::Time);
         }
-        let millis = if fraction { num(20..23)? } else { 0 };
-        Ok(Self {
-            date,
-            millis_of_day: (h * 3600 + m * 60 + sec) * 1000 + millis,
-        })
+        Ok((date, h * 3600 + m * 60 + sec))
     }
 
     /// The calendar date.
@@ -1035,6 +1095,33 @@ mod tests {
         assert_eq!(dt.epoch_seconds(), 1_753_428_927);
         assert_eq!(dt.epoch_millis(), 1_753_428_927_710);
         assert_eq!(dt.to_string(), "2025-07-25T07:35:27.710Z");
+        let naive = DateTime::parse_utc_naive("2025-07-25T07:35:27.710513").unwrap();
+        assert_eq!(naive, dt, "six fraction digits keep their milliseconds");
+        assert_eq!(
+            DateTime::parse_utc_naive("2025-07-25T07:35:27.7").unwrap(),
+            DateTime::parse_utc_millis("2025-07-25T07:35:27.700Z").unwrap()
+        );
+        assert_eq!(
+            DateTime::parse_utc_naive("2026-01-24T00:00:00").unwrap(),
+            DateTime::parse_utc("2026-01-24T00:00:00Z").unwrap()
+        );
+        for bad in [
+            "2026-01-24T00:00:00Z",
+            "2026-01-24T00:00:00.",
+            "2026-01-24T00:00:00.1234567",
+            "2026-01-24T00:00:00.12a",
+            "2026-01-24 00:00:00",
+        ] {
+            assert_eq!(
+                DateTime::parse_utc_naive(bad),
+                Err(Error::DateTimeNaiveShape),
+                "{bad}"
+            );
+        }
+        assert_eq!(
+            DateTime::parse_utc_naive("2026-01-24T24:00:00"),
+            Err(Error::Time)
+        );
         let midnight = DateTime::parse_utc_millis("2020-06-05T00:00:00.000Z").unwrap();
         assert_eq!(
             midnight,

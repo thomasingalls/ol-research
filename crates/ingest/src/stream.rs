@@ -22,7 +22,7 @@ use flate2::bufread::MultiGzDecoder;
 
 use crate::fetch::{self, Hashers, Promised, Run, Transfer, begin, etag_md5, part_of};
 use crate::http::{self, Client};
-use crate::listing::Entry;
+use crate::listing::{Entry, Kind};
 use crate::receipt::{self, Receipt};
 use crate::run::{
     Failure, FileRun, Outcome, Progress, Report, Stage, Step, Survey, failure, normalize_step,
@@ -135,6 +135,9 @@ where
     F: Fn(usize) -> io::Result<K> + Sync,
     D: Fn(&Entry, &Receipt) + Sync,
 {
+    if entries.iter().any(|e| e.kind == Kind::Lookup) {
+        return Err(fetch::Error::LookupIngest);
+    }
     let (todo, skipped) = fetch::plan(run, entries)?;
     let workers = workers.clamp(1, todo.len().max(1));
     let started = Instant::now();

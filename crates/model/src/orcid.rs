@@ -37,7 +37,8 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {}
 
 /// ISO 7064 MOD 11-2 over the fifteen digits: `0..=10`, ten meaning `X`.
-fn checksum(mut base: u64) -> u8 {
+/// ISNI uses the same scheme; [`crate::isni`] shares it.
+pub(crate) fn checksum(mut base: u64) -> u8 {
     let mut digits = [0u8; 15];
     for slot in digits.iter_mut().rev() {
         *slot = u8::try_from(base % 10).unwrap_or(0);

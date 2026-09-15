@@ -60,6 +60,10 @@ pub enum Source {
 pub enum AssertedBy {
     Publisher,
     Crossref,
+    /// `source` on an update: Retraction Watch's data, carried by Crossref
+    /// since 2023 (plan §2); 24 of 34,536 looked-up works (2026-09-15).
+    #[serde(rename = "retraction-watch")]
+    RetractionWatch,
 }
 
 /// `asserted-by` on a relation: which side of the relation asserted it.
@@ -79,6 +83,9 @@ pub enum IdKind {
     Ror,
     #[serde(rename = "DOI")]
     Doi,
+    /// 40 affiliation ids of 34,536 looked-up works (2026-09-15).
+    #[serde(rename = "ISNI")]
+    Isni,
 }
 
 /// `id-type` on a relation: the identifier types of the deposit schema.
@@ -111,15 +118,34 @@ pub enum Sequence {
     Additional,
 }
 
-/// `role.role` on a contributor.
+/// `role.role` on a contributor: Crossref's own, and the fourteen `CRediT`
+/// roles, all seen with `vocabulary: credit` on the looked-up works of
+/// 2026-09-15, with `reviewer` (on `contributor`) and
+/// `corresponding-author`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "kebab-case")]
 #[allow(missing_docs)]
 pub enum RoleName {
     Author,
     Editor,
     Chair,
     Translator,
+    Reviewer,
+    CorrespondingAuthor,
+    Conceptualization,
+    DataCuration,
+    FormalAnalysis,
+    FundingAcquisition,
+    Investigation,
+    Methodology,
+    ProjectAdministration,
+    Resources,
+    Software,
+    Supervision,
+    Validation,
+    Visualization,
+    WritingOriginalDraft,
+    WritingReviewEditing,
 }
 
 /// `role.vocabulary` on a contributor.
@@ -128,6 +154,30 @@ pub enum RoleName {
 #[allow(missing_docs)]
 pub enum Vocabulary {
     Crossref,
+    /// `CRediT`, the contributor roles taxonomy.
+    Credit,
+}
+
+/// `type` on a reference: the citing publisher's word for what it cites,
+/// not the 30 work types — `conference-proceedings`, `preprint`,
+/// `web-resource` and `software` are none of those. What 34,536
+/// looked-up works' references used (2026-09-15).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+#[allow(missing_docs)]
+pub enum ReferenceType {
+    JournalArticle,
+    Book,
+    BookChapter,
+    ConferencePaper,
+    ConferenceProceedings,
+    Dataset,
+    Dissertation,
+    Other,
+    Preprint,
+    Report,
+    Software,
+    WebResource,
 }
 
 /// `content-version` on licenses and links.

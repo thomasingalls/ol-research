@@ -6,16 +6,26 @@
 //! known others, and the file numbers must be contiguous — so a change in
 //! what NCBI publishes is a failed listing, not a silently shorter one.
 //! It fired on first contact: the update index's stats pages.
+//!
+//! And, for seeding the POC sample only (plan §8, item 8), E-utilities'
+//! `efetch`, which answers a batch of PMIDs with the baseline files' own
+//! `PubmedArticleSet` XML.
 
 use std::collections::BTreeSet;
+use std::time::Duration;
 
-use ingest::list::{Error, Index, Lister};
+use ingest::keys::Key;
+use ingest::list::{Error, Index, Lister, Lookup};
 use ingest::listing::{Entry, Kind};
 
 use crate::Pubmed;
 
 /// The FTP site over HTTPS.
 pub const BASE: &str = "https://ftp.ncbi.nlm.nih.gov/pubmed/";
+/// E-utilities' `efetch`, for lookups.
+pub const EFETCH: &str = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi";
+/// PMIDs per lookup request, well inside what a GET carries.
+const BATCH: usize = 200;
 /// The two directories listed, in order.
 const DIRECTORIES: [&str; 2] = ["baseline", "updatefiles"];
 /// Links an index may hold besides data files and sidecars.
@@ -115,6 +125,29 @@ fn hrefs(html: &str) -> impl Iterator<Item = &str> {
 }
 
 impl Lister for Pubmed {
+    /// A third of the three a second NCBI allows without a key.
+    const PACE: Duration = Duration::from_secs(1);
+    /// NCBI's `email`, registered with `tool` before it will unblock an
+    /// address; `tool` is always sent, the address only when given.
+    const CONTACT: Option<&'static str> = Some("email");
+
+    fn batch(key: Key) -> Option<usize> {
+        (key == Key::Pmid).then_some(BATCH)
+    }
+
+    fn lookup(key: Key, ids: &[&str]) -> Result<Lookup, Error> {
+        if key != Key::Pmid {
+            return Err(Error::Unsupported(key));
+        }
+        Ok(Lookup {
+            url: format!(
+                "{EFETCH}?db=pubmed&retmode=xml&tool=ol-rht&id={}",
+                ids.join(",")
+            ),
+            extension: "xml",
+        })
+    }
+
     fn list(index: &mut dyn Index) -> Result<Vec<Entry>, Error> {
         let mut all = Vec::new();
         for directory in DIRECTORIES {

@@ -32,6 +32,34 @@ pub use record::Work;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct OpenAlex;
 
+impl ingest::Keys for OpenAlex {
+    fn work_keys(work: &normalize::Work<'_>, key: ingest::Key, out: &mut dyn FnMut(String)) {
+        match key {
+            ingest::Key::OpenAlex => out(work.id.to_string()),
+            ingest::Key::Doi => {
+                if let Some(doi) = work.doi.as_ref().and_then(model::Claim::valid) {
+                    out(doi.as_str().to_owned());
+                }
+            }
+            ingest::Key::Pmid => {
+                if let Some(pmid) = work.pmid {
+                    out(pmid.to_string());
+                }
+            }
+        }
+    }
+
+    fn reference_keys(
+        reference: &model::OpenAlexId,
+        key: ingest::Key,
+        out: &mut dyn FnMut(String),
+    ) {
+        if key == ingest::Key::OpenAlex {
+            out(reference.to_string());
+        }
+    }
+}
+
 impl ingest::Source for OpenAlex {
     const NAME: &'static str = "openalex";
     type Native<'a> = Work<'a>;

@@ -31,6 +31,13 @@ pub enum WorkType {
     Grant,
     SupplementaryMaterials,
     Retraction,
+    /// The five below came with the API (2026-09-15), on 109 of 34,811
+    /// looked-up works; the June snapshot's part never showed them.
+    ConferencePaper,
+    ConferenceAbstract,
+    DataPaper,
+    BookReview,
+    SoftwarePaper,
 }
 
 /// `open_access.oa_status`.

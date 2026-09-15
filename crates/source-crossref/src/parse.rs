@@ -90,6 +90,24 @@ impl<'a> Page<'a> {
                 )),
             });
         }
+        // A result set that fits in one page must all be on it: a lookup
+        // (plan §8, item 8) whose answer was cut short is a loss, not a
+        // shorter page. A sample's total is the corpus and says nothing.
+        let m = &envelope.message;
+        if m.query.start_index == 0
+            && m.total_results <= m.items_per_page
+            && u64::try_from(m.items.len()).ok() != Some(m.total_results)
+        {
+            return Err(Error {
+                context: Context::Envelope,
+                doi: None,
+                source: serde::de::Error::custom(format!(
+                    "total-results {} but {} items on the one page",
+                    m.total_results,
+                    m.items.len()
+                )),
+            });
+        }
         Ok(Self { envelope })
     }
 
@@ -277,6 +295,23 @@ mod tests {
         );
         let err = jsonl(&bad).next().unwrap().unwrap_err();
         assert_eq!(err.context, Context::Line(1));
+    }
+
+    #[test]
+    fn a_page_that_should_hold_every_result_must() {
+        let cut = envelope(WORK).replacen("\"total-results\":1", "\"total-results\":2", 1);
+        assert!(
+            Page::parse(&cut)
+                .unwrap_err()
+                .to_string()
+                .contains("total-results 2"),
+        );
+        let sample =
+            envelope(WORK).replacen("\"total-results\":1", "\"total-results\":170000000", 1);
+        assert!(
+            Page::parse(&sample).is_ok(),
+            "a sample's total is the corpus"
+        );
     }
 
     #[test]

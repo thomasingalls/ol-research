@@ -100,6 +100,20 @@ impl Client {
         }
     }
 
+    /// GET `url`, whatever the status: the caller reads it, and the
+    /// headers a lookup needs on a 429 (`Retry-After`). The body is
+    /// unread.
+    ///
+    /// # Errors
+    ///
+    /// A transport failure.
+    pub fn request(&self, url: &str) -> Result<Response<Body>, Error> {
+        self.agent.get(url).call().map_err(|e| Error {
+            url: url.to_owned(),
+            kind: ErrorKind::Transport(e),
+        })
+    }
+
     /// GET `url` as text: an index document, a sidecar.
     ///
     /// # Errors
