@@ -438,4 +438,48 @@ mod normalized {
         assert_eq!(err.raw, "Janvier");
         assert_eq!(err.field, "JournalIssue/PubDate");
     }
+
+    #[test]
+    fn the_binary_layout_roundtrips_the_fixtures() {
+        use super::{fixture, only_article};
+        use ingest::{Binary, Kind, Reader};
+        let prefix = std::env::temp_dir().join(format!("ol-rht-pubmed-{}", std::process::id()));
+        let mut binary = Binary::create(&prefix, "pubmed", model::VERSION).unwrap();
+        let inputs: Vec<String> = ["shortest", "mathml_refs_mesh", "refs_pmcid_corrections"]
+            .iter()
+            .map(|n| fixture(n))
+            .collect();
+        let articles: Vec<_> = inputs.iter().map(|i| only_article(i)).collect();
+        let mut collect = Collect::default();
+        for article in &articles {
+            normalize(article, &mut (&mut collect, &mut binary)).expect("normalizes");
+        }
+        let written = binary.finish().unwrap();
+        assert_eq!(written.records[0], 3);
+        assert_eq!(written.records[1], collect.references.len() as u64);
+        let works = Reader::open(&Kind::Works.path(&prefix)).unwrap();
+        let back: Vec<Citation<'_>> = works.records().map(Result::unwrap).collect();
+        assert_eq!(back.len(), 3);
+        for (a, b) in back.iter().zip(&collect.citations) {
+            assert_eq!(a.pmid, b.pmid);
+            assert_eq!(a.title, b.title);
+            assert_eq!(a.authors.len(), b.authors.len());
+            assert_eq!(a.mesh.len(), b.mesh.len());
+            assert_eq!(a.dates.published, b.dates.published);
+        }
+        let refs = Reader::open(&Kind::References.path(&prefix)).unwrap();
+        let back: Vec<(Pmid, Reference<'_>)> = refs.records().map(Result::unwrap).collect();
+        assert_eq!(
+            back.iter().map(|(from, _)| *from).collect::<Vec<_>>(),
+            collect.froms
+        );
+        assert!(
+            back.iter()
+                .zip(&collect.references)
+                .all(|((_, a), b)| a == b)
+        );
+        for kind in Kind::ALL {
+            std::fs::remove_file(kind.path(&prefix)).unwrap();
+        }
+    }
 }

@@ -10,8 +10,8 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use crate::gz;
 use crate::source::{Sink, Source};
+use crate::{alloc, gz};
 
 /// Reads one raw file into memory: through the multi-member gzip decoder
 /// when its extension is `gz`, as is otherwise.
@@ -36,6 +36,8 @@ pub enum Stage {
     Parse,
     /// The strict value-level normalization.
     Normalize,
+    /// Writing to the sink.
+    Write,
 }
 
 impl fmt::Display for Stage {
@@ -44,6 +46,7 @@ impl fmt::Display for Stage {
             Self::Read => "read",
             Self::Parse => "parse",
             Self::Normalize => "normalize",
+            Self::Write => "write",
         })
     }
 }
@@ -91,6 +94,11 @@ pub struct Report {
     pub bytes: u64,
     /// Wall time for reading, parsing and normalizing.
     pub elapsed: Duration,
+    /// Allocations during the run, when the counting allocator is
+    /// installed (plan §5, rule 13); zero otherwise.
+    pub allocations: u64,
+    /// Bytes those allocations requested.
+    pub allocated_bytes: u64,
 }
 
 #[allow(clippy::cast_precision_loss)] // reporting only
@@ -120,8 +128,23 @@ impl fmt::Display for Report {
             self.elapsed.as_secs_f64(),
             self.records_per_second(),
             self.mib_per_second()
-        )
+        )?;
+        if self.allocations > 0 && self.records > 0 {
+            write!(
+                f,
+                "; {:.1} allocations/record, {:.0} B/record",
+                self.allocations as f64 / self.records as f64,
+                self.allocated_bytes as f64 / self.records as f64
+            )?;
+        }
+        Ok(())
     }
+}
+
+/// What one record's step failed at.
+enum Step<E> {
+    Normalize(E),
+    Write(io::Error),
 }
 
 /// Parses every record of every file and normalizes none of them: the
@@ -140,8 +163,9 @@ pub fn parse<S: Source>(paths: &[impl AsRef<Path>], limit: Option<u64>) -> Resul
 ///
 /// # Errors
 ///
-/// The first file that cannot be read, record that does not parse, or value
-/// that does not fit the model. The sink has received everything before it.
+/// The first file that cannot be read, record that does not parse, value
+/// that does not fit the model, or write the sink could not make. The sink
+/// has received everything before it.
 pub fn normalize<S, K>(
     paths: &[impl AsRef<Path>],
     limit: Option<u64>,
@@ -151,7 +175,10 @@ where
     S: Source,
     K: for<'n> Sink<'n, S>,
 {
-    each::<S, _>(paths, limit, |native| S::normalize(native, sink))
+    each::<S, _>(paths, limit, |native| {
+        S::normalize(native, sink).map_err(Step::Normalize)?;
+        sink.failed().map_or(Ok(()), |e| Err(Step::Write(e)))
+    })
 }
 
 fn each<S: Source, F>(
@@ -160,9 +187,10 @@ fn each<S: Source, F>(
     mut f: F,
 ) -> Result<Report, Failure>
 where
-    F: FnMut(&S::Native<'_>) -> Result<(), S::NormalizeError>,
+    F: FnMut(&S::Native<'_>) -> Result<(), Step<S::NormalizeError>>,
 {
     let started = Instant::now();
+    let (allocations, allocated_bytes) = (alloc::allocations(), alloc::allocated_bytes());
     let mut report = Report::default();
     'files: for path in paths {
         let path = path.as_ref();
@@ -187,11 +215,16 @@ where
                 error,
             };
             let native = record.map_err(|e| fail(Stage::Parse, Box::new(e)))?;
-            f(&native).map_err(|e| fail(Stage::Normalize, Box::new(e)))?;
+            f(&native).map_err(|e| match e {
+                Step::Normalize(e) => fail(Stage::Normalize, Box::new(e)),
+                Step::Write(e) => fail(Stage::Write, Box::new(e)),
+            })?;
             report.records += 1;
         }
     }
     report.elapsed = started.elapsed();
+    report.allocations = alloc::allocations() - allocations;
+    report.allocated_bytes = alloc::allocated_bytes() - allocated_bytes;
     Ok(report)
 }
 
@@ -321,6 +354,66 @@ mod tests {
         assert_eq!((report.records, report.files), (1, 1));
         std::fs::remove_file(a).unwrap();
         std::fs::remove_file(b).unwrap();
+    }
+
+    #[test]
+    fn the_binary_sink_roundtrips_every_kind() {
+        use crate::binary::{Binary, Kind, Reader};
+        let input = file("1: 2 3\ndel 9\n2:\n", false);
+        let prefix = std::env::temp_dir().join(format!(
+            "ol-rht-ingest-bin-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let mut sink = (
+            Count::default(),
+            Binary::create(&prefix, "lines", 7).unwrap(),
+        );
+        let report = normalize::<Lines, _>(&[&input], None, &mut sink).unwrap();
+        assert_eq!(report.records, 3);
+        let (count, binary) = sink;
+        let written = binary.finish().unwrap();
+        assert_eq!(written.records, [2, 2, 1]);
+        assert_eq!(count.works, 2);
+        assert!(written.bytes > 0);
+
+        let works = Reader::open(&Kind::Works.path(&prefix)).unwrap();
+        assert_eq!(works.header().source, "lines");
+        assert_eq!(works.header().model, 7);
+        assert_eq!(works.header().kind, Kind::Works);
+        let ws: Vec<u32> = works.records().map(Result::unwrap).collect();
+        assert_eq!(ws, [1, 2]);
+        let refs: Vec<(u32, u32)> =
+            crate::binary::read_all(&Kind::References.path(&prefix)).unwrap();
+        assert_eq!(refs, [(1, 2), (1, 3)]);
+        let dels: Vec<u32> = crate::binary::read_all(&Kind::Deletions.path(&prefix)).unwrap();
+        assert_eq!(dels, [9]);
+        assert!(
+            Reader::open(&input).is_err(),
+            "a plain text file is not this layout"
+        );
+        for kind in Kind::ALL {
+            std::fs::remove_file(kind.path(&prefix)).unwrap();
+        }
+        std::fs::remove_file(input).unwrap();
+    }
+
+    #[test]
+    fn a_failed_run_leaves_no_output() {
+        use crate::binary::{Binary, Kind};
+        let input = file("1: 2\nbad\n", false);
+        let prefix = std::env::temp_dir().join(format!(
+            "ol-rht-ingest-bin-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let mut sink = Binary::create(&prefix, "lines", 1).unwrap();
+        let err = normalize::<Lines, _>(&[&input], None, &mut sink).unwrap_err();
+        assert_eq!(err.stage, Stage::Normalize);
+        assert!(Kind::Works.path(&prefix).exists());
+        sink.discard();
+        assert!(!Kind::Works.path(&prefix).exists());
+        std::fs::remove_file(input).unwrap();
     }
 
     #[test]

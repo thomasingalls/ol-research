@@ -4,10 +4,17 @@
 //! identifier, with the exact rule it enforces. Everything else about the
 //! normalized shape is discovered from data, not declared ahead of it.
 
+/// The model version. Bump it on any change to a type here or to a
+/// source's normalized types: normalized output carries it (plan §6), and
+/// output written under another version is invalid — rebuilt, never
+/// patched.
+pub const VERSION: u32 = 1;
+
 pub mod claim;
 pub mod code;
 pub mod date;
 pub mod doi;
+mod human;
 pub mod id;
 pub mod isbn;
 pub mod issn;

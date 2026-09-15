@@ -4,10 +4,10 @@
 //! are the values observed in the first part file plus the documented ones
 //! that were not, where the documentation lists them.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// `type`: OpenAlex's work types, from Crossref's with a few of its own.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 #[allow(missing_docs)]
 pub enum WorkType {
@@ -34,7 +34,7 @@ pub enum WorkType {
 }
 
 /// `open_access.oa_status`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 #[allow(missing_docs)]
 pub enum OaStatus {
@@ -47,7 +47,7 @@ pub enum OaStatus {
 }
 
 /// `version` on a location.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
 #[allow(missing_docs)]
 pub enum Version {
     #[serde(rename = "publishedVersion")]
@@ -59,7 +59,7 @@ pub enum Version {
 }
 
 /// `license` on a location.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 #[allow(missing_docs)]
 pub enum License {
@@ -98,7 +98,7 @@ impl License {
 }
 
 /// `provenance` on a location: which upstream supplied it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 #[allow(missing_docs)]
 pub enum Provenance {
@@ -110,7 +110,7 @@ pub enum Provenance {
 }
 
 /// `indexed_in[]`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 #[allow(missing_docs)]
 pub enum Index {
@@ -133,7 +133,7 @@ impl Index {
 }
 
 /// `source.type`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
 #[allow(missing_docs)]
 pub enum SourceType {
     #[serde(rename = "journal")]
@@ -153,7 +153,7 @@ pub enum SourceType {
 }
 
 /// `institutions[].type`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 #[allow(missing_docs)]
 pub enum InstitutionType {
@@ -169,7 +169,7 @@ pub enum InstitutionType {
 }
 
 /// `author_position`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 #[allow(missing_docs)]
 pub enum AuthorPosition {

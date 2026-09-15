@@ -7,6 +7,8 @@ license.workspace = true
 [dependencies]
 ingest.workspace = true
 model.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 source-crossref.workspace = true
 source-openalex.workspace = true
 source-pubmed.workspace = true

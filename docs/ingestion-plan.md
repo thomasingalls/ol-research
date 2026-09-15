@@ -27,6 +27,18 @@ Scholar are aggregators that have already done identity resolution (their
 `ids` / `externalids` maps). Those assertions are an input to merging, and a
 yardstick for it.
 
+Standing, 2026-09-15: for the POC this pipeline is an aggregator over
+aggregators. Nothing comes from a publisher directly (publisher RSS feeds
+are a possible later origin; whether anyone still publishes them is
+unchecked). The interesting data is where the aggregators *disagree* about
+a record. A policy that resolves those disagreements sensibly is a product
+feature, not plumbing — for instance, preserving matchability against the
+whole smear of representations a work has while promoting the corrected
+form for display and use. That policy belongs to the merge plan; what
+ingestion owes it is every representation kept intact and typed, so that
+the disagreement is visible rather than papered over at the source. This
+is roughly what Dimensions does; the aim is to do it better.
+
 ## 2. Sources
 
 Five. Summary first; per-source facts follow. The bullets mix documented
@@ -242,31 +254,47 @@ wart is a claim the POC run confirms or refutes, not a commitment.
 - Terms: ODC-BY with attribution to Kinney et al. 2023 (arXiv:2301.10140) —
   a product-facing obligation, not just a download formality.
 
-### Long tail — assessed 2026-09-15
+### Long tail — assessed and mostly wanted, 2026-09-15
 
-Scoped to articles and their edges, books excluded. Two worth a slot; the
-rest not.
+Scoped to articles and their edges, books excluded. Because the product
+lives on the disagreements between aggregators (§1), overlap with what is
+already ingested is not a reason to skip a source. In rough order of
+expected value:
 
+- **DataCite** public data file: DOIs for datasets, preprints and theses;
+  a source of record where OpenAlex and Crossref disagree with it. Wanted.
+- **NIH Open Citation Collection** (iCite): CC0, PMID → PMID edges from
+  full text; the biomedical edge set that PubMed's own reference lists
+  only partly carry. Wanted.
 - **OpenCitations Index**: CC0, bulk CSV dumps, ~2 × 10^9 citing-DOI →
-  cited-DOI edges built from Crossref, DataCite and NIH's open citation
-  collection. The most direct edge source there is and an independent check
-  on Crossref's reference DOIs. A POC slot after S2.
-- **Europe PMC** (and PMC's own OA subset): bulk full-text XML on FTP with
-  parsed reference lists carrying PMIDs and DOIs, plus preprints. Metadata
-  overlaps PubMed and OpenAlex almost entirely; the value is at the
-  full-text stage of the funnel, not for the graph.
-- **CORE**, **BASE**: aggregators over the repositories OpenAlex already
-  harvests. CORE's one distinctive asset is its full-text corpus (a later
-  stage); BASE adds nothing. Neither offers a bulk dump without an
-  application.
+  cited-DOI edges built from Crossref, DataCite and NIH-OCC. The most
+  direct edge source and an independent check on Crossref's reference
+  DOIs. Wanted.
+- **Europe PMC** (and PMC's own OA subset): bulk full-text XML with parsed
+  reference lists carrying PMIDs and DOIs, plus preprints. Metadata
+  overlaps PubMed and OpenAlex; the value is at the full-text stage.
+- **CORE**, **BASE**: aggregators over the repositories OpenAlex harvests,
+  which is exactly the point — a third and fourth opinion on the same
+  records, and CORE's full-text corpus. Both need an application for bulk
+  access. Wanted.
+- **Retraction Watch**: carried free by Crossref since 2023, also a CSV;
+  the funnel's retraction filter wants it. Wanted.
+- **DBLP**: CC0 dump, computer science, no citations; clean venues and
+  authors for one field. Wanted.
+- **Papers With Code**: the site was retired in 2025; its CC BY-SA dumps
+  (papers, code links) survive on Hugging Face as of last look, unverified
+  here. Wanted if the dumps are still reachable.
+- **Papers We Love**: a curated list, not a database — no schema, no ids
+  beyond links. Useful as a seed set, not as a source.
 - **JSTOR**, **Dimensions**, **Google Scholar**: closed. JSTOR's article
   metadata is in Crossref under its prefix; Dimensions has no bulk access
   and a proprietary graph; Scholar has no API and forbids scraping.
-- **OAI-PMH** is a protocol, not a source: the route to arXiv (§2), and how
-  the aggregators above are harvested.
-- Small extras: **DBLP** (CC0 dump, computer science, no citations);
-  **Retraction Watch**, which Crossref now carries free and which the
-  funnel's retraction filter will want.
+- **OAI-PMH** is a protocol, not a source: the route to arXiv, and how the
+  aggregators above are harvested.
+
+Each wanted source is a crate implementing `Source` (§3.2) when its turn
+comes; the order above is a guess to be revised by what the merge stage
+finds it needs.
 
 ### Consequences
 
@@ -444,6 +472,41 @@ release build, one core, Apple Silicon: **28.8k records/s, 393 MiB/s** of
 decompressed XML through the strict zero-copy parser, with gzip inflation
 running at the same rate ahead of it. Extrapolated, the full 37M-record
 baseline is ~22 core-minutes. Allocations per record are not yet counted.
+
+Second measurement, 2026-09-15 — all three sources through one runner,
+end to end (inflate, parse, normalize, and write the binary sink at zstd
+level 3), release build, one core, Apple Silicon:
+
+| source   | records | without sink | with sink   | allocations / record | output vs raw          |
+|----------|--------:|-------------:|------------:|---------------------:|------------------------|
+| PubMed   |   4,989 | 14.3k rec/s  |  8.9k rec/s | 74 parse only, 94 all | 11.3 MiB vs 13 MB gz  |
+| Crossref |   1,000 | 28.5k rec/s* | 14.4k rec/s | 195 parse only, 207 all | 1.8 MiB vs 11 MB JSON |
+| OpenAlex |  10,873 | 22.5k rec/s  | 15.2k rec/s | 162 parse only, 184 all | 13.2 MiB vs 20 MB gz  |
+
+\* uncompressed input; the others include gzip inflation. Three findings.
+(1) The sink costs 30–45 % of the throughput at zstd level 3; the level
+and the frame size are knobs not yet turned. (2) Rule 1 is not met: 75 to
+200 allocations per record, nearly all of them the `Vec`s inside the
+native records — authors, references, MeSH headings; quick-xml and serde
+build them per record — and their counterparts in the normalized ones;
+the sink adds under twenty. At ~3 × 10^6 allocations per second that is a
+tax of perhaps a tenth of the time, not the dominant cost; the fix, when
+it is worth it, is per-worker arenas or reused native records. This is
+the first budget number. (3) The layout is about the size of the gzipped
+raw, not smaller: OpenAlex's abstract is kept as raw JSON text and every
+name and affiliation is a string. Symbol tables (rule 4) and a compact
+abstract form are the levers, not the compressor.
+
+Napkin extrapolation, same date — whole corpora at the measured end-to-end
+rates with the sink, one core: PubMed, ~4 × 10^7 citations (1,334
+baseline files of 30,000; the 3.7 × 10^7 in §2 was an estimate) → ~75
+min; Crossref, ~1.8 × 10^8 works → ~3.5 h, call it 4 with inflation;
+OpenAlex, 5.1 × 10^8 works → ~9.5 h. About 14 core-hours, 9 without the
+sink. On eight cores, once the runner is parallel over files, ~2 h of wall
+time, and the disk keeps up (0.9 TB of gzipped raw reads in ~15 min from
+NVMe). The binding constraints are not the machinery: the raw is 0.9 TB
+gzipped, this layout writes roughly as much again, and downloading it
+takes longer than running it. The POC stays at 10^4 records per source.
 
 The rules are committed. The specific types named inside them —
 `PartialDate`, `WorkKind`, interned venue names — are Appendix A
@@ -732,6 +795,14 @@ in your environment, never in the repo or in this conversation.
   shape for all three, a deletion stream for PubMed. Still here: fetch with
   manifests, the binary sink, the counting allocator, parallelism over
   files — and with them the first budget number.*
+  *Continued 2026-09-15: counting allocator (rule 13) and allocations per
+  record in every report; the binary sink v0 (rule 12: postcard values,
+  length-prefixed, one zstd stream per record kind, a header with the
+  model version) and its reader; `--out` and `dump`; write errors stop the
+  run at the record they hit; a failed run leaves no output. serde on
+  every normalized and model type, with canonical text in JSON and packed
+  numbers on disk. First numbers in §5. Left: fetch with manifests,
+  parallelism over files, symbol tables, the allocation work.*
 - **M3** — `source-openalex` (widest schema, second edge source, cross-IDs).
   *Native struct landed 2026-09-15 from the census: every object
   `deny_unknown_fields`, closed enums for type / OA status / version /
@@ -774,6 +845,14 @@ in your environment, never in the repo or in this conversation.
 - **M8** — full-scale plan: storage, incremental origins (`DeleteCitation`,
   update files, OAI `from`), model-version invalidation.
 - Then: the merge plan.
+- **Search sinks**, noted 2026-09-15 so they are not forgotten: the
+  metadata goes into **Meilisearch** and **Tantivy** at least, and probably
+  two more for comparison (Quickwit, which is Tantivy at scale; Typesense or
+  OpenSearch). The search strategy is undecided. These index the *merged*
+  layer, so they are sinks of the merge stage, not of ingestion; the
+  `Sink` trait shape (§3.2) is what they will implement against, with a
+  merged `Source` behind it. The citation graph remains the end goal; the
+  search index is the funnel's cheap-scoring stage (architecture doc).
 
 Order after Crossref is adjustable; OpenAlex second because it exercises
 cross-IDs and a second edge namespace early.
@@ -833,6 +912,25 @@ cross-IDs and a second edge namespace early.
   The citing id travels beside the edge, not inside it, for every source.
   Long tail of sources assessed (§2): OpenCitations and Europe PMC worth a
   slot; the rest not.
+- 2026-09-15, round 5 — aggregator over aggregators: disagreement between
+  sources is the product's material, and the policy resolving it is a
+  feature of the merge stage (§1). Long tail re-decided on that basis (§2):
+  DataCite, NIH-OCC, OpenCitations, CORE, BASE, Retraction Watch, DBLP,
+  Papers With Code wanted; Papers We Love a seed list; the closed ones
+  skipped. Search sinks (Meilisearch, Tantivy, two more) recorded as a
+  downstream goal (§9). M2 continues: allocation counting, the binary
+  sink, `dump`.
+- 2026-09-15, binary sink — postcard + zstd, length-prefixed, one stream
+  per record kind, tagged with `model::VERSION` (one number for the model
+  and every normalized type; bump it on any change). Sink methods stay
+  infallible; a writing sink remembers its error and the runner asks after
+  every record (`Sink::failed`), so a full disk stops the run where it hit
+  and nothing partial survives. Packed types serialize as canonical text
+  for JSON and as numbers for postcard, so `dump` reads well at no cost on
+  disk. First measurements (§5): the sink halves throughput at zstd level
+  3 (a knob), rule 1's allocation goal is far (75–200 per record, the
+  native `Vec`s), and the layout is not smaller than gzipped raw (symbol
+  tables and the abstract are the levers).
 - 2026-09-14, normalizer first cut — value-level layer over the native
   record; the `Claim<Doi>` decision above (§6); `Lang` from ISO 639-2 via
   Debian iso-codes (NLM's own language page is retired); publication types
@@ -887,13 +985,16 @@ cross-IDs and a second edge namespace early.
 
 ## 11. Dependencies
 
-The scaffold is dependency-free by request; this is what the pipeline needs,
-listed for approval rather than assumed: `serde` + `serde_json`, `quick-xml`,
-`flate2`, `zstd`, `postcard` (or `bincode`), `thiserror`, `anyhow`, `clap`,
-`rayon`, `proptest` (dev), `tracing`. No date crate: `PartialDate` is a
-packed integer with its own calendar check. For fetching: `reqwest` +
-`tokio` (needed from M2, since arXiv and Semantic Scholar have no
-plain-download channel for the POC).
+The scaffold was dependency-free by request. In use as of 2026-09-15, one
+version each for the workspace: `serde` + `serde_json`, `quick-xml`,
+`flate2`, `zstd`, `postcard` (chosen over `bincode`: a stable, documented
+wire format, varints, borrowing deserialization). Not yet needed and not
+added: `thiserror`, `anyhow`, `clap` (the binary's argument grammar is a
+`match`), `rayon` (parallelism over files can be `std::thread::scope`),
+`proptest`, `tracing`. No date crate: `PartialDate` is a packed integer
+with its own calendar check. For fetching, when it comes: `reqwest` +
+`tokio` (arXiv and Semantic Scholar have no plain-download channel for
+the POC).
 
 ## 12. Sources consulted
 

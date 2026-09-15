@@ -3,22 +3,29 @@
 //! * `id <kind>` runs one identifier parser over stdin, one value per line.
 //! * `<source> check <file>... [--limit N]` reads raw files through the
 //!   source's strict native types and reports counts and throughput.
-//! * `<source> normalize <file>... [--limit N]` parses and normalizes, and
-//!   prints the source's stats report: what every field held.
+//! * `<source> normalize <file>... [--limit N] [--out <prefix>]` parses and
+//!   normalizes, prints the source's stats report — what every field held —
+//!   and, with `--out`, writes the normalized layer: `<prefix>.works.zst`,
+//!   `<prefix>.references.zst` and `<prefix>.deletions.zst` (plan §5, rule
+//!   12), tagged with the model version.
+//! * `<source> dump <file.zst>... [--limit N]` prints a normalized file as
+//!   JSON lines, for eyes.
 //!
 //! Sources are `pubmed`, `crossref` and `openalex`. Every one goes through
 //! the same runner (`ingest::normalize`); what differs per source is one
 //! registration line and its stats sink. All exit non-zero on the first
 //! failure and say exactly where it was — source, file, record ordinal,
 //! stage, native id, field, raw value — the seed of the "reproduce against
-//! one record" command the failure report promises (plan §6).
+//! one record" command the failure report promises (plan §6). A failed run
+//! leaves no output: partial files are removed.
 
 use std::collections::BTreeMap;
 use std::fmt::Display;
-use std::io::{self, BufRead};
+use std::io::{self, BufRead, Write};
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use ingest::{Failure, Sink, Source, Stage};
+use ingest::{Binary, Failure, Kind, Reader, Sink, Source, Stage};
 use model::{Claim, Doi, OpenAlexId, ParseError, Pmid};
 use source_crossref::Crossref;
 use source_openalex::OpenAlex;
@@ -26,10 +33,15 @@ use source_openalex::normalize::LocationId;
 use source_pubmed::Pubmed;
 use source_pubmed::normalize::{Citation, Reference};
 
+/// Allocations per record are part of every report (plan §5, rule 13).
+#[global_allocator]
+static ALLOC: ingest::alloc::Counting = ingest::alloc::Counting;
+
 const USAGE: &str = "usage:
   ol-rht id <pmid|pmid-url|openalex|openalex-url> < values.txt
   ol-rht <pubmed|crossref|openalex> check <file>... [--limit N]
-  ol-rht <pubmed|crossref|openalex> normalize <file>... [--limit N]";
+  ol-rht <pubmed|crossref|openalex> normalize <file>... [--limit N] [--out <prefix>]
+  ol-rht <pubmed|crossref|openalex> dump <file.zst>... [--limit N]";
 
 type Parser = fn(&str) -> Result<(), ParseError>;
 
@@ -52,16 +64,19 @@ fn main() -> ExitCode {
             None => usage(),
         },
         [source, action, rest @ ..] => {
-            let Some((paths, limit)) = split_limit(rest) else {
+            let Some(opts) = Options::parse(rest) else {
                 return usage();
             };
             match (*source, *action) {
-                ("pubmed", "check") => check::<Pubmed>(&paths, limit),
-                ("pubmed", "normalize") => normalize::<Pubmed, PubmedStats>(&paths, limit),
-                ("crossref", "check") => check::<Crossref>(&paths, limit),
-                ("crossref", "normalize") => normalize::<Crossref, CrossrefStats>(&paths, limit),
-                ("openalex", "check") => check::<OpenAlex>(&paths, limit),
-                ("openalex", "normalize") => normalize::<OpenAlex, OpenAlexStats>(&paths, limit),
+                ("pubmed", "check") => check::<Pubmed>(&opts),
+                ("pubmed", "normalize") => normalize::<Pubmed, PubmedStats>(&opts),
+                ("pubmed", "dump") => dump::<Pubmed>(&opts),
+                ("crossref", "check") => check::<Crossref>(&opts),
+                ("crossref", "normalize") => normalize::<Crossref, CrossrefStats>(&opts),
+                ("crossref", "dump") => dump::<Crossref>(&opts),
+                ("openalex", "check") => check::<OpenAlex>(&opts),
+                ("openalex", "normalize") => normalize::<OpenAlex, OpenAlexStats>(&opts),
+                ("openalex", "dump") => dump::<OpenAlex>(&opts),
                 _ => usage(),
             }
         }
@@ -69,16 +84,44 @@ fn main() -> ExitCode {
     }
 }
 
-/// Splits a trailing `--limit N` off the paths. `None` when there are no
-/// paths or the flag is malformed.
-fn split_limit<'a>(rest: &[&'a str]) -> Option<(Vec<&'a str>, Option<u64>)> {
-    match rest {
-        [] => None,
-        [paths @ .., "--limit", n] => {
-            (!paths.is_empty()).then_some((paths.to_vec(), Some(n.parse().ok()?)))
+/// The paths and trailing options of a source command.
+struct Options {
+    paths: Vec<PathBuf>,
+    limit: Option<u64>,
+    out: Option<PathBuf>,
+}
+
+impl Options {
+    /// `None` when there are no paths, an option is malformed or repeated,
+    /// or an unknown one appears.
+    fn parse(args: &[&str]) -> Option<Self> {
+        let mut rest = args;
+        let (mut limit, mut out) = (None, None);
+        loop {
+            match rest {
+                [before @ .., "--limit", n] => {
+                    if limit.replace(n.parse::<u64>().ok()?).is_some() {
+                        return None;
+                    }
+                    rest = before;
+                }
+                [before @ .., "--out", p] => {
+                    if out.replace(PathBuf::from(p)).is_some() {
+                        return None;
+                    }
+                    rest = before;
+                }
+                _ => break,
+            }
         }
-        paths if paths.contains(&"--limit") => None,
-        paths => Some((paths.to_vec(), None)),
+        if rest.is_empty() || rest.iter().any(|a| a.starts_with("--")) {
+            return None;
+        }
+        Some(Self {
+            paths: rest.iter().map(PathBuf::from).collect(),
+            limit,
+            out,
+        })
     }
 }
 
@@ -118,8 +161,11 @@ trait StatsReport: Default {
     fn report(&self);
 }
 
-fn check<S: Source>(paths: &[&str], limit: Option<u64>) -> ExitCode {
-    match ingest::parse::<S>(paths, limit) {
+fn check<S: Source>(opts: &Options) -> ExitCode {
+    if opts.out.is_some() {
+        return usage();
+    }
+    match ingest::parse::<S>(&opts.paths, opts.limit) {
         Ok(report) => {
             eprintln!("{}: {report}", S::NAME);
             ExitCode::SUCCESS
@@ -128,23 +174,116 @@ fn check<S: Source>(paths: &[&str], limit: Option<u64>) -> ExitCode {
     }
 }
 
-fn normalize<S, K>(paths: &[&str], limit: Option<u64>) -> ExitCode
+#[allow(clippy::cast_precision_loss)] // reporting only
+fn normalize<S, K>(opts: &Options) -> ExitCode
 where
     S: Source,
     K: StatsReport + for<'n> Sink<'n, S>,
 {
-    let mut stats = K::default();
-    match ingest::normalize::<S, K>(paths, limit, &mut stats) {
+    let binary = match &opts.out {
+        Some(prefix) => match Binary::create(prefix, S::NAME, model::VERSION) {
+            Ok(binary) => Some(binary),
+            Err(err) => {
+                eprintln!("{}: {err}", prefix.display());
+                return ExitCode::from(2);
+            }
+        },
+        None => None,
+    };
+    let mut sink = (K::default(), binary);
+    let result = ingest::normalize::<S, _>(&opts.paths, opts.limit, &mut sink);
+    let (stats, binary) = sink;
+    stats.report();
+    match result {
         Ok(report) => {
-            stats.report();
+            if let Some(binary) = binary {
+                match binary.finish() {
+                    Ok(written) => eprintln!(
+                        "wrote {} works, {} references, {} deletions: {:.1} MiB under {}.*.zst",
+                        written.records[0],
+                        written.records[1],
+                        written.records[2],
+                        written.bytes as f64 / (1024.0 * 1024.0),
+                        opts.out
+                            .as_deref()
+                            .map_or_else(String::new, |p| p.display().to_string())
+                    ),
+                    Err(err) => {
+                        eprintln!("{} write: {err}", S::NAME);
+                        return ExitCode::FAILURE;
+                    }
+                }
+            }
             eprintln!("{}: {report}", S::NAME);
             ExitCode::SUCCESS
         }
         Err(failure) => {
-            stats.report();
+            if let Some(binary) = binary {
+                binary.discard();
+                eprintln!("no output written");
+            }
             failed(&failure)
         }
     }
+}
+
+fn dump<S: Source>(opts: &Options) -> ExitCode {
+    if opts.out.is_some() {
+        return usage();
+    }
+    let mut out = io::BufWriter::new(io::stdout().lock());
+    for path in &opts.paths {
+        if let Err(err) = dump_one::<S>(path, opts.limit, &mut out) {
+            eprintln!("{}: {err}", path.display());
+            return ExitCode::FAILURE;
+        }
+    }
+    match out.flush() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(err) => {
+            eprintln!("stdout: {err}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn dump_one<S: Source>(path: &Path, limit: Option<u64>, out: &mut impl Write) -> io::Result<()> {
+    let reader = Reader::open(path)?;
+    let header = reader.header();
+    if header.source != S::NAME {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("written by {:?}, not {}", header.source, S::NAME),
+        ));
+    }
+    if header.model != model::VERSION {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "model version {} is not this binary's {}",
+                header.model,
+                model::VERSION
+            ),
+        ));
+    }
+    let limit = limit.map_or(usize::MAX, |n| usize::try_from(n).unwrap_or(usize::MAX));
+    match header.kind {
+        Kind::Works => json_lines::<S::Work<'_>>(&reader, limit, out),
+        Kind::References => json_lines::<(S::Id<'_>, S::Reference<'_>)>(&reader, limit, out),
+        Kind::Deletions => json_lines::<S::Id<'_>>(&reader, limit, out),
+    }
+}
+
+fn json_lines<'a, T: serde::Deserialize<'a> + serde::Serialize>(
+    reader: &'a Reader,
+    limit: usize,
+    out: &mut impl Write,
+) -> io::Result<()> {
+    for record in reader.records::<T>().take(limit) {
+        serde_json::to_writer(&mut *out, &record?)?;
+        out.write_all(b"\n")?;
+    }
+    Ok(())
 }
 
 fn failed(failure: &Failure) -> ExitCode {

@@ -7,16 +7,18 @@
 //! parser here accepts the forms observed in real data and nothing else
 //! (plan §6): a form not listed is an error, and the fix is to list it.
 
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt;
 use std::num::NonZeroU8;
 
 /// A year, `1000..=2999`: wide enough for any scholarly record, narrow
 /// enough to catch a dropped or doubled digit.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct Year(u16);
 
 /// A month. `Option<Month>` is one byte.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[repr(u8)]
 #[allow(missing_docs)]
 pub enum Month {
@@ -35,11 +37,12 @@ pub enum Month {
 }
 
 /// A day of the month, `1..=31`; calendar validity is [`Date::new`]'s job.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct Day(NonZeroU8);
 
 /// A season, as PubMed writes it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[allow(missing_docs)]
 pub enum Season {
     Winter,
@@ -49,7 +52,7 @@ pub enum Season {
 }
 
 /// A quarter, as PubMed's `MedlineDate` writes it (`1st Quarter`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[allow(missing_docs)]
 pub enum Quarter {
     First,
@@ -68,7 +71,7 @@ pub struct Date {
 
 /// One end of a [`Span`]: a year, optionally to the month, optionally to
 /// the day.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Bound {
     /// The year.
     pub year: Year,
@@ -79,7 +82,7 @@ pub struct Bound {
 }
 
 /// A range of publication dates, from PubMed's `MedlineDate`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Span {
     /// The start.
     pub start: Bound,
@@ -88,7 +91,7 @@ pub struct Span {
 }
 
 /// A publication date at whatever precision the source gave.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum PartialDate {
     /// Only the year.
     Year(Year),
@@ -105,7 +108,7 @@ pub enum PartialDate {
 }
 
 /// Why a date part did not parse.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Error {
     /// A year is exactly four ASCII digits.
     YearDigits,
@@ -149,7 +152,7 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {}
 
 /// Why a `MedlineDate` did not parse.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum MedlineError {
     /// None of the recognized forms.
     Unrecognized,
@@ -448,7 +451,7 @@ impl Date {
 
 /// A time of day to the minute with no zone, as PubMed's history dates
 /// carry it. One byte each.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct TimeOfDay {
     hour: u8,
     minute: u8,
@@ -755,6 +758,49 @@ impl PartialDate {
             Self::YearQuarter(..) => "year-quarter",
             Self::Span(_) => "span",
         }
+    }
+}
+
+impl Serialize for Date {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        crate::human::serialize(self, (self.year, self.month, self.day), serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for Date {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        crate::human::deserialize(
+            deserializer,
+            "date",
+            |(year, month, day): (Year, Month, Day)| Self::new(year, month, day).ok(),
+            |s| Self::parse_iso(s).ok(),
+        )
+    }
+}
+
+impl Serialize for DateTime {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        crate::human::serialize(self, (self.date, self.millis_of_day), serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for DateTime {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        crate::human::deserialize(
+            deserializer,
+            "date-time",
+            |(date, millis_of_day): (Date, u32)| {
+                (millis_of_day < 86_400_000).then_some(Self {
+                    date,
+                    millis_of_day,
+                })
+            },
+            |s| {
+                Self::parse_utc(s)
+                    .or_else(|_| Self::parse_utc_millis(s))
+                    .ok()
+            },
+        )
     }
 }
 

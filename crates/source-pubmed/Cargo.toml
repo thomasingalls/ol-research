@@ -9,6 +9,7 @@ description = "PubMed baseline/update XML: native record types and a strict, zer
 ingest.workspace = true
 model.workspace = true
 quick-xml.workspace = true
+serde.workspace = true
 
 [lints]
 workspace = true

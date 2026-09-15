@@ -1,3 +1,4 @@
+use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::num::NonZeroU32;
 use std::str::FromStr;
@@ -15,8 +16,9 @@ use super::{ParseError, parse_digits, strip_literal};
 ///
 /// The largest observed is `PMC12846865`; `u32` has three hundred times the
 /// headroom. `Option<PmcId>` is four bytes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[repr(transparent)]
+#[serde(transparent)]
 pub struct PmcId(NonZeroU32);
 
 impl PmcId {

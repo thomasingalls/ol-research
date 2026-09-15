@@ -8,7 +8,7 @@ macro_rules! attr_enum {
         $($(#[$vmeta:meta])* $variant:ident = $token:literal),+ $(,)?
     }) => {
         $(#[$meta])*
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, ::serde::Serialize, ::serde::Deserialize)]
         $vis enum $name {
             $($(#[$vmeta])* $variant),+
         }

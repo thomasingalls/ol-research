@@ -1,5 +1,6 @@
 //! Digital Object Identifiers.
 
+use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::fmt;
 
@@ -16,8 +17,9 @@ use std::fmt;
 /// until one is observed; that is a modelling decision waiting on evidence.
 /// So far the only non-ASCII seen is a Unicode hyphen where an ASCII one
 /// belongs, which is the data being wrong, not the rule.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct Doi<'a>(Cow<'a, str>);
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Doi<'a>(#[serde(borrow)] Cow<'a, str>);
 
 /// A registrant code: the digits between `10.` and `/`, `1001` in
 /// `10.1001/jama.2025.15703`. Four to nine digits, no leading zero.
@@ -25,11 +27,12 @@ pub struct Doi<'a>(Cow<'a, str>);
 /// Also the type of Crossref's `prefix`, which names the DOI's *current
 /// owner* and differs from the DOI's own registrant on 7 % of works, because
 /// DOIs move between publishers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct Registrant(u32);
 
 /// Why a string is not a DOI.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Error {
     /// Nothing to parse.
     Empty,

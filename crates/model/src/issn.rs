@@ -1,5 +1,6 @@
 //! ISSNs.
 
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt;
 
 /// An ISSN: `NNNN-NNNC`, the last character a MOD 11 check digit (`X` for
@@ -9,7 +10,7 @@ use std::fmt;
 pub struct Issn(u32);
 
 /// Why a string is not an ISSN.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Error {
     /// Not `NNNN-NNNC`.
     Shape,
@@ -83,6 +84,23 @@ impl fmt::Display for Issn {
             10 => f.write_str("X"),
             d => write!(f, "{d}"),
         }
+    }
+}
+
+impl Serialize for Issn {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        crate::human::serialize(self, self.0, serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for Issn {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        crate::human::deserialize(
+            deserializer,
+            "ISSN",
+            |n: u32| (n < 10_000_000).then_some(Self(n)),
+            |s| Self::parse(s).ok(),
+        )
     }
 }
 

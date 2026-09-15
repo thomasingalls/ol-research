@@ -1,3 +1,4 @@
+use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::num::NonZeroU32;
 use std::str::FromStr;
@@ -16,8 +17,9 @@ use super::{ParseError, parse_digits, strip_literal};
 ///
 /// Positive and fits `u32`: the 2026 baseline tops out near 4.2 × 10^7,
 /// a hundredfold below the limit. `Option<Pmid>` is four bytes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[repr(transparent)]
+#[serde(transparent)]
 pub struct Pmid(NonZeroU32);
 
 impl Pmid {

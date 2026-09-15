@@ -1,5 +1,6 @@
 //! ISBNs.
 
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt;
 
 /// An ISBN-13 (thirteen digits, MOD 10 with weights 1 and 3) or ISBN-10
@@ -14,7 +15,7 @@ pub enum Isbn {
 }
 
 /// Why a string is not an ISBN.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Error {
     /// Not thirteen digits, nor nine digits and a check character.
     Shape,
@@ -102,6 +103,36 @@ impl fmt::Display for Isbn {
                 }
             }
         }
+    }
+}
+
+impl Serialize for Isbn {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let packed = match *self {
+            Self::Thirteen(base) => (true, base),
+            Self::Ten(base) => (false, u64::from(base)),
+        };
+        crate::human::serialize(self, packed, serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for Isbn {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        crate::human::deserialize(
+            deserializer,
+            "ISBN",
+            |(thirteen, base): (bool, u64)| {
+                if thirteen {
+                    (base < 1_000_000_000_000).then_some(Self::Thirteen(base))
+                } else {
+                    u32::try_from(base)
+                        .ok()
+                        .filter(|b| *b < 1_000_000_000)
+                        .map(Self::Ten)
+                }
+            },
+            |s| Self::parse(s).ok(),
+        )
     }
 }
 

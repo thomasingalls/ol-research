@@ -1,5 +1,6 @@
 //! ORCID identifiers.
 
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt;
 
 /// An ORCID iD: sixteen characters in four hyphenated groups, the last a
@@ -13,7 +14,7 @@ use std::fmt;
 pub struct Orcid(u64);
 
 /// Why a string is not an ORCID iD.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Error {
     /// Not `NNNN-NNNN-NNNN-NNNC`.
     Shape,
@@ -137,6 +138,23 @@ impl fmt::Display for Orcid {
         } else {
             write!(f, "{check}")
         }
+    }
+}
+
+impl Serialize for Orcid {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        crate::human::serialize(self, self.0, serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for Orcid {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        crate::human::deserialize(
+            deserializer,
+            "ORCID",
+            |n: u64| (n < 1_000_000_000_000_000).then_some(Self(n)),
+            |s| Self::from_hyphenated(s).ok(),
+        )
     }
 }
 

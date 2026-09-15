@@ -18,9 +18,11 @@ source-pubmed = { path = "crates/source-pubmed" }
 
 # External. One version for the whole workspace.
 flate2 = "1"
+postcard = { version = "1", default-features = false, features = ["use-std"] }
 quick-xml = "0.42"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
+zstd = "0.13"
 
 [workspace.lints.rust]
 missing_debug_implementations = "warn"

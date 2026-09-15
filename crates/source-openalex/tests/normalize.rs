@@ -418,3 +418,29 @@ fn broken_invariants_stop_with_id_and_field() {
         "{err}"
     );
 }
+
+#[test]
+fn the_binary_layout_roundtrips_every_fixture() {
+    use ingest::{Binary, Kind, Reader};
+    let prefix = std::env::temp_dir().join(format!("ol-rht-openalex-{}", std::process::id()));
+    let mut binary = Binary::create(&prefix, "openalex", model::VERSION).unwrap();
+    let inputs: Vec<String> = ALL.iter().map(|n| fixture(n)).collect();
+    let natives: Vec<source_openalex::Work<'_>> = inputs.iter().map(|i| parse(i)).collect();
+    let mut collect = Collect::default();
+    for native in &natives {
+        normalize(native, &mut (&mut collect, &mut binary)).unwrap();
+    }
+    let written = binary.finish().unwrap();
+    assert_eq!(written.records[0], ALL.len() as u64);
+    assert_eq!(written.records[1], collect.edges.len() as u64);
+    let works = Reader::open(&Kind::Works.path(&prefix)).unwrap();
+    assert_eq!(works.header().model, model::VERSION);
+    let back: Vec<Work<'_>> = works.records().map(Result::unwrap).collect();
+    assert_eq!(back, collect.works);
+    let refs = Reader::open(&Kind::References.path(&prefix)).unwrap();
+    let back: Vec<(OpenAlexId, OpenAlexId)> = refs.records().map(Result::unwrap).collect();
+    assert_eq!(back, collect.edges);
+    for kind in Kind::ALL {
+        std::fs::remove_file(kind.path(&prefix)).unwrap();
+    }
+}

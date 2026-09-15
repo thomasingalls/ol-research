@@ -1,5 +1,6 @@
 //! Research Organization Registry identifiers.
 
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt;
 
 /// A ROR id: `https://ror.org/` then a leading `0`, six characters of
@@ -14,7 +15,7 @@ use std::fmt;
 pub struct Ror(u32);
 
 /// Why a string is not a ROR id.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Error {
     /// Not the `https://ror.org/` prefix.
     BadPrefix,
@@ -106,6 +107,23 @@ impl fmt::Display for Ror {
         }
         f.write_str(std::str::from_utf8(&chars).unwrap_or(""))?;
         write!(f, "{:02}", checksum(self.0))
+    }
+}
+
+impl Serialize for Ror {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        crate::human::serialize(self, self.0, serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for Ror {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        crate::human::deserialize(
+            deserializer,
+            "ROR",
+            |n: u32| (n < 1 << 30).then_some(Self(n)),
+            |s| Self::from_bare(s).ok(),
+        )
     }
 }
 

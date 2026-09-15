@@ -247,4 +247,35 @@ mod normalized {
         assert_eq!(err.field, "created", "{err}");
         assert!(err.to_string().contains("timestamp disagrees"), "{err}");
     }
+
+    #[test]
+    fn the_binary_layout_roundtrips_the_fixtures() {
+        use ingest::{Binary, Kind, Reader};
+        let prefix = std::env::temp_dir().join(format!("ol-rht-crossref-{}", std::process::id()));
+        let mut binary = Binary::create(&prefix, "crossref", model::VERSION).unwrap();
+        let inputs: Vec<String> = ["journal_article_full", "grant_project"]
+            .iter()
+            .map(|n| fixture(n))
+            .collect();
+        let natives: Vec<source_crossref::Work<'_>> = inputs.iter().map(|i| work(i)).collect();
+        let mut collect = Collect::default();
+        for native in &natives {
+            normalize(native, &mut (&mut collect, &mut binary)).expect("normalizes");
+        }
+        let written = binary.finish().unwrap();
+        assert_eq!(written.records[0], 2);
+        let works = Reader::open(&Kind::Works.path(&prefix)).unwrap();
+        let back: Vec<Work<'_>> = works.records().map(Result::unwrap).collect();
+        assert_eq!(back, collect.works);
+        let refs = Reader::open(&Kind::References.path(&prefix)).unwrap();
+        let back: Vec<(Doi<'_>, Reference<'_>)> = refs.records().map(Result::unwrap).collect();
+        assert_eq!(back.len(), collect.references.len());
+        for ((from, r), (from2, r2)) in back.iter().zip(&collect.references) {
+            assert_eq!(from.as_str(), from2);
+            assert_eq!(r, r2);
+        }
+        for kind in Kind::ALL {
+            std::fs::remove_file(kind.path(&prefix)).unwrap();
+        }
+    }
 }

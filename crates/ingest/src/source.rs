@@ -3,6 +3,9 @@
 //! normalizers that existed before it, not designed ahead of them.
 
 use std::error::Error;
+use std::io;
+
+use serde::{Deserialize, Serialize};
 
 /// A source of scholarly records: how its raw files parse into native
 /// records, and how a native record normalizes into the records a
@@ -25,12 +28,15 @@ pub trait Source: Sized {
     type Native<'a>;
     /// The source's native identifier (plan §4), which every normalized
     /// record and every edge carries.
-    type Id<'n>;
-    /// A normalized work.
-    type Work<'n>;
+    type Id<'n>: Serialize + Deserialize<'n>;
+    /// A normalized work. Serializable, because the binary sink is what
+    /// every normalized record is for; deserializable borrowing from the
+    /// bytes it was read from, for the same reason it borrows from the
+    /// native record.
+    type Work<'n>: Serialize + Deserialize<'n>;
     /// A normalized citation edge, without the citing id it is emitted
     /// with.
-    type Reference<'n>;
+    type Reference<'n>: Serialize + Deserialize<'n>;
     /// Why a record did not parse: structural strictness (plan §6).
     type ParseError: Error + Send + Sync + 'static;
     /// Why a value did not fit the model: value-level strictness (plan §6).
@@ -71,6 +77,81 @@ pub trait Sink<'n, S: Source> {
     fn reference(&mut self, from: &S::Id<'n>, reference: &S::Reference<'n>);
     /// A record the source has withdrawn: PubMed's `DeleteCitation`.
     fn deletion(&mut self, id: &S::Id<'n>);
+
+    /// The first I/O error since the last call, for sinks that write. The
+    /// three methods above cannot fail, so a writing sink remembers its
+    /// error and the runner asks after every record, stopping at the one
+    /// the error hit. Sinks that do not write leave the default.
+    fn failed(&mut self) -> Option<io::Error> {
+        None
+    }
+}
+
+/// Two sinks fed the same records, the first before the second: a stats
+/// report beside the binary output.
+impl<'n, S: Source, A: Sink<'n, S>, B: Sink<'n, S>> Sink<'n, S> for (A, B) {
+    fn work(&mut self, work: &S::Work<'n>) {
+        self.0.work(work);
+        self.1.work(work);
+    }
+
+    fn reference(&mut self, from: &S::Id<'n>, reference: &S::Reference<'n>) {
+        self.0.reference(from, reference);
+        self.1.reference(from, reference);
+    }
+
+    fn deletion(&mut self, id: &S::Id<'n>) {
+        self.0.deletion(id);
+        self.1.deletion(id);
+    }
+
+    fn failed(&mut self) -> Option<io::Error> {
+        self.0.failed().or_else(|| self.1.failed())
+    }
+}
+
+/// A sink by mutable reference.
+impl<'n, S: Source, K: Sink<'n, S>> Sink<'n, S> for &mut K {
+    fn work(&mut self, work: &S::Work<'n>) {
+        (**self).work(work);
+    }
+
+    fn reference(&mut self, from: &S::Id<'n>, reference: &S::Reference<'n>) {
+        (**self).reference(from, reference);
+    }
+
+    fn deletion(&mut self, id: &S::Id<'n>) {
+        (**self).deletion(id);
+    }
+
+    fn failed(&mut self) -> Option<io::Error> {
+        (**self).failed()
+    }
+}
+
+/// An optional sink: `None` receives nothing and never fails.
+impl<'n, S: Source, K: Sink<'n, S>> Sink<'n, S> for Option<K> {
+    fn work(&mut self, work: &S::Work<'n>) {
+        if let Some(k) = self {
+            k.work(work);
+        }
+    }
+
+    fn reference(&mut self, from: &S::Id<'n>, reference: &S::Reference<'n>) {
+        if let Some(k) = self {
+            k.reference(from, reference);
+        }
+    }
+
+    fn deletion(&mut self, id: &S::Id<'n>) {
+        if let Some(k) = self {
+            k.deletion(id);
+        }
+    }
+
+    fn failed(&mut self) -> Option<io::Error> {
+        self.as_mut().and_then(Sink::failed)
+    }
 }
 
 /// A sink that counts.

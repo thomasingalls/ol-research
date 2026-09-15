@@ -6,6 +6,11 @@ license.workspace = true
 description = "Canonical types for the normalized layer: native identifiers and the rules they enforce."
 
 [dependencies]
+serde.workspace = true
+
+[dev-dependencies]
+postcard.workspace = true
+serde_json.workspace = true
 
 [lints]
 workspace = true

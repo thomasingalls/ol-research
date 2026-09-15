@@ -10,6 +10,7 @@
 //!
 //! Records are pushed to a [`Sink`] by reference as they are built.
 
+use serde::{Deserialize, Serialize};
 use std::fmt;
 
 use ingest::Sink;
@@ -30,9 +31,10 @@ use crate::vocab::{
 pub type DoiClaim<'n> = Claim<'n, Doi<'n>, DoiError>;
 
 /// One Crossref work, normalized: the fields with evidence behind them.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Work<'n> {
     /// The work's DOI, lowercased.
+    #[serde(borrow)]
     pub doi: Doi<'n>,
     /// `prefix`: the DOI's current owner, which differs from the DOI's own
     /// registrant on 7 % of works.
@@ -55,53 +57,68 @@ pub struct Work<'n> {
     /// `published-online`.
     pub published_online: Option<PartialDate>,
     /// `title[0]`, raw markup included.
+    #[serde(borrow)]
     pub title: Option<&'n str>,
     /// `title[1..]`: translations, in the sample.
+    #[serde(borrow)]
     pub alternate_titles: Vec<&'n str>,
     /// `subtitle[0]`; empty strings occur.
+    #[serde(borrow)]
     pub subtitle: Option<&'n str>,
     /// A JATS (usually) XML fragment.
     pub r#abstract: Option<&'n str>,
     /// `container-title[0]`.
+    #[serde(borrow)]
     pub container_title: Option<&'n str>,
     /// From `issn-type`, checked against `ISSN`.
     pub issns: Vec<TypedIssn>,
     /// From `isbn-type`, checked against `ISBN`.
     pub isbns: Vec<TypedIsbn>,
     #[allow(missing_docs)]
+    #[serde(borrow)]
     pub volume: Option<&'n str>,
     #[allow(missing_docs)]
+    #[serde(borrow)]
     pub issue: Option<&'n str>,
     #[allow(missing_docs)]
+    #[serde(borrow)]
     pub page: Option<&'n str>,
     #[allow(missing_docs)]
+    #[serde(borrow)]
     pub article_number: Option<&'n str>,
     #[allow(missing_docs)]
     pub publisher: &'n str,
     /// `language`, ISO 639-1.
     pub language: Option<Lang>,
     /// `author[]`.
+    #[serde(borrow)]
     pub authors: Vec<Author<'n>>,
     /// `references-count`, checked against the reference array.
     pub references_count: Option<u32>,
     /// `is-referenced-by-count`.
     pub cited_by_count: Option<u32>,
     #[allow(missing_docs)]
+    #[serde(borrow)]
     pub licenses: Vec<License<'n>>,
     /// Updates this work applies to others: it is the notice.
+    #[serde(borrow)]
     pub updates_to: Vec<Update<'n>>,
     /// Updates applied to this work: it is the retracted, corrected, … one.
+    #[serde(borrow)]
     pub updated_by: Vec<Update<'n>>,
     /// `relation`, flattened.
+    #[serde(borrow)]
     pub relations: Vec<Relation<'n>>,
     /// `alternative-id`, often the DOI itself or a PII.
+    #[serde(borrow)]
     pub alternative_ids: Vec<&'n str>,
 }
 
 /// An author.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Author<'n> {
     #[allow(missing_docs)]
+    #[serde(borrow)]
     pub name: AuthorName<'n>,
     #[allow(missing_docs)]
     pub orcid: Option<Orcid>,
@@ -110,15 +127,17 @@ pub struct Author<'n> {
     #[allow(missing_docs)]
     pub sequence: Sequence,
     #[allow(missing_docs)]
+    #[serde(borrow)]
     pub affiliations: Vec<Affiliation<'n>>,
 }
 
 /// A person (`family`, maybe `given`) or an organisation (`name`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AuthorName<'n> {
     #[allow(missing_docs)]
     Person {
         #[allow(missing_docs)]
+        #[serde(borrow)]
         given: Option<&'n str>,
         #[allow(missing_docs)]
         family: &'n str,
@@ -128,16 +147,18 @@ pub enum AuthorName<'n> {
 }
 
 /// An affiliation: a name, a ROR id, or both.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Affiliation<'n> {
     #[allow(missing_docs)]
+    #[serde(borrow)]
     pub name: Option<&'n str>,
     /// `https://ror.org/…`, unvalidated here.
+    #[serde(borrow)]
     pub ror: Option<&'n str>,
 }
 
 /// An ISSN with its kind.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TypedIssn {
     #[allow(missing_docs)]
     pub kind: SerialKind,
@@ -146,7 +167,7 @@ pub struct TypedIssn {
 }
 
 /// An ISBN with its kind.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TypedIsbn {
     #[allow(missing_docs)]
     pub kind: SerialKind,
@@ -155,7 +176,7 @@ pub struct TypedIsbn {
 }
 
 /// A license.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct License<'n> {
     #[allow(missing_docs)]
     pub url: &'n str,
@@ -168,9 +189,10 @@ pub struct License<'n> {
 }
 
 /// A Crossmark update, either direction.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Update<'n> {
     /// The other work.
+    #[serde(borrow)]
     pub doi: Doi<'n>,
     #[allow(missing_docs)]
     pub kind: UpdateType,
@@ -179,7 +201,7 @@ pub struct Update<'n> {
 }
 
 /// One relation to another object.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Relation<'n> {
     /// `has-preprint`, `is-preprint-of`, …
     pub kind: &'n str,
@@ -193,33 +215,44 @@ pub struct Relation<'n> {
 
 /// One entry of a work's reference list: an edge whose target is a DOI
 /// (76 % of the sample), matching signals, or both.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Reference<'n> {
     #[allow(missing_docs)]
     pub key: &'n str,
     #[allow(missing_docs)]
+    #[serde(borrow)]
     pub doi: Option<DoiClaim<'n>>,
     /// Present exactly when `doi` is.
     pub asserted_by: Option<AssertedBy>,
     #[allow(missing_docs)]
+    #[serde(borrow)]
     pub unstructured: Option<&'n str>,
     /// Raw: `2019`, but also `nd` and `0`.
+    #[serde(borrow)]
     pub year: Option<&'n str>,
     #[allow(missing_docs)]
+    #[serde(borrow)]
     pub article_title: Option<&'n str>,
     #[allow(missing_docs)]
+    #[serde(borrow)]
     pub journal_title: Option<&'n str>,
     #[allow(missing_docs)]
+    #[serde(borrow)]
     pub volume_title: Option<&'n str>,
     #[allow(missing_docs)]
+    #[serde(borrow)]
     pub series_title: Option<&'n str>,
     #[allow(missing_docs)]
+    #[serde(borrow)]
     pub author: Option<&'n str>,
     #[allow(missing_docs)]
+    #[serde(borrow)]
     pub volume: Option<&'n str>,
     #[allow(missing_docs)]
+    #[serde(borrow)]
     pub issue: Option<&'n str>,
     #[allow(missing_docs)]
+    #[serde(borrow)]
     pub first_page: Option<&'n str>,
 }
 

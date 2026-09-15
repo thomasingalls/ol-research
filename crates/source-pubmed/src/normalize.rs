@@ -16,6 +16,7 @@
 //!
 //! Records are pushed to an [`Emit`] by reference as they are built.
 
+use serde::{Deserialize, Serialize};
 use std::fmt;
 
 use ingest::Sink;
@@ -45,7 +46,7 @@ pub type DoiClaim<'n> = Claim<'n, Doi<'n>, DoiError>;
 pub type OrcidClaim<'n> = Claim<'n, Orcid, OrcidError>;
 
 /// One PubMed record, normalized.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Citation<'n> {
     /// The record's identifier.
     pub pmid: Pmid,
@@ -57,44 +58,60 @@ pub struct Citation<'n> {
     pub owner: Owner,
     /// `MedlineCitation@IndexingMethod`: `Automated` or `Curated`, free text
     /// in the DTD.
+    #[serde(borrow)]
     pub indexing_method: Option<&'n str>,
     /// The record's other identifiers.
+    #[serde(borrow)]
     pub ids: Identifiers<'n>,
     /// The record's dates.
     pub dates: Dates,
     /// The journal and issue.
+    #[serde(borrow)]
     pub journal: Journal<'n>,
     /// `ArticleTitle`, raw markup; empty on 14 of 4,989.
     pub title: &'n str,
     /// `VernacularTitle`, raw markup.
+    #[serde(borrow)]
     pub vernacular_title: Option<&'n str>,
     /// `Abstract`.
     pub r#abstract: Option<Abstract<'n>>,
     /// `OtherAbstract*`.
+    #[serde(borrow)]
     pub other_abstracts: Vec<OtherAbstract<'n>>,
     /// `Language+`, ISO 639-2 bibliographic codes.
     pub languages: Vec<Lang>,
     /// `PublicationType+`.
+    #[serde(borrow)]
     pub publication_types: Vec<MeshTerm<'n>>,
     /// `AuthorList/Author*`.
+    #[serde(borrow)]
     pub authors: Vec<Author<'n>>,
     /// `InvestigatorList*`, each with the `ID` a `CollectiveName` may point at.
+    #[serde(borrow)]
     pub investigator_lists: Vec<InvestigatorList<'n>>,
     /// `MeshHeadingList`.
+    #[serde(borrow)]
     pub mesh: Vec<MeshHeading<'n>>,
     /// `SupplMeshList`.
+    #[serde(borrow)]
     pub suppl_mesh: Vec<SupplMesh<'n>>,
     /// `ChemicalList`.
+    #[serde(borrow)]
     pub chemicals: Vec<Chemical<'n>>,
     /// Every `Keyword` of every `KeywordList`, with its list's owner.
+    #[serde(borrow)]
     pub keywords: Vec<Keyword<'n>>,
     /// `GrantList`.
+    #[serde(borrow)]
     pub grants: Vec<Grant<'n>>,
     /// `DataBankList`.
+    #[serde(borrow)]
     pub data_banks: Vec<DataBank<'n>>,
     /// `CoiStatement`, raw markup.
+    #[serde(borrow)]
     pub coi_statement: Option<&'n str>,
     /// `CitationSubset*`: `IM` and friends.
+    #[serde(borrow)]
     pub citation_subsets: Vec<&'n str>,
     /// `PubmedData/History`.
     pub history: Vec<HistoryEntry>,
@@ -105,24 +122,28 @@ pub struct Citation<'n> {
 }
 
 /// The record's identifiers beyond its PMID.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct Identifiers<'n> {
     /// `ArticleId IdType="doi"` — the record's own DOI as it asserts it.
+    #[serde(borrow)]
     pub doi: Option<DoiClaim<'n>>,
     /// `ELocationID EIdType="doi"` — the same identifier from the article
     /// block. Agrees with `doi` whenever both are valid; when they differ,
     /// one is malformed.
+    #[serde(borrow)]
     pub elocation_doi: Option<DoiClaim<'n>>,
     /// `ArticleId IdType="pii"`, an opaque publisher item identifier.
+    #[serde(borrow)]
     pub pii: Option<&'n str>,
     /// `ELocationID EIdType="pii"`, which need not equal `pii`.
+    #[serde(borrow)]
     pub elocation_pii: Option<&'n str>,
     /// `ArticleId IdType="pmc"`.
     pub pmc: Option<PmcId>,
 }
 
 /// The record's dates.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Dates {
     /// `JournalIssue/PubDate`, at the precision the record gave.
     pub published: PartialDate,
@@ -136,16 +157,19 @@ pub struct Dates {
 }
 
 /// The journal and the issue the article appeared in.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Journal<'n> {
     /// `Journal/Title`.
+    #[serde(borrow)]
     pub title: Option<&'n str>,
     /// `Journal/ISOAbbreviation`.
+    #[serde(borrow)]
     pub iso_abbreviation: Option<&'n str>,
     /// `MedlineJournalInfo/MedlineTA`.
     pub medline_ta: &'n str,
     /// `MedlineJournalInfo/NlmUniqueID`: digits, sometimes with a trailing
     /// letter.
+    #[serde(borrow)]
     pub nlm_unique_id: Option<&'n str>,
     /// `Journal/ISSN` with its type.
     pub issn: Option<TypedIssn>,
@@ -153,21 +177,25 @@ pub struct Journal<'n> {
     pub issn_linking: Option<Issn>,
     /// `MedlineJournalInfo/Country`, NLM's spelling (`United States`,
     /// `England`, `Korea (South)`).
+    #[serde(borrow)]
     pub country: Option<&'n str>,
     /// `Article@PubModel`.
     pub pub_model: PubModel,
     /// `JournalIssue@CitedMedium`.
     pub cited_medium: CitedMedium,
     #[allow(missing_docs)]
+    #[serde(borrow)]
     pub volume: Option<&'n str>,
     #[allow(missing_docs)]
+    #[serde(borrow)]
     pub issue: Option<&'n str>,
     #[allow(missing_docs)]
+    #[serde(borrow)]
     pub pagination: Option<Pagination<'n>>,
 }
 
 /// An ISSN with its type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TypedIssn {
     #[allow(missing_docs)]
     pub kind: IssnType,
@@ -176,15 +204,17 @@ pub struct TypedIssn {
 }
 
 /// `Pagination`, as text: `1-8`, `e2025072830`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Pagination<'n> {
     /// `StartPage`, `EndPage?`, `MedlinePgn?`.
     Pages {
         #[allow(missing_docs)]
         start: &'n str,
         #[allow(missing_docs)]
+        #[serde(borrow)]
         end: Option<&'n str>,
         #[allow(missing_docs)]
+        #[serde(borrow)]
         medline: Option<&'n str>,
     },
     /// `MedlinePgn` alone.
@@ -192,18 +222,21 @@ pub enum Pagination<'n> {
 }
 
 /// `Abstract`: labelled sections plus a copyright line.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Abstract<'n> {
     /// `AbstractText+`.
+    #[serde(borrow)]
     pub sections: Vec<Section<'n>>,
     /// `CopyrightInformation?`.
+    #[serde(borrow)]
     pub copyright: Option<&'n str>,
 }
 
 /// One `AbstractText`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Section<'n> {
     /// `Label`, the publisher's heading (`RESULTS`, `Résultats`).
+    #[serde(borrow)]
     pub label: Option<&'n str>,
     /// `NlmCategory`, NLM's normalization of the heading.
     pub category: Option<NlmCategory>,
@@ -212,82 +245,93 @@ pub struct Section<'n> {
 }
 
 /// `OtherAbstract`: a publisher's or plain-language abstract.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OtherAbstract<'n> {
     #[allow(missing_docs)]
     pub kind: OtherAbstractType,
     /// `Language`, ISO 639-2 bibliographic.
     pub language: Lang,
     #[allow(missing_docs)]
+    #[serde(borrow)]
     pub sections: Vec<Section<'n>>,
     #[allow(missing_docs)]
+    #[serde(borrow)]
     pub copyright: Option<&'n str>,
 }
 
 /// A MeSH-keyed term: publication types, descriptors, qualifiers,
 /// substances, supplementary concepts.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MeshTerm<'n> {
     #[allow(missing_docs)]
+    #[serde(borrow)]
     pub ui: MeshUi<'n>,
     #[allow(missing_docs)]
     pub name: &'n str,
 }
 
 /// An author.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Author<'n> {
     #[allow(missing_docs)]
+    #[serde(borrow)]
     pub name: AuthorName<'n>,
     /// `Identifier Source="ORCID"`, in any of its three forms.
+    #[serde(borrow)]
     pub orcid: Option<OrcidClaim<'n>>,
     /// `EqualContrib`.
     pub equal_contrib: Option<bool>,
     /// `ValidYN`.
     pub valid: bool,
     #[allow(missing_docs)]
+    #[serde(borrow)]
     pub affiliations: Vec<Affiliation<'n>>,
 }
 
 /// A person or a collective.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AuthorName<'n> {
     #[allow(missing_docs)]
-    Person(PersonName<'n>),
+    Person(#[serde(borrow)] PersonName<'n>),
     /// `CollectiveName`, raw markup, and the `InvestigatorList` it points at.
     Collective {
         #[allow(missing_docs)]
         name: &'n str,
         #[allow(missing_docs)]
+        #[serde(borrow)]
         investigators: Option<&'n str>,
     },
 }
 
 /// `LastName, ForeName?, Initials?, Suffix?`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PersonName<'n> {
     #[allow(missing_docs)]
     pub last: &'n str,
     #[allow(missing_docs)]
+    #[serde(borrow)]
     pub fore: Option<&'n str>,
     #[allow(missing_docs)]
+    #[serde(borrow)]
     pub initials: Option<&'n str>,
     /// Raw markup.
+    #[serde(borrow)]
     pub suffix: Option<&'n str>,
 }
 
 /// `AffiliationInfo`: the text and its identifiers.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Affiliation<'n> {
     /// Raw markup.
     pub text: &'n str,
     #[allow(missing_docs)]
+    #[serde(borrow)]
     pub ids: Vec<AffiliationId<'n>>,
 }
 
 /// An affiliation identifier, as written: ROR URL, GRID id, spaced ISNI,
 /// Ringgold number. Unvalidated here.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AffiliationId<'n> {
     #[allow(missing_docs)]
     pub source: AffiliationIdSource,
@@ -296,31 +340,37 @@ pub struct AffiliationId<'n> {
 }
 
 /// `InvestigatorList`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InvestigatorList<'n> {
     /// `ID`, the target of a `CollectiveName@Investigators`.
+    #[serde(borrow)]
     pub id: Option<&'n str>,
     #[allow(missing_docs)]
+    #[serde(borrow)]
     pub investigators: Vec<Investigator<'n>>,
 }
 
 /// An investigator: a person with the same identifiers an author has.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Investigator<'n> {
     #[allow(missing_docs)]
+    #[serde(borrow)]
     pub name: PersonName<'n>,
     #[allow(missing_docs)]
+    #[serde(borrow)]
     pub orcid: Option<OrcidClaim<'n>>,
     #[allow(missing_docs)]
     pub valid: bool,
     #[allow(missing_docs)]
+    #[serde(borrow)]
     pub affiliations: Vec<Affiliation<'n>>,
 }
 
 /// A MeSH heading: descriptor plus qualifiers.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MeshHeading<'n> {
     #[allow(missing_docs)]
+    #[serde(borrow)]
     pub descriptor: MeshTerm<'n>,
     /// `MajorTopicYN` on the descriptor.
     pub major: bool,
@@ -329,13 +379,15 @@ pub struct MeshHeading<'n> {
     /// `AutoHM`: assigned by NLM's automated indexer.
     pub auto: bool,
     #[allow(missing_docs)]
+    #[serde(borrow)]
     pub qualifiers: Vec<Qualifier<'n>>,
 }
 
 /// A MeSH qualifier on a heading.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Qualifier<'n> {
     #[allow(missing_docs)]
+    #[serde(borrow)]
     pub term: MeshTerm<'n>,
     #[allow(missing_docs)]
     pub major: bool,
@@ -344,25 +396,27 @@ pub struct Qualifier<'n> {
 }
 
 /// A supplementary concept.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SupplMesh<'n> {
     #[allow(missing_docs)]
     pub kind: SupplMeshType,
     #[allow(missing_docs)]
+    #[serde(borrow)]
     pub term: MeshTerm<'n>,
 }
 
 /// A chemical.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Chemical<'n> {
     /// `0`, a CAS number, an EC number or a UNII, as text.
     pub registry_number: &'n str,
     #[allow(missing_docs)]
+    #[serde(borrow)]
     pub substance: MeshTerm<'n>,
 }
 
 /// A keyword.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Keyword<'n> {
     /// The owner of the list it came from.
     pub owner: KeywordOwner,
@@ -373,29 +427,33 @@ pub struct Keyword<'n> {
 }
 
 /// A grant.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Grant<'n> {
     #[allow(missing_docs)]
+    #[serde(borrow)]
     pub id: Option<&'n str>,
     #[allow(missing_docs)]
+    #[serde(borrow)]
     pub acronym: Option<&'n str>,
     #[allow(missing_docs)]
     pub agency: &'n str,
     /// `Country`; an empty element (92 % of grants) is `None`.
+    #[serde(borrow)]
     pub country: Option<&'n str>,
 }
 
 /// A data bank with accession numbers.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DataBank<'n> {
     /// `ClinicalTrials.gov`, `Dryad`, `GEO`, …
     pub name: &'n str,
     #[allow(missing_docs)]
+    #[serde(borrow)]
     pub accessions: Vec<&'n str>,
 }
 
 /// One `PubMedPubDate`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HistoryEntry {
     #[allow(missing_docs)]
     pub status: PubStatus,
@@ -406,7 +464,7 @@ pub struct HistoryEntry {
 }
 
 /// A `CommentsCorrections` entry: how this record relates to another.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Relation {
     /// `ErratumFor`, `RetractionOf`, `CommentOn`, …
     pub kind: RefType,
@@ -416,11 +474,12 @@ pub struct Relation {
 
 /// One entry of a record's reference list: an edge whose target is
 /// identified by whichever of three namespaces the source supplied.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Reference<'n> {
     /// `ArticleId IdType="pubmed"`.
     pub pmid: Option<Pmid>,
     /// `ArticleId IdType="doi"`.
+    #[serde(borrow)]
     pub doi: Option<DoiClaim<'n>>,
     /// `ArticleId IdType="pmcid"`.
     pub pmc: Option<PmcId>,

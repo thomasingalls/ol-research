@@ -6,10 +6,10 @@
 //! Crossref's deposit schema). The others are exactly the values observed in
 //! the first 1,000 works, which is the point.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// The 30 work types of `https://api.crossref.org/types`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 #[allow(missing_docs)]
 pub enum WorkType {
@@ -46,7 +46,7 @@ pub enum WorkType {
 }
 
 /// `source`: "currently always Crossref".
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
 #[allow(missing_docs)]
 pub enum Source {
     Crossref,
@@ -54,7 +54,7 @@ pub enum Source {
 
 /// Who asserted a DOI or identifier: `doi-asserted-by`, `asserted-by` on
 /// identifier objects, `source` on updates.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 #[allow(missing_docs)]
 pub enum AssertedBy {
@@ -63,7 +63,7 @@ pub enum AssertedBy {
 }
 
 /// `asserted-by` on a relation: which side of the relation asserted it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 #[allow(missing_docs)]
 pub enum RelationAssertedBy {
@@ -72,7 +72,7 @@ pub enum RelationAssertedBy {
 }
 
 /// `id-type` on affiliation, funder and institution identifiers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
 #[allow(missing_docs)]
 pub enum IdKind {
     #[serde(rename = "ROR")]
@@ -82,7 +82,7 @@ pub enum IdKind {
 }
 
 /// `id-type` on a relation: the identifier types of the deposit schema.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 #[allow(missing_docs)]
 pub enum RelationIdKind {
@@ -103,7 +103,7 @@ pub enum RelationIdKind {
 }
 
 /// A contributor's `sequence`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 #[allow(missing_docs)]
 pub enum Sequence {
@@ -112,7 +112,7 @@ pub enum Sequence {
 }
 
 /// `role.role` on a contributor.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 #[allow(missing_docs)]
 pub enum RoleName {
@@ -123,7 +123,7 @@ pub enum RoleName {
 }
 
 /// `role.vocabulary` on a contributor.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 #[allow(missing_docs)]
 pub enum Vocabulary {
@@ -131,7 +131,7 @@ pub enum Vocabulary {
 }
 
 /// `content-version` on licenses and links.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 #[allow(missing_docs)]
 pub enum ContentVersion {
@@ -143,7 +143,7 @@ pub enum ContentVersion {
 }
 
 /// `intended-application` on a link.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 #[allow(missing_docs)]
 pub enum IntendedApplication {
@@ -154,7 +154,7 @@ pub enum IntendedApplication {
 }
 
 /// `type` on `issn-type` and `isbn-type` entries (and on references).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 #[allow(missing_docs)]
 pub enum SerialKind {
@@ -163,7 +163,7 @@ pub enum SerialKind {
 }
 
 /// `type` on `update-to` and `updated-by`: the Crossmark update types.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 #[allow(missing_docs)]
 pub enum UpdateType {
@@ -182,7 +182,7 @@ pub enum UpdateType {
 }
 
 /// `subtype` of posted content.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 #[allow(missing_docs)]
 pub enum Subtype {
@@ -196,7 +196,7 @@ pub enum Subtype {
 }
 
 /// `review.stage`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 #[allow(missing_docs)]
 pub enum ReviewStage {
@@ -205,7 +205,7 @@ pub enum ReviewStage {
 }
 
 /// `review.recommendation`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 #[allow(missing_docs)]
 pub enum ReviewRecommendation {
@@ -217,7 +217,7 @@ pub enum ReviewRecommendation {
 }
 
 /// `review.type`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 #[allow(missing_docs)]
 pub enum ReviewType {
@@ -229,7 +229,7 @@ pub enum ReviewType {
 }
 
 /// `type` of a project's funding entry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 #[allow(missing_docs)]
 pub enum FundingType {

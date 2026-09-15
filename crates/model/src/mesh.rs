@@ -1,5 +1,6 @@
 //! MeSH unique identifiers.
 
+use serde::{Deserialize, Serialize};
 use std::fmt;
 
 /// A MeSH unique identifier, validated and borrowed: `D016428`,
@@ -10,11 +11,12 @@ use std::fmt;
 /// for newer records while keeping six for old ones, and the width is part
 /// of the identifier (`D000078182` is not `D078182`), so the text is the
 /// canonical form and this type keeps it rather than packing a number.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct MeshUi<'a>(&'a str);
 
 /// The record kind a MeSH UI names.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Kind {
     /// `D…`: a descriptor, including publication types.
     Descriptor,
@@ -25,7 +27,7 @@ pub enum Kind {
 }
 
 /// Why a string is not a MeSH UI.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Error {
     /// Nothing to parse.
     Empty,

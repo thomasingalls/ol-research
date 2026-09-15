@@ -6,6 +6,7 @@
 //! itself, keyed by its terminologic code, with one strict entry point per
 //! form — a source that switches forms fails at that source (plan §6).
 
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt;
 
 mod table;
@@ -17,7 +18,7 @@ use table::{ALPHA_2, BIBLIOGRAPHIC, ENTRIES};
 pub struct Lang(u16);
 
 /// A code that is not in the vocabulary, in the form requested.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Error;
 
 impl fmt::Display for Error {
@@ -108,6 +109,23 @@ impl Lang {
 impl fmt::Display for Lang {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.alpha_3())
+    }
+}
+
+impl Serialize for Lang {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        crate::human::serialize(self.alpha_3(), self.0, serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for Lang {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        crate::human::deserialize(
+            deserializer,
+            "language",
+            |i: u16| (usize::from(i) < ENTRIES.len()).then_some(Self(i)),
+            |s| Self::from_terminologic(s).ok(),
+        )
     }
 }
 

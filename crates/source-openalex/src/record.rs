@@ -5,7 +5,7 @@
 
 use std::borrow::Cow;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 
 use crate::vocab::{
@@ -455,7 +455,7 @@ pub struct ApcPaid<'a> {
 }
 
 /// `has_content`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct HasContent {
     #[allow(missing_docs)]
@@ -465,7 +465,7 @@ pub struct HasContent {
 }
 
 /// `citation_normalized_percentile`.
-#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct CitationNormalizedPercentile {
     /// `0.0..=1.0`.
@@ -477,7 +477,7 @@ pub struct CitationNormalizedPercentile {
 }
 
 /// `cited_by_percentile_year`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PercentileYear {
     #[allow(missing_docs)]

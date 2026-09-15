@@ -8,6 +8,7 @@
 //! letters name a real country or currency waits for a vocabulary table
 //! (plan §8); the types are sized so that adding one changes nothing else.
 
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt;
 
 /// An ISO 3166-1 alpha-2 country code, `US`. Two bytes.
@@ -19,7 +20,7 @@ pub struct CountryCode([u8; 2]);
 pub struct CurrencyCode([u8; 3]);
 
 /// Why a string is not a code.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Error {
     /// Not the code's width.
     Length,
@@ -94,6 +95,40 @@ impl fmt::Display for CountryCode {
 impl fmt::Display for CurrencyCode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
+    }
+}
+
+impl Serialize for CountryCode {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        crate::human::serialize(self.as_str(), self.0, serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for CountryCode {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        crate::human::deserialize(
+            deserializer,
+            "country code",
+            |b: [u8; 2]| b.iter().all(u8::is_ascii_uppercase).then_some(Self(b)),
+            |s| Self::parse(s).ok(),
+        )
+    }
+}
+
+impl Serialize for CurrencyCode {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        crate::human::serialize(self.as_str(), self.0, serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for CurrencyCode {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        crate::human::deserialize(
+            deserializer,
+            "currency code",
+            |b: [u8; 3]| b.iter().all(u8::is_ascii_uppercase).then_some(Self(b)),
+            |s| Self::parse(s).ok(),
+        )
     }
 }
 

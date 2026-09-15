@@ -9,12 +9,19 @@
 //! Nothing here knows any source; the source crates depend on this one,
 //! and the binary registers each with one line.
 //!
-//! Still to come here: fetch with manifests, the binary sink, the counting
-//! allocator, parallelism over files.
+//! [`Binary`] is the first sink: the normalized layer on disk (plan §5,
+//! rule 12), tagged with the model version, readable back through
+//! [`Reader`]. [`alloc::Counting`] counts allocations for the report.
+//!
+//! Still to come here: fetch with manifests, symbol tables, parallelism
+//! over files.
 
+pub mod alloc;
+pub mod binary;
 pub mod gz;
 pub mod run;
 pub mod source;
 
+pub use binary::{Binary, Header, Kind, Reader, Written};
 pub use run::{Failure, Report, Stage, normalize, parse, read_raw};
 pub use source::{Count, Sink, Source};

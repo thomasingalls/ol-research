@@ -1,5 +1,7 @@
 //! A value a source asserted to be something it might not be.
 
+use serde::{Deserialize, Serialize};
+
 /// What a source claimed a `T` to be.
 ///
 /// Sources put non-identifiers in identifier slots: PubMed holds a
@@ -9,7 +11,7 @@
 /// it actually was, so the record stays honest and the count stays visible.
 /// Downstream code has to match on it — the malformed case cannot be
 /// ignored by accident (plan §6).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Claim<'a, T, E> {
     /// It parsed.
     Valid(T),

@@ -26,6 +26,7 @@
 //! Records are pushed to a [`Sink`] by reference as they are built; the
 //! citation edges follow the work, one call each.
 
+use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::num::NonZeroU32;
 
@@ -66,12 +67,13 @@ const SDG_PREFIX: &str = "https://metadata.un.org/sdg/";
 const WIKIDATA_PREFIX: &str = "https://www.wikidata.org/wiki/Q";
 
 /// One OpenAlex work, normalized.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Work<'n> {
     #[allow(missing_docs)]
     pub id: OpenAlexId,
     /// `doi`, already lowercase in the snapshot; 15 of 9,136 in the sample
     /// were the bare prefix with nothing after it.
+    #[serde(borrow)]
     pub doi: Option<DoiClaim<'n>>,
     /// `ids.pmid`.
     pub pmid: Option<Pmid>,
@@ -84,12 +86,15 @@ pub struct Work<'n> {
     pub published: Date,
     /// `language`: ISO 639-1, or ISO 639-2 for a language without a
     /// two-letter code.
+    #[serde(borrow)]
     pub language: Option<LangClaim<'n>>,
     /// `type`.
     pub kind: WorkType,
     #[allow(missing_docs)]
+    #[serde(borrow)]
     pub open_access: OpenAccess<'n>,
     #[allow(missing_docs)]
+    #[serde(borrow)]
     pub authorships: Vec<Authorship<'n>>,
     /// `apc_list`.
     pub apc_list: Option<Apc>,
@@ -108,32 +113,42 @@ pub struct Work<'n> {
     #[allow(missing_docs)]
     pub cited_by_percentile_year: Option<PercentileYear>,
     #[allow(missing_docs)]
+    #[serde(borrow)]
     pub biblio: Biblio<'n>,
     #[allow(missing_docs)]
     pub is_retracted: bool,
     /// Undocumented.
     pub is_xpac: bool,
     /// `topics`, best first; `primary_topic` is the first.
+    #[serde(borrow)]
     pub topics: Vec<Topic<'n>>,
     #[allow(missing_docs)]
+    #[serde(borrow)]
     pub keywords: Vec<Keyword<'n>>,
     #[allow(missing_docs)]
+    #[serde(borrow)]
     pub concepts: Vec<Concept<'n>>,
     #[allow(missing_docs)]
+    #[serde(borrow)]
     pub mesh: Vec<Mesh<'n>>,
     /// `locations`, the first being `primary_location`.
+    #[serde(borrow)]
     pub locations: Vec<Location<'n>>,
     #[allow(missing_docs)]
+    #[serde(borrow)]
     pub sustainable_development_goals: Vec<Sdg<'n>>,
     #[allow(missing_docs)]
+    #[serde(borrow)]
     pub awards: Vec<Award<'n>>,
     #[allow(missing_docs)]
+    #[serde(borrow)]
     pub funders: Vec<Funder<'n>>,
     /// How many edges follow this work through [`Sink::reference`].
     pub referenced_works_count: u32,
     #[allow(missing_docs)]
     pub related_works: Vec<OpenAlexId>,
     /// The inverted index, raw JSON.
+    #[serde(borrow)]
     pub abstract_inverted_index: Option<&'n str>,
     #[allow(missing_docs)]
     pub counts_by_year: Vec<YearCount>,
@@ -161,11 +176,12 @@ impl<'n> Work<'n> {
 }
 
 /// `open_access`, the Unpaywall facts.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OpenAccess<'n> {
     #[allow(missing_docs)]
     pub status: OaStatus,
     /// One of the best open location's two URLs, when set.
+    #[serde(borrow)]
     pub oa_url: Option<&'n str>,
     /// Absent on 474 gold works in the sample.
     pub any_repository_has_fulltext: Option<bool>,
@@ -180,13 +196,15 @@ impl OpenAccess<'_> {
 }
 
 /// An authorship.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Authorship<'n> {
     /// Not derivable from the index: 30 single-author works say `last`.
     pub position: AuthorPosition,
     #[allow(missing_docs)]
+    #[serde(borrow)]
     pub author: Author<'n>,
     #[allow(missing_docs)]
+    #[serde(borrow)]
     pub institutions: Vec<Institution<'n>>,
     /// A superset of the institutions' countries.
     pub countries: Vec<CountryCode>,
@@ -195,8 +213,10 @@ pub struct Authorship<'n> {
     #[allow(missing_docs)]
     pub raw_author_name: &'n str,
     /// Not always the strings inside `affiliations` (84 of 30,825).
+    #[serde(borrow)]
     pub raw_affiliation_strings: Vec<&'n str>,
     #[allow(missing_docs)]
+    #[serde(borrow)]
     pub affiliations: Vec<Affiliation<'n>>,
     /// The ORCID as deposited; differs from the resolved one on 5, and
     /// each occurs without the other.
@@ -204,7 +224,7 @@ pub struct Authorship<'n> {
 }
 
 /// The resolved author.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Author<'n> {
     /// Null on 1,321 of 30,825.
     pub id: Option<AuthorId>,
@@ -215,7 +235,7 @@ pub struct Author<'n> {
 }
 
 /// A resolved institution.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Institution<'n> {
     #[allow(missing_docs)]
     pub id: InstitutionId,
@@ -232,7 +252,7 @@ pub struct Institution<'n> {
 }
 
 /// A raw affiliation string and the institutions it resolved to.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Affiliation<'n> {
     #[allow(missing_docs)]
     pub raw: &'n str,
@@ -242,7 +262,7 @@ pub struct Affiliation<'n> {
 
 /// An article processing charge, list or paid; the paid one arrives as
 /// floats that have always been whole.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Apc {
     #[allow(missing_docs)]
     pub value: u32,
@@ -253,20 +273,24 @@ pub struct Apc {
 }
 
 /// `biblio`, raw.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Biblio<'n> {
     #[allow(missing_docs)]
+    #[serde(borrow)]
     pub volume: Option<&'n str>,
     #[allow(missing_docs)]
+    #[serde(borrow)]
     pub issue: Option<&'n str>,
     #[allow(missing_docs)]
+    #[serde(borrow)]
     pub first_page: Option<&'n str>,
     #[allow(missing_docs)]
+    #[serde(borrow)]
     pub last_page: Option<&'n str>,
 }
 
 /// A topic with its subfield, field and domain.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Topic<'n> {
     #[allow(missing_docs)]
     pub id: TopicId,
@@ -275,15 +299,18 @@ pub struct Topic<'n> {
     #[allow(missing_docs)]
     pub score: f64,
     /// `subfields/NNNN`.
+    #[serde(borrow)]
     pub subfield: (u16, &'n str),
     /// `fields/NN`.
+    #[serde(borrow)]
     pub field: (u8, &'n str),
     /// `domains/N`.
+    #[serde(borrow)]
     pub domain: (u8, &'n str),
 }
 
 /// A keyword: the slug of `keywords/<slug>`, its name and score.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Keyword<'n> {
     #[allow(missing_docs)]
     pub slug: &'n str,
@@ -294,7 +321,7 @@ pub struct Keyword<'n> {
 }
 
 /// A (deprecated) concept.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Concept<'n> {
     #[allow(missing_docs)]
     pub id: ConceptId,
@@ -309,47 +336,56 @@ pub struct Concept<'n> {
 }
 
 /// A MeSH heading, one qualifier per entry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Mesh<'n> {
     #[allow(missing_docs)]
+    #[serde(borrow)]
     pub descriptor: MeshUi<'n>,
     #[allow(missing_docs)]
     pub descriptor_name: &'n str,
     #[allow(missing_docs)]
+    #[serde(borrow)]
     pub qualifier: Option<Qualifier<'n>>,
     #[allow(missing_docs)]
     pub major: bool,
 }
 
 /// A MeSH qualifier.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Qualifier<'n> {
     #[allow(missing_docs)]
+    #[serde(borrow)]
     pub ui: MeshUi<'n>,
     #[allow(missing_docs)]
     pub name: &'n str,
 }
 
 /// A location: one copy of the work somewhere.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Location<'n> {
     #[allow(missing_docs)]
+    #[serde(borrow)]
     pub id: LocationId<'n>,
     #[allow(missing_docs)]
     pub is_oa: bool,
     #[allow(missing_docs)]
+    #[serde(borrow)]
     pub landing_page_url: Option<&'n str>,
     #[allow(missing_docs)]
+    #[serde(borrow)]
     pub pdf_url: Option<&'n str>,
     #[allow(missing_docs)]
+    #[serde(borrow)]
     pub source: Option<Source<'n>>,
     #[allow(missing_docs)]
     pub license: Option<License>,
     /// `is_published` and `is_accepted` follow from it.
     pub version: Option<Version>,
     /// Sometimes the empty string.
+    #[serde(borrow)]
     pub raw_type: Option<&'n str>,
     /// Sometimes the empty string.
+    #[serde(borrow)]
     pub raw_source_name: Option<&'n str>,
     #[allow(missing_docs)]
     pub provenance: Provenance,
@@ -358,21 +394,21 @@ pub struct Location<'n> {
 /// A location's `id`, whose form is its `provenance`'s. None of the three
 /// typed forms is necessarily this work's own identifier: merged duplicates
 /// keep their MAG id, PMID or DOI.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LocationId<'n> {
     /// `provenance: mag`.
     Mag(NonZeroU32),
     /// `provenance: pubmed`.
     Pmid(Pmid),
     /// `provenance: crossref` or `datacite`, a bare DOI.
-    Doi(Doi<'n>),
+    Doi(#[serde(borrow)] Doi<'n>),
     /// `provenance: repo`: `doi:…`, `oai:…`, digits, or the repository's
     /// own string.
     Repo(&'n str),
 }
 
 /// A source: journal, repository, conference, …
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Source<'n> {
     #[allow(missing_docs)]
     pub id: SourceId,
@@ -382,6 +418,7 @@ pub struct Source<'n> {
     pub issn_l: Option<Issn>,
     /// `issn`, null and `[]` both meaning none; four in the sample had a
     /// wrong check digit.
+    #[serde(borrow)]
     pub issns: Vec<IssnClaim<'n>>,
     #[allow(missing_docs)]
     pub is_oa: bool,
@@ -392,8 +429,10 @@ pub struct Source<'n> {
     /// The host organization is the first of the lineage.
     pub host_organization_lineage: Vec<HostOrganization>,
     #[allow(missing_docs)]
+    #[serde(borrow)]
     pub host_organization_name: Option<&'n str>,
     /// Not parallel to the lineage: usually shorter.
+    #[serde(borrow)]
     pub host_organization_lineage_names: Vec<&'n str>,
     #[allow(missing_docs)]
     pub kind: SourceType,
@@ -408,7 +447,7 @@ impl Source<'_> {
 }
 
 /// A sustainable development goal, `1..=17`.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Sdg<'n> {
     #[allow(missing_docs)]
     pub goal: u8,
@@ -420,11 +459,12 @@ pub struct Sdg<'n> {
 
 /// An award; its funder is always among the work's `funders`, with the
 /// same name.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Award<'n> {
     #[allow(missing_docs)]
     pub id: AwardId,
     #[allow(missing_docs)]
+    #[serde(borrow)]
     pub name: Option<&'n str>,
     #[allow(missing_docs)]
     pub funder_award_id: &'n str,
@@ -433,7 +473,7 @@ pub struct Award<'n> {
 }
 
 /// A funder.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Funder<'n> {
     #[allow(missing_docs)]
     pub id: FunderId,
@@ -444,7 +484,7 @@ pub struct Funder<'n> {
 }
 
 /// One year's citations.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct YearCount {
     #[allow(missing_docs)]
     pub year: Year,
@@ -453,7 +493,7 @@ pub struct YearCount {
 }
 
 /// `indexed_in`, as one bit per index.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub struct IndexedIn(u8);
 
 impl IndexedIn {

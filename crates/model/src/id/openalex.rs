@@ -1,3 +1,4 @@
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt;
 use std::num::NonZeroU64;
 use std::str::FromStr;
@@ -126,7 +127,7 @@ impl<const KIND: char> From<EntityId<KIND>> for u64 {
 /// The organization hosting a source: an institution (`I…`) for a
 /// repository, a publisher (`P…`) for a journal. One field, two entity
 /// types, as the snapshot writes it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum HostOrganization {
     #[allow(missing_docs)]
     Institution(InstitutionId),
@@ -159,6 +160,23 @@ impl fmt::Display for HostOrganization {
             Self::Institution(id) => fmt::Display::fmt(id, f),
             Self::Publisher(id) => fmt::Display::fmt(id, f),
         }
+    }
+}
+
+impl<const KIND: char> Serialize for EntityId<KIND> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        crate::human::serialize(self, self.0.get(), serializer)
+    }
+}
+
+impl<'de, const KIND: char> Deserialize<'de> for EntityId<KIND> {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        crate::human::deserialize(
+            deserializer,
+            "OpenAlex id",
+            |n: u64| Self::new(n),
+            |s| Self::from_bare(s).ok(),
+        )
     }
 }
 

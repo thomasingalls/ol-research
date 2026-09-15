@@ -9,6 +9,8 @@
 //! Each type has one entry point per observed form, so a source that starts
 //! emitting the other form fails at the source that changed.
 
+use serde::{Deserialize, Serialize};
+
 mod openalex;
 mod pmc;
 mod pmid;
@@ -23,7 +25,7 @@ pub use pmc::PmcId;
 pub use pmid::Pmid;
 
 /// Why an identifier failed to parse.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ParseError {
     /// Nothing to parse (after any prefix).
     Empty,
