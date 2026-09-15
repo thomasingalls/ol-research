@@ -1,0 +1,16 @@
+[package]
+name = "merge"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The merged layer: one work across sources, our own ids, the registry that mints them, and the edges between works."
+
+[dependencies]
+ingest.workspace = true
+model.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+smallvec.workspace = true
+
+[lints]
+workspace = true

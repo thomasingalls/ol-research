@@ -17,7 +17,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use model::{Doi, OpenAlexId, Pmid};
+use model::{Doi, OpenAlexId, PmcId, Pmid};
 
 use crate::http::{self, Client};
 use crate::keys::Key;
@@ -282,6 +282,9 @@ fn parse(key: Key, s: &str) -> Result<String, String> {
             .map(|d| d.as_str().to_owned())
             .map_err(|e| e.to_string()),
         Key::Pmid => Pmid::from_digits(s)
+            .map(|p| p.to_string())
+            .map_err(|e| e.to_string()),
+        Key::Pmc => PmcId::from_prefixed(s)
             .map(|p| p.to_string())
             .map_err(|e| e.to_string()),
         Key::OpenAlex => OpenAlexId::from_bare(s)

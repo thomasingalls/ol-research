@@ -9,21 +9,24 @@ use std::fmt;
 use crate::source::Source;
 
 /// Which identifier a seed holds, or a `keys` run asks for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Key {
     /// A DOI, lowercase, bare (`10.1000/x`).
     Doi,
     /// A PMID, digits.
     Pmid,
+    /// A PMC id, `PMC` then digits. A name a work can carry (merge plan
+    /// §2); no source looks up by it.
+    Pmc,
     /// An OpenAlex work id, bare (`W123`).
     OpenAlex,
 }
 
 impl Key {
     /// Every key, in a fixed order.
-    pub const ALL: [Self; 3] = [Self::Doi, Self::Pmid, Self::OpenAlex];
+    pub const ALL: [Self; 4] = [Self::Doi, Self::Pmid, Self::Pmc, Self::OpenAlex];
 
-    /// `doi`, `pmid` or `openalex`.
+    /// `doi`, `pmid`, `pmc` or `openalex`.
     #[must_use]
     pub fn parse(s: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|k| k.name() == s)
@@ -35,6 +38,7 @@ impl Key {
         match self {
             Self::Doi => "doi",
             Self::Pmid => "pmid",
+            Self::Pmc => "pmc",
             Self::OpenAlex => "openalex",
         }
     }

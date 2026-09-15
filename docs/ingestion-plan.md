@@ -39,6 +39,9 @@ ingestion owes it is every representation kept intact and typed, so that
 the disagreement is visible rather than papered over at the source. This
 is roughly what Dimensions does; the aim is to do it better.
 
+The merge plan is [merge-plan.md](merge-plan.md): draft 1, 2026-09-15,
+written against the overlapping sample (§7) and a census of it.
+
 ## 2. Sources
 
 Five. Summary first; per-source facts follow. The bullets mix documented
@@ -407,12 +410,15 @@ crates/
   source-arxiv/
   source-openalex/
   source-s2/
-  ol-rht/             CLI:  <source> list | fetch <listing> | ingest <listing> | check | normalize [--survey] | dump
+  merge/              the merged layer (merge-plan.md): names, identity, the registry, the report
+  ol-rht/             CLI:  <source> list | fetch <listing> | ingest <listing> | check | normalize [--survey] | dump | keys; merge identity
 <store>/                  the store of record (§3.5): one root, `--store`, never committed
   raw/<source>/<path>     bytes as served, write-once, at the source's own path; `<path>.part` while in flight
   listings/<source>/<stamp>.jsonl   what the source offered, one entry per line, beside the index document it came from
   receipts/<source>.jsonl what was fetched: one verified file per line, append-only — the completion marker
   normalized/v<model>/<source>/<path minus extensions>.{works,references,deletions,symbols}.zst   rebuildable
+  merged/registry.jsonl   the WorkId registry (merge plan §4): of record, append-only
+  merged/v<model>.<merge>/<shard>.{works,edges,names,relations,unresolved,symbols}.zst   rebuildable
 ```
 
 Each source crate carries `fixtures/`: single raw records that once failed to
@@ -461,8 +467,10 @@ committed under `manifests/` on 2026-09-14 move into the store when
   same root, beside what they describe, immutable once written; the
   record of a fetch is the completion marker for its raw file.
 - Normalized output is a cache under a model-versioned prefix,
-  rebuildable, never of record. The merge output will be of record when
-  it exists.
+  rebuildable, never of record. Of the merge output, only the registry
+  that mints `WorkId`s is of record — append-only, like receipts; the
+  merged sets are a cache under `merged/v<model>.<merge>/` (merge plan
+  §4, 2026-09-15).
 - Nothing derived from data is committed.
 
 Backing: a directory on this laptop for the POC; a box, not yet ready, for
@@ -1187,7 +1195,9 @@ in your environment, never in the repo or in this conversation.
 - **M9** — full-scale plan: storage, incremental origins (`DeleteCitation`,
   update files, OAI `from`), model-version invalidation; the zstd level and
   frame size, once the box says whether disk or CPU is the scarce one.
-- Then: the merge plan.
+- Then: the merge plan — [merge-plan.md](merge-plan.md), draft 1 of
+  2026-09-15, written against the sample, with milestones MM1–MM5 of its
+  own.
 - **Search sinks**, noted 2026-09-15 so they are not forgotten: the
   metadata goes into **Meilisearch** and **Tantivy** at least, and probably
   two more for comparison (Quickwit, which is Tantivy at scale; Typesense or
@@ -1440,6 +1450,14 @@ cross-IDs and a second edge namespace early.
   corresponding author listed twice counted twice. The normalized shapes
   changed under every source, so every cache was rebuilt from raw; the
   layout has no schema evolution by design (§3.5).
+- 2026-09-15, the merge plan — drafted against the sample as
+  `merge-plan.md`, its decisions logged there. What changes here: the
+  registry that mints `WorkId`s is the merge's one thing of record and
+  the merged sets are a cache (§3.5); the store gains `merged/` (§3.3);
+  `ingest::Key` gains `Pmc` so a PMC id can be a name, which no source
+  can look up by. The census behind it: 82,723 works in the sample's
+  177,166 records, 83 conflict components in seven shapes, 4.2 million
+  cited works the sample does not hold.
 
 ## 11. Dependencies
 

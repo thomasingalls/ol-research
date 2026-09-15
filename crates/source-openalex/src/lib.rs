@@ -46,6 +46,7 @@ impl ingest::Keys for OpenAlex {
                     out(pmid.to_string());
                 }
             }
+            ingest::Key::Pmc => {}
         }
     }
 
@@ -57,6 +58,43 @@ impl ingest::Keys for OpenAlex {
         if key == ingest::Key::OpenAlex {
             out(reference.to_string());
         }
+    }
+}
+
+impl merge::Contributor for OpenAlex {
+    const SOURCE: merge::SourceId = merge::SourceId::OpenAlex;
+
+    fn names<'w>(work: &'w normalize::Work<'_>, out: &mut dyn FnMut(merge::Assertion<'w>)) {
+        out(merge::Assertion {
+            name: merge::Name::OpenAlex(work.id),
+            field: "id",
+            native: true,
+        });
+        if let Some(doi) = work.doi.as_ref().and_then(model::Claim::valid) {
+            out(merge::Assertion {
+                name: merge::Name::Doi(doi.as_str()),
+                field: "doi",
+                native: false,
+            });
+        }
+        if let Some(pmid) = work.pmid {
+            out(merge::Assertion {
+                name: merge::Name::Pmid(pmid),
+                field: "pmid",
+                native: false,
+            });
+        }
+    }
+
+    fn titles<'w>(work: &'w normalize::Work<'_>) -> merge::Titles<'w> {
+        merge::Titles {
+            title: work.title.filter(|t| !t.trim().is_empty()),
+            vernacular: None,
+        }
+    }
+
+    fn targets<'w>(reference: &'w model::OpenAlexId, out: &mut dyn FnMut(merge::Name<'w>)) {
+        out(merge::Name::OpenAlex(*reference));
     }
 }
 

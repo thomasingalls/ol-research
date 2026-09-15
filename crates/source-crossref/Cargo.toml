@@ -7,6 +7,7 @@ description = "Crossref works JSON: native record types and a strict, zero-copy 
 
 [dependencies]
 ingest.workspace = true
+merge.workspace = true
 model.workspace = true
 serde.workspace = true
 smallvec.workspace = true

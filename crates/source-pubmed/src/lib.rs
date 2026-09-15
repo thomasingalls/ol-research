@@ -44,6 +44,11 @@ impl ingest::Keys for Pubmed {
                     out(doi.as_str().to_owned());
                 }
             }
+            ingest::Key::Pmc => {
+                if let Some(pmc) = work.ids.pmc {
+                    out(pmc.to_string());
+                }
+            }
             ingest::Key::OpenAlex => {}
         }
     }
@@ -64,7 +69,69 @@ impl ingest::Keys for Pubmed {
                     out(doi.as_str().to_owned());
                 }
             }
+            ingest::Key::Pmc => {
+                if let Some(pmc) = reference.pmc.as_ref().and_then(model::Claim::valid) {
+                    out(pmc.to_string());
+                }
+            }
             ingest::Key::OpenAlex => {}
+        }
+    }
+}
+
+impl merge::Contributor for Pubmed {
+    const SOURCE: merge::SourceId = merge::SourceId::Pubmed;
+
+    fn names<'w>(work: &'w normalize::Citation<'_>, out: &mut dyn FnMut(merge::Assertion<'w>)) {
+        out(merge::Assertion {
+            name: merge::Name::Pmid(work.pmid),
+            field: "pmid",
+            native: true,
+        });
+        if let Some(doi) = work.ids.doi.as_ref().and_then(model::Claim::valid) {
+            out(merge::Assertion {
+                name: merge::Name::Doi(doi.as_str()),
+                field: "ids.doi",
+                native: false,
+            });
+        }
+        for doi in work
+            .ids
+            .elocation_doi
+            .iter()
+            .filter_map(model::Claim::valid)
+        {
+            out(merge::Assertion {
+                name: merge::Name::Doi(doi.as_str()),
+                field: "ids.elocation_doi",
+                native: false,
+            });
+        }
+        if let Some(pmc) = work.ids.pmc {
+            out(merge::Assertion {
+                name: merge::Name::Pmc(pmc),
+                field: "ids.pmc",
+                native: false,
+            });
+        }
+    }
+
+    fn titles<'w>(work: &'w normalize::Citation<'_>) -> merge::Titles<'w> {
+        merge::Titles {
+            title: Some(work.title).filter(|t| !t.trim().is_empty()),
+            vernacular: work.vernacular_title,
+        }
+    }
+
+    fn targets<'w>(reference: &'w normalize::Reference<'_>, out: &mut dyn FnMut(merge::Name<'w>)) {
+        if let Some(pmid) = reference.pmid.as_ref().and_then(model::Claim::valid) {
+            out(merge::Name::Pmid(*pmid));
+        }
+        if let Some(doi) = reference.doi.as_ref().and_then(model::Claim::valid) {
+            out(merge::Name::Doi(doi.as_str()));
+        }
+        if let Some(pmc) = reference.pmc.as_ref().and_then(model::Claim::valid) {
+            out(merge::Name::Pmc(*pmc));
         }
     }
 }

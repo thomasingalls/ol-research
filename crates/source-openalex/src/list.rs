@@ -112,8 +112,8 @@ impl Lister for OpenAlex {
         entries(&index.document(MANIFEST, "manifest.json")?)
     }
 
-    fn batch(_: Key) -> Option<usize> {
-        Some(BATCH)
+    fn batch(key: Key) -> Option<usize> {
+        matches!(key, Key::Doi | Key::Pmid | Key::OpenAlex).then_some(BATCH)
     }
 
     fn lookup(key: Key, ids: &[&str]) -> Result<Lookup, Error> {
@@ -121,6 +121,7 @@ impl Lister for OpenAlex {
             Key::Doi => "doi",
             Key::Pmid => "pmid",
             Key::OpenAlex => "ids.openalex",
+            Key::Pmc => return Err(Error::Unsupported(key)),
         };
         let values: Vec<String> = ids.iter().map(|id| encode(id)).collect();
         Ok(Lookup {
@@ -206,5 +207,7 @@ mod tests {
             "https://api.openalex.org/works?filter=ids.openalex:W1&per-page=100"
         );
         assert_eq!(OpenAlex::batch(Key::Doi), Some(50));
+        assert_eq!(OpenAlex::batch(Key::Pmc), None);
+        assert!(OpenAlex::lookup(Key::Pmc, &["PMC1"]).is_err());
     }
 }

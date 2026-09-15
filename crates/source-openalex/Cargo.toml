@@ -7,6 +7,7 @@ description = "OpenAlex works snapshot JSON lines: native record types and a str
 
 [dependencies]
 ingest.workspace = true
+merge.workspace = true
 model.workspace = true
 serde.workspace = true
 smallvec.workspace = true

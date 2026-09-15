@@ -56,6 +56,31 @@ impl ingest::Keys for Crossref {
     }
 }
 
+impl merge::Contributor for Crossref {
+    const SOURCE: merge::SourceId = merge::SourceId::Crossref;
+
+    fn names<'w>(work: &'w normalize::Work<'_>, out: &mut dyn FnMut(merge::Assertion<'w>)) {
+        out(merge::Assertion {
+            name: merge::Name::Doi(work.doi.as_str()),
+            field: "doi",
+            native: true,
+        });
+    }
+
+    fn titles<'w>(work: &'w normalize::Work<'_>) -> merge::Titles<'w> {
+        merge::Titles {
+            title: work.title.filter(|t| !t.trim().is_empty()),
+            vernacular: work.alternate_titles.first().copied(),
+        }
+    }
+
+    fn targets<'w>(reference: &'w normalize::Reference<'_>, out: &mut dyn FnMut(merge::Name<'w>)) {
+        if let Some(doi) = reference.doi.as_ref().and_then(model::Claim::valid) {
+            out(merge::Name::Doi(doi.as_str()));
+        }
+    }
+}
+
 impl ingest::Source for Crossref {
     const NAME: &'static str = "crossref";
     type Native<'a> = Work<'a>;

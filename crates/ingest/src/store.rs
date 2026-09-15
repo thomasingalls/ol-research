@@ -11,6 +11,8 @@
 //! <root>/listings/<source>/<date>.<name> the index document(s) the listing was read from
 //! <root>/receipts/<source>.jsonl        what was fetched, one receipt per line, append-only
 //! <root>/normalized/v<model>/<source>/… rebuildable
+//! <root>/merged/registry.jsonl         the WorkId registry (merge plan §4): of record, append-only
+//! <root>/merged/v<model>.<merge>/…      the merged sets, rebuildable
 //! ```
 
 use std::path::{Path, PathBuf};
@@ -81,6 +83,19 @@ impl Store {
             .join(format!("v{model}"))
             .join(source)
     }
+
+    /// The registry that mints work ids: `merged/registry.jsonl`.
+    #[must_use]
+    pub fn registry(&self) -> PathBuf {
+        self.root.join("merged").join("registry.jsonl")
+    }
+
+    /// The merged layer under one model and merge version:
+    /// `merged/v<model>.<merge>`.
+    #[must_use]
+    pub fn merged(&self, model: u32, merge: u32) -> PathBuf {
+        self.root.join("merged").join(format!("v{model}.{merge}"))
+    }
 }
 
 #[cfg(test)]
@@ -114,5 +129,7 @@ mod tests {
             store.normalized(1, "openalex"),
             Path::new("data/normalized/v1/openalex")
         );
+        assert_eq!(store.registry(), Path::new("data/merged/registry.jsonl"));
+        assert_eq!(store.merged(1, 2), Path::new("data/merged/v1.2"));
     }
 }
