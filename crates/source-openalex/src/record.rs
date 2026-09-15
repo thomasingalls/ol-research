@@ -3,18 +3,22 @@
 //! keys. Documentation notes how many of the 10,873 carried a field where
 //! that is informative.
 
-use std::borrow::Cow;
-
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
+use smallvec::SmallVec;
 
 use crate::vocab::{
     AuthorPosition, Index, InstitutionType, License, OaStatus, Provenance, SourceType, Version,
     WorkType,
 };
 
+/// A list with room for its usual length inside the record itself (plan
+/// §5, rule 1); only a longer one allocates. The lengths come from the
+/// observed distributions in the plan's data, about the 90th percentile.
+pub type Few<T, const N: usize> = SmallVec<[T; N]>;
+
 /// A string borrowed from the input unless it contained an escape sequence.
-pub type Text<'a> = Cow<'a, str>;
+pub use ingest::Text;
 
 /// One work.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -57,21 +61,21 @@ pub struct Work<'a> {
     pub open_access: OpenAccess<'a>,
     /// Up to 547.
     #[serde(borrow)]
-    pub authorships: Vec<Authorship<'a>>,
+    pub authorships: Few<Authorship<'a>, 8>,
     #[allow(missing_docs)]
     pub authors_count: u32,
     #[serde(borrow)]
     #[allow(missing_docs)]
-    pub corresponding_author_ids: Vec<Text<'a>>,
+    pub corresponding_author_ids: Few<Text<'a>, 2>,
     #[serde(borrow)]
     #[allow(missing_docs)]
-    pub corresponding_institution_ids: Vec<Text<'a>>,
+    pub corresponding_institution_ids: Few<Text<'a>, 2>,
     #[allow(missing_docs)]
     pub countries_distinct_count: u32,
     #[allow(missing_docs)]
     pub institutions_distinct_count: u32,
     /// Always empty in the sample; an element would be a parse failure.
-    pub institutions: Vec<Unmodelled>,
+    pub institutions: Few<Unmodelled, 2>,
     /// Present on 778.
     #[serde(borrow)]
     pub apc_list: Option<Apc<'a>>,
@@ -106,19 +110,19 @@ pub struct Work<'a> {
     pub primary_topic: Option<Topic<'a>>,
     /// Up to 3.
     #[serde(borrow)]
-    pub topics: Vec<Topic<'a>>,
+    pub topics: Few<Topic<'a>, 3>,
     /// 1 to 27.
     #[serde(borrow)]
-    pub keywords: Vec<Scored<'a>>,
+    pub keywords: Few<Scored<'a>, 8>,
     /// Deprecated by OpenAlex in favour of topics; 1 to 34.
     #[serde(borrow)]
-    pub concepts: Vec<Concept<'a>>,
+    pub concepts: Few<Concept<'a>, 16>,
     /// On 200 works, up to 120 headings.
     #[serde(borrow)]
-    pub mesh: Vec<Mesh<'a>>,
+    pub mesh: Few<Mesh<'a>, 4>,
     /// 1 to 17.
     #[serde(borrow)]
-    pub locations: Vec<Location<'a>>,
+    pub locations: Few<Location<'a>, 4>,
     #[allow(missing_docs)]
     pub locations_count: u32,
     /// Never null, but every field null when there is no OA copy (6,869).
@@ -126,26 +130,26 @@ pub struct Work<'a> {
     pub best_oa_location: BestOaLocation<'a>,
     #[serde(borrow)]
     #[allow(missing_docs)]
-    pub sustainable_development_goals: Vec<Scored<'a>>,
+    pub sustainable_development_goals: Few<Scored<'a>, 2>,
     /// Up to 62.
     #[serde(borrow)]
-    pub awards: Vec<Award<'a>>,
+    pub awards: Few<Award<'a>, 2>,
     #[serde(borrow)]
     #[allow(missing_docs)]
-    pub funders: Vec<Funder<'a>>,
+    pub funders: Few<Funder<'a>, 2>,
     /// Edges: OpenAlex ids of cited works; up to 581.
     #[serde(borrow)]
-    pub referenced_works: Vec<Text<'a>>,
+    pub referenced_works: Few<Text<'a>, 8>,
     #[allow(missing_docs)]
     pub referenced_works_count: u32,
     /// Up to 20.
     #[serde(borrow)]
-    pub related_works: Vec<Text<'a>>,
+    pub related_works: Few<Text<'a>, 20>,
     /// Word → positions, kept as the raw JSON slice; present on 8,831.
     #[serde(borrow)]
     pub abstract_inverted_index: Option<RawJson<'a>>,
     #[allow(missing_docs)]
-    pub counts_by_year: Vec<YearCount>,
+    pub counts_by_year: Few<YearCount, 8>,
     /// ISO 8601 with milliseconds.
     #[serde(borrow)]
     pub updated_date: Text<'a>,
@@ -153,7 +157,7 @@ pub struct Work<'a> {
     #[serde(borrow)]
     pub created_date: Text<'a>,
     #[allow(missing_docs)]
-    pub indexed_in: Vec<Index>,
+    pub indexed_in: Few<Index, 4>,
 }
 
 /// A JSON value kept exactly as serialized, borrowed and uninterpreted:
@@ -310,7 +314,7 @@ pub struct Source<'a> {
     pub issn_l: Option<Text<'a>>,
     #[serde(borrow)]
     #[allow(missing_docs)]
-    pub issn: Option<Vec<Text<'a>>>,
+    pub issn: Option<Few<Text<'a>, 2>>,
     #[allow(missing_docs)]
     pub is_oa: bool,
     #[allow(missing_docs)]
@@ -325,10 +329,10 @@ pub struct Source<'a> {
     pub host_organization_name: Option<Text<'a>>,
     #[serde(borrow)]
     #[allow(missing_docs)]
-    pub host_organization_lineage: Vec<Text<'a>>,
+    pub host_organization_lineage: Few<Text<'a>, 2>,
     #[serde(borrow)]
     #[allow(missing_docs)]
-    pub host_organization_lineage_names: Vec<Text<'a>>,
+    pub host_organization_lineage_names: Few<Text<'a>, 2>,
     #[serde(rename = "type")]
     #[allow(missing_docs)]
     pub r#type: SourceType,
@@ -361,10 +365,10 @@ pub struct Authorship<'a> {
     pub author: Author<'a>,
     #[serde(borrow)]
     #[allow(missing_docs)]
-    pub institutions: Vec<Institution<'a>>,
+    pub institutions: Few<Institution<'a>, 2>,
     /// ISO 3166-1 alpha-2.
     #[serde(borrow)]
-    pub countries: Vec<Text<'a>>,
+    pub countries: Few<Text<'a>, 2>,
     #[allow(missing_docs)]
     pub is_corresponding: bool,
     #[serde(borrow)]
@@ -372,10 +376,10 @@ pub struct Authorship<'a> {
     pub raw_author_name: Text<'a>,
     #[serde(borrow)]
     #[allow(missing_docs)]
-    pub raw_affiliation_strings: Vec<Text<'a>>,
+    pub raw_affiliation_strings: Few<Text<'a>, 2>,
     #[serde(borrow)]
     #[allow(missing_docs)]
-    pub affiliations: Vec<Affiliation<'a>>,
+    pub affiliations: Few<Affiliation<'a>, 2>,
     /// The ORCID as deposited, before resolution; 6,931 of 30,825.
     #[serde(borrow)]
     pub raw_orcid: Option<Text<'a>>,
@@ -418,7 +422,7 @@ pub struct Institution<'a> {
     pub r#type: Option<InstitutionType>,
     /// The institution and its parents; 1 to 28.
     #[serde(borrow)]
-    pub lineage: Vec<Text<'a>>,
+    pub lineage: Few<Text<'a>, 4>,
 }
 
 /// A raw affiliation string and the institutions it resolved to.
@@ -430,7 +434,7 @@ pub struct Affiliation<'a> {
     pub raw_affiliation_string: Text<'a>,
     #[serde(borrow)]
     #[allow(missing_docs)]
-    pub institution_ids: Vec<Text<'a>>,
+    pub institution_ids: Few<Text<'a>, 2>,
 }
 
 /// `apc_list`: the list price, integers.

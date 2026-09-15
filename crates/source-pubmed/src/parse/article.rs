@@ -6,7 +6,7 @@ use crate::attr::{AuthorListType, CitedMedium, EIdType, IssnType, NlmCategory, P
 use crate::error::ErrorKind;
 use crate::record::{
     Abstract, AbstractText, Article, ArticleTitle, Author, AuthorList, AuthorName, CollectiveName,
-    DataBank, DataBankList, Date, ELocationId, Grant, GrantList, Issn, Journal, JournalIssue,
+    DataBank, DataBankList, Date, ELocationId, Few, Grant, GrantList, Issn, Journal, JournalIssue,
     Pagination, PubDate,
 };
 use crate::text::Text;
@@ -30,9 +30,9 @@ pub(super) fn article<'a>(p: &mut Parser<'a>, tag: Tag<'a>) -> Result<Article<'a
     let (mut journal, mut article_title, mut pagination, mut r#abstract) = (None, None, None, None);
     let (mut author_list, mut data_bank_list, mut grant_list) = (None, None, None);
     let (mut publication_types, mut vernacular_title) = (None, None);
-    let mut elocation_ids = Vec::new();
-    let mut languages = Vec::new();
-    let mut article_dates = Vec::new();
+    let mut elocation_ids = Few::new();
+    let mut languages = Few::new();
+    let mut article_dates = Few::new();
     while let Child::Elem(t) = p.next_child(&tag)? {
         match t.name() {
             "Journal" => set_once!(p, journal, "Journal", journal_elem(p, t)?),
@@ -294,8 +294,8 @@ fn abstract_elem<'a>(p: &mut Parser<'a>, tag: Tag<'a>) -> Result<Abstract<'a>> {
 pub(super) fn abstract_children<'a>(
     p: &mut Parser<'a>,
     tag: &Tag<'a>,
-) -> Result<(Vec<AbstractText<'a>>, Option<Text<'a>>)> {
-    let mut texts = Vec::new();
+) -> Result<(Few<AbstractText<'a>, 4>, Option<Text<'a>>)> {
+    let mut texts = Few::new();
     let mut copyright_information = None;
     while let Child::Elem(t) = p.next_child(tag)? {
         match t.name() {
@@ -352,7 +352,7 @@ fn author_list_elem<'a>(p: &mut Parser<'a>, tag: Tag<'a>) -> Result<AuthorList<'
         }
         Ok(())
     })?;
-    let mut authors = Vec::new();
+    let mut authors = Few::new();
     while let Child::Elem(t) = p.next_child(&tag)? {
         match t.name() {
             "Author" => authors.push(author(p, t)?),
@@ -385,8 +385,8 @@ fn author<'a>(p: &mut Parser<'a>, tag: Tag<'a>) -> Result<Author<'a>> {
     })?;
     let mut person = NameSlots::default();
     let mut collective = None;
-    let mut identifiers = Vec::new();
-    let mut affiliations = Vec::new();
+    let mut identifiers = Few::new();
+    let mut affiliations = Few::new();
     while let Child::Elem(t) = p.next_child(&tag)? {
         let Some(t) = person.take(p, t)? else {
             continue;
@@ -450,7 +450,7 @@ fn data_bank_list_elem<'a>(p: &mut Parser<'a>, tag: Tag<'a>) -> Result<DataBankL
         }
         Ok(())
     })?;
-    let mut data_banks = Vec::new();
+    let mut data_banks = Few::new();
     while let Child::Elem(t) = p.next_child(&tag)? {
         match t.name() {
             "DataBank" => data_banks.push(data_bank(p, t)?),
@@ -501,7 +501,7 @@ fn grant_list_elem<'a>(p: &mut Parser<'a>, tag: Tag<'a>) -> Result<GrantList<'a>
         }
         Ok(())
     })?;
-    let mut grants = Vec::new();
+    let mut grants = Few::new();
     while let Child::Elem(t) = p.next_child(&tag)? {
         match t.name() {
             "Grant" => grants.push(grant(p, t)?),

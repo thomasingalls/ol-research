@@ -248,9 +248,17 @@ pub(crate) enum Step<E> {
 }
 
 /// Shared across a run's workers: the record limit and the halt flag.
+///
+/// A worker claims a record before reading it, so the record after the
+/// limit is never parsed, and gives the claim back if the file ends
+/// first. `done` counts claims consumed or still held; `pending` counts
+/// the held ones. A claim that finds the limit reached waits while claims
+/// are pending — one may come back — and only then answers no, so the
+/// limit is exact across workers.
 pub(crate) struct Progress<'a> {
     limit: Option<u64>,
     done: &'a AtomicU64,
+    pending: &'a AtomicU64,
     halt: &'a AtomicBool,
     /// Tally normalize failures instead of stopping at the first.
     survey: bool,
@@ -260,12 +268,14 @@ impl<'a> Progress<'a> {
     pub(crate) fn new(
         limit: Option<u64>,
         done: &'a AtomicU64,
+        pending: &'a AtomicU64,
         halt: &'a AtomicBool,
         survey: bool,
     ) -> Self {
         Self {
             limit,
             done,
+            pending,
             halt,
             survey,
         }
@@ -274,25 +284,48 @@ impl<'a> Progress<'a> {
     /// Claims the next record: false when the run is stopped or the limit
     /// is reached, so at most `limit` records are ever processed.
     pub(crate) fn claim(&self) -> bool {
-        !self.halt.load(Ordering::Relaxed)
-            && self
-                .limit
-                .is_none_or(|n| self.done.fetch_add(1, Ordering::Relaxed) < n)
+        let Some(n) = self.limit else {
+            return !self.halt.load(Ordering::Relaxed);
+        };
+        loop {
+            if self.halt.load(Ordering::Relaxed) {
+                return false;
+            }
+            if self.done.fetch_add(1, Ordering::AcqRel) < n {
+                self.pending.fetch_add(1, Ordering::AcqRel);
+                return true;
+            }
+            self.done.fetch_sub(1, Ordering::AcqRel);
+            if self.pending.load(Ordering::Acquire) == 0 {
+                return false;
+            }
+            std::thread::yield_now();
+        }
     }
 
-    /// Whether the run is over: stopped, or the limit reached.
+    /// The claim held for this record is used: the record is being
+    /// processed.
+    fn consume(&self) {
+        if self.limit.is_some() {
+            self.pending.fetch_sub(1, Ordering::AcqRel);
+        }
+    }
+
+    /// Whether the run is over: stopped, or the limit reached with no
+    /// claim that could still come back.
     pub(crate) fn over(&self) -> bool {
         self.halt.load(Ordering::Relaxed)
-            || self
-                .limit
-                .is_some_and(|n| self.done.load(Ordering::Relaxed) >= n)
+            || self.limit.is_some_and(|n| {
+                self.done.load(Ordering::Acquire) >= n && self.pending.load(Ordering::Acquire) == 0
+            })
     }
 
     /// Gives back a claim that went unused: the file ended before the
     /// record it was for.
     fn unclaim(&self) {
         if self.limit.is_some() {
-            self.done.fetch_sub(1, Ordering::Relaxed);
+            self.pending.fetch_sub(1, Ordering::AcqRel);
+            self.done.fetch_sub(1, Ordering::AcqRel);
         }
     }
 }
@@ -397,6 +430,7 @@ where
         BufReader::with_capacity(FRAME_BUFFER, &mut counted),
         |native| {
             held = false;
+            progress.consume();
             records += 1;
             match step(native, sink) {
                 Ok(()) => {}
@@ -462,8 +496,8 @@ where
 {
     let started = Instant::now();
     let (allocations, allocated_bytes) = (alloc::allocations(), alloc::allocated_bytes());
-    let (done, halt) = (AtomicU64::new(0), AtomicBool::new(false));
-    let progress = Progress::new(limit, &done, &halt, false);
+    let (done, pending, halt) = (AtomicU64::new(0), AtomicU64::new(0), AtomicBool::new(false));
+    let progress = Progress::new(limit, &done, &pending, &halt, false);
     let mut report = Report {
         workers: 1,
         ..Report::default()
@@ -579,12 +613,13 @@ where
     let workers = workers.clamp(1, paths.len().max(1));
     let started = Instant::now();
     let (allocations, allocated_bytes) = (alloc::allocations(), alloc::allocated_bytes());
-    let (next, done, halt) = (
+    let (next, done, pending, halt) = (
         AtomicUsize::new(0),
+        AtomicU64::new(0),
         AtomicU64::new(0),
         AtomicBool::new(false),
     );
-    let progress = Progress::new(limit, &done, &halt, survey);
+    let progress = Progress::new(limit, &done, &pending, &halt, survey);
     let outcomes: Vec<(Report, Option<K>, Option<Failure>, Survey)> = std::thread::scope(|scope| {
         let handles: Vec<_> = (0..workers)
             .map(|w| {
@@ -1106,8 +1141,8 @@ mod tests {
             .iter()
             .map(|w| (w.prefix.clone(), w.records))
             .collect();
-        assert_eq!(by_prefix[&prefixes[0]], [1, 2, 1]);
-        assert_eq!(by_prefix[&prefixes[1]], [1, 0, 0]);
+        assert_eq!(by_prefix[&prefixes[0]], [1, 2, 1, 0]);
+        assert_eq!(by_prefix[&prefixes[1]], [1, 0, 0, 0]);
         assert!(written.iter().all(|w| w.bytes > 0));
 
         let works = Reader::open(&Kind::Works.path(&prefixes[0])).unwrap();

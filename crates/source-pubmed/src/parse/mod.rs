@@ -19,9 +19,10 @@ use quick_xml::XmlVersion;
 use quick_xml::escape;
 use quick_xml::events::attributes::Attributes;
 use quick_xml::events::{BytesEnd, BytesStart, Event};
+use smallvec::SmallVec;
 
 use crate::error::{Error, ErrorKind};
-use crate::record::{Date, Pmid, Record};
+use crate::record::{Date, Few, Pmid, Record};
 use crate::text::{RawXml, Text};
 
 /// Stores `$value` into the `Option` `$slot`; a second occurrence is an error.
@@ -77,7 +78,9 @@ pub(crate) struct Parser<'a> {
     /// Where `input` begins in the file, so errors say file offsets even
     /// when `input` is one frame of it.
     base: u64,
-    path: Vec<&'a str>,
+    /// Element names from the root down; PubMed nests about ten deep, so
+    /// this never leaves the parser itself.
+    path: SmallVec<[&'a str; 16]>,
     pmid: Option<Text<'a>>,
 }
 
@@ -90,11 +93,16 @@ impl<'a> Parser<'a> {
     fn at(input: &'a str, base: u64) -> Self {
         // quick-xml skips a BOM; skip it here too so offsets agree.
         let input = input.strip_prefix('\u{feff}').unwrap_or(input);
+        // quick-xml's own end-tag check keeps the open names on the heap,
+        // several allocations per frame; the check is done here instead,
+        // against `path`, which is inline.
+        let mut reader = Reader::from_str(input);
+        reader.config_mut().check_end_names = false;
         Self {
             input,
-            reader: Reader::from_str(input),
+            reader,
             base,
-            path: Vec::with_capacity(16),
+            path: SmallVec::new(),
             pmid: None,
         }
     }
@@ -152,7 +160,15 @@ impl<'a> Parser<'a> {
             match self.reader.read_event() {
                 Ok(Event::Start(s)) => return Ok(Child::Elem(self.tag(&s, false))),
                 Ok(Event::Empty(s)) => return Ok(Child::Elem(self.tag(&s, true))),
-                Ok(Event::End(_)) => return Ok(Child::End),
+                Ok(Event::End(e)) => {
+                    let name = e.name();
+                    if self.path.last().copied() != Some(name.as_ref()) {
+                        return Err(
+                            self.error(ErrorKind::UnexpectedElement(format!("/{}", name.as_ref())))
+                        );
+                    }
+                    return Ok(Child::End);
+                }
                 Ok(Event::Comment(_) | Event::PI(_)) => {}
                 Ok(Event::Text(t)) => {
                     if !t.trim().is_empty() {
@@ -225,14 +241,23 @@ impl<'a> Parser<'a> {
     }
 
     /// Visits each attribute of `tag`, decoded, borrowed from the input.
-    /// Duplicate attributes are rejected by quick-xml.
+    /// A duplicate attribute is an error, checked here against the few
+    /// names already seen: quick-xml's own check keeps them on the heap,
+    /// which was one allocation per element with attributes.
     pub(crate) fn each_attr<F>(&self, tag: &Tag<'a>, mut visit: F) -> Result<()>
     where
         F: FnMut(&'a str, Cow<'a, str>) -> Result<()>,
     {
-        for attr in tag.attributes() {
+        let mut seen: SmallVec<[&'a str; 8]> = SmallVec::new();
+        for attr in tag.attributes().with_checks(false) {
             let attr = attr.map_err(|e| self.error(ErrorKind::Attr(e)))?;
             let name = attr.key.into_inner();
+            if seen.contains(&name) {
+                return Err(self.error(ErrorKind::Attr(
+                    quick_xml::events::attributes::AttrError::Duplicated(0, 0),
+                )));
+            }
+            seen.push(name);
             let value = attr
                 .normalized_value(XmlVersion::Explicit1_0)
                 .map_err(|e| self.error(ErrorKind::Xml(e)))?;
@@ -265,7 +290,11 @@ impl<'a> Parser<'a> {
         value.ok_or_else(|| self.error(ErrorKind::MissingAttribute(name)))
     }
 
-    pub(crate) fn at_least_one<T>(&self, name: &'static str, items: Vec<T>) -> Result<Vec<T>> {
+    pub(crate) fn at_least_one<T, const N: usize>(
+        &self,
+        name: &'static str,
+        items: Few<T, N>,
+    ) -> Result<Few<T, N>> {
         if items.is_empty() {
             Err(self.error(ErrorKind::MissingElement(name)))
         } else {
@@ -404,15 +433,15 @@ pub(crate) fn date_ymd<'a>(p: &mut Parser<'a>, tag: Tag<'a>) -> Result<Date<'a>>
 }
 
 /// A wrapper element with no attributes whose content is `child+`.
-pub(crate) fn list<'a, T>(
+pub(crate) fn list<'a, T, const N: usize>(
     p: &mut Parser<'a>,
     tag: Tag<'a>,
     child: &'static str,
     parse: impl Fn(&mut Parser<'a>, Tag<'a>) -> Result<T>,
-) -> Result<Vec<T>> {
+) -> Result<Few<T, N>> {
     p.enter(&tag);
     p.no_attributes(&tag)?;
-    let mut items = Vec::new();
+    let mut items = Few::new();
     while let Child::Elem(t) = p.next_child(&tag)? {
         if t.name() == child {
             items.push(parse(p, t)?);
@@ -499,10 +528,12 @@ mod tests {
             panic!()
         };
         assert_eq!(r.name(), "r");
+        p.enter(&r);
         let Child::Elem(a) = p.next_child(&r).unwrap() else {
             panic!()
         };
         assert_eq!(a.name(), "a");
+        p.enter(&a);
         let mut seen = Vec::new();
         p.each_attr(&a, |n, v| {
             // Borrowed from `input`, not from the event: still usable later.
@@ -576,6 +607,7 @@ mod tests {
         let Child::Elem(r) = p.next_event_child().unwrap() else {
             panic!()
         };
+        p.enter(&r);
         let Child::Elem(t) = p.next_child(&r).unwrap() else {
             panic!()
         };
@@ -585,6 +617,38 @@ mod tests {
             "a &amp; <i>b<sub>2</sub></i> <mml:math><mml:mi>x</mml:mi></mml:math>"
         );
         assert!(matches!(p.next_child(&r).unwrap(), Child::End));
+    }
+
+    #[test]
+    fn a_mismatched_end_tag_is_an_error() {
+        let input = "<r><a>x</b></r>";
+        let mut p = Parser::new(input);
+        let Child::Elem(r) = p.next_event_child().unwrap() else {
+            panic!()
+        };
+        p.enter(&r);
+        let Child::Elem(a) = p.next_child(&r).unwrap() else {
+            panic!()
+        };
+        let err = p.leaf(&a).unwrap_err();
+        assert!(matches!(err.kind, ErrorKind::Xml(_)), "{err:?}");
+        let input = "<r><a></b></r>";
+        let mut p = Parser::new(input);
+        let Child::Elem(r) = p.next_event_child().unwrap() else {
+            panic!()
+        };
+        p.enter(&r);
+        let Child::Elem(a) = p.next_child(&r).unwrap() else {
+            panic!()
+        };
+        p.enter(&a);
+        let Err(err) = p.next_child(&a) else {
+            panic!("a mismatched end tag parsed")
+        };
+        assert!(
+            matches!(err.kind, ErrorKind::UnexpectedElement(ref n) if n == "/b"),
+            "{err:?}"
+        );
     }
 
     #[test]

@@ -11,12 +11,13 @@
 //! Records are pushed to a [`Sink`] by reference as they are built.
 
 use serde::{Deserialize, Serialize};
+use smallvec::SmallVec;
 use std::fmt;
 
 use ingest::Sink;
 use model::{
-    Claim, Date, DateError, DateTime, Doi, DoiError, Isbn, IsbnError, Issn, IssnError, Lang,
-    LangError, Orcid, OrcidError, ParseError, PartialDate, Registrant,
+    Claim, Date, DateError, DateTime, Doi, DoiError, Interned, Isbn, IsbnError, Issn, IssnError,
+    Lang, LangError, Orcid, OrcidError, ParseError, PartialDate, Registrant,
 };
 
 use crate::Crossref;
@@ -26,6 +27,11 @@ use crate::vocab::{
     AssertedBy, ContentVersion, IdKind, RelationAssertedBy, RelationIdKind, Sequence, SerialKind,
     UpdateType, WorkType,
 };
+
+/// A list with room for its usual length inside the record itself (plan
+/// §5, rule 1); only a longer one allocates. The lengths come from the
+/// observed distributions in the plan's data, about the 90th percentile.
+pub type Few<T, const N: usize> = SmallVec<[T; N]>;
 
 /// A DOI as a source asserted it.
 pub type DoiClaim<'n> = Claim<'n, Doi<'n>, DoiError>;
@@ -61,7 +67,7 @@ pub struct Work<'n> {
     pub title: Option<&'n str>,
     /// `title[1..]`: translations, in the sample.
     #[serde(borrow)]
-    pub alternate_titles: Vec<&'n str>,
+    pub alternate_titles: Few<&'n str, 2>,
     /// `subtitle[0]`; empty strings occur.
     #[serde(borrow)]
     pub subtitle: Option<&'n str>,
@@ -69,11 +75,11 @@ pub struct Work<'n> {
     pub r#abstract: Option<&'n str>,
     /// `container-title[0]`.
     #[serde(borrow)]
-    pub container_title: Option<&'n str>,
+    pub container_title: Option<Interned<'n>>,
     /// From `issn-type`, checked against `ISSN`.
-    pub issns: Vec<TypedIssn>,
+    pub issns: Few<TypedIssn, 2>,
     /// From `isbn-type`, checked against `ISBN`.
-    pub isbns: Vec<TypedIsbn>,
+    pub isbns: Few<TypedIsbn, 2>,
     #[allow(missing_docs)]
     #[serde(borrow)]
     pub volume: Option<&'n str>,
@@ -87,31 +93,32 @@ pub struct Work<'n> {
     #[serde(borrow)]
     pub article_number: Option<&'n str>,
     #[allow(missing_docs)]
-    pub publisher: &'n str,
+    #[serde(borrow)]
+    pub publisher: Interned<'n>,
     /// `language`, ISO 639-1.
     pub language: Option<Lang>,
     /// `author[]`.
     #[serde(borrow)]
-    pub authors: Vec<Author<'n>>,
+    pub authors: Few<Author<'n>, 8>,
     /// `references-count`, checked against the reference array.
     pub references_count: Option<u32>,
     /// `is-referenced-by-count`.
     pub cited_by_count: Option<u32>,
     #[allow(missing_docs)]
     #[serde(borrow)]
-    pub licenses: Vec<License<'n>>,
+    pub licenses: Few<License<'n>, 4>,
     /// Updates this work applies to others: it is the notice.
     #[serde(borrow)]
-    pub updates_to: Vec<Update<'n>>,
+    pub updates_to: Few<Update<'n>, 2>,
     /// Updates applied to this work: it is the retracted, corrected, … one.
     #[serde(borrow)]
-    pub updated_by: Vec<Update<'n>>,
+    pub updated_by: Few<Update<'n>, 2>,
     /// `relation`, flattened.
     #[serde(borrow)]
-    pub relations: Vec<Relation<'n>>,
+    pub relations: Few<Relation<'n>, 4>,
     /// `alternative-id`, often the DOI itself or a PII.
     #[serde(borrow)]
-    pub alternative_ids: Vec<&'n str>,
+    pub alternative_ids: Few<&'n str, 2>,
 }
 
 /// An author.
@@ -128,7 +135,7 @@ pub struct Author<'n> {
     pub sequence: Sequence,
     #[allow(missing_docs)]
     #[serde(borrow)]
-    pub affiliations: Vec<Affiliation<'n>>,
+    pub affiliations: Few<Affiliation<'n>, 2>,
 }
 
 /// A person (`family`, maybe `given`) or an organisation (`name`).
@@ -151,7 +158,7 @@ pub enum AuthorName<'n> {
 pub struct Affiliation<'n> {
     #[allow(missing_docs)]
     #[serde(borrow)]
-    pub name: Option<&'n str>,
+    pub name: Option<Interned<'n>>,
     /// `https://ror.org/…`, unvalidated here.
     #[serde(borrow)]
     pub ror: Option<&'n str>,
@@ -179,7 +186,8 @@ pub struct TypedIsbn {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct License<'n> {
     #[allow(missing_docs)]
-    pub url: &'n str,
+    #[serde(borrow)]
+    pub url: Interned<'n>,
     #[allow(missing_docs)]
     pub version: ContentVersion,
     #[allow(missing_docs)]
@@ -204,7 +212,8 @@ pub struct Update<'n> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Relation<'n> {
     /// `has-preprint`, `is-preprint-of`, …
-    pub kind: &'n str,
+    #[serde(borrow)]
+    pub kind: Interned<'n>,
     #[allow(missing_docs)]
     pub id: &'n str,
     #[allow(missing_docs)]
@@ -453,7 +462,7 @@ impl Ctx {
                     .map_err(|e| self.err("author.ORCID", o, ErrorKind::Orcid(e)))
             })
             .transpose()?;
-        let mut affiliations = Vec::with_capacity(c.affiliation.len());
+        let mut affiliations = Few::new();
         for a in &c.affiliation {
             let mut ror = None;
             for id in a.id.as_deref().unwrap_or_default() {
@@ -473,7 +482,7 @@ impl Ctx {
                 }
             }
             affiliations.push(Affiliation {
-                name: a.name.as_deref(),
+                name: a.name.as_deref().map(Interned::Text),
                 ror,
             });
         }
@@ -504,7 +513,7 @@ impl Ctx {
     }
 }
 
-fn first<'n>(list: Option<&'n Vec<crate::record::Text<'_>>>) -> Option<&'n str> {
+fn first<'n>(list: Option<&'n [crate::record::Text<'_>]>) -> Option<&'n str> {
     list.and_then(|l| l.first()).map(|t| &**t)
 }
 
@@ -614,7 +623,7 @@ pub fn normalize<'n, K: Sink<'n, Crossref>>(w: &'n Native<'_>, emit: &mut K) -> 
         .unwrap_or_default()
         .iter()
         .map(|c| ctx.author(c))
-        .collect::<Result<Vec<_>, _>>()?;
+        .collect::<Result<_, _>>()?;
     let licenses = w
         .license
         .as_deref()
@@ -622,7 +631,7 @@ pub fn normalize<'n, K: Sink<'n, Crossref>>(w: &'n Native<'_>, emit: &mut K) -> 
         .iter()
         .map(|l| {
             Ok(License {
-                url: &l.url,
+                url: Interned::Text(&l.url),
                 version: l.content_version,
                 start: ctx.stamp(
                     "license.start",
@@ -633,28 +642,28 @@ pub fn normalize<'n, K: Sink<'n, Crossref>>(w: &'n Native<'_>, emit: &mut K) -> 
                 delay_days: l.delay_in_days,
             })
         })
-        .collect::<Result<Vec<_>, Error>>()?;
+        .collect::<Result<_, Error>>()?;
     let updates_to = w
         .update_to
         .as_deref()
         .unwrap_or_default()
         .iter()
         .map(|u| ctx.update("update-to", u))
-        .collect::<Result<Vec<_>, _>>()?;
+        .collect::<Result<_, _>>()?;
     let updated_by = w
         .updated_by
         .as_deref()
         .unwrap_or_default()
         .iter()
         .map(|u| ctx.update("updated-by", u))
-        .collect::<Result<Vec<_>, _>>()?;
+        .collect::<Result<_, _>>()?;
     let relations = w
         .relation
         .iter()
         .flat_map(|map| map.iter())
         .flat_map(|(kind, targets)| {
             targets.iter().map(move |t| Relation {
-                kind,
+                kind: Interned::Text(kind),
                 id: &t.id,
                 id_kind: t.id_type,
                 asserted_by: t.asserted_by,
@@ -672,23 +681,23 @@ pub fn normalize<'n, K: Sink<'n, Crossref>>(w: &'n Native<'_>, emit: &mut K) -> 
         issued,
         published_print,
         published_online,
-        title: first(w.title.as_ref()),
+        title: first(w.title.as_deref()),
         alternate_titles: w
             .title
             .iter()
             .flat_map(|t| t.iter().skip(1))
             .map(|t| &**t)
             .collect(),
-        subtitle: first(w.subtitle.as_ref()),
+        subtitle: first(w.subtitle.as_deref()),
         r#abstract: w.r#abstract.as_deref(),
-        container_title: first(w.container_title.as_ref()),
+        container_title: first(w.container_title.as_deref()).map(Interned::Text),
         issns: journal_serials,
         isbns: book_serials,
         volume: w.volume.as_deref(),
         issue: w.issue.as_deref(),
         page: w.page.as_deref(),
         article_number: w.article_number.as_deref(),
-        publisher: &w.publisher,
+        publisher: Interned::Text(&w.publisher),
         language,
         authors,
         references_count: w.references_count,

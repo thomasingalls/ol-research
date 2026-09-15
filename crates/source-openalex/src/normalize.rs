@@ -27,6 +27,7 @@
 //! citation edges follow the work, one call each.
 
 use serde::{Deserialize, Serialize};
+use smallvec::SmallVec;
 use std::fmt;
 use std::num::NonZeroU32;
 
@@ -36,9 +37,9 @@ use model::id::{
     TopicId, strict_u32,
 };
 use model::{
-    Claim, CodeError, CountryCode, CurrencyCode, Date, DateError, DateTime, Doi, DoiError, Issn,
-    IssnError, Lang, LangError, MeshUi, MeshUiError, OpenAlexId, Orcid, OrcidError, ParseError,
-    Pmid, Ror, RorError, Year,
+    Claim, CodeError, CountryCode, CurrencyCode, Date, DateError, DateTime, Doi, DoiError,
+    Interned, Issn, IssnError, Lang, LangError, MeshUi, MeshUiError, OpenAlexId, Orcid, OrcidError,
+    ParseError, Pmid, Ror, RorError, Year,
 };
 
 use crate::OpenAlex;
@@ -50,6 +51,11 @@ use crate::vocab::{
     AuthorPosition, Index, InstitutionType, License, OaStatus, Provenance, SourceType, Version,
     WorkType,
 };
+
+/// A list with room for its usual length inside the record itself (plan
+/// §5, rule 1); only a longer one allocates. The lengths come from the
+/// observed distributions in the plan's data, about the 90th percentile.
+pub type Few<T, const N: usize> = SmallVec<[T; N]>;
 
 /// A DOI as the source asserted it.
 pub type DoiClaim<'n> = Claim<'n, Doi<'n>, DoiError>;
@@ -98,7 +104,7 @@ pub struct Work<'n> {
     pub open_access: OpenAccess<'n>,
     #[allow(missing_docs)]
     #[serde(borrow)]
-    pub authorships: Vec<Authorship<'n>>,
+    pub authorships: Few<Authorship<'n>, 8>,
     /// `apc_list`.
     pub apc_list: Option<Apc>,
     /// `apc_paid`.
@@ -124,37 +130,37 @@ pub struct Work<'n> {
     pub is_xpac: bool,
     /// `topics`, best first; `primary_topic` is the first.
     #[serde(borrow)]
-    pub topics: Vec<Topic<'n>>,
+    pub topics: Few<Topic<'n>, 3>,
     #[allow(missing_docs)]
     #[serde(borrow)]
-    pub keywords: Vec<Keyword<'n>>,
+    pub keywords: Few<Keyword<'n>, 8>,
     #[allow(missing_docs)]
     #[serde(borrow)]
-    pub concepts: Vec<Concept<'n>>,
+    pub concepts: Few<Concept<'n>, 16>,
     #[allow(missing_docs)]
     #[serde(borrow)]
-    pub mesh: Vec<Mesh<'n>>,
+    pub mesh: Few<Mesh<'n>, 4>,
     /// `locations`, the first being `primary_location`.
     #[serde(borrow)]
-    pub locations: Vec<Location<'n>>,
+    pub locations: Few<Location<'n>, 4>,
     #[allow(missing_docs)]
     #[serde(borrow)]
-    pub sustainable_development_goals: Vec<Sdg<'n>>,
+    pub sustainable_development_goals: Few<Sdg<'n>, 2>,
     #[allow(missing_docs)]
     #[serde(borrow)]
-    pub awards: Vec<Award<'n>>,
+    pub awards: Few<Award<'n>, 2>,
     #[allow(missing_docs)]
     #[serde(borrow)]
-    pub funders: Vec<Funder<'n>>,
+    pub funders: Few<Funder<'n>, 2>,
     /// How many edges follow this work through [`Sink::reference`].
     pub referenced_works_count: u32,
     #[allow(missing_docs)]
-    pub related_works: Vec<OpenAlexId>,
+    pub related_works: Few<OpenAlexId, 20>,
     /// The inverted index, raw JSON.
     #[serde(borrow)]
     pub abstract_inverted_index: Option<&'n str>,
     #[allow(missing_docs)]
-    pub counts_by_year: Vec<YearCount>,
+    pub counts_by_year: Few<YearCount, 8>,
     /// `created_date`.
     pub created: DateTime,
     /// `updated_date`, never before `created`.
@@ -208,19 +214,18 @@ pub struct Authorship<'n> {
     pub author: Author<'n>,
     #[allow(missing_docs)]
     #[serde(borrow)]
-    pub institutions: Vec<Institution<'n>>,
+    pub institutions: Few<Institution<'n>, 2>,
     /// A superset of the institutions' countries.
-    pub countries: Vec<CountryCode>,
+    pub countries: Few<CountryCode, 2>,
     #[allow(missing_docs)]
     pub is_corresponding: bool,
     #[allow(missing_docs)]
     pub raw_author_name: &'n str,
     /// Not always the strings inside `affiliations` (84 of 30,825).
-    #[serde(borrow)]
-    pub raw_affiliation_strings: Vec<&'n str>,
+    pub raw_affiliation_strings: Few<&'n str, 2>,
     #[allow(missing_docs)]
     #[serde(borrow)]
-    pub affiliations: Vec<Affiliation<'n>>,
+    pub affiliations: Few<Affiliation<'n>, 2>,
     /// The ORCID as deposited; differs from the resolved one on 5, and
     /// each occurs without the other.
     pub raw_orcid: Option<Orcid>,
@@ -243,7 +248,8 @@ pub struct Institution<'n> {
     #[allow(missing_docs)]
     pub id: InstitutionId,
     #[allow(missing_docs)]
-    pub name: &'n str,
+    #[serde(borrow)]
+    pub name: Interned<'n>,
     /// Absent for an institution OpenAlex has not matched to ROR; the
     /// 2025-07-29 part had one such, with no `type` either.
     pub ror: Option<Ror>,
@@ -252,7 +258,7 @@ pub struct Institution<'n> {
     /// Absent together with `ror`.
     pub kind: Option<InstitutionType>,
     /// The institution and its parents, the institution not always first.
-    pub lineage: Vec<InstitutionId>,
+    pub lineage: Few<InstitutionId, 4>,
 }
 
 /// A raw affiliation string and the institutions it resolved to.
@@ -261,7 +267,7 @@ pub struct Affiliation<'n> {
     #[allow(missing_docs)]
     pub raw: &'n str,
     #[allow(missing_docs)]
-    pub institution_ids: Vec<InstitutionId>,
+    pub institution_ids: Few<InstitutionId, 2>,
 }
 
 /// An article processing charge, list or paid; the paid one arrives as
@@ -299,27 +305,30 @@ pub struct Topic<'n> {
     #[allow(missing_docs)]
     pub id: TopicId,
     #[allow(missing_docs)]
-    pub name: &'n str,
+    #[serde(borrow)]
+    pub name: Interned<'n>,
     #[allow(missing_docs)]
     pub score: f64,
     /// `subfields/NNNN`.
     #[serde(borrow)]
-    pub subfield: (u16, &'n str),
+    pub subfield: (u16, Interned<'n>),
     /// `fields/NN`.
     #[serde(borrow)]
-    pub field: (u8, &'n str),
+    pub field: (u8, Interned<'n>),
     /// `domains/N`.
     #[serde(borrow)]
-    pub domain: (u8, &'n str),
+    pub domain: (u8, Interned<'n>),
 }
 
 /// A keyword: the slug of `keywords/<slug>`, its name and score.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Keyword<'n> {
     #[allow(missing_docs)]
-    pub slug: &'n str,
+    #[serde(borrow)]
+    pub slug: Interned<'n>,
     #[allow(missing_docs)]
-    pub name: &'n str,
+    #[serde(borrow)]
+    pub name: Interned<'n>,
     #[allow(missing_docs)]
     pub score: f64,
 }
@@ -332,7 +341,8 @@ pub struct Concept<'n> {
     /// The `Q` number.
     pub wikidata: u32,
     #[allow(missing_docs)]
-    pub name: &'n str,
+    #[serde(borrow)]
+    pub name: Interned<'n>,
     #[allow(missing_docs)]
     pub level: u8,
     #[allow(missing_docs)]
@@ -346,7 +356,8 @@ pub struct Mesh<'n> {
     #[serde(borrow)]
     pub descriptor: MeshUi<'n>,
     #[allow(missing_docs)]
-    pub descriptor_name: &'n str,
+    #[serde(borrow)]
+    pub descriptor_name: Interned<'n>,
     #[allow(missing_docs)]
     #[serde(borrow)]
     pub qualifier: Option<Qualifier<'n>>,
@@ -361,7 +372,8 @@ pub struct Qualifier<'n> {
     #[serde(borrow)]
     pub ui: MeshUi<'n>,
     #[allow(missing_docs)]
-    pub name: &'n str,
+    #[serde(borrow)]
+    pub name: Interned<'n>,
 }
 
 /// A location: one copy of the work somewhere.
@@ -387,10 +399,10 @@ pub struct Location<'n> {
     pub version: Option<Version>,
     /// Sometimes the empty string.
     #[serde(borrow)]
-    pub raw_type: Option<&'n str>,
+    pub raw_type: Option<Interned<'n>>,
     /// Sometimes the empty string.
     #[serde(borrow)]
-    pub raw_source_name: Option<&'n str>,
+    pub raw_source_name: Option<Interned<'n>>,
     #[allow(missing_docs)]
     pub provenance: Provenance,
 }
@@ -417,13 +429,14 @@ pub struct Source<'n> {
     #[allow(missing_docs)]
     pub id: SourceId,
     #[allow(missing_docs)]
-    pub name: &'n str,
+    #[serde(borrow)]
+    pub name: Interned<'n>,
     /// The linking ISSN, always among `issns` when present.
     pub issn_l: Option<Issn>,
     /// `issn`, null and `[]` both meaning none; four in the sample had a
     /// wrong check digit.
     #[serde(borrow)]
-    pub issns: Vec<IssnClaim<'n>>,
+    pub issns: Few<IssnClaim<'n>, 2>,
     #[allow(missing_docs)]
     pub is_oa: bool,
     #[allow(missing_docs)]
@@ -431,13 +444,13 @@ pub struct Source<'n> {
     #[allow(missing_docs)]
     pub is_core: bool,
     /// The host organization is the first of the lineage.
-    pub host_organization_lineage: Vec<HostOrganization>,
+    pub host_organization_lineage: Few<HostOrganization, 2>,
     #[allow(missing_docs)]
     #[serde(borrow)]
-    pub host_organization_name: Option<&'n str>,
+    pub host_organization_name: Option<Interned<'n>>,
     /// Not parallel to the lineage: usually shorter.
     #[serde(borrow)]
-    pub host_organization_lineage_names: Vec<&'n str>,
+    pub host_organization_lineage_names: Few<Interned<'n>, 2>,
     #[allow(missing_docs)]
     pub kind: SourceType,
 }
@@ -456,7 +469,8 @@ pub struct Sdg<'n> {
     #[allow(missing_docs)]
     pub goal: u8,
     #[allow(missing_docs)]
-    pub name: &'n str,
+    #[serde(borrow)]
+    pub name: Interned<'n>,
     #[allow(missing_docs)]
     pub score: f64,
 }
@@ -482,7 +496,8 @@ pub struct Funder<'n> {
     #[allow(missing_docs)]
     pub id: FunderId,
     #[allow(missing_docs)]
-    pub name: &'n str,
+    #[serde(borrow)]
+    pub name: Interned<'n>,
     #[allow(missing_docs)]
     pub ror: Option<Ror>,
 }
@@ -617,8 +632,10 @@ fn language(code: &str) -> Result<Lang, LangError> {
     }
 }
 
-/// True when `best_oa_location` is exactly this location.
-fn best_matches(b: &BestOaLocation<'_>, l: &record::Location<'_>) -> bool {
+/// True when `best_oa_location` is exactly this location. Both borrow
+/// from the same record: an inline list is invariant in its lifetime, so
+/// the two must be spelled with one.
+fn best_matches<'a>(b: &BestOaLocation<'a>, l: &record::Location<'a>) -> bool {
     b.id.as_deref() == Some(&*l.id)
         && b.is_oa == Some(l.is_oa)
         && b.landing_page_url == l.landing_page_url
@@ -651,8 +668,12 @@ fn best_is_null(b: &BestOaLocation<'_>) -> bool {
         && b.provenance.is_none()
 }
 
-fn strs<'n>(list: &'n [Text<'_>]) -> Vec<&'n str> {
+fn strs<'n, const N: usize>(list: &'n [Text<'_>]) -> Few<&'n str, N> {
     list.iter().map(|t| &**t).collect()
+}
+
+fn interned<'n, const N: usize>(list: &'n [Text<'_>]) -> Few<Interned<'n>, N> {
+    list.iter().map(|t| Interned::Text(t)).collect()
 }
 
 struct Ctx {
@@ -677,11 +698,11 @@ impl Ctx {
         EntityId::from_url(s).map_err(|e| self.err(field, s, ErrorKind::Id(e)))
     }
 
-    fn entities<const K: char>(
+    fn entities<const K: char, const N: usize>(
         &self,
         field: &'static str,
         list: &[Text<'_>],
-    ) -> Result<Vec<EntityId<K>>, Error> {
+    ) -> Result<Few<EntityId<K>, N>, Error> {
         list.iter().map(|s| self.entity(field, s)).collect()
     }
 
@@ -751,7 +772,7 @@ impl Ctx {
         }
         Ok(Institution {
             id,
-            name: &i.display_name,
+            name: Interned::Text(&i.display_name),
             ror: i
                 .ror
                 .as_deref()
@@ -788,18 +809,18 @@ impl Ctx {
                 .map(|o| self.orcid("author.orcid", o))
                 .transpose()?,
         };
-        let countries = a
+        let countries: Few<CountryCode, 2> = a
             .countries
             .iter()
             .map(|c| {
                 CountryCode::parse(c).map_err(|e| self.err("countries", c, ErrorKind::Code(e)))
             })
-            .collect::<Result<Vec<_>, _>>()?;
-        let institutions = a
+            .collect::<Result<_, _>>()?;
+        let institutions: Few<Institution<'n>, 2> = a
             .institutions
             .iter()
             .map(|i| self.institution(i))
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect::<Result<_, _>>()?;
         for i in &institutions {
             if let Some(c) = i.country
                 && !countries.contains(&c)
@@ -821,7 +842,7 @@ impl Ctx {
                         .entities("affiliations.institution_ids", &x.institution_ids)?,
                 })
             })
-            .collect::<Result<Vec<_>, Error>>()?;
+            .collect::<Result<_, Error>>()?;
         Ok(Authorship {
             position: a.author_position,
             author,
@@ -845,7 +866,7 @@ impl Ctx {
             .as_deref()
             .map(|x| Issn::parse(x).map_err(|e| self.err("source.issn_l", x, ErrorKind::Issn(e))))
             .transpose()?;
-        let issns: Vec<IssnClaim<'n>> = s
+        let issns: Few<IssnClaim<'n>, 2> = s
             .issn
             .iter()
             .flatten()
@@ -867,7 +888,7 @@ impl Ctx {
                 HostOrganization::from_url(h)
                     .map_err(|e| self.err("source.host_organization_lineage", h, ErrorKind::Id(e)))
             })
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect::<Result<_, _>>()?;
         if s.host_organization.as_deref() != s.host_organization_lineage.first().map(|t| &**t) {
             return Err(self.inconsistent(
                 "source.host_organization",
@@ -877,15 +898,15 @@ impl Ctx {
         }
         Ok(Source {
             id: self.entity("source.id", &s.id)?,
-            name: &s.display_name,
+            name: Interned::Text(&s.display_name),
             issn_l,
             issns,
             is_oa: s.is_oa,
             is_in_doaj: s.is_in_doaj,
             is_core: s.is_core,
             host_organization_lineage: lineage,
-            host_organization_name: s.host_organization_name.as_deref(),
-            host_organization_lineage_names: strs(&s.host_organization_lineage_names),
+            host_organization_name: s.host_organization_name.as_deref().map(Interned::Text),
+            host_organization_lineage_names: interned(&s.host_organization_lineage_names),
             kind: s.r#type,
         })
     }
@@ -947,8 +968,8 @@ impl Ctx {
             source: l.source.as_ref().map(|s| self.source(s)).transpose()?,
             license: l.license,
             version: l.version,
-            raw_type: l.raw_type.as_deref(),
-            raw_source_name: l.raw_source_name.as_deref(),
+            raw_type: l.raw_type.as_deref().map(Interned::Text),
+            raw_source_name: l.raw_source_name.as_deref().map(Interned::Text),
             provenance: l.provenance,
         })
     }
@@ -959,7 +980,7 @@ impl Ctx {
         let domain = self.numbered("topics.domain.id", &t.domain.id, DOMAIN_PREFIX)?;
         Ok(Topic {
             id: self.entity("topics.id", &t.id)?,
-            name: &t.display_name,
+            name: Interned::Text(&t.display_name),
             score: t.score,
             subfield: (
                 self.narrow(
@@ -968,15 +989,15 @@ impl Ctx {
                     subfield,
                     "subfield above u16",
                 )?,
-                &t.subfield.display_name,
+                Interned::Text(&t.subfield.display_name),
             ),
             field: (
                 self.narrow("topics.field.id", &t.field.id, field, "field above u8")?,
-                &t.field.display_name,
+                Interned::Text(&t.field.display_name),
             ),
             domain: (
                 self.narrow("topics.domain.id", &t.domain.id, domain, "domain above u8")?,
-                &t.domain.display_name,
+                Interned::Text(&t.domain.display_name),
             ),
         })
     }
@@ -987,7 +1008,7 @@ impl Ctx {
             (Some(ui), Some(name)) => Some(Qualifier {
                 ui: MeshUi::parse(ui)
                     .map_err(|e| self.err("mesh.qualifier_ui", ui, ErrorKind::Mesh(e)))?,
-                name,
+                name: Interned::Text(name),
             }),
             (ui, name) => {
                 return Err(self.inconsistent(
@@ -1001,7 +1022,7 @@ impl Ctx {
             descriptor: MeshUi::parse(&m.descriptor_ui).map_err(|e| {
                 self.err("mesh.descriptor_ui", &m.descriptor_ui, ErrorKind::Mesh(e))
             })?,
-            descriptor_name: &m.descriptor_name,
+            descriptor_name: Interned::Text(&m.descriptor_name),
             qualifier,
             major: m.is_major_topic,
         })
@@ -1121,7 +1142,7 @@ pub fn normalize<'n, K: Sink<'n, OpenAlex>>(w: &'n Native<'_>, emit: &mut K) -> 
         .authorships
         .iter()
         .map(|a| ctx.authorship(a))
-        .collect::<Result<Vec<_>, _>>()?;
+        .collect::<Result<_, _>>()?;
     let corresponding = w
         .authorships
         .iter()
@@ -1228,7 +1249,7 @@ pub fn normalize<'n, K: Sink<'n, OpenAlex>>(w: &'n Native<'_>, emit: &mut K) -> 
         .locations
         .iter()
         .map(|l| ctx.location(l))
-        .collect::<Result<Vec<_>, _>>()?;
+        .collect::<Result<_, _>>()?;
     let first_oa = w.locations.iter().find(|l| l.is_oa);
     let best_ok = match first_oa {
         Some(l) => best_matches(&w.best_oa_location, l),
@@ -1280,20 +1301,20 @@ pub fn normalize<'n, K: Sink<'n, OpenAlex>>(w: &'n Native<'_>, emit: &mut K) -> 
         .topics
         .iter()
         .map(|t| ctx.topic(t))
-        .collect::<Result<Vec<_>, _>>()?;
+        .collect::<Result<_, _>>()?;
     let keywords = w
         .keywords
         .iter()
         .map(|k| {
             Ok(Keyword {
-                slug: k.id.strip_prefix(KEYWORD_PREFIX).ok_or_else(|| {
+                slug: Interned::Text(k.id.strip_prefix(KEYWORD_PREFIX).ok_or_else(|| {
                     ctx.err("keywords.id", &k.id, ErrorKind::Id(ParseError::BadPrefix))
-                })?,
-                name: &k.display_name,
+                })?),
+                name: Interned::Text(&k.display_name),
                 score: k.score,
             })
         })
-        .collect::<Result<Vec<_>, Error>>()?;
+        .collect::<Result<_, Error>>()?;
     let concepts = w
         .concepts
         .iter()
@@ -1301,17 +1322,17 @@ pub fn normalize<'n, K: Sink<'n, OpenAlex>>(w: &'n Native<'_>, emit: &mut K) -> 
             Ok(Concept {
                 id: ctx.entity("concepts.id", &c.id)?,
                 wikidata: ctx.numbered("concepts.wikidata", &c.wikidata, WIKIDATA_PREFIX)?,
-                name: &c.display_name,
+                name: Interned::Text(&c.display_name),
                 level: c.level,
                 score: c.score,
             })
         })
-        .collect::<Result<Vec<_>, Error>>()?;
+        .collect::<Result<_, Error>>()?;
     let mesh = w
         .mesh
         .iter()
         .map(|m| ctx.mesh(m))
-        .collect::<Result<Vec<_>, _>>()?;
+        .collect::<Result<_, _>>()?;
     let sustainable_development_goals = w
         .sustainable_development_goals
         .iter()
@@ -1326,20 +1347,20 @@ pub fn normalize<'n, K: Sink<'n, OpenAlex>>(w: &'n Native<'_>, emit: &mut K) -> 
             }
             Ok(Sdg {
                 goal: ctx.narrow("sustainable_development_goals.id", &g.id, goal, "goal")?,
-                name: &g.display_name,
+                name: Interned::Text(&g.display_name),
                 score: g.score,
             })
         })
-        .collect::<Result<Vec<_>, Error>>()?;
+        .collect::<Result<_, Error>>()?;
 
     // Funding.
-    let funders = w
+    let funders: Few<Funder<'_>, 2> = w
         .funders
         .iter()
         .map(|f| {
             Ok(Funder {
                 id: ctx.entity("funders.id", &f.id)?,
-                name: &f.display_name,
+                name: Interned::Text(&f.display_name),
                 ror: f
                     .ror
                     .as_deref()
@@ -1349,14 +1370,14 @@ pub fn normalize<'n, K: Sink<'n, OpenAlex>>(w: &'n Native<'_>, emit: &mut K) -> 
                     .transpose()?,
             })
         })
-        .collect::<Result<Vec<_>, Error>>()?;
+        .collect::<Result<_, Error>>()?;
     let awards = w
         .awards
         .iter()
         .map(|a| {
             let funder: FunderId = ctx.entity("awards.funder_id", &a.funder_id)?;
             let known = funders.iter().find(|f| f.id == funder);
-            if known.map(|f| f.name) != Some(&*a.funder_display_name) {
+            if known.map(|f| f.name) != Some(Interned::Text(&a.funder_display_name)) {
                 return Err(ctx.inconsistent(
                     "awards.funder_id",
                     &a.funder_id,
@@ -1370,7 +1391,7 @@ pub fn normalize<'n, K: Sink<'n, OpenAlex>>(w: &'n Native<'_>, emit: &mut K) -> 
                 funder,
             })
         })
-        .collect::<Result<Vec<_>, Error>>()?;
+        .collect::<Result<_, Error>>()?;
 
     // Citations.
     if usize::try_from(w.referenced_works_count).ok() != Some(w.referenced_works.len()) {
@@ -1396,7 +1417,7 @@ pub fn normalize<'n, K: Sink<'n, OpenAlex>>(w: &'n Native<'_>, emit: &mut K) -> 
                 cited_by_count: c.cited_by_count,
             })
         })
-        .collect::<Result<Vec<_>, Error>>()?;
+        .collect::<Result<_, Error>>()?;
     let mut indexed_in = IndexedIn::default();
     for i in &w.indexed_in {
         if indexed_in.contains(*i) {

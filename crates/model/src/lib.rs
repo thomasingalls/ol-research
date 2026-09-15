@@ -22,6 +22,7 @@ pub mod lang;
 pub mod mesh;
 pub mod orcid;
 pub mod ror;
+pub mod symbol;
 
 pub use claim::Claim;
 pub use code::{CountryCode, CurrencyCode, Error as CodeError};
@@ -37,3 +38,4 @@ pub use lang::{Error as LangError, Lang};
 pub use mesh::{Error as MeshUiError, MeshUi};
 pub use orcid::{Error as OrcidError, Orcid};
 pub use ror::{Error as RorError, Ror};
+pub use symbol::{Interned, Interner, Table};

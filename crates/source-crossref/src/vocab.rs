@@ -9,7 +9,7 @@
 use serde::{Deserialize, Serialize};
 
 /// The 30 work types of `https://api.crossref.org/types`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 #[allow(missing_docs)]
 pub enum WorkType {
@@ -131,7 +131,7 @@ pub enum Vocabulary {
 }
 
 /// `content-version` on licenses and links.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 #[allow(missing_docs)]
 pub enum ContentVersion {
@@ -163,7 +163,7 @@ pub enum SerialKind {
 }
 
 /// `type` on `update-to` and `updated-by`: the Crossmark update types.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 #[allow(missing_docs)]
 pub enum UpdateType {

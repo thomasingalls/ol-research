@@ -396,7 +396,7 @@ crates/
   raw/<source>/<path>     bytes as served, write-once, at the source's own path; `<path>.part` while in flight
   listings/<source>/<stamp>.jsonl   what the source offered, one entry per line, beside the index document it came from
   receipts/<source>.jsonl what was fetched: one verified file per line, append-only — the completion marker
-  normalized/v<model>/<source>/<path minus extensions>.{works,references,deletions}.zst   rebuildable
+  normalized/v<model>/<source>/<path minus extensions>.{works,references,deletions,symbols}.zst   rebuildable
 ```
 
 Each source crate carries `fixtures/`: single raw records that once failed to
@@ -419,7 +419,9 @@ Every worker's sink comes back to the caller either way, to be finished
 or discarded — a failed run still leaves nothing. Landed 2026-09-15.
 Within a file the runner claims the record limit one record ahead, so the
 record after the limit is never parsed, and returns the spare claim when
-the file ends, so the limit stays exact across workers. API mode is
+the file ends; a claim that finds the limit reached waits while other
+workers still hold claims that may come back, so the limit stays exact
+across workers (a race the test suite caught once in forty runs). API mode is
 rate-limited per source.
 
 ### 3.5 Store of record
@@ -586,7 +588,75 @@ is what lets eight workers take the largest OpenAlex parts. Crossref's
 API pages are one document each and are still held whole, as they must
 be; its public data file is JSON lines and streams. Output is
 byte-identical to the second measurement's on all 36 files. Three
-findings from the second measurement stand.
+findings from the second measurement stood until the fourth measurement.
+
+Fourth measurement, 2026-09-15, the allocation work (rule 1) — same
+machine, one core, parse only, then with the stats sink and the binary
+sink; output byte-identical on all 36 files:
+
+| source   | allocations / record before → after | bytes allocated / record | parse only        | with sink        |
+|----------|------------------------------------:|-------------------------:|------------------:|-----------------:|
+| PubMed   | 87 → 7.5 (8.8 with sinks)           | 13.8 KB → 7.3 KB         | 14.1k → 13.9k rec/s | 8.5k → 9.1k rec/s |
+| Crossref | 195 → 50 (57 with sinks)            | 66.8 KB → 54.9 KB        | 23.3k → 21.9k rec/s | 12.5k → 14.0k rec/s |
+| OpenAlex | 162 → 2.1 (3.1 with sinks)          | 13.2 KB → 2.6 KB         | 25.4k → 22.4k rec/s | 14.5k → 16.8k rec/s |
+
+Two causes, neither of them the `Vec`s the second measurement blamed
+first. (a) serde's derive borrows a bare `Cow<str>` field marked
+`#[serde(borrow)]` and copies one inside an `Option` or a list — `Cow`'s
+own `Deserialize` yields the owned form — so most of a JSON record's
+strings were a `String` each; `ingest::Text` borrows wherever it sits and
+took OpenAlex from 162 to 2. (b) quick-xml's attribute iterator keeps a
+heap-allocated list of seen keys for its duplicate check, one allocation
+per element with attributes; PubMed does that check inline now. The lists
+were real but smaller: every list field is a `smallvec` sized at about
+the 90th percentile of its observed length (`Few<T, N>`), so only a long
+list allocates. What remains: Crossref's API escapes every `/` (8,376 in
+one page of 100 works), and each escaped string must be unescaped into
+its own allocation — its public data file may not; PubMed's last six are
+quick-xml's per-frame open-tag bookkeeping, kept whatever the
+configuration (its issue #514), and a handful of long lists; OpenAlex's
+two are lists past their inline length and the 10 % of records with an
+escape. Throughput is within noise: the allocations were never the
+dominant cost, as the second measurement said, but rule 1 is now met in
+spirit — steady state is a few allocations per record, not a hundred.
+
+Fifth measurement, 2026-09-15, symbol tables (rule 4) — layout version 2:
+every `model::Interned` value in a set's records is a `u32` into the
+set's fourth file, `<prefix>.symbols.zst`, one string per symbol; the
+sink interns through a table installed on its thread while a set is open,
+the reader loads the table beside the records and resolves through it,
+and `dump` prints the text. Interned: journal title, abbreviation,
+MedlineTA, NLM id and country, MeSH descriptor and qualifier names,
+publication types, chemical names and registry numbers, grant agencies
+and countries, data-bank names (PubMed); publisher, container title,
+affiliation name, license URL, relation kind (Crossref); source, host
+organization and lineage names, institution name, topic, subfield, field
+and domain names, keyword slug and name, concept name, MeSH descriptor
+and qualifier names, funder name, SDG name, raw source name and type
+(OpenAlex). Chosen from a repetition survey: those repeat enough that
+52–100 % of their bytes within a file are copies; titles, author names,
+URLs and citation text do not and stay text, as the rule says.
+Affiliations were tried and taken out: half of them are unique within a
+file (116k distinct of 247k in one PubMed file), so the table held most
+of the bytes the records saved. Every JSON dump is byte-identical to the
+old layout's, on all 36 files.
+
+| source   | symbols per set       | works stream | whole set | with sink                                    |
+|----------|----------------------:|-------------:|----------:|---------------------------------------------:|
+| PubMed   | 34,216                | −2.3 %       | −0.5 %    | 9.1k → 8.8k rec/s, 8.8 → 10.0 allocs/record  |
+| Crossref | 235 per 100-work page | −11.6 %      | +0.2 %    | 14.0k → 13.1k rec/s                          |
+| OpenAlex | 42,246                | −7.2 %       | −3.8 %    | 16.8k → 16.0k rec/s, 3.1 → 7.0 allocs/record |
+
+The honest reading: at per-file granularity, bytes barely move — zstd
+already folds a journal name repeated within a window, and a table per
+set is paid for by every set — and the sink pays about 5 % in throughput
+for the hashing, one allocation per distinct string per file. What the
+tables buy is structural, and downstream: the merge stage and the graph
+builder receive categorical values as small integers with a per-file
+dictionary, not ten million forty-byte strings to hash and compare
+(rule 4's trap). Whether that is worth the 5 % is a question for the
+merge stage to answer with a number; the field set is the knob, and the
+whole thing is one type in one place if the answer is no.
 (1) The sink costs 30–45 % of the throughput at zstd level 3; the level
 and the frame size are knobs not yet turned. (2) Rule 1 is not met: 75 to
 200 allocations per record, nearly all of them the `Vec`s inside the
@@ -947,7 +1017,12 @@ in your environment, never in the repo or in this conversation.
   manuscript ids (NIHMS and EMS), a `YYYY Mon-Mon DD` MedlineDate, a
   reference's PMID or PMC id that is a DOI or a PMC id, an ISSN with a
   bad check digit — each a fixture now, all 17 OpenAlex parts and both
-  PubMed files survey-clean. Left: symbol tables, the allocation work.*
+  PubMed files survey-clean.*
+  *Allocation work and symbol tables landed 2026-09-15 (§5, fourth and
+  fifth measurements): 2–8 allocations per record for the JSON and XML
+  sources (Crossref's API escaping keeps it at 50), and layout version 2
+  with a symbol table per set. M2 is complete; the zstd level and frame
+  size stay knobs not yet turned.*
 - **M3** — `source-openalex` (widest schema, second edge source, cross-IDs).
   *Native struct landed 2026-09-15 from the census: every object
   `deny_unknown_fields`, closed enums for type / OA status / version /
@@ -1174,6 +1249,22 @@ cross-IDs and a second edge namespace early.
   that failed. None of it was a surprise in kind: this is the loop §6
   describes, and `--survey` made it one pass per file instead of one
   round per wart.
+- 2026-09-15, allocation work — rule 1 met in spirit: OpenAlex 162 → 2
+  allocations per record, PubMed 87 → 7.5, Crossref 195 → 50, output
+  byte-identical (§5, fourth measurement). The two real causes were
+  serde copying `Cow<str>` inside `Option`s and lists, fixed by
+  `ingest::Text`, and quick-xml's heap-backed duplicate-attribute check,
+  done inline now; the lists were the smaller part and are inline
+  `smallvec`s at their 90th-percentile length. Stats sinks key their maps
+  by enums, not by a `String` per record.
+- 2026-09-15, symbol tables — rule 4 as written: `model::Interned`, one
+  table per output set in a fourth file, thread-local interner while a
+  set is open, resolution through the loaded table when reading; fields
+  chosen from a repetition survey, affiliations tried and left as text.
+  Dumps byte-identical on 36 files; bytes −0.5 % to −4 % per set, sink
+  throughput −5 % (§5, fifth measurement). Kept for what it gives the
+  merge stage — integers for categorical values — with the field set as
+  the knob and the number still owed by that stage.
 
 ## 11. Dependencies
 
@@ -1184,7 +1275,9 @@ wire format, varints, borrowing deserialization). Not yet needed and not
 added: `thiserror`, `anyhow`, `clap` (the binary's argument grammar is a
 `match`), `rayon` (parallelism over files can be `std::thread::scope`),
 `proptest`, `tracing`. No date crate: `PartialDate` is a packed integer
-with its own calendar check. Fetching (2026-09-15): `ureq` 3 over rustls
+with its own calendar check. `smallvec` (2026-09-15) for the lists inside
+records, sized from the observed distributions, so a record's usual lists
+live inside it. Fetching (2026-09-15): `ureq` 3 over rustls
 with transparent decompression off, so raw bytes land as served, plus
 `sha2` and `md-5` for the digests the sources publish or imply; no async
 runtime — one thread per transfer is the runner's own shape. arXiv's and

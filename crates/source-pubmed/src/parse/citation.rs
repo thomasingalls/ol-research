@@ -7,7 +7,7 @@ use crate::attr::{
 };
 use crate::error::ErrorKind;
 use crate::record::{
-    AffiliationInfo, Chemical, CommentsCorrections, DescriptorName, GeneralNote, Identifier,
+    AffiliationInfo, Chemical, CommentsCorrections, DescriptorName, Few, GeneralNote, Identifier,
     Investigator, InvestigatorList, Keyed, Keyword, KeywordList, MedlineCitation,
     MedlineJournalInfo, MeshHeading, OtherAbstract, OtherId, PersonName, PubmedArticle,
     QualifierName, SupplMeshName,
@@ -59,13 +59,13 @@ fn medline_citation<'a>(p: &mut Parser<'a>, tag: Tag<'a>) -> Result<MedlineCitat
     let (mut chemicals, mut suppl_mesh, mut comments_corrections) = (None, None, None);
     let (mut gene_symbols, mut mesh_headings, mut personal_name_subjects) = (None, None, None);
     let (mut number_of_references, mut coi_statement) = (None, None);
-    let mut citation_subsets = Vec::new();
-    let mut other_ids = Vec::new();
-    let mut other_abstracts = Vec::new();
-    let mut keyword_lists = Vec::new();
-    let mut space_flight_missions = Vec::new();
-    let mut investigator_lists = Vec::new();
-    let mut general_notes = Vec::new();
+    let mut citation_subsets = Few::new();
+    let mut other_ids = Few::new();
+    let mut other_abstracts = Few::new();
+    let mut keyword_lists = Few::new();
+    let mut space_flight_missions = Few::new();
+    let mut investigator_lists = Few::new();
+    let mut general_notes = Few::new();
     while let Child::Elem(t) = p.next_child(&tag)? {
         match t.name() {
             "PMID" => {
@@ -293,7 +293,7 @@ fn mesh_heading<'a>(p: &mut Parser<'a>, tag: Tag<'a>) -> Result<MeshHeading<'a>>
     p.enter(&tag);
     p.no_attributes(&tag)?;
     let mut descriptor = None;
-    let mut qualifiers = Vec::new();
+    let mut qualifiers = Few::new();
     while let Child::Elem(t) = p.next_child(&tag)? {
         match t.name() {
             "DescriptorName" => set_once!(p, descriptor, "DescriptorName", descriptor_name(p, t)?),
@@ -455,7 +455,7 @@ pub(super) fn affiliation_info<'a>(
     p.enter(&tag);
     p.no_attributes(&tag)?;
     let mut affiliation = None;
-    let mut identifiers = Vec::new();
+    let mut identifiers = Few::new();
     while let Child::Elem(t) = p.next_child(&tag)? {
         match t.name() {
             "Affiliation" => set_once!(p, affiliation, "Affiliation", p.mixed(&t)?),
@@ -526,7 +526,7 @@ fn keyword_list<'a>(p: &mut Parser<'a>, tag: Tag<'a>) -> Result<KeywordList<'a>>
         }
         Ok(())
     })?;
-    let mut keywords = Vec::new();
+    let mut keywords = Few::new();
     while let Child::Elem(t) = p.next_child(&tag)? {
         match t.name() {
             "Keyword" => keywords.push(keyword(p, t)?),
@@ -573,7 +573,7 @@ fn investigator_list<'a>(p: &mut Parser<'a>, tag: Tag<'a>) -> Result<Investigato
         }
         Ok(())
     })?;
-    let mut investigators = Vec::new();
+    let mut investigators = Few::new();
     while let Child::Elem(t) = p.next_child(&tag)? {
         match t.name() {
             "Investigator" => investigators.push(investigator(p, t)?),
@@ -601,8 +601,8 @@ fn investigator<'a>(p: &mut Parser<'a>, tag: Tag<'a>) -> Result<Investigator<'a>
         Ok(())
     })?;
     let mut name = NameSlots::default();
-    let mut identifiers = Vec::new();
-    let mut affiliations = Vec::new();
+    let mut identifiers = Few::new();
+    let mut affiliations = Few::new();
     while let Child::Elem(t) = p.next_child(&tag)? {
         let Some(t) = name.take(p, t)? else { continue };
         match t.name() {

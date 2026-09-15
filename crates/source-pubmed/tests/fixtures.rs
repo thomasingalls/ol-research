@@ -283,9 +283,9 @@ mod normalized {
         assert_eq!(c.dates.electronic.unwrap().to_string(), "2026-01-29");
         assert_eq!(c.dates.revised.unwrap().to_string(), "2026-01-29");
         assert_eq!(c.title, "Glucose as a Food.");
-        assert_eq!(c.journal.title, Some("JAMA"));
+        assert_eq!(c.journal.title, Some("JAMA".into()));
         assert_eq!(c.journal.medline_ta, "JAMA");
-        assert_eq!(c.journal.nlm_unique_id, Some("7501160"));
+        assert_eq!(c.journal.nlm_unique_id, Some("7501160".into()));
         let issn = c.journal.issn.as_ref().unwrap();
         assert_eq!(issn.kind, IssnType::Electronic);
         assert_eq!(issn.issn.valid().unwrap().to_string(), "1538-3598");
@@ -299,12 +299,12 @@ mod normalized {
                 .to_string(),
             "0098-7484"
         );
-        assert_eq!(c.journal.country, Some("United States"));
+        assert_eq!(c.journal.country, Some("United States".into()));
         assert_eq!(c.languages[0].alpha_3(), "eng");
         assert_eq!(c.publication_types[0].ui.as_str(), "D016428");
         assert_eq!(c.publication_types[0].name, "Journal Article");
         assert!(c.authors.is_empty() && c.r#abstract.is_none() && c.mesh.is_empty());
-        assert_eq!(c.citation_subsets, ["IM"]);
+        assert_eq!(&*c.citation_subsets, ["IM"]);
         assert_eq!(c.publication_status, Some(PublicationStatus::AheadOfPrint));
         assert_eq!(c.history.len(), 1);
         assert_eq!(c.history[0].status, PubStatus::Entrez);

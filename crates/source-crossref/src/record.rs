@@ -5,10 +5,10 @@
 //! where that is informative, and where the data disagrees with
 //! `api_format.md`.
 
-use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use serde::Deserialize;
+use smallvec::SmallVec;
 
 use crate::date::{IndexedStamp, PartialDate, Stamp};
 use crate::vocab::{
@@ -17,8 +17,13 @@ use crate::vocab::{
     Source, Subtype, UpdateType, Vocabulary, WorkType,
 };
 
+/// A list with room for its usual length inside the record itself (plan
+/// §5, rule 1); only a longer one allocates. The lengths come from the
+/// observed distributions in the plan's data, about the 90th percentile.
+pub type Few<T, const N: usize> = SmallVec<[T; N]>;
+
 /// A string borrowed from the input unless it contained an escape sequence.
-pub type Text<'a> = Cow<'a, str>;
+pub use ingest::Text;
 
 /// One work.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -78,25 +83,25 @@ pub struct Work<'a> {
     pub is_referenced_by_count: Option<u32>,
     /// Titles; 980 of 1,000 have one, up to two.
     #[serde(borrow)]
-    pub title: Option<Vec<Text<'a>>>,
+    pub title: Option<Few<Text<'a>, 1>>,
     #[serde(borrow)]
     #[allow(missing_docs)]
-    pub subtitle: Option<Vec<Text<'a>>>,
+    pub subtitle: Option<Few<Text<'a>, 1>>,
     #[serde(borrow)]
     #[allow(missing_docs)]
-    pub short_title: Option<Vec<Text<'a>>>,
+    pub short_title: Option<Few<Text<'a>, 1>>,
     #[serde(borrow)]
     #[allow(missing_docs)]
-    pub original_title: Option<Vec<Text<'a>>>,
+    pub original_title: Option<Few<Text<'a>, 1>>,
     /// Up to two.
     #[serde(borrow)]
-    pub container_title: Option<Vec<Text<'a>>>,
+    pub container_title: Option<Few<Text<'a>, 1>>,
     /// Up to eight.
     #[serde(borrow)]
-    pub short_container_title: Option<Vec<Text<'a>>>,
+    pub short_container_title: Option<Few<Text<'a>, 1>>,
     #[serde(borrow)]
     #[allow(missing_docs)]
-    pub issue_title: Option<Vec<Text<'a>>>,
+    pub issue_title: Option<Few<Text<'a>, 1>>,
     /// Posted content's group, e.g. `SSRN`.
     #[serde(borrow)]
     pub group_title: Option<Text<'a>>,
@@ -135,31 +140,31 @@ pub struct Work<'a> {
     pub update_policy: Option<Text<'a>>,
     #[serde(rename = "ISSN", borrow)]
     #[allow(missing_docs)]
-    pub issn: Option<Vec<Text<'a>>>,
+    pub issn: Option<Few<Text<'a>, 2>>,
     /// `print` / `electronic`, not the `pissn` / `eissn` of `api_format.md`.
     #[serde(borrow)]
-    pub issn_type: Option<Vec<Serial<'a>>>,
+    pub issn_type: Option<Few<Serial<'a>, 2>>,
     #[serde(rename = "ISBN", borrow)]
     #[allow(missing_docs)]
-    pub isbn: Option<Vec<Text<'a>>>,
+    pub isbn: Option<Few<Text<'a>, 2>>,
     #[serde(borrow)]
     #[allow(missing_docs)]
-    pub isbn_type: Option<Vec<Serial<'a>>>,
+    pub isbn_type: Option<Few<Serial<'a>, 2>>,
     /// Publisher identifiers such as PIIs; 551 of 1,000.
     #[serde(borrow)]
-    pub alternative_id: Option<Vec<Text<'a>>>,
+    pub alternative_id: Option<Few<Text<'a>, 2>>,
     /// Other DOIs for the same work; 2 of 1,000.
     #[serde(borrow)]
-    pub aliases: Option<Vec<Text<'a>>>,
+    pub aliases: Option<Few<Text<'a>, 2>>,
     /// `Portico`, `CLOCKSS`, …
     #[serde(borrow)]
-    pub archive: Option<Vec<Text<'a>>>,
+    pub archive: Option<Few<Text<'a>, 2>>,
     /// Documented, deprecated, not observed; kept so its return is noticed.
     #[serde(borrow)]
-    pub subject: Option<Vec<Text<'a>>>,
+    pub subject: Option<Few<Text<'a>, 4>>,
     #[serde(borrow)]
     #[allow(missing_docs)]
-    pub degree: Option<Vec<Text<'a>>>,
+    pub degree: Option<Few<Text<'a>, 1>>,
     #[serde(borrow)]
     #[allow(missing_docs)]
     pub description: Option<Text<'a>>,
@@ -173,34 +178,34 @@ pub struct Work<'a> {
     pub subtype: Option<Subtype>,
     /// 898 of 1,000; up to 544 authors.
     #[serde(borrow)]
-    pub author: Option<Vec<Contributor<'a>>>,
+    pub author: Option<Few<Contributor<'a>, 8>>,
     #[serde(borrow)]
     #[allow(missing_docs)]
-    pub editor: Option<Vec<Contributor<'a>>>,
+    pub editor: Option<Few<Contributor<'a>, 4>>,
     #[serde(borrow)]
     #[allow(missing_docs)]
-    pub chair: Option<Vec<Contributor<'a>>>,
+    pub chair: Option<Few<Contributor<'a>, 2>>,
     #[serde(borrow)]
     #[allow(missing_docs)]
-    pub translator: Option<Vec<Contributor<'a>>>,
+    pub translator: Option<Few<Contributor<'a>, 2>>,
     /// 2 of 1,000, with a `[null]` role.
     #[serde(borrow)]
-    pub contributor: Option<Vec<Contributor<'a>>>,
+    pub contributor: Option<Few<Contributor<'a>, 2>>,
     /// 733 of 1,000; up to 503 entries.
     #[serde(borrow)]
-    pub reference: Option<Vec<Reference<'a>>>,
+    pub reference: Option<Few<Reference<'a>, 16>>,
     #[serde(borrow)]
     #[allow(missing_docs)]
-    pub funder: Option<Vec<Funder<'a>>>,
+    pub funder: Option<Few<Funder<'a>, 4>>,
     #[serde(borrow)]
     #[allow(missing_docs)]
-    pub license: Option<Vec<License<'a>>>,
+    pub license: Option<Few<License<'a>, 4>>,
     #[serde(borrow)]
     #[allow(missing_docs)]
-    pub link: Option<Vec<Link<'a>>>,
+    pub link: Option<Few<Link<'a>, 4>>,
     #[serde(borrow)]
     #[allow(missing_docs)]
-    pub assertion: Option<Vec<Assertion<'a>>>,
+    pub assertion: Option<Few<Assertion<'a>, 8>>,
     #[serde(borrow)]
     #[allow(missing_docs)]
     pub content_domain: Option<ContentDomain<'a>>,
@@ -215,16 +220,16 @@ pub struct Work<'a> {
     pub event: Option<Event<'a>>,
     #[serde(borrow)]
     #[allow(missing_docs)]
-    pub institution: Option<Vec<Institution<'a>>>,
+    pub institution: Option<Few<Institution<'a>, 2>>,
     /// Keyed by relation type: `has-preprint`, `is-preprint-of`, …
     #[serde(borrow)]
     pub relation: Option<BTreeMap<&'a str, Vec<Relation<'a>>>>,
     /// Updates this work applies to others.
     #[serde(borrow)]
-    pub update_to: Option<Vec<Update<'a>>>,
+    pub update_to: Option<Few<Update<'a>, 2>>,
     /// Updates others apply to this work.
     #[serde(borrow)]
-    pub updated_by: Option<Vec<Update<'a>>>,
+    pub updated_by: Option<Few<Update<'a>, 2>>,
     #[serde(borrow)]
     #[allow(missing_docs)]
     pub review: Option<Review<'a>>,
@@ -233,10 +238,10 @@ pub struct Work<'a> {
     pub standards_body: Option<StandardsBody<'a>>,
     /// Grants.
     #[serde(borrow)]
-    pub project: Option<Vec<Project<'a>>>,
+    pub project: Option<Few<Project<'a>, 1>>,
     /// Documented; not observed.
     #[serde(borrow)]
-    pub clinical_trial_number: Option<Vec<ClinicalTrialNumber<'a>>>,
+    pub clinical_trial_number: Option<Few<ClinicalTrialNumber<'a>, 2>>,
 }
 
 /// An `issn-type` or `isbn-type` entry.
@@ -279,9 +284,9 @@ pub struct Contributor<'a> {
     pub sequence: Sequence,
     /// Always present, often empty.
     #[serde(borrow)]
-    pub affiliation: Vec<Affiliation<'a>>,
+    pub affiliation: Few<Affiliation<'a>, 2>,
     /// One role per contributor; `[null]` on `contributor` entries.
-    pub role: Option<Vec<Option<Role>>>,
+    pub role: Option<Few<Option<Role>, 1>>,
 }
 
 /// `role` on a contributor.
@@ -303,16 +308,16 @@ pub struct Affiliation<'a> {
     pub name: Option<Text<'a>>,
     #[serde(borrow)]
     #[allow(missing_docs)]
-    pub department: Option<Vec<Text<'a>>>,
+    pub department: Option<Few<Text<'a>, 1>>,
     #[serde(borrow)]
     #[allow(missing_docs)]
-    pub place: Option<Vec<Text<'a>>>,
+    pub place: Option<Few<Text<'a>, 1>>,
     /// ISO country code, on grant investigators.
     #[serde(borrow)]
     pub country: Option<Text<'a>>,
     #[serde(borrow)]
     #[allow(missing_docs)]
-    pub id: Option<Vec<Identifier<'a>>>,
+    pub id: Option<Few<Identifier<'a>, 1>>,
 }
 
 /// An identifier with its type and asserter: ROR ids, funder DOIs.
@@ -412,13 +417,13 @@ pub struct Funder<'a> {
     pub doi_asserted_by: Option<AssertedBy>,
     #[serde(borrow)]
     #[allow(missing_docs)]
-    pub award: Option<Vec<Text<'a>>>,
+    pub award: Option<Few<Text<'a>, 2>>,
     #[serde(borrow)]
     #[allow(missing_docs)]
-    pub award_info: Option<Vec<AwardInfo<'a>>>,
+    pub award_info: Option<Few<AwardInfo<'a>, 1>>,
     #[serde(borrow)]
     #[allow(missing_docs)]
-    pub id: Option<Vec<Identifier<'a>>>,
+    pub id: Option<Few<Identifier<'a>, 1>>,
 }
 
 /// `award-info` on a funder.
@@ -427,7 +432,7 @@ pub struct Funder<'a> {
 pub struct AwardInfo<'a> {
     #[serde(borrow)]
     #[allow(missing_docs)]
-    pub award_number: Vec<Text<'a>>,
+    pub award_number: Few<Text<'a>, 2>,
 }
 
 /// A license.
@@ -515,7 +520,7 @@ pub struct AssertionGroup<'a> {
 pub struct ContentDomain<'a> {
     #[serde(borrow)]
     #[allow(missing_docs)]
-    pub domain: Vec<Text<'a>>,
+    pub domain: Few<Text<'a>, 4>,
     /// Absent on 4 of 999.
     pub crossmark_restriction: Option<bool>,
 }
@@ -529,7 +534,7 @@ pub struct Resource<'a> {
     pub primary: ResourceUrl<'a>,
     #[serde(borrow)]
     #[allow(missing_docs)]
-    pub secondary: Option<Vec<LabelledUrl<'a>>>,
+    pub secondary: Option<Few<LabelledUrl<'a>, 1>>,
 }
 
 /// `resource.primary`.
@@ -584,7 +589,7 @@ pub struct Event<'a> {
     pub number: Option<Text<'a>>,
     #[serde(borrow)]
     #[allow(missing_docs)]
-    pub sponsor: Option<Vec<Text<'a>>>,
+    pub sponsor: Option<Few<Text<'a>, 1>>,
     #[serde(borrow)]
     #[allow(missing_docs)]
     pub theme: Option<Text<'a>>,
@@ -603,16 +608,16 @@ pub struct Institution<'a> {
     pub name: Option<Text<'a>>,
     #[serde(borrow)]
     #[allow(missing_docs)]
-    pub acronym: Option<Vec<Text<'a>>>,
+    pub acronym: Option<Few<Text<'a>, 1>>,
     #[serde(borrow)]
     #[allow(missing_docs)]
-    pub department: Option<Vec<Text<'a>>>,
+    pub department: Option<Few<Text<'a>, 1>>,
     #[serde(borrow)]
     #[allow(missing_docs)]
-    pub place: Option<Vec<Text<'a>>>,
+    pub place: Option<Few<Text<'a>, 1>>,
     #[serde(borrow)]
     #[allow(missing_docs)]
-    pub id: Option<Vec<Identifier<'a>>>,
+    pub id: Option<Few<Identifier<'a>, 1>>,
 }
 
 /// One relation target.
@@ -690,10 +695,10 @@ pub struct StandardsBody<'a> {
 pub struct Project<'a> {
     #[serde(borrow)]
     #[allow(missing_docs)]
-    pub project_title: Option<Vec<Titled<'a>>>,
+    pub project_title: Option<Few<Titled<'a>, 1>>,
     #[serde(borrow)]
     #[allow(missing_docs)]
-    pub project_description: Option<Vec<Described<'a>>>,
+    pub project_description: Option<Few<Described<'a>, 1>>,
     #[serde(borrow)]
     #[allow(missing_docs)]
     pub award_amount: Option<AwardAmount<'a>>,
@@ -703,13 +708,13 @@ pub struct Project<'a> {
     pub award_end: Option<PartialDate>,
     #[serde(borrow)]
     #[allow(missing_docs)]
-    pub funding: Option<Vec<Funding<'a>>>,
+    pub funding: Option<Few<Funding<'a>, 1>>,
     #[serde(borrow)]
     #[allow(missing_docs)]
-    pub investigator: Option<Vec<Investigator<'a>>>,
+    pub investigator: Option<Few<Investigator<'a>, 2>>,
     #[serde(borrow)]
     #[allow(missing_docs)]
-    pub lead_investigator: Option<Vec<Investigator<'a>>>,
+    pub lead_investigator: Option<Few<Investigator<'a>, 1>>,
 }
 
 /// A grant investigator: a person without the `sequence` and `role` that
@@ -737,7 +742,7 @@ pub struct Investigator<'a> {
     pub authenticated_orcid: Option<bool>,
     #[serde(borrow)]
     #[allow(missing_docs)]
-    pub affiliation: Option<Vec<Affiliation<'a>>>,
+    pub affiliation: Option<Few<Affiliation<'a>, 2>>,
 }
 
 /// `project-title[]`.
@@ -799,7 +804,7 @@ pub struct FundingFunder<'a> {
     pub name: Text<'a>,
     #[serde(borrow)]
     #[allow(missing_docs)]
-    pub id: Option<Vec<Identifier<'a>>>,
+    pub id: Option<Few<Identifier<'a>, 1>>,
 }
 
 /// Documented; not yet observed.

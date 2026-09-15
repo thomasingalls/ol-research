@@ -35,6 +35,7 @@ pub mod run;
 pub mod source;
 pub mod store;
 pub mod stream;
+pub mod text;
 pub mod time;
 
 pub use binary::{Binary, Header, Kind, Reader, Written};
@@ -46,3 +47,4 @@ pub use receipt::Receipt;
 pub use run::{Failure, Report, Seen, Stage, Survey, normalize, parse};
 pub use source::{Count, Signature, Sink, Source};
 pub use store::Store;
+pub use text::Text;

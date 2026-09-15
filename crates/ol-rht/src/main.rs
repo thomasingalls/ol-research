@@ -349,19 +349,21 @@ where
                 return ExitCode::FAILURE;
             }
             if let Some(dir) = &opts.out {
-                let records = written.iter().fold([0u64; 3], |a, w| {
+                let records = written.iter().fold([0u64; 4], |a, w| {
                     [
                         a[0] + w.records[0],
                         a[1] + w.records[1],
                         a[2] + w.records[2],
+                        a[3] + w.records[3],
                     ]
                 });
                 let bytes: u64 = written.iter().map(|w| w.bytes).sum();
                 eprintln!(
-                    "wrote {} works, {} references, {} deletions in {} sets under {}: {:.1} MiB",
+                    "wrote {} works, {} references, {} deletions, {} symbols in {} sets under {}: {:.1} MiB",
                     records[0],
                     records[1],
                     records[2],
+                    records[3],
                     written.len(),
                     dir.display(),
                     bytes as f64 / (1024.0 * 1024.0)
@@ -428,11 +430,13 @@ fn dump_one<S: Source>(path: &Path, limit: Option<u64>, out: &mut impl Write) ->
         ));
     }
     let limit = limit.map_or(usize::MAX, |n| usize::try_from(n).unwrap_or(usize::MAX));
-    match header.kind {
+    // Interned strings resolve through the set's table while it is installed.
+    reader.with_table(|| match header.kind {
         Kind::Works => json_lines::<S::Work<'_>>(&reader, limit, out),
         Kind::References => json_lines::<(S::Id<'_>, S::Reference<'_>)>(&reader, limit, out),
         Kind::Deletions => json_lines::<S::Id<'_>>(&reader, limit, out),
-    }
+        Kind::Symbols => json_lines::<&str>(&reader, limit, out),
+    })
 }
 
 fn json_lines<'a, T: serde::Deserialize<'a> + serde::Serialize>(
@@ -672,19 +676,21 @@ where
         }
     }
     stats.report();
-    let records = written.iter().fold([0u64; 3], |a, w| {
+    let records = written.iter().fold([0u64; 4], |a, w| {
         [
             a[0] + w.records[0],
             a[1] + w.records[1],
             a[2] + w.records[2],
+            a[3] + w.records[3],
         ]
     });
     let bytes: u64 = written.iter().map(|w| w.bytes).sum();
     eprintln!(
-        "wrote {} works, {} references, {} deletions in {} sets under {}: {:.1} MiB",
+        "wrote {} works, {} references, {} deletions, {} symbols in {} sets under {}: {:.1} MiB",
         records[0],
         records[1],
         records[2],
+        records[3],
         written.len(),
         out.display(),
         bytes as f64 / (1024.0 * 1024.0)
@@ -775,6 +781,16 @@ macro_rules! absorb_all {
         let $ty { $($field),* } = $other;
         $( $self.$field.absorb($field); )*
     };
+}
+
+/// Counts `key` in a map of the data's own strings, allocating only the
+/// first time a key is seen.
+fn bump(map: &mut BTreeMap<String, u64>, key: &str) {
+    if let Some(n) = map.get_mut(key) {
+        *n += 1;
+    } else {
+        map.insert(key.to_owned(), 1);
+    }
 }
 
 /// Keeps the first few malformed values for the report.
@@ -956,10 +972,7 @@ impl<'n> Sink<'n, Pubmed> for PubmedStats {
             *self.languages.entry(l.alpha_3()).or_default() += 1;
         }
         for pt in &c.publication_types {
-            *self
-                .publication_types
-                .entry(format!("{} {}", pt.ui, pt.name))
-                .or_default() += 1;
+            bump(&mut self.publication_types, pt.name.as_text().unwrap_or(""));
         }
         if c.title.is_empty() {
             self.title[2] += 1;
@@ -1072,7 +1085,7 @@ impl<'n> Sink<'n, Pubmed> for PubmedStats {
 struct CrossrefStats {
     works: u64,
     deletions: u64,
-    types: BTreeMap<String, u64>,
+    types: BTreeMap<source_crossref::vocab::WorkType, u64>,
     doi_lowercased: u64,
     owner_differs: u64,
     issued: BTreeMap<&'static str, u64>,
@@ -1090,16 +1103,16 @@ struct CrossrefStats {
     references: u64,
     reference_doi: [u64; 3],
     reference_empty: u64,
-    updates: BTreeMap<String, u64>,
+    updates: BTreeMap<source_crossref::vocab::UpdateType, u64>,
     relations: BTreeMap<String, u64>,
-    licenses: BTreeMap<String, u64>,
+    licenses: BTreeMap<source_crossref::vocab::ContentVersion, u64>,
     malformed_samples: Vec<String>,
 }
 
 impl<'n> Sink<'n, Crossref> for CrossrefStats {
     fn work(&mut self, w: &source_crossref::normalize::Work<'n>) {
         self.works += 1;
-        *self.types.entry(format!("{:?}", w.kind)).or_default() += 1;
+        *self.types.entry(w.kind).or_default() += 1;
         self.doi_lowercased += u64::from(!w.doi.is_borrowed());
         self.owner_differs += u64::from(w.owner != w.doi.registrant());
         *self
@@ -1133,13 +1146,13 @@ impl<'n> Sink<'n, Crossref> for CrossrefStats {
             *self.languages.entry(l.alpha_3()).or_default() += 1;
         }
         for u in w.updates_to.iter().chain(&w.updated_by) {
-            *self.updates.entry(format!("{:?}", u.kind)).or_default() += 1;
+            *self.updates.entry(u.kind).or_default() += 1;
         }
         for r in &w.relations {
-            *self.relations.entry(r.kind.to_owned()).or_default() += 1;
+            bump(&mut self.relations, r.kind.as_text().unwrap_or(""));
         }
         for l in &w.licenses {
-            *self.licenses.entry(format!("{:?}", l.version)).or_default() += 1;
+            *self.licenses.entry(l.version).or_default() += 1;
         }
     }
 
@@ -1217,7 +1230,7 @@ impl StatsReport for CrossrefStats {
 struct OpenAlexStats {
     works: u64,
     deletions: u64,
-    types: BTreeMap<String, u64>,
+    types: BTreeMap<source_openalex::vocab::WorkType, u64>,
     doi: [u64; 3],
     doi_lowercased: u64,
     pmid: u64,
@@ -1225,7 +1238,7 @@ struct OpenAlexStats {
     languages: BTreeMap<&'static str, u64>,
     language_malformed: u64,
     title: [u64; 3],
-    oa_status: BTreeMap<String, u64>,
+    oa_status: BTreeMap<source_openalex::vocab::OaStatus, u64>,
     oa_url: u64,
     with_best_oa: u64,
     authorships: u64,
@@ -1240,14 +1253,14 @@ struct OpenAlexStats {
     authorship_countries: u64,
     affiliations: u64,
     locations: u64,
-    provenance: BTreeMap<String, u64>,
+    provenance: BTreeMap<source_openalex::vocab::Provenance, u64>,
     location_ids: BTreeMap<&'static str, u64>,
     with_source: u64,
     issn_l: u64,
     issn: [u64; 2],
     host_lineage: u64,
-    licenses: BTreeMap<String, u64>,
-    versions: BTreeMap<String, u64>,
+    licenses: BTreeMap<&'static str, u64>,
+    versions: BTreeMap<source_openalex::vocab::Version, u64>,
     topics: u64,
     keywords: u64,
     concepts: u64,
@@ -1259,7 +1272,7 @@ struct OpenAlexStats {
     apc: [u64; 2],
     abstracts: u64,
     counts_by_year: u64,
-    indexed_in: BTreeMap<String, u64>,
+    indexed_in: BTreeMap<source_openalex::vocab::Index, u64>,
     flags: [u64; 3],
     references: u64,
     self_references: u64,
@@ -1351,7 +1364,7 @@ impl<'n> Sink<'n, OpenAlex> for OpenAlexStats {
     #[allow(clippy::too_many_lines)] // one counter per field group
     fn work(&mut self, w: &source_openalex::normalize::Work<'n>) {
         self.works += 1;
-        *self.types.entry(format!("{:?}", w.kind)).or_default() += 1;
+        *self.types.entry(w.kind).or_default() += 1;
         match &w.doi {
             None => self.doi[2] += 1,
             Some(Claim::Valid(d)) => {
@@ -1381,10 +1394,7 @@ impl<'n> Sink<'n, OpenAlex> for OpenAlexStats {
             Some(t) if t.contains('<') => self.title[1] += 1,
             Some(_) => self.title[0] += 1,
         }
-        *self
-            .oa_status
-            .entry(format!("{:?}", w.open_access.status))
-            .or_default() += 1;
+        *self.oa_status.entry(w.open_access.status).or_default() += 1;
         self.oa_url += u64::from(w.open_access.oa_url.is_some());
         self.with_best_oa += u64::from(w.best_oa_location().is_some());
         for a in &w.authorships {
@@ -1410,10 +1420,7 @@ impl<'n> Sink<'n, OpenAlex> for OpenAlexStats {
         }
         for l in &w.locations {
             self.locations += 1;
-            *self
-                .provenance
-                .entry(format!("{:?}", l.provenance))
-                .or_default() += 1;
+            *self.provenance.entry(l.provenance).or_default() += 1;
             let kind = match l.id {
                 LocationId::Mag(_) => "mag",
                 LocationId::Pmid(_) => "pmid",
@@ -1436,10 +1443,10 @@ impl<'n> Sink<'n, OpenAlex> for OpenAlexStats {
                 self.host_lineage += s.host_organization_lineage.len() as u64;
             }
             if let Some(license) = l.license {
-                *self.licenses.entry(license.token().to_owned()).or_default() += 1;
+                *self.licenses.entry(license.token()).or_default() += 1;
             }
             if let Some(v) = l.version {
-                *self.versions.entry(format!("{v:?}")).or_default() += 1;
+                *self.versions.entry(v).or_default() += 1;
             }
         }
         self.topics += w.topics.len() as u64;
@@ -1455,7 +1462,7 @@ impl<'n> Sink<'n, OpenAlex> for OpenAlexStats {
         self.abstracts += u64::from(w.abstract_inverted_index.is_some());
         self.counts_by_year += w.counts_by_year.len() as u64;
         for i in w.indexed_in.iter() {
-            *self.indexed_in.entry(format!("{i:?}")).or_default() += 1;
+            *self.indexed_in.entry(i).or_default() += 1;
         }
         self.flags[0] += u64::from(w.is_retracted == Some(true));
         self.flags[1] += u64::from(w.is_xpac);

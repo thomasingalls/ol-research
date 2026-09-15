@@ -4,7 +4,8 @@ use super::{Child, DateSlots, Parser, Result, Tag, list, pmid};
 use crate::attr::{IdType, PubStatus};
 use crate::error::ErrorKind;
 use crate::record::{
-    ArticleId, DeleteCitation, Object, Param, PubMedPubDate, PubmedData, Reference, ReferenceList,
+    ArticleId, DeleteCitation, Few, Object, Param, PubMedPubDate, PubmedData, Reference,
+    ReferenceList,
 };
 
 /// `PubmedData (History?, PublicationStatus, ArticleIdList, ObjectList?, ReferenceList*)`.
@@ -13,7 +14,7 @@ pub(super) fn pubmed_data<'a>(p: &mut Parser<'a>, tag: Tag<'a>) -> Result<Pubmed
     p.no_attributes(&tag)?;
     let (mut history, mut publication_status, mut article_ids, mut objects) =
         (None, None, None, None);
-    let mut reference_lists = Vec::new();
+    let mut reference_lists = Few::new();
     while let Child::Elem(t) = p.next_child(&tag)? {
         match t.name() {
             "History" => set_once!(
@@ -83,7 +84,10 @@ fn pubmed_pub_date<'a>(p: &mut Parser<'a>, tag: Tag<'a>) -> Result<PubMedPubDate
 }
 
 /// `ArticleIdList (ArticleId+)`.
-pub(super) fn article_id_list<'a>(p: &mut Parser<'a>, tag: Tag<'a>) -> Result<Vec<ArticleId<'a>>> {
+pub(super) fn article_id_list<'a>(
+    p: &mut Parser<'a>,
+    tag: Tag<'a>,
+) -> Result<Few<ArticleId<'a>, 4>> {
     list(p, tag, "ArticleId", article_id)
 }
 
@@ -118,7 +122,7 @@ fn object<'a>(p: &mut Parser<'a>, tag: Tag<'a>) -> Result<Object<'a>> {
         Ok(())
     })?;
     let r#type = p.required_attr("Type", r#type)?;
-    let mut params = Vec::new();
+    let mut params = Few::new();
     while let Child::Elem(t) = p.next_child(&tag)? {
         match t.name() {
             "Param" => params.push(param(p, t)?),
@@ -153,7 +157,7 @@ fn reference_list<'a>(p: &mut Parser<'a>, tag: Tag<'a>) -> Result<ReferenceList<
     p.enter(&tag);
     p.no_attributes(&tag)?;
     let mut title = None;
-    let mut references = Vec::new();
+    let mut references = Few::new();
     let mut sub_lists = Vec::new();
     while let Child::Elem(t) = p.next_child(&tag)? {
         match t.name() {

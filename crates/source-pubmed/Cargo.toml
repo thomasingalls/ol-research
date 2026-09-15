@@ -10,6 +10,7 @@ ingest.workspace = true
 model.workspace = true
 quick-xml.workspace = true
 serde.workspace = true
+smallvec.workspace = true
 
 [lints]
 workspace = true

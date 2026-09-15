@@ -17,13 +17,14 @@
 //! Records are pushed to an [`Emit`] by reference as they are built.
 
 use serde::{Deserialize, Serialize};
+use smallvec::SmallVec;
 use std::fmt;
 
 use ingest::Sink;
 use model::{
-    Claim, Date, DateError, Day, Doi, DoiError, Issn, IssnError, Lang, LangError, MedlineDateError,
-    MeshUi, MeshUiError, Month, Orcid, OrcidError, ParseError, PartialDate, PmcId, Pmid, Season,
-    TimeOfDay, Year,
+    Claim, Date, DateError, Day, Doi, DoiError, Interned, Issn, IssnError, Lang, LangError,
+    MedlineDateError, MeshUi, MeshUiError, Month, Orcid, OrcidError, ParseError, PartialDate,
+    PmcId, Pmid, Season, TimeOfDay, Year,
 };
 
 use crate::Pubmed;
@@ -38,6 +39,11 @@ use crate::record::{
     PersonName as NativePersonName, PubDate, PubmedArticle, ReferenceList as ReferenceListRecord,
 };
 use crate::text::RawXml;
+
+/// A list with room for its usual length inside the record itself (plan
+/// §5, rule 1); only a longer one allocates. The lengths come from the
+/// observed distributions in the plan's data, about the 90th percentile.
+pub type Few<T, const N: usize> = SmallVec<[T; N]>;
 
 /// A DOI as a source asserted it.
 pub type DoiClaim<'n> = Claim<'n, Doi<'n>, DoiError>;
@@ -85,48 +91,48 @@ pub struct Citation<'n> {
     pub r#abstract: Option<Abstract<'n>>,
     /// `OtherAbstract*`.
     #[serde(borrow)]
-    pub other_abstracts: Vec<OtherAbstract<'n>>,
+    pub other_abstracts: Few<OtherAbstract<'n>, 2>,
     /// `Language+`, ISO 639-2 bibliographic codes.
-    pub languages: Vec<Lang>,
+    pub languages: Few<Lang, 1>,
     /// `PublicationType+`.
     #[serde(borrow)]
-    pub publication_types: Vec<MeshTerm<'n>>,
+    pub publication_types: Few<MeshTerm<'n>, 4>,
     /// `AuthorList/Author*`.
     #[serde(borrow)]
-    pub authors: Vec<Author<'n>>,
+    pub authors: Few<Author<'n>, 8>,
     /// `InvestigatorList*`, each with the `ID` a `CollectiveName` may point at.
     #[serde(borrow)]
-    pub investigator_lists: Vec<InvestigatorList<'n>>,
+    pub investigator_lists: Few<InvestigatorList<'n>, 2>,
     /// `MeshHeadingList`.
     #[serde(borrow)]
-    pub mesh: Vec<MeshHeading<'n>>,
+    pub mesh: Few<MeshHeading<'n>, 16>,
     /// `SupplMeshList`.
     #[serde(borrow)]
-    pub suppl_mesh: Vec<SupplMesh<'n>>,
+    pub suppl_mesh: Few<SupplMesh<'n>, 2>,
     /// `ChemicalList`.
     #[serde(borrow)]
-    pub chemicals: Vec<Chemical<'n>>,
+    pub chemicals: Few<Chemical<'n>, 8>,
     /// Every `Keyword` of every `KeywordList`, with its list's owner.
     #[serde(borrow)]
-    pub keywords: Vec<Keyword<'n>>,
+    pub keywords: Few<Keyword<'n>, 8>,
     /// `GrantList`.
     #[serde(borrow)]
-    pub grants: Vec<Grant<'n>>,
+    pub grants: Few<Grant<'n>, 4>,
     /// `DataBankList`.
     #[serde(borrow)]
-    pub data_banks: Vec<DataBank<'n>>,
+    pub data_banks: Few<DataBank<'n>, 2>,
     /// `CoiStatement`, raw markup.
     #[serde(borrow)]
     pub coi_statement: Option<&'n str>,
     /// `CitationSubset*`: `IM` and friends.
     #[serde(borrow)]
-    pub citation_subsets: Vec<&'n str>,
+    pub citation_subsets: Few<&'n str, 2>,
     /// `PubmedData/History`.
-    pub history: Vec<HistoryEntry>,
+    pub history: Few<HistoryEntry, 8>,
     /// `PubmedData/PublicationStatus`.
     pub publication_status: Option<PublicationStatus>,
     /// `CommentsCorrections*`: errata, retractions, comments, by kind.
-    pub relations: Vec<Relation>,
+    pub relations: Few<Relation, 4>,
 }
 
 /// The record's identifiers beyond its PMID.
@@ -173,16 +179,17 @@ pub struct Dates {
 pub struct Journal<'n> {
     /// `Journal/Title`.
     #[serde(borrow)]
-    pub title: Option<&'n str>,
+    pub title: Option<Interned<'n>>,
     /// `Journal/ISOAbbreviation`.
     #[serde(borrow)]
-    pub iso_abbreviation: Option<&'n str>,
+    pub iso_abbreviation: Option<Interned<'n>>,
     /// `MedlineJournalInfo/MedlineTA`.
-    pub medline_ta: &'n str,
+    #[serde(borrow)]
+    pub medline_ta: Interned<'n>,
     /// `MedlineJournalInfo/NlmUniqueID`: digits, sometimes with a trailing
     /// letter.
     #[serde(borrow)]
-    pub nlm_unique_id: Option<&'n str>,
+    pub nlm_unique_id: Option<Interned<'n>>,
     /// `Journal/ISSN` with its type, as claimed.
     #[serde(borrow)]
     pub issn: Option<TypedIssn<'n>>,
@@ -192,7 +199,7 @@ pub struct Journal<'n> {
     /// `MedlineJournalInfo/Country`, NLM's spelling (`United States`,
     /// `England`, `Korea (South)`).
     #[serde(borrow)]
-    pub country: Option<&'n str>,
+    pub country: Option<Interned<'n>>,
     /// `Article@PubModel`.
     pub pub_model: PubModel,
     /// `JournalIssue@CitedMedium`.
@@ -241,7 +248,7 @@ pub enum Pagination<'n> {
 pub struct Abstract<'n> {
     /// `AbstractText+`.
     #[serde(borrow)]
-    pub sections: Vec<Section<'n>>,
+    pub sections: Few<Section<'n>, 4>,
     /// `CopyrightInformation?`.
     #[serde(borrow)]
     pub copyright: Option<&'n str>,
@@ -268,7 +275,7 @@ pub struct OtherAbstract<'n> {
     pub language: Lang,
     #[allow(missing_docs)]
     #[serde(borrow)]
-    pub sections: Vec<Section<'n>>,
+    pub sections: Few<Section<'n>, 4>,
     #[allow(missing_docs)]
     #[serde(borrow)]
     pub copyright: Option<&'n str>,
@@ -282,7 +289,8 @@ pub struct MeshTerm<'n> {
     #[serde(borrow)]
     pub ui: MeshUi<'n>,
     #[allow(missing_docs)]
-    pub name: &'n str,
+    #[serde(borrow)]
+    pub name: Interned<'n>,
 }
 
 /// An author.
@@ -300,7 +308,7 @@ pub struct Author<'n> {
     pub valid: bool,
     #[allow(missing_docs)]
     #[serde(borrow)]
-    pub affiliations: Vec<Affiliation<'n>>,
+    pub affiliations: Few<Affiliation<'n>, 2>,
 }
 
 /// A person or a collective.
@@ -341,7 +349,7 @@ pub struct Affiliation<'n> {
     pub text: &'n str,
     #[allow(missing_docs)]
     #[serde(borrow)]
-    pub ids: Vec<AffiliationId<'n>>,
+    pub ids: Few<AffiliationId<'n>, 2>,
 }
 
 /// An affiliation identifier, as written: ROR URL, GRID id, spaced ISNI,
@@ -351,7 +359,8 @@ pub struct AffiliationId<'n> {
     #[allow(missing_docs)]
     pub source: AffiliationIdSource,
     #[allow(missing_docs)]
-    pub value: &'n str,
+    #[serde(borrow)]
+    pub value: Interned<'n>,
 }
 
 /// `InvestigatorList`.
@@ -362,7 +371,7 @@ pub struct InvestigatorList<'n> {
     pub id: Option<&'n str>,
     #[allow(missing_docs)]
     #[serde(borrow)]
-    pub investigators: Vec<Investigator<'n>>,
+    pub investigators: Few<Investigator<'n>, 8>,
 }
 
 /// An investigator: a person with the same identifiers an author has.
@@ -378,7 +387,7 @@ pub struct Investigator<'n> {
     pub valid: bool,
     #[allow(missing_docs)]
     #[serde(borrow)]
-    pub affiliations: Vec<Affiliation<'n>>,
+    pub affiliations: Few<Affiliation<'n>, 2>,
 }
 
 /// A MeSH heading: descriptor plus qualifiers.
@@ -395,7 +404,7 @@ pub struct MeshHeading<'n> {
     pub auto: bool,
     #[allow(missing_docs)]
     #[serde(borrow)]
-    pub qualifiers: Vec<Qualifier<'n>>,
+    pub qualifiers: Few<Qualifier<'n>, 4>,
 }
 
 /// A MeSH qualifier on a heading.
@@ -424,7 +433,8 @@ pub struct SupplMesh<'n> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Chemical<'n> {
     /// `0`, a CAS number, an EC number or a UNII, as text.
-    pub registry_number: &'n str,
+    #[serde(borrow)]
+    pub registry_number: Interned<'n>,
     #[allow(missing_docs)]
     #[serde(borrow)]
     pub substance: MeshTerm<'n>,
@@ -449,22 +459,24 @@ pub struct Grant<'n> {
     pub id: Option<&'n str>,
     #[allow(missing_docs)]
     #[serde(borrow)]
-    pub acronym: Option<&'n str>,
+    pub acronym: Option<Interned<'n>>,
     #[allow(missing_docs)]
-    pub agency: &'n str,
+    #[serde(borrow)]
+    pub agency: Interned<'n>,
     /// `Country`; an empty element (92 % of grants) is `None`.
     #[serde(borrow)]
-    pub country: Option<&'n str>,
+    pub country: Option<Interned<'n>>,
 }
 
 /// A data bank with accession numbers.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DataBank<'n> {
     /// `ClinicalTrials.gov`, `Dryad`, `GEO`, …
-    pub name: &'n str,
+    #[serde(borrow)]
+    pub name: Interned<'n>,
     #[allow(missing_docs)]
     #[serde(borrow)]
-    pub accessions: Vec<&'n str>,
+    pub accessions: Few<&'n str, 4>,
 }
 
 /// One `PubMedPubDate`.
@@ -652,7 +664,7 @@ impl Ctx {
         Ok(MeshTerm {
             ui: MeshUi::parse(&keyed.ui)
                 .map_err(|e| self.err(field, &keyed.ui, ErrorKind::MeshUi(e)))?,
-            name: &keyed.value,
+            name: Interned::Text(&keyed.value),
         })
     }
 
@@ -660,7 +672,7 @@ impl Ctx {
         Lang::from_bibliographic(s).map_err(|e| self.err(field, s, ErrorKind::Lang(e)))
     }
 
-    fn sections<'n>(texts: &'n [AbstractText<'_>]) -> Vec<Section<'n>> {
+    fn sections<'n>(texts: &'n [AbstractText<'_>]) -> Few<Section<'n>, 4> {
         texts
             .iter()
             .map(|t| Section {
@@ -714,7 +726,7 @@ impl Ctx {
     fn affiliations<'n>(
         &self,
         infos: &'n [record::AffiliationInfo<'_>],
-    ) -> Result<Vec<Affiliation<'n>>, Error> {
+    ) -> Result<Few<Affiliation<'n>, 2>, Error> {
         infos
             .iter()
             .map(|info| {
@@ -731,10 +743,10 @@ impl Ctx {
                         })?;
                         Ok(AffiliationId {
                             source,
-                            value: &id.value,
+                            value: Interned::Text(&id.value),
                         })
                     })
-                    .collect::<Result<Vec<_>, Error>>()?;
+                    .collect::<Result<_, Error>>()?;
                 Ok(Affiliation {
                     text: info.affiliation.as_str(),
                     ids,
@@ -994,16 +1006,16 @@ fn journal<'n>(c: &'n MedlineCitation<'_>) -> Journal<'n> {
         NativePagination::MedlinePgn(p) => Pagination::Medline(p),
     });
     Journal {
-        title: j.title.as_deref(),
-        iso_abbreviation: j.iso_abbreviation.as_deref(),
-        medline_ta: &info.medline_ta,
-        nlm_unique_id: info.nlm_unique_id.as_deref(),
+        title: j.title.as_deref().map(Interned::Text),
+        iso_abbreviation: j.iso_abbreviation.as_deref().map(Interned::Text),
+        medline_ta: Interned::Text(&info.medline_ta),
+        nlm_unique_id: info.nlm_unique_id.as_deref().map(Interned::Text),
         issn,
         issn_linking: info
             .issn_linking
             .as_deref()
             .map(|s| Claim::from_parse(s, Issn::parse(s))),
-        country: info.country.as_deref(),
+        country: info.country.as_deref().map(Interned::Text),
         pub_model: c.article.pub_model,
         cited_medium: j.journal_issue.cited_medium,
         volume: j.journal_issue.volume.as_deref(),
@@ -1084,20 +1096,20 @@ pub fn normalize<'n, K: Sink<'n, Pubmed>>(
                 copyright: o.copyright_information.as_deref(),
             })
         })
-        .collect::<Result<Vec<_>, Error>>()?;
+        .collect::<Result<_, Error>>()?;
 
     let languages = c
         .article
         .languages
         .iter()
         .map(|l| ctx.lang("Language", l))
-        .collect::<Result<Vec<_>, _>>()?;
+        .collect::<Result<_, _>>()?;
     let publication_types = c
         .article
         .publication_types
         .iter()
         .map(|pt| ctx.mesh_term("PublicationType@UI", pt))
-        .collect::<Result<Vec<_>, _>>()?;
+        .collect::<Result<_, _>>()?;
 
     let authors = c
         .article
@@ -1107,7 +1119,7 @@ pub fn normalize<'n, K: Sink<'n, Pubmed>>(
             l.authors
                 .iter()
                 .map(|a| ctx.author(a))
-                .collect::<Result<Vec<_>, _>>()
+                .collect::<Result<_, _>>()
         })
         .transpose()?
         .unwrap_or_default();
@@ -1121,10 +1133,10 @@ pub fn normalize<'n, K: Sink<'n, Pubmed>>(
                     .investigators
                     .iter()
                     .map(|i| ctx.investigator(i))
-                    .collect::<Result<Vec<_>, _>>()?,
+                    .collect::<Result<_, _>>()?,
             })
         })
-        .collect::<Result<Vec<_>, Error>>()?;
+        .collect::<Result<_, Error>>()?;
 
     let mesh = c
         .mesh_headings
@@ -1135,7 +1147,7 @@ pub fn normalize<'n, K: Sink<'n, Pubmed>>(
                 descriptor: MeshTerm {
                     ui: MeshUi::parse(&d.ui)
                         .map_err(|e| ctx.err("DescriptorName@UI", &d.ui, ErrorKind::MeshUi(e)))?,
-                    name: &d.value,
+                    name: Interned::Text(&d.value),
                 },
                 major: d.major_topic == YesNo::Yes,
                 geographic: d.r#type.is_some(),
@@ -1149,16 +1161,16 @@ pub fn normalize<'n, K: Sink<'n, Pubmed>>(
                                 ui: MeshUi::parse(&q.ui).map_err(|e| {
                                     ctx.err("QualifierName@UI", &q.ui, ErrorKind::MeshUi(e))
                                 })?,
-                                name: &q.value,
+                                name: Interned::Text(&q.value),
                             },
                             major: q.major_topic == YesNo::Yes,
                             auto: q.auto_hm,
                         })
                     })
-                    .collect::<Result<Vec<_>, Error>>()?,
+                    .collect::<Result<_, Error>>()?,
             })
         })
-        .collect::<Result<Vec<_>, Error>>()?;
+        .collect::<Result<_, Error>>()?;
     let suppl_mesh = c
         .suppl_mesh
         .iter()
@@ -1168,21 +1180,21 @@ pub fn normalize<'n, K: Sink<'n, Pubmed>>(
                 term: MeshTerm {
                     ui: MeshUi::parse(&s.ui)
                         .map_err(|e| ctx.err("SupplMeshName@UI", &s.ui, ErrorKind::MeshUi(e)))?,
-                    name: &s.value,
+                    name: Interned::Text(&s.value),
                 },
             })
         })
-        .collect::<Result<Vec<_>, Error>>()?;
+        .collect::<Result<_, Error>>()?;
     let chemicals = c
         .chemicals
         .iter()
         .map(|ch| {
             Ok(Chemical {
-                registry_number: &ch.registry_number,
+                registry_number: Interned::Text(&ch.registry_number),
                 substance: ctx.mesh_term("NameOfSubstance@UI", &ch.name_of_substance)?,
             })
         })
-        .collect::<Result<Vec<_>, Error>>()?;
+        .collect::<Result<_, Error>>()?;
     let keywords = c
         .keyword_lists
         .iter()
@@ -1201,9 +1213,13 @@ pub fn normalize<'n, K: Sink<'n, Pubmed>>(
         .flat_map(|l| l.grants.iter())
         .map(|g| Grant {
             id: g.grant_id.as_deref(),
-            acronym: g.acronym.as_deref(),
-            agency: &g.agency,
-            country: g.country.as_deref().filter(|s| !s.is_empty()),
+            acronym: g.acronym.as_deref().map(Interned::Text),
+            agency: Interned::Text(&g.agency),
+            country: g
+                .country
+                .as_deref()
+                .filter(|s| !s.is_empty())
+                .map(Interned::Text),
         })
         .collect();
     let data_banks = c
@@ -1212,12 +1228,12 @@ pub fn normalize<'n, K: Sink<'n, Pubmed>>(
         .iter()
         .flat_map(|l| l.data_banks.iter())
         .map(|b| DataBank {
-            name: &b.name,
+            name: Interned::Text(&b.name),
             accessions: b.accession_numbers.iter().map(|a| &**a).collect(),
         })
         .collect();
 
-    let mut relations = Vec::with_capacity(c.comments_corrections.len());
+    let mut relations = Few::new();
     for cc in &c.comments_corrections {
         let pmid = cc
             .pmid
@@ -1238,7 +1254,7 @@ pub fn normalize<'n, K: Sink<'n, Pubmed>>(
             d.history
                 .iter()
                 .map(|h| ctx.history(h))
-                .collect::<Result<Vec<_>, _>>()?,
+                .collect::<Result<_, _>>()?,
             Some(
                 PublicationStatus::parse(&d.publication_status).ok_or_else(|| {
                     ctx.err(
@@ -1249,7 +1265,7 @@ pub fn normalize<'n, K: Sink<'n, Pubmed>>(
                 })?,
             ),
         ),
-        None => (Vec::new(), None),
+        None => (Few::new(), None),
     };
 
     emit.work(&Citation {

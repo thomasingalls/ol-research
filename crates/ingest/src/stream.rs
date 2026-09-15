@@ -139,12 +139,13 @@ where
     let workers = workers.clamp(1, todo.len().max(1));
     let started = Instant::now();
     let (allocations, allocated_bytes) = (alloc::allocations(), alloc::allocated_bytes());
-    let (next, count, halt) = (
+    let (next, count, pending, halt) = (
         AtomicUsize::new(0),
+        AtomicU64::new(0),
         AtomicU64::new(0),
         AtomicBool::new(false),
     );
-    let progress = Progress::new(limit, &count, &halt, false);
+    let progress = Progress::new(limit, &count, &pending, &halt, false);
     let shared = Shared {
         receipts_path: run.store.receipts(run.source),
         appending: Mutex::new(()),

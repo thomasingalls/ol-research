@@ -9,6 +9,7 @@ description = "Crossref works JSON: native record types and a strict, zero-copy 
 ingest.workspace = true
 model.workspace = true
 serde.workspace = true
+smallvec.workspace = true
 serde_json.workspace = true
 
 [lints]

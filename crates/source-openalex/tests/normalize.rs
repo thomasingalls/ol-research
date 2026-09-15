@@ -4,6 +4,7 @@
 
 use ingest::Sink;
 use model::{Claim, DoiError, IssnError, OpenAlexId, OrcidError, Ror};
+use smallvec::SmallVec;
 use source_openalex::OpenAlex;
 use source_openalex::normalize::{Error, ErrorKind, LocationId, Work, normalize};
 use source_openalex::vocab::{AuthorPosition, Index, OaStatus, Provenance, WorkType};
@@ -328,7 +329,7 @@ fn rors_and_host_organizations_roundtrip() {
                 hosts += u64::from(s.host_organization().is_some());
                 assert_eq!(
                     s.issns.len(),
-                    ns.issn.as_ref().map_or(0, Vec::len),
+                    ns.issn.as_ref().map_or(0, SmallVec::len),
                     "{name}"
                 );
             }
@@ -459,7 +460,13 @@ fn the_binary_layout_roundtrips_every_fixture() {
     let works = Reader::open(&Kind::Works.path(&prefix)).unwrap();
     assert_eq!(works.header().model, model::VERSION);
     let back: Vec<Work<'_>> = works.records().map(Result::unwrap).collect();
-    assert_eq!(back, collect.works);
+    // Interned strings come back as symbols; through the set's table they
+    // serialize to the same text.
+    assert!(works.table().is_some_and(|t| !t.is_empty()));
+    assert_eq!(
+        works.with_table(|| serde_json::to_string(&back).unwrap()),
+        serde_json::to_string(&collect.works).unwrap()
+    );
     let refs = Reader::open(&Kind::References.path(&prefix)).unwrap();
     let back: Vec<(OpenAlexId, OpenAlexId)> = refs.records().map(Result::unwrap).collect();
     assert_eq!(back, collect.edges);

@@ -14,6 +14,12 @@ use crate::attr::{
     Status, SupplMeshType, YesNo,
 };
 use crate::text::{RawXml, Text};
+use smallvec::SmallVec;
+
+/// A list with room for its usual length inside the record itself (plan
+/// §5, rule 1); only a longer one allocates. The lengths come from the
+/// observed distributions in the plan's data, about the 90th percentile.
+pub type Few<T, const N: usize> = SmallVec<[T; N]>;
 
 /// One member of `PubmedArticleSet ((PubmedArticle | PubmedBookArticle)+, DeleteCitation?)`.
 /// `PubmedBookArticle` is not modelled yet; encountering one is an error.
@@ -33,7 +39,7 @@ pub enum Record<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeleteCitation<'a> {
     /// At least one.
-    pub pmids: Vec<Pmid<'a>>,
+    pub pmids: Few<Pmid<'a>, 8>,
 }
 
 /// `PubmedArticle (MedlineCitation, PubmedData?)`.
@@ -84,35 +90,35 @@ pub struct MedlineCitation<'a> {
     /// `MedlineJournalInfo`.
     pub medline_journal_info: MedlineJournalInfo<'a>,
     /// `ChemicalList? (Chemical+)`.
-    pub chemicals: Vec<Chemical<'a>>,
+    pub chemicals: Few<Chemical<'a>, 8>,
     /// `SupplMeshList? (SupplMeshName+)`.
-    pub suppl_mesh: Vec<SupplMeshName<'a>>,
+    pub suppl_mesh: Few<SupplMeshName<'a>, 2>,
     /// `CitationSubset*`.
-    pub citation_subsets: Vec<Text<'a>>,
+    pub citation_subsets: Few<Text<'a>, 2>,
     /// `CommentsCorrectionsList? (CommentsCorrections+)`.
-    pub comments_corrections: Vec<CommentsCorrections<'a>>,
+    pub comments_corrections: Few<CommentsCorrections<'a>, 4>,
     /// `GeneSymbolList? (GeneSymbol+)`.
-    pub gene_symbols: Vec<Text<'a>>,
+    pub gene_symbols: Few<Text<'a>, 4>,
     /// `MeshHeadingList? (MeshHeading+)`.
-    pub mesh_headings: Vec<MeshHeading<'a>>,
+    pub mesh_headings: Few<MeshHeading<'a>, 16>,
     /// `NumberOfReferences?`.
     pub number_of_references: Option<Text<'a>>,
     /// `PersonalNameSubjectList? (PersonalNameSubject+)`.
-    pub personal_name_subjects: Vec<PersonName<'a>>,
+    pub personal_name_subjects: Few<PersonName<'a>, 2>,
     /// `OtherID*`.
-    pub other_ids: Vec<OtherId<'a>>,
+    pub other_ids: Few<OtherId<'a>, 2>,
     /// `OtherAbstract*`.
-    pub other_abstracts: Vec<OtherAbstract<'a>>,
+    pub other_abstracts: Few<OtherAbstract<'a>, 2>,
     /// `KeywordList*`.
-    pub keyword_lists: Vec<KeywordList<'a>>,
+    pub keyword_lists: Few<KeywordList<'a>, 2>,
     /// `CoiStatement? (%text;)*`.
     pub coi_statement: Option<RawXml<'a>>,
     /// `SpaceFlightMission*`.
-    pub space_flight_missions: Vec<Text<'a>>,
+    pub space_flight_missions: Few<Text<'a>, 2>,
     /// `InvestigatorList*`.
-    pub investigator_lists: Vec<InvestigatorList<'a>>,
+    pub investigator_lists: Few<InvestigatorList<'a>, 2>,
     /// `GeneralNote*`.
-    pub general_notes: Vec<GeneralNote<'a>>,
+    pub general_notes: Few<GeneralNote<'a>, 2>,
 }
 
 /// `(Year, Month, Day)` — `DateCompleted`, `DateRevised`, `ArticleDate`
@@ -142,23 +148,23 @@ pub struct Article<'a> {
     /// `Pagination?` — when absent, at least one `ELocationID` is required.
     pub pagination: Option<Pagination<'a>>,
     /// `ELocationID*`.
-    pub elocation_ids: Vec<ELocationId<'a>>,
+    pub elocation_ids: Few<ELocationId<'a>, 2>,
     /// `Abstract?`.
     pub r#abstract: Option<Abstract<'a>>,
     /// `AuthorList?`.
     pub author_list: Option<AuthorList<'a>>,
     /// `Language+`.
-    pub languages: Vec<Text<'a>>,
+    pub languages: Few<Text<'a>, 1>,
     /// `DataBankList?`.
     pub data_bank_list: Option<DataBankList<'a>>,
     /// `GrantList?`.
     pub grant_list: Option<GrantList<'a>>,
     /// `PublicationTypeList (PublicationType+)`.
-    pub publication_types: Vec<Keyed<'a>>,
+    pub publication_types: Few<Keyed<'a>, 4>,
     /// `VernacularTitle? (%text; | mml:math)*`.
     pub vernacular_title: Option<RawXml<'a>>,
     /// `ArticleDate*`.
-    pub article_dates: Vec<Date<'a>>,
+    pub article_dates: Few<Date<'a>, 2>,
 }
 
 /// `ArticleTitle (%text; | mml:math)*` with `%booklinkatts;`:
@@ -261,7 +267,7 @@ pub struct ELocationId<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Abstract<'a> {
     /// `AbstractText+`.
-    pub texts: Vec<AbstractText<'a>>,
+    pub texts: Few<AbstractText<'a>, 4>,
     /// `CopyrightInformation?`.
     pub copyright_information: Option<Text<'a>>,
 }
@@ -287,7 +293,7 @@ pub struct AuthorList<'a> {
     /// `Type`.
     pub r#type: Option<AuthorListType>,
     /// `Author+`.
-    pub authors: Vec<Author<'a>>,
+    pub authors: Few<Author<'a>, 8>,
 }
 
 /// `Author (((LastName, ForeName?, Initials?, Suffix?) | CollectiveName),
@@ -302,9 +308,9 @@ pub struct Author<'a> {
     /// The name branch.
     pub name: AuthorName<'a>,
     /// `Identifier*` — `Source` is free text: `ORCID` observed.
-    pub identifiers: Vec<Identifier<'a>>,
+    pub identifiers: Few<Identifier<'a>, 1>,
     /// `AffiliationInfo*`.
-    pub affiliations: Vec<AffiliationInfo<'a>>,
+    pub affiliations: Few<AffiliationInfo<'a>, 2>,
 }
 
 /// The choice inside `Author`.
@@ -354,7 +360,7 @@ pub struct AffiliationInfo<'a> {
     /// `Affiliation`.
     pub affiliation: RawXml<'a>,
     /// `Identifier*`.
-    pub identifiers: Vec<Identifier<'a>>,
+    pub identifiers: Few<Identifier<'a>, 1>,
 }
 
 /// `DataBankList (DataBank+)` with `CompleteYN (Y | N) "Y"`.
@@ -363,7 +369,7 @@ pub struct DataBankList<'a> {
     /// `CompleteYN`.
     pub complete: YesNo,
     /// `DataBank+`.
-    pub data_banks: Vec<DataBank<'a>>,
+    pub data_banks: Few<DataBank<'a>, 2>,
 }
 
 /// `DataBank (DataBankName, AccessionNumberList?)`;
@@ -373,7 +379,7 @@ pub struct DataBank<'a> {
     /// `DataBankName`.
     pub name: Text<'a>,
     /// `AccessionNumber+`, or empty when the list is absent.
-    pub accession_numbers: Vec<Text<'a>>,
+    pub accession_numbers: Few<Text<'a>, 4>,
 }
 
 /// `GrantList (Grant+)` with `CompleteYN (Y | N) "Y"`.
@@ -382,7 +388,7 @@ pub struct GrantList<'a> {
     /// `CompleteYN`.
     pub complete: YesNo,
     /// `Grant+`.
-    pub grants: Vec<Grant<'a>>,
+    pub grants: Few<Grant<'a>, 4>,
 }
 
 /// `Grant (GrantID?, Acronym?, Agency, Country?)`.
@@ -461,7 +467,7 @@ pub struct MeshHeading<'a> {
     /// `DescriptorName`.
     pub descriptor: DescriptorName<'a>,
     /// `QualifierName*`.
-    pub qualifiers: Vec<QualifierName<'a>>,
+    pub qualifiers: Few<QualifierName<'a>, 4>,
 }
 
 /// `DescriptorName (#PCDATA)` with `MajorTopicYN (Y | N) "N"`,
@@ -512,7 +518,7 @@ pub struct OtherAbstract<'a> {
     /// `Language`, defaulted to `eng`.
     pub language: Text<'a>,
     /// `AbstractText+`.
-    pub texts: Vec<AbstractText<'a>>,
+    pub texts: Few<AbstractText<'a>, 4>,
     /// `CopyrightInformation?`.
     pub copyright_information: Option<Text<'a>>,
 }
@@ -523,7 +529,7 @@ pub struct KeywordList<'a> {
     /// `Owner`.
     pub owner: KeywordOwner,
     /// `Keyword+`.
-    pub keywords: Vec<Keyword<'a>>,
+    pub keywords: Few<Keyword<'a>, 8>,
 }
 
 /// `Keyword (%text; | mml:math)*` with `MajorTopicYN (Y | N) "N"`.
@@ -541,7 +547,7 @@ pub struct InvestigatorList<'a> {
     /// `ID`, the target of `CollectiveName Investigators`.
     pub id: Option<Text<'a>>,
     /// `Investigator+`.
-    pub investigators: Vec<Investigator<'a>>,
+    pub investigators: Few<Investigator<'a>, 8>,
 }
 
 /// `Investigator (LastName, ForeName?, Initials?, Suffix?, Identifier*,
@@ -553,9 +559,9 @@ pub struct Investigator<'a> {
     /// The name.
     pub name: PersonName<'a>,
     /// `Identifier*`.
-    pub identifiers: Vec<Identifier<'a>>,
+    pub identifiers: Few<Identifier<'a>, 1>,
     /// `AffiliationInfo*`.
-    pub affiliations: Vec<AffiliationInfo<'a>>,
+    pub affiliations: Few<AffiliationInfo<'a>, 2>,
 }
 
 /// `GeneralNote (#PCDATA)` with `Owner (...) "NLM"`.
@@ -573,15 +579,15 @@ pub struct GeneralNote<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PubmedData<'a> {
     /// `PubMedPubDate+`, or empty when `History` is absent.
-    pub history: Vec<PubMedPubDate<'a>>,
+    pub history: Few<PubMedPubDate<'a>, 8>,
     /// `PublicationStatus` — `ppublish`, `epublish`, `aheadofprint` observed.
     pub publication_status: Text<'a>,
     /// `ArticleId+`.
-    pub article_ids: Vec<ArticleId<'a>>,
+    pub article_ids: Few<ArticleId<'a>, 4>,
     /// `Object+`, or empty when `ObjectList` is absent.
-    pub objects: Vec<Object<'a>>,
+    pub objects: Few<Object<'a>, 2>,
     /// `ReferenceList*`.
-    pub reference_lists: Vec<ReferenceList<'a>>,
+    pub reference_lists: Few<ReferenceList<'a>, 1>,
 }
 
 /// `PubMedPubDate (Year, Month, Day, (Hour, (Minute, Second?)?)?)` with
@@ -619,7 +625,7 @@ pub struct Object<'a> {
     /// `Type`.
     pub r#type: Text<'a>,
     /// `Param*`.
-    pub params: Vec<Param<'a>>,
+    pub params: Few<Param<'a>, 2>,
 }
 
 /// `Param (%text;)*` with `Name CDATA #REQUIRED`.
@@ -637,7 +643,7 @@ pub struct ReferenceList<'a> {
     /// `Title?` — `References`, `REFERENCES`, `Literatur`, … observed.
     pub title: Option<Text<'a>>,
     /// `Reference*`.
-    pub references: Vec<Reference<'a>>,
+    pub references: Few<Reference<'a>, 16>,
     /// `ReferenceList*`.
     pub sub_lists: Vec<ReferenceList<'a>>,
 }
@@ -649,5 +655,5 @@ pub struct Reference<'a> {
     pub citation: RawXml<'a>,
     /// `ArticleId+`, or empty when the list is absent — `doi`, `pubmed`
     /// and `pmcid` observed.
-    pub article_ids: Vec<ArticleId<'a>>,
+    pub article_ids: Few<ArticleId<'a>, 4>,
 }

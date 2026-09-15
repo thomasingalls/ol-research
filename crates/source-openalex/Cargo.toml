@@ -9,6 +9,7 @@ description = "OpenAlex works snapshot JSON lines: native record types and a str
 ingest.workspace = true
 model.workspace = true
 serde.workspace = true
+smallvec.workspace = true
 serde_json.workspace = true
 
 [lints]

@@ -7,7 +7,7 @@
 use serde::{Deserialize, Serialize};
 
 /// `type`: OpenAlex's work types, from Crossref's with a few of its own.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 #[allow(missing_docs)]
 pub enum WorkType {
@@ -34,7 +34,7 @@ pub enum WorkType {
 }
 
 /// `open_access.oa_status`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 #[allow(missing_docs)]
 pub enum OaStatus {
@@ -47,7 +47,7 @@ pub enum OaStatus {
 }
 
 /// `version` on a location.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize)]
 #[allow(missing_docs)]
 pub enum Version {
     #[serde(rename = "publishedVersion")]
@@ -98,7 +98,7 @@ impl License {
 }
 
 /// `provenance` on a location: which upstream supplied it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 #[allow(missing_docs)]
 pub enum Provenance {
@@ -110,7 +110,7 @@ pub enum Provenance {
 }
 
 /// `indexed_in[]`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 #[allow(missing_docs)]
 pub enum Index {

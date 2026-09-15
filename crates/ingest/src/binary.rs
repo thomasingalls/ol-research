@@ -16,27 +16,34 @@
 //!
 //! Writing allocates nothing per record in the steady state: each value is
 //! encoded into one reusable buffer and copied into the compressor.
-//! Symbol tables for repeated strings (rule 4) are not here yet; this is
-//! the layout to measure them against.
+//!
+//! The fourth file of a set, `<prefix>.symbols.zst`, is the set's symbol
+//! table (rule 4): every [`model::Interned`] value of the set's records
+//! was written as a `u32` index into it. The sink installs an interner on
+//! its thread while a set is open and writes the table when the set
+//! closes; the reader loads a set's table beside its records and resolves
+//! through it.
 
 use std::fmt;
 use std::fs::{self, File};
 use std::io::{self, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
+use model::symbol::{self, Table};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use crate::source::{Sink, Source};
 
-/// The layout version, independent of the model version.
-pub const FORMAT: u8 = 1;
+/// The layout version, independent of the model version. 2: interned
+/// strings are symbols into a fourth file per set.
+pub const FORMAT: u8 = 2;
 
 /// zstd level: fast; the level and the frame size are knobs not yet
 /// turned (plan §5, second measurement).
 const LEVEL: i32 = 3;
 
-/// The three record kinds, one file each.
+/// The three record kinds and the symbol table, one file each.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Kind {
     /// One record per work.
@@ -45,11 +52,18 @@ pub enum Kind {
     References,
     /// One record per withdrawn work: its id.
     Deletions,
+    /// One string per symbol, in symbol order: the set's table.
+    Symbols,
 }
 
 impl Kind {
     /// Every kind, in file order.
-    pub const ALL: [Self; 3] = [Self::Works, Self::References, Self::Deletions];
+    pub const ALL: [Self; 4] = [
+        Self::Works,
+        Self::References,
+        Self::Deletions,
+        Self::Symbols,
+    ];
 
     /// The file name segment: `works` in `<prefix>.works.zst`.
     #[must_use]
@@ -58,7 +72,21 @@ impl Kind {
             Self::Works => "works",
             Self::References => "references",
             Self::Deletions => "deletions",
+            Self::Symbols => "symbols",
         }
+    }
+
+    /// The prefix of a set from the path of one of its files, when the
+    /// name has this layout's shape.
+    #[must_use]
+    pub fn prefix_of(path: &Path) -> Option<PathBuf> {
+        let name = path.file_name()?.to_str()?;
+        let stem = name.strip_suffix(".zst")?;
+        let (prefix, segment) = stem.rsplit_once('.')?;
+        Self::ALL
+            .iter()
+            .any(|k| k.segment() == segment)
+            .then(|| path.with_file_name(prefix))
     }
 
     /// The path of this kind's file for a prefix.
@@ -101,9 +129,10 @@ impl Header {
 pub struct Written {
     /// The set's prefix: its files are [`Kind::path`] of it.
     pub prefix: PathBuf,
-    /// Records per kind, in [`Kind::ALL`] order.
-    pub records: [u64; 3],
-    /// Compressed bytes on disk, all three files.
+    /// Records per kind, in [`Kind::ALL`] order; the fourth is the
+    /// table's size.
+    pub records: [u64; 4],
+    /// Compressed bytes on disk, all four files.
     pub bytes: u64,
 }
 
@@ -129,7 +158,7 @@ impl Set {
         }
         let mut set = Self {
             prefix: prefix.to_path_buf(),
-            streams: Vec::with_capacity(3),
+            streams: Vec::with_capacity(4),
             finished: false,
         };
         for kind in Kind::ALL {
@@ -149,6 +178,7 @@ impl Set {
             // Headers are not records.
             set.streams[i].records = 0;
         }
+        symbol::begin_writing().map_err(io::Error::other)?;
         Ok(set)
     }
 
@@ -170,11 +200,16 @@ impl Set {
         Ok(())
     }
 
-    fn finish(mut self) -> io::Result<Written> {
+    fn finish(mut self, buf: &mut Vec<u8>) -> io::Result<Written> {
+        let table =
+            symbol::end_writing().ok_or_else(|| io::Error::other("the set's interner is gone"))?;
+        for s in table.iter() {
+            self.put(3, s, buf)?;
+        }
         let streams = std::mem::take(&mut self.streams);
         let mut written = Written {
             prefix: self.prefix.clone(),
-            records: [0; 3],
+            records: [0; 4],
             bytes: 0,
         };
         for (i, s) in streams.into_iter().enumerate() {
@@ -197,6 +232,7 @@ impl Set {
 impl Drop for Set {
     fn drop(&mut self) {
         if !self.finished {
+            let _ = symbol::end_writing();
             self.remove_files();
         }
     }
@@ -300,7 +336,7 @@ impl Binary {
             .current
             .take()
             .ok_or_else(|| io::Error::other("no raw file is open"))?;
-        self.written.push(set.finish()?);
+        self.written.push(set.finish(&mut self.buf)?);
         Ok(())
     }
 
@@ -427,12 +463,14 @@ fn read_varint(bytes: &[u8], pos: &mut usize) -> io::Result<u64> {
 }
 
 /// One file written by [`Binary`], inflated into memory; records are
-/// decoded on demand, borrowing from it.
+/// decoded on demand, borrowing from it. A record file's symbol table,
+/// the set's fourth file, is loaded with it when present.
 #[derive(Debug)]
 pub struct Reader {
     bytes: Vec<u8>,
     header: Header,
     body: usize,
+    table: Option<Table>,
 }
 
 impl Reader {
@@ -458,11 +496,41 @@ impl Reader {
                 format!("layout version {} is not {FORMAT}", header.format),
             ));
         }
-        Ok(Self {
+        let mut reader = Self {
             bytes,
             header,
             body: pos,
-        })
+            table: None,
+        };
+        if reader.header.kind != Kind::Symbols
+            && let Some(prefix) = Kind::prefix_of(path)
+        {
+            let symbols = Kind::Symbols.path(&prefix);
+            if symbols.exists() {
+                let file = Self::open(&symbols)?;
+                let strings = file
+                    .records::<&str>()
+                    .map(|r| r.map(Box::from))
+                    .collect::<io::Result<Vec<Box<str>>>>()?;
+                reader.table = Some(Table::from(strings));
+            }
+        }
+        Ok(reader)
+    }
+
+    /// The set's symbol table, when its file was beside this one.
+    #[must_use]
+    pub const fn table(&self) -> Option<&Table> {
+        self.table.as_ref()
+    }
+
+    /// Runs `f` with the table installed for reading on this thread, so
+    /// symbols serialize as their text; without a table, just `f`.
+    pub fn with_table<R>(&self, f: impl FnOnce() -> R) -> R {
+        match &self.table {
+            Some(table) => symbol::with_reading(table, f),
+            None => f(),
+        }
     }
 
     /// The header.

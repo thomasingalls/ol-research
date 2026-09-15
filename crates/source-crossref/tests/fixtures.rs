@@ -275,7 +275,13 @@ mod normalized {
         assert_eq!(written.records[0], 2);
         let works = Reader::open(&Kind::Works.path(&prefix)).unwrap();
         let back: Vec<Work<'_>> = works.records().map(Result::unwrap).collect();
-        assert_eq!(back, collect.works);
+        // Interned strings come back as symbols; through the set's table
+        // they serialize to the same text.
+        assert!(works.table().is_some_and(|t| !t.is_empty()));
+        assert_eq!(
+            works.with_table(|| serde_json::to_string(&back).unwrap()),
+            serde_json::to_string(&collect.works).unwrap()
+        );
         let refs = Reader::open(&Kind::References.path(&prefix)).unwrap();
         let back: Vec<(Doi<'_>, Reference<'_>)> = refs.records().map(Result::unwrap).collect();
         assert_eq!(back.len(), collect.references.len());
