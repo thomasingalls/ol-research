@@ -41,7 +41,7 @@ pub mod stream;
 pub mod text;
 pub mod time;
 
-pub use binary::{Binary, Header, Kind, Reader, Written};
+pub use binary::{Binary, Finished, Header, Kind, Reader, Writer, Written};
 pub use frame::ReadError;
 pub use http::Client;
 pub use keys::{Key, Keys};

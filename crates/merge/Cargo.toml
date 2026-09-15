@@ -8,6 +8,7 @@ description = "The merged layer: one work across sources, our own ids, the regis
 [dependencies]
 ingest.workspace = true
 model.workspace = true
+postcard.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 smallvec.workspace = true

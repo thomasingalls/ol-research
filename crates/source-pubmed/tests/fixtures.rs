@@ -519,7 +519,7 @@ mod normalized {
                 .zip(&collect.references)
                 .all(|((_, a), b)| a == b)
         );
-        for kind in Kind::ALL {
+        for kind in Kind::NORMALIZED {
             std::fs::remove_file(kind.path(&prefix)).unwrap();
         }
     }

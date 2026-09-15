@@ -23,7 +23,7 @@ pub enum Name<'a> {
     OpenAlex(OpenAlexId),
 }
 
-impl Name<'_> {
+impl<'a> Name<'a> {
     /// The namespace.
     #[must_use]
     pub const fn key(&self) -> Key {
@@ -44,6 +44,38 @@ impl Name<'_> {
             Self::Pmc(p) => Some(p.get() as u64),
             Self::OpenAlex(w) => Some(w.get()),
         }
+    }
+
+    /// Parses the text form this type displays, the DOI's text borrowed
+    /// from `text`, through the model's own parsers, so only a canonical
+    /// name reads back.
+    ///
+    /// # Errors
+    ///
+    /// No namespace, an unknown one, or a value its parser refuses.
+    pub fn parse(text: &'a str) -> Result<Self, ParseNameError> {
+        let err = |reason: String| ParseNameError {
+            text: text.to_owned(),
+            reason,
+        };
+        let (key, value) = text
+            .split_once(':')
+            .ok_or_else(|| err("no namespace".to_owned()))?;
+        let key = Key::parse(key).ok_or_else(|| err(format!("unknown namespace {key:?}")))?;
+        Ok(match key {
+            Key::Doi => {
+                let doi = Doi::parse(value).map_err(|e| err(e.to_string()))?;
+                if doi.as_str() != value {
+                    return Err(err("not canonical".to_owned()));
+                }
+                Self::Doi(value)
+            }
+            Key::Pmid => Self::Pmid(Pmid::from_digits(value).map_err(|e| err(e.to_string()))?),
+            Key::Pmc => Self::Pmc(PmcId::from_prefixed(value).map_err(|e| err(e.to_string()))?),
+            Key::OpenAlex => {
+                Self::OpenAlex(OpenAlexId::from_bare(value).map_err(|e| err(e.to_string()))?)
+            }
+        })
     }
 
     /// A copy that owns its text.
@@ -105,35 +137,13 @@ impl OwnedName {
         self.as_name().key()
     }
 
-    /// Parses the text form [`Name`] displays, through the model's own
-    /// parsers, so only a canonical name reads back.
+    /// Parses the text form [`Name`] displays; see [`Name::parse`].
     ///
     /// # Errors
     ///
-    /// No namespace, an unknown one, or a value its parser refuses.
+    /// As [`Name::parse`].
     pub fn parse(text: &str) -> Result<Self, ParseNameError> {
-        let err = |reason: String| ParseNameError {
-            text: text.to_owned(),
-            reason,
-        };
-        let (key, value) = text
-            .split_once(':')
-            .ok_or_else(|| err("no namespace".to_owned()))?;
-        let key = Key::parse(key).ok_or_else(|| err(format!("unknown namespace {key:?}")))?;
-        Ok(match key {
-            Key::Doi => {
-                let doi = Doi::parse(value).map_err(|e| err(e.to_string()))?;
-                if doi.as_str() != value {
-                    return Err(err("not canonical".to_owned()));
-                }
-                Self::Doi(value.into())
-            }
-            Key::Pmid => Self::Pmid(Pmid::from_digits(value).map_err(|e| err(e.to_string()))?),
-            Key::Pmc => Self::Pmc(PmcId::from_prefixed(value).map_err(|e| err(e.to_string()))?),
-            Key::OpenAlex => {
-                Self::OpenAlex(OpenAlexId::from_bare(value).map_err(|e| err(e.to_string()))?)
-            }
-        })
+        Name::parse(text).map(|n| n.to_owned())
     }
 }
 
@@ -146,6 +156,21 @@ impl fmt::Display for OwnedName {
 impl From<Name<'_>> for OwnedName {
     fn from(name: Name<'_>) -> Self {
         name.to_owned()
+    }
+}
+
+/// As its text form, in every format: the merged sets are read back with
+/// the text borrowed.
+impl Serialize for Name<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
+    }
+}
+
+impl<'de: 'a, 'a> Deserialize<'de> for Name<'a> {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let text = <&'de str>::deserialize(deserializer)?;
+        Self::parse(text).map_err(D::Error::custom)
     }
 }
 
@@ -219,6 +244,11 @@ mod tests {
                 *name
             );
             assert_eq!(name.as_name().to_owned(), *name);
+        }
+        for name in &names {
+            let bytes = postcard::to_allocvec(&name.as_name()).unwrap();
+            let back: Name<'_> = postcard::from_bytes(&bytes).unwrap();
+            assert_eq!(back.to_owned(), *name, "borrowed through postcard");
         }
         assert!(OwnedName::parse("10.1000/x").is_err(), "no namespace");
         assert!(OwnedName::parse("isbn:1").is_err(), "unknown namespace");

@@ -18,23 +18,36 @@
 //! [`identity`] is the first pass of the plan's §8: every work's
 //! assertions, the components they connect, the verdicts of §3.3, and the
 //! works those leave. [`registry`] is the plan's §4: the one part of the
-//! merged layer that is of record.
+//! merged layer that is of record. [`build`] is the second pass: every
+//! record's [`view`] joins its work, every reference resolves through
+//! the names, and the rows of [`record`] are made — the merged record
+//! with its promoted fields (§5), the edges, relations and unresolved
+//! references (§6) — which [`layout`] writes as sharded sets.
 
 pub mod arena;
+pub mod build;
 pub mod contributor;
 pub mod identity;
+pub mod kind;
+pub mod layout;
 pub mod name;
+pub mod record;
 pub mod registry;
+pub mod relation;
 pub mod report;
 pub mod sets;
 pub mod title;
+pub mod view;
 pub mod work;
 
+pub use build::{Builder, Ids, Merged};
 pub use contributor::Contributor;
 pub use identity::Identity;
+pub use kind::{Form, Genre};
 pub use name::{Assertion, Name, OwnedName};
 pub use registry::Registry;
 pub use title::Titles;
+pub use view::View;
 pub use work::{SourceId, Sources, WorkId};
 
 /// The merge's own version, beside the model's: any change to the rules

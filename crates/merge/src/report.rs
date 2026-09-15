@@ -1,11 +1,15 @@
-//! The identity report: what the pass read, what it found, what the
-//! registry did.
+//! The reports: the identity pass's — what it read, what it found, what
+//! the registry did — and the merge's — every promoted field's agreement,
+//! the references resolved, the edges' agreement, the relations, what
+//! was written (merge plan §8).
 
 use std::collections::BTreeMap;
 use std::io::{self, Write};
 
 use ingest::Key;
 
+use crate::build::Merged;
+use crate::layout::Summary;
 use crate::name::OwnedName;
 
 use crate::identity::{Resolution, Standing};
@@ -23,8 +27,7 @@ pub fn identity(
     out: &mut impl Write,
     res: &Resolution,
     stub_works: &[Vec<OwnedName>],
-    held: Option<&Assignment>,
-    stubs: Option<&Assignment>,
+    registry: Option<&Assignment>,
 ) -> io::Result<()> {
     let s = &res.stats;
     writeln!(out, "identity")?;
@@ -113,6 +116,21 @@ pub fn identity(
             )?;
         }
     }
+    if !s.related.is_empty() {
+        writeln!(out, "  relation targets by source")?;
+        for source in SourceId::ALL {
+            let get = |what: &'static str| s.related.get(&(source, what)).copied().unwrap_or(0);
+            if s.related.keys().any(|(src, _)| *src == source) {
+                writeln!(
+                    out,
+                    "    {source:<9} held {:>9}  stub {:>9}  none {:>9}",
+                    get("held"),
+                    get("stub"),
+                    get("none")
+                )?;
+            }
+        }
+    }
     let mut by_key = [0u64; 4];
     for name in res.stubs.iter() {
         by_key[Key::ALL.iter().position(|k| *k == name.key()).unwrap_or(0)] += 1;
@@ -146,18 +164,194 @@ pub fn identity(
             .collect::<Vec<_>>()
             .join(", ")
     )?;
-    if let Some(a) = held {
+    for ((source, what), n) in &s.unmapped {
+        writeln!(out, "  UNMAPPED ({source}): {what}: {n} records")?;
+    }
+    if let Some(a) = registry {
         writeln!(
             out,
-            "  registry, held works: {} minted, {} reused, {} merged, {} split, {} names attached, {} dropped",
+            "  registry, held works then stubs: {} minted, {} reused, {} merged, {} split, {} names attached, {} dropped",
             a.minted, a.reused, a.merged, a.split, a.attached, a.dropped
         )?;
     }
-    if let Some(a) = stubs {
+    Ok(())
+}
+
+/// Writes the report of one merge run after its identity report: the
+/// promoted fields' agreement (the table of merge plan §5, measured), the
+/// kinds, the status flags, the references and edges, the relations, the
+/// unresolved, and what was written.
+///
+/// # Errors
+///
+/// I/O.
+#[allow(clippy::too_many_lines, clippy::cast_precision_loss)] // reporting only
+pub fn merge(out: &mut impl Write, m: &Merged, written: Option<&Summary>) -> io::Result<()> {
+    let s = &m.stats;
+    writeln!(out, "merge")?;
+    writeln!(
+        out,
+        "  views: {}",
+        SourceId::ALL
+            .iter()
+            .map(|src| format!("{src} {}", s.viewed.get(src).copied().unwrap_or(0)))
+            .collect::<Vec<_>>()
+            .join(", ")
+    )?;
+    writeln!(out, "  works: {} held, {} stubs", m.held, m.stubs)?;
+    writeln!(
+        out,
+        "  fields: works with a value; compared = two or more candidates; disputed = another source differs under the rule"
+    )?;
+    writeln!(
+        out,
+        "    {:<10} {:>8} {:>9} {:>9} {:>7}  promoted from",
+        "field", "present", "compared", "disputed", "rate"
+    )?;
+    for (name, f) in &m.fields {
+        let rate = if f.compared == 0 {
+            0.0
+        } else {
+            100.0 * f.disputed as f64 / f.compared as f64
+        };
         writeln!(
             out,
-            "  registry, stubs: {} minted, {} reused, {} merged, {} split, {} names attached, {} dropped",
-            a.minted, a.reused, a.merged, a.split, a.attached, a.dropped
+            "    {name:<10} {:>8} {:>9} {:>9} {rate:>6.1}%  {}",
+            f.present,
+            f.compared,
+            f.disputed,
+            f.from
+                .iter()
+                .map(|(src, n)| format!("{src} {n}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )?;
+        for ((a, b), (compared, differ)) in &f.pairs {
+            let rate = if *compared == 0 {
+                0.0
+            } else {
+                100.0 * *differ as f64 / *compared as f64
+            };
+            writeln!(
+                out,
+                "      {a}-{b}: {differ} of {compared} differ ({rate:.1}%)"
+            )?;
+        }
+    }
+    let with_both: u64 = m.kinds.values().sum();
+    writeln!(
+        out,
+        "  kinds: {with_both} works with a form and a genre, {} whose genre cannot live in its form",
+        m.kind_conflicts
+    )?;
+    let mut kinds: Vec<_> = m.kinds.iter().collect();
+    kinds.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+    for ((form, genre), n) in kinds.iter().take(24) {
+        let flag = if form.admits(*genre) {
+            ""
+        } else {
+            "  <- conflict"
+        };
+        writeln!(out, "    {n:>8}  {form} / {genre}{flag}")?;
+    }
+    writeln!(out, "  status by flag and the sources asserting it")?;
+    for ((flag, by), n) in &m.status {
+        writeln!(out, "    {n:>8}  {flag} by {by}")?;
+    }
+    writeln!(
+        out,
+        "  references by source: held, stub, self, no name, shared, disagree, empty, unknown, citing record unknown"
+    )?;
+    for source in SourceId::ALL {
+        if !s.references.keys().any(|(src, _)| *src == source) {
+            continue;
+        }
+        let get = |what: &'static str| s.references.get(&(source, what)).copied().unwrap_or(0);
+        writeln!(
+            out,
+            "    {source:<9} {:>9} {:>9} {:>6} {:>9} {:>6} {:>6} {:>7} {:>7} {:>7}",
+            get("held"),
+            get("stub"),
+            get("self"),
+            get("no name"),
+            get("shared"),
+            get("disagree"),
+            get("empty"),
+            get("unknown"),
+            get("citing record unknown")
+        )?;
+    }
+    writeln!(
+        out,
+        "  edges: {} distinct, {} of them self-citations",
+        m.edges.len(),
+        m.self_citations
+    )?;
+    for (by, n) in &m.edges_by {
+        writeln!(out, "    {n:>9}  by {by}")?;
+    }
+    writeln!(
+        out,
+        "  agreement, over edges whose citing work both sources hold and whose target is held"
+    )?;
+    for ((a, b), [both, only_a, only_b]) in &m.agreement {
+        writeln!(
+            out,
+            "    {a}-{b}: both {both}, {a} alone {only_a}, {b} alone {only_b}"
+        )?;
+    }
+    writeln!(
+        out,
+        "  relations: {} kept; targets by source: held, stub, not a name, shared, unknown",
+        m.relations.len()
+    )?;
+    for source in SourceId::ALL {
+        if !s.relations.keys().any(|(src, _)| *src == source) {
+            continue;
+        }
+        let get = |what: &'static str| s.relations.get(&(source, what)).copied().unwrap_or(0);
+        writeln!(
+            out,
+            "    {source:<9} {:>9} {:>9} {:>10} {:>6} {:>7}",
+            get("held"),
+            get("stub"),
+            get("not a name"),
+            get("shared"),
+            get("unknown")
+        )?;
+    }
+    let mut kinds: Vec<_> = s.relation_kinds.iter().collect();
+    kinds.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+    for (kind, n) in kinds.iter().take(30) {
+        writeln!(out, "    {n:>9}  {kind}")?;
+    }
+    let mut whys: BTreeMap<&'static str, u64> = BTreeMap::new();
+    for u in &m.unresolved {
+        *whys.entry(u.why.name()).or_default() += 1;
+    }
+    writeln!(
+        out,
+        "  unresolved: {} rows ({})",
+        m.unresolved.len(),
+        whys.iter()
+            .map(|(why, n)| format!("{why} {n}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    )?;
+    for ((source, what), n) in &s.unmapped {
+        writeln!(out, "  UNMAPPED ({source}): {what}: {n} records")?;
+    }
+    if let Some(w) = written {
+        writeln!(
+            out,
+            "  written: {} shards, {}, {:.1} MiB",
+            w.shards,
+            w.records
+                .iter()
+                .map(|(kind, n)| format!("{n} {kind}"))
+                .collect::<Vec<_>>()
+                .join(", "),
+            w.bytes as f64 / (1024.0 * 1024.0)
         )?;
     }
     Ok(())

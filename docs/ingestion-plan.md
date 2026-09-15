@@ -410,8 +410,8 @@ crates/
   source-arxiv/
   source-openalex/
   source-s2/
-  merge/              the merged layer (merge-plan.md): names, identity, the registry, the report
-  ol-rht/             CLI:  <source> list | fetch <listing> | ingest <listing> | check | normalize [--survey] | dump | keys; merge identity
+  merge/              the merged layer (merge-plan.md): names, identity, the registry, the merged record, edges, the report
+  ol-rht/             CLI:  <source> list | fetch <listing> | ingest <listing> | check | normalize [--survey] | dump | keys; merge identity | merge | merge dump
 <store>/                  the store of record (§3.5): one root, `--store`, never committed
   raw/<source>/<path>     bytes as served, write-once, at the source's own path; `<path>.part` while in flight
   listings/<source>/<stamp>.jsonl   what the source offered, one entry per line, beside the index document it came from
@@ -1458,6 +1458,13 @@ cross-IDs and a second edge namespace early.
   can look up by. The census behind it: 82,723 works in the sample's
   177,166 records, 83 conflict components in seven shapes, 4.2 million
   cited works the sample does not hold.
+- 2026-09-15, one framing for both layers — the merged sets (merge plan
+  §8, MM3) use the normalized layout's framing rather than a second one:
+  `ingest::binary::Writer` is the set writer factored out of the sink,
+  any kinds, a symbol table beside them; `Binary` is a `Writer` per raw
+  file with the normalized four. `ingest::Kind` gained the merged layer's
+  `edges`, `names`, `relations` and `unresolved`, appended, so every
+  header written before still reads; the layout version stays 2.
 
 ## 11. Dependencies
 

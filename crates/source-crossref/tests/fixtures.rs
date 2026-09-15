@@ -289,7 +289,7 @@ mod normalized {
             assert_eq!(from.as_str(), from2);
             assert_eq!(r, r2);
         }
-        for kind in Kind::ALL {
+        for kind in Kind::NORMALIZED {
             std::fs::remove_file(kind.path(&prefix)).unwrap();
         }
     }

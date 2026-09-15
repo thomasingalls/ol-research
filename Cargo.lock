@@ -241,6 +241,7 @@ version = "0.1.0"
 dependencies = [
  "ingest",
  "model",
+ "postcard",
  "serde",
  "serde_json",
  "smallvec",

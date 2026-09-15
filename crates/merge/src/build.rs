@@ -1,0 +1,1729 @@
+//! The second pass of merge plan §8: every record's view joins its work,
+//! every reference resolves through the names table, and the rows of the
+//! merged sets are made — held works and stubs with their promoted fields
+//! (§5), edges, relations and the unresolved (§6) — then checked against
+//! the invariants of §8.
+//!
+//! The pass keeps one owned [`view::Owned`] per record until every set
+//! has been read, then promotes per work; the plan's §8 names the range
+//! shape that bounds this at scale.
+
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::fmt;
+use std::io;
+use std::path::{Path, PathBuf};
+
+use ingest::{Key, Kind};
+use model::Issn;
+use model::date::Bound;
+use model::symbol::Interned;
+use smallvec::SmallVec;
+
+use crate::arena::NameIx;
+use crate::contributor::Contributor;
+use crate::identity::{RecordIx, Resolution, Standing, Work as Identified};
+use crate::kind::{Form, Genre};
+use crate::name::{Name, OwnedName};
+use crate::record::{
+    Citation, Edge, Field, Fields, Flags, NameRow, Named, Other, Record, Rejected, Relation,
+    StatusBy, Unresolved, Why, Work,
+};
+use crate::relation::{self, Related};
+use crate::sets;
+use crate::title::{self, Agreement};
+use crate::view::{self, Owned, OwnedVenue, Unmapped, Venue};
+use crate::work::{SourceId, Sources, WorkId};
+
+/// Why the pass stopped.
+#[derive(Debug)]
+pub enum Error {
+    /// A set could not be read.
+    Io {
+        #[allow(missing_docs)]
+        path: PathBuf,
+        #[allow(missing_docs)]
+        source: io::Error,
+    },
+    /// A set without its symbol table beside it.
+    NoTable(PathBuf),
+    /// A record's value outside the merge's tables (merge plan §5, §6).
+    Unmapped {
+        #[allow(missing_docs)]
+        path: PathBuf,
+        /// From one.
+        ordinal: u64,
+        #[allow(missing_docs)]
+        source: Unmapped,
+    },
+    /// An invariant of merge plan §8 does not hold: the merge is wrong,
+    /// not the data.
+    Invariant(String),
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Io { path, source } => write!(f, "{}: {source}", path.display()),
+            Self::NoTable(path) => write!(f, "{}: no symbol table beside it", path.display()),
+            Self::Unmapped {
+                path,
+                ordinal,
+                source,
+            } => write!(f, "{}: record {ordinal}: {source}", path.display()),
+            Self::Invariant(what) => write!(f, "invariant broken: {what}"),
+        }
+    }
+}
+
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io { source, .. } => Some(source),
+            Self::Unmapped { source, .. } => Some(source),
+            _ => None,
+        }
+    }
+}
+
+/// The ids the registry gave: one per held work, aligned with
+/// [`Resolution::works`], and one per stub, aligned with
+/// [`Resolution::stub_works`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Ids {
+    #[allow(missing_docs)]
+    pub held: Vec<WorkId>,
+    #[allow(missing_docs)]
+    pub stubs: Vec<WorkId>,
+}
+
+/// What the pass counted.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Stats {
+    /// Records viewed per source.
+    pub viewed: BTreeMap<SourceId, u64>,
+    /// Per source: references by what became of them — `held`, `stub`,
+    /// `self`, `no name`, `shared`, `disagree`, `empty`, `unknown`,
+    /// `citing record unknown`.
+    pub references: BTreeMap<(SourceId, &'static str), u64>,
+    /// Per source: relation targets likewise — `held`, `stub`, `not a
+    /// name`, `shared`, `unknown`.
+    pub relations: BTreeMap<(SourceId, &'static str), u64>,
+    /// Relations kept, by kind.
+    pub relation_kinds: BTreeMap<relation::Kind, u64>,
+    /// Under `--survey`: values outside the merge's tables, by source
+    /// and `field: value`, that stopped nothing; the record has no view.
+    pub unmapped: BTreeMap<(SourceId, String), u64>,
+}
+
+/// What one promoted field's rule found over every work.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct FieldStat {
+    /// Works with a value.
+    pub present: u64,
+    /// Works with two or more candidates.
+    pub compared: u64,
+    /// Works where another source differs under the rule.
+    pub disputed: u64,
+    /// Which source the value came from.
+    pub from: BTreeMap<SourceId, u64>,
+    /// Per pair of sources, the promoted one first: candidates compared,
+    /// and how many differed.
+    pub pairs: BTreeMap<(SourceId, SourceId), (u64, u64)>,
+}
+
+/// A source record of a work, owned.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnedRecord {
+    #[allow(missing_docs)]
+    pub source: SourceId,
+    #[allow(missing_docs)]
+    pub native: OwnedName,
+    #[allow(missing_docs)]
+    pub revised: Option<model::Date>,
+    #[allow(missing_docs)]
+    pub promoted: bool,
+}
+
+/// An accepted name, owned.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnedNamed {
+    #[allow(missing_docs)]
+    pub name: OwnedName,
+    #[allow(missing_docs)]
+    pub standing: Standing,
+    #[allow(missing_docs)]
+    pub by: Sources,
+    #[allow(missing_docs)]
+    pub native: bool,
+}
+
+/// A rejected assertion, owned.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnedRejected {
+    #[allow(missing_docs)]
+    pub name: OwnedName,
+    #[allow(missing_docs)]
+    pub by: SourceId,
+    #[allow(missing_docs)]
+    pub holder: OwnedName,
+}
+
+/// The promoted fields, owned.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OwnedFields {
+    #[allow(missing_docs)]
+    pub title: Option<Field<Box<str>>>,
+    #[allow(missing_docs)]
+    pub abstract_in: Sources,
+    #[allow(missing_docs)]
+    pub authors: Option<Field<u32>>,
+    #[allow(missing_docs)]
+    pub venue: Option<Field<OwnedVenue>>,
+    #[allow(missing_docs)]
+    pub published: Option<Field<Bound>>,
+    #[allow(missing_docs)]
+    pub language: Option<Field<model::Lang>>,
+    #[allow(missing_docs)]
+    pub form: Option<Field<Form>>,
+    #[allow(missing_docs)]
+    pub genre: Option<Field<Genre>>,
+    #[allow(missing_docs)]
+    pub status: StatusBy,
+    #[allow(missing_docs)]
+    pub access: Option<Field<bool>>,
+    #[allow(missing_docs)]
+    pub references: SmallVec<[Other<u32>; 3]>,
+    #[allow(missing_docs)]
+    pub cited_by: SmallVec<[Other<u32>; 3]>,
+}
+
+/// A merged work that owns its text: what the pass holds until the sets
+/// are written.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnedWork {
+    #[allow(missing_docs)]
+    pub id: WorkId,
+    #[allow(missing_docs)]
+    pub stub: bool,
+    #[allow(missing_docs)]
+    pub records: SmallVec<[OwnedRecord; 3]>,
+    #[allow(missing_docs)]
+    pub names: SmallVec<[OwnedNamed; 4]>,
+    #[allow(missing_docs)]
+    pub rejected: SmallVec<[OwnedRejected; 1]>,
+    #[allow(missing_docs)]
+    pub fields: OwnedFields,
+    #[allow(missing_docs)]
+    pub flags: Flags,
+}
+
+impl OwnedWork {
+    /// The row, borrowed.
+    #[must_use]
+    pub fn borrow(&self) -> Work<'_> {
+        let f = &self.fields;
+        Work {
+            id: self.id,
+            stub: self.stub,
+            records: self
+                .records
+                .iter()
+                .map(|r| Record {
+                    source: r.source,
+                    native: r.native.as_name(),
+                    revised: r.revised,
+                    promoted: r.promoted,
+                })
+                .collect(),
+            names: self
+                .names
+                .iter()
+                .map(|n| Named {
+                    name: n.name.as_name(),
+                    standing: n.standing,
+                    by: n.by,
+                    native: n.native,
+                })
+                .collect(),
+            rejected: self
+                .rejected
+                .iter()
+                .map(|r| Rejected {
+                    name: r.name.as_name(),
+                    by: r.by,
+                    holder: r.holder.as_name(),
+                })
+                .collect(),
+            fields: Fields {
+                title: f.title.as_ref().map(|t| t.map(|s| &**s)),
+                abstract_in: f.abstract_in,
+                authors: f.authors.clone(),
+                venue: f.venue.as_ref().map(|v| v.map(OwnedVenue::borrow)),
+                published: f.published.clone(),
+                language: f.language.clone(),
+                form: f.form.clone(),
+                genre: f.genre.clone(),
+                status: f.status,
+                access: f.access.clone(),
+                references: f.references.clone(),
+                cited_by: f.cited_by.clone(),
+            },
+            flags: self.flags,
+        }
+    }
+
+    /// The names set's rows for this work.
+    pub fn name_rows(&self) -> impl Iterator<Item = NameRow<'_>> {
+        self.names.iter().map(|n| NameRow {
+            name: n.name.as_name(),
+            work: self.id,
+            standing: n.standing,
+            by: n.by,
+            native: n.native,
+        })
+    }
+}
+
+/// A citation that owns its text.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OwnedCitation {
+    #[allow(missing_docs)]
+    pub text: Option<Box<str>>,
+    #[allow(missing_docs)]
+    pub key: Option<Box<str>>,
+    #[allow(missing_docs)]
+    pub year: Option<Box<str>>,
+    #[allow(missing_docs)]
+    pub author: Option<Box<str>>,
+    #[allow(missing_docs)]
+    pub title: Option<Box<str>>,
+    #[allow(missing_docs)]
+    pub container: Option<Box<str>>,
+    #[allow(missing_docs)]
+    pub volume: Option<Box<str>>,
+    #[allow(missing_docs)]
+    pub issue: Option<Box<str>>,
+    #[allow(missing_docs)]
+    pub first_page: Option<Box<str>>,
+}
+
+impl OwnedCitation {
+    fn of(c: &Citation<'_>) -> Self {
+        Self {
+            text: c.text.map(Box::from),
+            key: c.key.map(Box::from),
+            year: c.year.map(Box::from),
+            author: c.author.map(Box::from),
+            title: c.title.map(Box::from),
+            container: c
+                .container
+                .as_ref()
+                .and_then(Interned::as_text)
+                .map(Box::from),
+            volume: c.volume.map(Box::from),
+            issue: c.issue.map(Box::from),
+            first_page: c.first_page.map(Box::from),
+        }
+    }
+
+    /// The citation, borrowed.
+    #[must_use]
+    pub fn borrow(&self) -> Citation<'_> {
+        Citation {
+            text: self.text.as_deref(),
+            key: self.key.as_deref(),
+            year: self.year.as_deref(),
+            author: self.author.as_deref(),
+            title: self.title.as_deref(),
+            container: self.container.as_deref().map(Interned::Text),
+            volume: self.volume.as_deref(),
+            issue: self.issue.as_deref(),
+            first_page: self.first_page.as_deref(),
+        }
+    }
+}
+
+/// An unresolved reference that owns its text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnedUnresolved {
+    #[allow(missing_docs)]
+    pub from: WorkId,
+    #[allow(missing_docs)]
+    pub by: SourceId,
+    #[allow(missing_docs)]
+    pub why: Why,
+    #[allow(missing_docs)]
+    pub names: SmallVec<[OwnedName; 2]>,
+    #[allow(missing_docs)]
+    pub citation: OwnedCitation,
+}
+
+impl OwnedUnresolved {
+    /// The row, borrowed.
+    #[must_use]
+    pub fn borrow(&self) -> Unresolved<'_> {
+        Unresolved {
+            from: self.from,
+            by: self.by,
+            why: self.why,
+            names: self.names.iter().map(OwnedName::as_name).collect(),
+            citation: self.citation.borrow(),
+        }
+    }
+}
+
+/// What the pass leaves: every row of every merged set, sorted as the
+/// layout writes them, and the counts the report prints.
+#[derive(Debug)]
+pub struct Merged {
+    /// Held works and stubs, by id.
+    pub works: Vec<OwnedWork>,
+    /// By citing work, then cited.
+    pub edges: Vec<Edge>,
+    /// By asserting work.
+    pub relations: Vec<Relation>,
+    /// By citing work.
+    pub unresolved: Vec<OwnedUnresolved>,
+    #[allow(missing_docs)]
+    pub stats: Stats,
+    /// Per promoted field, by name.
+    pub fields: BTreeMap<&'static str, FieldStat>,
+    /// Works by promoted form and genre.
+    pub kinds: BTreeMap<(Form, Genre), u64>,
+    /// Works whose promoted genre cannot live in their form.
+    pub kind_conflicts: u64,
+    /// Works by status flag and the sources asserting it.
+    pub status: BTreeMap<(&'static str, String), u64>,
+    /// Distinct edges by the sources asserting them.
+    pub edges_by: BTreeMap<Sources, u64>,
+    /// Per pair of sources, over edges whose citing work both hold and
+    /// whose target is held: asserted by both, by the first alone, by
+    /// the second alone.
+    pub agreement: BTreeMap<(SourceId, SourceId), [u64; 3]>,
+    #[allow(missing_docs)]
+    pub self_citations: u64,
+    #[allow(missing_docs)]
+    pub held: u64,
+    #[allow(missing_docs)]
+    pub stubs: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Slot {
+    Free,
+    Work(WorkId),
+    Shared,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Target {
+    Work(WorkId, bool),
+    Shared,
+    Unknown,
+}
+
+/// Every name's work: one live work unless shared (merge plan §8), and
+/// one promoted name per namespace per work.
+fn names_table(res: &Resolution, ids: &Ids) -> Result<Vec<Slot>, Error> {
+    let mut name_work = vec![Slot::Free; res.arena.len()];
+    for (w, work) in res.works.iter().enumerate() {
+        let id = ids.held[w];
+        for key in Key::ALL {
+            let promoted = work
+                .names
+                .iter()
+                .filter(|n| n.standing == Standing::Promoted && res.arena.get(n.name).key() == key)
+                .count();
+            let held = work
+                .names
+                .iter()
+                .filter(|n| n.standing != Standing::Shared && res.arena.get(n.name).key() == key)
+                .count();
+            if promoted > 1 || (held > 0 && promoted == 0) {
+                return Err(Error::Invariant(format!(
+                    "{id} has {promoted} promoted {key} names among {held}"
+                )));
+            }
+        }
+        for n in &work.names {
+            let slot = &mut name_work[n.name as usize];
+            *slot = match (n.standing, *slot) {
+                (Standing::Shared, Slot::Free | Slot::Shared) => Slot::Shared,
+                (Standing::Shared, Slot::Work(_)) | (_, Slot::Shared) => {
+                    return Err(Error::Invariant(format!(
+                        "{} is both shared and held",
+                        res.arena.get(n.name)
+                    )));
+                }
+                (_, Slot::Free) => Slot::Work(id),
+                (_, Slot::Work(other)) => {
+                    return Err(Error::Invariant(format!(
+                        "{} is in {other} and {id}",
+                        res.arena.get(n.name)
+                    )));
+                }
+            };
+        }
+    }
+    Ok(name_work)
+}
+
+/// Every record's work: exactly one (merge plan §8).
+fn records_table(res: &Resolution) -> Result<Vec<usize>, Error> {
+    let mut record_work = vec![usize::MAX; res.records.len()];
+    for (w, work) in res.works.iter().enumerate() {
+        for &rix in &work.records {
+            if record_work[rix as usize] != usize::MAX {
+                return Err(Error::Invariant(format!(
+                    "{}={} is in two works",
+                    res.records[rix as usize].source,
+                    res.arena.get(res.records[rix as usize].native)
+                )));
+            }
+            record_work[rix as usize] = w;
+        }
+    }
+    if let Some(rix) = record_work.iter().position(|w| *w == usize::MAX) {
+        return Err(Error::Invariant(format!(
+            "{}={} is in no work",
+            res.records[rix].source,
+            res.arena.get(res.records[rix].native)
+        )));
+    }
+    Ok(record_work)
+}
+
+/// The pass, accumulating over every set of every source.
+#[derive(Debug)]
+pub struct Builder {
+    res: Resolution,
+    ids: Ids,
+    stub_works: Vec<Vec<OwnedName>>,
+    name_work: Vec<Slot>,
+    stub_name_work: Vec<Option<WorkId>>,
+    record_work: Vec<usize>,
+    by_native: HashMap<NameIx, RecordIx>,
+    views: Vec<Option<Owned>>,
+    edges: Vec<(WorkId, WorkId, SourceId)>,
+    relations: Vec<Relation>,
+    unresolved: Vec<OwnedUnresolved>,
+    survey: bool,
+    /// Counts so far.
+    pub stats: Stats,
+}
+
+impl Builder {
+    /// The names table from a resolution and the ids the registry gave
+    /// it, with the invariants that can be checked before reading: every
+    /// name in one live work unless shared, every record in exactly one
+    /// work, one promoted name per namespace, no id given twice.
+    ///
+    /// # Errors
+    ///
+    /// An invariant broken.
+    pub fn new(res: Resolution, ids: Ids) -> Result<Self, Error> {
+        let stub_works = res.stub_works();
+        if ids.held.len() != res.works.len() || ids.stubs.len() != stub_works.len() {
+            return Err(Error::Invariant(format!(
+                "{} ids for {} works, {} for {} stubs",
+                ids.held.len(),
+                res.works.len(),
+                ids.stubs.len(),
+                stub_works.len()
+            )));
+        }
+        let mut seen: HashSet<WorkId> = HashSet::with_capacity(ids.held.len() + ids.stubs.len());
+        for id in ids.held.iter().chain(&ids.stubs) {
+            if !seen.insert(*id) {
+                return Err(Error::Invariant(format!("{id} given to two works")));
+            }
+        }
+        let name_work = names_table(&res, &ids)?;
+        let record_work = records_table(&res)?;
+        let mut by_native: HashMap<NameIx, RecordIx> = HashMap::with_capacity(res.records.len());
+        for (rix, r) in res.records.iter().enumerate() {
+            let rix = RecordIx::try_from(rix)
+                .map_err(|_| Error::Invariant("more than 2^32 records".to_owned()))?;
+            by_native.insert(r.native, rix);
+        }
+        let mut stub_name_work = vec![None; res.stubs.len()];
+        for (s, names) in stub_works.iter().enumerate() {
+            for name in names {
+                let ix = res.stubs.find(name.as_name()).ok_or_else(|| {
+                    Error::Invariant(format!("stub name {name} is not in the stubs"))
+                })?;
+                stub_name_work[ix as usize] = Some(ids.stubs[s]);
+            }
+        }
+        if stub_name_work.iter().any(Option::is_none) {
+            return Err(Error::Invariant("a stub name is in no stub".to_owned()));
+        }
+        let views = vec![None; res.records.len()];
+        Ok(Self {
+            res,
+            ids,
+            stub_works,
+            name_work,
+            stub_name_work,
+            record_work,
+            by_native,
+            views,
+            edges: Vec::new(),
+            relations: Vec::new(),
+            unresolved: Vec::new(),
+            survey: false,
+            stats: Stats::default(),
+        })
+    }
+    /// Under `--survey`, a value outside the merge's tables is counted
+    /// in [`Stats::unmapped`] instead of stopping the run.
+    pub fn set_survey(&mut self, on: bool) {
+        self.survey = on;
+    }
+
+    /// The resolution the pass is over.
+    #[must_use]
+    pub fn resolution(&self) -> &Resolution {
+        &self.res
+    }
+
+    /// The work a name belongs to.
+    fn resolve(&self, name: Name<'_>) -> Target {
+        if let Some(ix) = self.res.arena.find(name) {
+            return match self.name_work[ix as usize] {
+                Slot::Work(id) => Target::Work(id, false),
+                Slot::Shared => Target::Shared,
+                Slot::Free => Target::Unknown,
+            };
+        }
+        if let Some(ix) = self.res.stubs.find(name) {
+            return match self.stub_name_work[ix as usize] {
+                Some(id) => Target::Work(id, true),
+                None => Target::Unknown,
+            };
+        }
+        Target::Unknown
+    }
+
+    /// The record with `native` as its native name, and its work's id.
+    fn record_of(&self, native: Name<'_>) -> Option<(RecordIx, WorkId)> {
+        let ix = self.res.arena.find(native)?;
+        let rix = *self.by_native.get(&ix)?;
+        Some((rix, self.ids.held[self.record_work[rix as usize]]))
+    }
+
+    /// Reads one works set of `S`: every record's view, kept for its
+    /// work, and its relations, resolved; at most `limit` records.
+    ///
+    /// # Errors
+    ///
+    /// The set cannot be read or has no symbol table, or a value is
+    /// outside the merge's tables.
+    pub fn works<S: Contributor>(
+        &mut self,
+        path: &Path,
+        limit: Option<usize>,
+    ) -> Result<u64, Error> {
+        let io = |source| Error::Io {
+            path: path.to_path_buf(),
+            source,
+        };
+        let reader = sets::open::<S>(path, Kind::Works).map_err(io)?;
+        let table = reader
+            .table()
+            .ok_or_else(|| Error::NoTable(path.to_path_buf()))?;
+        let mut read = 0u64;
+        reader.with_table(|| {
+            for (i, work) in reader
+                .records::<S::Work<'_>>()
+                .take(limit.unwrap_or(usize::MAX))
+                .enumerate()
+            {
+                let work = work.map_err(io)?;
+                let ordinal = i as u64 + 1;
+                let unmapped = |source| Error::Unmapped {
+                    path: path.to_path_buf(),
+                    ordinal,
+                    source,
+                };
+                let mut native = None;
+                S::names(&work, &mut |a| {
+                    if a.native && native.is_none() {
+                        native = Some(a.name);
+                    }
+                });
+                let Some((rix, from)) = native.and_then(|n| self.record_of(n)) else {
+                    continue;
+                };
+                if self.views[rix as usize].is_some() {
+                    // The same work fetched twice: the first copy speaks.
+                    continue;
+                }
+                match S::view(&work, table) {
+                    Ok(view) => {
+                        self.views[rix as usize] = Some(Owned::of(&view));
+                        *self.stats.viewed.entry(S::SOURCE).or_default() += 1;
+                    }
+                    Err(source) if self.survey => {
+                        *self
+                            .stats
+                            .unmapped
+                            .entry((S::SOURCE, source.to_string()))
+                            .or_default() += 1;
+                    }
+                    Err(source) => return Err(unmapped(source)),
+                }
+                match S::relations(&work, table, &mut |r| self.relate(from, S::SOURCE, &r)) {
+                    Ok(()) => {}
+                    Err(source) if self.survey => {
+                        *self
+                            .stats
+                            .unmapped
+                            .entry((S::SOURCE, source.to_string()))
+                            .or_default() += 1;
+                    }
+                    Err(source) => return Err(unmapped(source)),
+                }
+                read += 1;
+            }
+            Ok(())
+        })?;
+        Ok(read)
+    }
+
+    /// One record's view given directly, for tests and for callers that
+    /// hold records in memory: `native` names the record.
+    pub fn view(&mut self, native: Name<'_>, view: &view::View<'_>) -> bool {
+        let Some((rix, _)) = self.record_of(native) else {
+            return false;
+        };
+        self.views[rix as usize] = Some(Owned::of(view));
+        true
+    }
+
+    /// One relation, resolved: an edge in the relations stream when its
+    /// target is a held work's or a stub's name.
+    pub fn relate(&mut self, from: WorkId, source: SourceId, r: &Related) {
+        let what = match r.target.as_ref().map(|t| self.resolve(t.as_name())) {
+            None => "not a name",
+            Some(Target::Work(to, stub)) => {
+                self.relations.push(Relation {
+                    from,
+                    to,
+                    kind: r.kind,
+                    by: source,
+                });
+                *self.stats.relation_kinds.entry(r.kind).or_default() += 1;
+                if stub { "stub" } else { "held" }
+            }
+            Some(Target::Shared) => "shared",
+            Some(Target::Unknown) => "unknown",
+        };
+        *self.stats.relations.entry((source, what)).or_default() += 1;
+    }
+
+    /// Reads one references set of `S`: every reference resolved through
+    /// the names table into an edge or an unresolved row; at most
+    /// `limit` references.
+    ///
+    /// # Errors
+    ///
+    /// The set cannot be read.
+    pub fn references<S: Contributor>(
+        &mut self,
+        path: &Path,
+        limit: Option<usize>,
+    ) -> Result<u64, Error> {
+        let io = |source| Error::Io {
+            path: path.to_path_buf(),
+            source,
+        };
+        let reader = sets::open::<S>(path, Kind::References).map_err(io)?;
+        let mut read = 0u64;
+        reader.with_table(|| {
+            for record in reader
+                .records::<(S::Id<'_>, S::Reference<'_>)>()
+                .take(limit.unwrap_or(usize::MAX))
+            {
+                let (id, reference) = record.map_err(io)?;
+                let Some((_, from)) = self.record_of(S::native(&id)) else {
+                    *self
+                        .stats
+                        .references
+                        .entry((S::SOURCE, "citing record unknown"))
+                        .or_default() += 1;
+                    continue;
+                };
+                let mut names: SmallVec<[Name<'_>; 3]> = SmallVec::new();
+                S::targets(&reference, &mut |n| names.push(n));
+                self.reference(from, S::SOURCE, &names, &S::citation(&reference));
+                read += 1;
+            }
+            Ok(())
+        })?;
+        Ok(read)
+    }
+
+    /// One reference, resolved (merge plan §6): one work named is an
+    /// edge; only shared names, or none, is an unresolved row; names
+    /// naming different works follow the registry id — PMID, PMC id,
+    /// OpenAlex id before DOI — and keep the rest as an unresolved row
+    /// too. Returns what it was.
+    pub fn reference(
+        &mut self,
+        from: WorkId,
+        source: SourceId,
+        names: &[Name<'_>],
+        citation: &Citation<'_>,
+    ) -> &'static str {
+        let outcome = if names.is_empty() {
+            if citation.is_empty() {
+                "empty"
+            } else {
+                self.unresolved(from, source, Why::NoName, names, citation);
+                "no name"
+            }
+        } else {
+            let mut resolved: SmallVec<[(Name<'_>, WorkId, bool); 3]> = SmallVec::new();
+            let mut shared = false;
+            for &name in names {
+                match self.resolve(name) {
+                    Target::Work(id, stub) => resolved.push((name, id, stub)),
+                    Target::Shared => shared = true,
+                    Target::Unknown => {}
+                }
+            }
+            if resolved.is_empty() {
+                if shared {
+                    self.unresolved(from, source, Why::Shared, names, citation);
+                    "shared"
+                } else {
+                    "unknown"
+                }
+            } else if resolved.iter().all(|r| r.1 == resolved[0].1) {
+                let (_, to, stub) = resolved[0];
+                self.edges.push((from, to, source));
+                if from == to {
+                    "self"
+                } else if stub {
+                    "stub"
+                } else {
+                    "held"
+                }
+            } else {
+                let rank = |k: Key| match k {
+                    Key::Pmid => 0,
+                    Key::Pmc => 1,
+                    Key::OpenAlex => 2,
+                    Key::Doi => 3,
+                };
+                let (_, to, _) = resolved
+                    .iter()
+                    .min_by_key(|(n, _, _)| rank(n.key()))
+                    .copied()
+                    .unwrap_or(resolved[0]);
+                self.edges.push((from, to, source));
+                self.unresolved(from, source, Why::Disagree, names, citation);
+                "disagree"
+            }
+        };
+        *self.stats.references.entry((source, outcome)).or_default() += 1;
+        outcome
+    }
+
+    fn unresolved(
+        &mut self,
+        from: WorkId,
+        by: SourceId,
+        why: Why,
+        names: &[Name<'_>],
+        citation: &Citation<'_>,
+    ) {
+        self.unresolved.push(OwnedUnresolved {
+            from,
+            by,
+            why,
+            names: names.iter().map(Name::to_owned).collect(),
+            citation: OwnedCitation::of(citation),
+        });
+    }
+
+    /// Promotes every work's fields, settles the edges and checks the
+    /// invariants of merge plan §8 that need every row.
+    ///
+    /// # Errors
+    ///
+    /// An invariant broken.
+    #[allow(clippy::too_many_lines)]
+    pub fn finish(self) -> Result<Merged, Error> {
+        let Self {
+            res,
+            ids,
+            stub_works,
+            views,
+            edges,
+            relations,
+            mut unresolved,
+            stats,
+            ..
+        } = self;
+        let mut tallies = Tallies::default();
+        let mut works: Vec<OwnedWork> = Vec::with_capacity(res.works.len() + stub_works.len());
+        for (w, work) in res.works.iter().enumerate() {
+            works.push(held(&res, work, ids.held[w], &views, &mut tallies));
+        }
+        for (s, names) in stub_works.iter().enumerate() {
+            works.push(stub(&res, names, ids.stubs[s]));
+        }
+        works.sort_by_key(|w| w.id);
+        let max = works
+            .last()
+            .map(|w| w.id.get())
+            .ok_or_else(|| Error::Invariant("no works at all".to_owned()))?;
+        let mut holds: Vec<Option<Sources>> = vec![None; max as usize + 1];
+        for w in &works {
+            holds[w.id.get() as usize] = Some(w.records.iter().map(|r| r.source).collect());
+        }
+        let live = |id: WorkId| holds.get(id.get() as usize).is_some_and(Option::is_some);
+        let is_stub = |id: WorkId| holds[id.get() as usize].is_some_and(Sources::is_empty);
+        // Edges: one per pair, the sources joined.
+        let mut raw = edges;
+        raw.sort_unstable();
+        let mut edges: Vec<Edge> = Vec::with_capacity(raw.len());
+        for (from, to, source) in raw {
+            if let Some(last) = edges.last_mut()
+                && last.from == from
+                && last.to == to
+            {
+                last.by.insert(source);
+                continue;
+            }
+            edges.push(Edge {
+                from,
+                to,
+                by: [source].into_iter().collect(),
+            });
+        }
+        let mut self_citations = 0u64;
+        let mut edges_by: BTreeMap<Sources, u64> = BTreeMap::new();
+        let mut agreement: BTreeMap<(SourceId, SourceId), [u64; 3]> = BTreeMap::new();
+        let pairs = [
+            (SourceId::Pubmed, SourceId::Crossref),
+            (SourceId::Pubmed, SourceId::OpenAlex),
+            (SourceId::Crossref, SourceId::OpenAlex),
+        ];
+        for e in &edges {
+            if !live(e.from) || !live(e.to) {
+                return Err(Error::Invariant(format!(
+                    "edge {} -> {} has an end that is no work",
+                    e.from, e.to
+                )));
+            }
+            if e.from == e.to {
+                self_citations += 1;
+            }
+            *edges_by.entry(e.by).or_default() += 1;
+            let citing = holds[e.from.get() as usize].unwrap_or(Sources::NONE);
+            if is_stub(e.to) {
+                continue;
+            }
+            for (a, b) in pairs {
+                if citing.contains(a) && citing.contains(b) {
+                    let slot = agreement.entry((a, b)).or_default();
+                    match (e.by.contains(a), e.by.contains(b)) {
+                        (true, true) => slot[0] += 1,
+                        (true, false) => slot[1] += 1,
+                        (false, true) => slot[2] += 1,
+                        (false, false) => {}
+                    }
+                }
+            }
+        }
+        let mut relations = relations;
+        relations.sort_unstable();
+        relations.dedup();
+        for r in &relations {
+            if !live(r.from) || !live(r.to) {
+                return Err(Error::Invariant(format!(
+                    "relation {} -> {} has an end that is no work",
+                    r.from, r.to
+                )));
+            }
+        }
+        unresolved.sort_by_key(|u| u.from);
+        Ok(Merged {
+            held: res.works.len() as u64,
+            stubs: stub_works.len() as u64,
+            works,
+            edges,
+            relations,
+            unresolved,
+            stats,
+            fields: tallies.fields,
+            kinds: tallies.kinds,
+            kind_conflicts: tallies.kind_conflicts,
+            status: tallies.status,
+            edges_by,
+            agreement,
+            self_citations,
+        })
+    }
+}
+
+/// What promoting every work counts.
+#[derive(Debug, Default)]
+struct Tallies {
+    fields: BTreeMap<&'static str, FieldStat>,
+    kinds: BTreeMap<(Form, Genre), u64>,
+    kind_conflicts: u64,
+    status: BTreeMap<(&'static str, String), u64>,
+}
+
+/// One record's view as a candidate for a work's fields.
+#[derive(Clone, Copy)]
+struct Cand<'v> {
+    source: SourceId,
+    promoted: bool,
+    rix: RecordIx,
+    view: &'v Owned,
+}
+
+/// The precedence orders of merge plan §5. Genre puts PubMed before
+/// OpenAlex since the first report (2026-09-15): where the two differed,
+/// PubMed's curated type was the specific one — review, letter,
+/// editorial, news, guideline against OpenAlex's `article` — 7,070
+/// times, and OpenAlex's 288.
+const TITLE: [SourceId; 3] = [SourceId::Pubmed, SourceId::Crossref, SourceId::OpenAlex];
+const AUTHORS: [SourceId; 3] = [SourceId::Crossref, SourceId::OpenAlex, SourceId::Pubmed];
+const VENUE: [SourceId; 3] = [SourceId::OpenAlex, SourceId::Crossref, SourceId::Pubmed];
+const LANGUAGE: [SourceId; 3] = TITLE;
+const FORM: [SourceId; 3] = [SourceId::Crossref, SourceId::Pubmed, SourceId::OpenAlex];
+const GENRE: [SourceId; 3] = [SourceId::Pubmed, SourceId::OpenAlex, SourceId::Crossref];
+const ACCESS: [SourceId; 3] = VENUE;
+
+/// Candidates in a field's precedence: the order's sources first, a
+/// source's promoted record before its others, then by record.
+fn ordered<'v>(cands: &[Cand<'v>], order: [SourceId; 3]) -> SmallVec<[Cand<'v>; 3]> {
+    let mut out: SmallVec<[Cand<'v>; 3]> = cands.iter().copied().collect();
+    out.sort_by_key(|c| {
+        (
+            order.iter().position(|s| *s == c.source).unwrap_or(3),
+            !c.promoted,
+            c.rix,
+        )
+    });
+    out
+}
+
+/// One field by precedence (merge plan §5): the first candidate with a
+/// value is promoted, and every later one that differs under the rule is
+/// kept beside it.
+fn promote<'v, T>(
+    name: &'static str,
+    cands: &[Cand<'v>],
+    order: [SourceId; 3],
+    get: impl Fn(&'v Owned) -> Option<T>,
+    differs: impl Fn(&T, &T) -> bool,
+    tallies: &mut Tallies,
+) -> Option<Field<T>> {
+    let mut values = ordered(cands, order)
+        .into_iter()
+        .filter_map(|c| get(c.view).map(|v| (c.source, v)));
+    let (from, value) = values.next()?;
+    let stat = tallies.fields.entry(name).or_default();
+    stat.present += 1;
+    *stat.from.entry(from).or_default() += 1;
+    let mut others: SmallVec<[Other<T>; 2]> = SmallVec::new();
+    let mut compared = false;
+    for (source, other) in values {
+        compared = true;
+        let pair = stat.pairs.entry((from, source)).or_default();
+        pair.0 += 1;
+        if differs(&value, &other) {
+            pair.1 += 1;
+            others.push(Other {
+                source,
+                value: other,
+            });
+        }
+    }
+    stat.compared += u64::from(compared);
+    stat.disputed += u64::from(!others.is_empty());
+    Some(Field {
+        value,
+        from,
+        others,
+    })
+}
+
+/// The publication date (merge plan §5): the earliest any source gives,
+/// at its precision; a year that differs is the disagreement.
+fn published(cands: &[Cand<'_>], tallies: &mut Tallies) -> Option<Field<Bound>> {
+    let dated: SmallVec<[(SourceId, Bound); 3]> = ordered(cands, TITLE)
+        .into_iter()
+        .filter_map(|c| c.view.published.map(|d| (c.source, d)))
+        .collect();
+    let (from, value) = dated.iter().copied().reduce(|best, next| {
+        if view::earlier(&next.1, &best.1).is_lt() {
+            next
+        } else {
+            best
+        }
+    })?;
+    let stat = tallies.fields.entry("published").or_default();
+    stat.present += 1;
+    *stat.from.entry(from).or_default() += 1;
+    let mut others: SmallVec<[Other<Bound>; 2]> = SmallVec::new();
+    let mut compared = false;
+    for (source, other) in dated {
+        if source == from {
+            continue;
+        }
+        compared = true;
+        let pair = stat.pairs.entry((from, source)).or_default();
+        pair.0 += 1;
+        if other.year != value.year {
+            pair.1 += 1;
+            others.push(Other {
+                source,
+                value: other,
+            });
+        }
+    }
+    stat.compared += u64::from(compared);
+    stat.disputed += u64::from(!others.is_empty());
+    Some(Field {
+        value,
+        from,
+        others,
+    })
+}
+
+fn issns_disjoint(a: &[Issn], b: &[Issn]) -> bool {
+    !a.is_empty() && !b.is_empty() && !a.iter().any(|i| b.contains(i))
+}
+
+/// One held work's row (merge plan §5).
+#[allow(clippy::too_many_lines)]
+fn held(
+    res: &Resolution,
+    work: &Identified,
+    id: WorkId,
+    views: &[Option<Owned>],
+    tallies: &mut Tallies,
+) -> OwnedWork {
+    let arena = &res.arena;
+    let is_promoted = |rix: RecordIx| {
+        let native = res.records[rix as usize].native;
+        work.names
+            .iter()
+            .any(|n| n.name == native && n.standing == Standing::Promoted)
+    };
+    let records: SmallVec<[OwnedRecord; 3]> = work
+        .records
+        .iter()
+        .map(|&rix| OwnedRecord {
+            source: res.records[rix as usize].source,
+            native: arena.get(res.records[rix as usize].native).clone(),
+            revised: views[rix as usize].as_ref().and_then(|v| v.revised),
+            promoted: is_promoted(rix),
+        })
+        .collect();
+    let cands: SmallVec<[Cand<'_>; 3]> = work
+        .records
+        .iter()
+        .filter_map(|&rix| {
+            views[rix as usize].as_ref().map(|view| Cand {
+                source: res.records[rix as usize].source,
+                promoted: is_promoted(rix),
+                rix,
+                view,
+            })
+        })
+        .collect();
+    let title = promote(
+        "title",
+        &cands,
+        TITLE,
+        |v| v.title.as_ref().map(|t| (t.clone(), v.titles.clone())),
+        |a, b| {
+            let agreement = title::agree(&a.1, &b.1);
+            !agreement.is_agreement() && agreement != Agreement::Untestable
+        },
+        tallies,
+    )
+    .map(|f| f.map(|(t, _)| t.clone()));
+    let authors = promote(
+        "authors",
+        &cands,
+        AUTHORS,
+        |v| (v.authors > 0).then_some(v.authors),
+        |a, b| a != b,
+        tallies,
+    );
+    let venue = promote(
+        "venue",
+        &cands,
+        VENUE,
+        |v| (!v.venue.borrow().is_empty()).then(|| v.venue.clone()),
+        |a, b| issns_disjoint(&a.issns, &b.issns),
+        tallies,
+    );
+    let published = published(&cands, tallies);
+    let language = promote(
+        "language",
+        &cands,
+        LANGUAGE,
+        |v| v.language,
+        |a, b| a != b,
+        tallies,
+    );
+    let form = promote("form", &cands, FORM, |v| v.form, |a, b| a != b, tallies);
+    let genre = promote("genre", &cands, GENRE, |v| v.genre, |a, b| a != b, tallies);
+    let access = promote(
+        "access",
+        &cands,
+        ACCESS,
+        |v| v.access,
+        |a, b| a != b,
+        tallies,
+    );
+    let mut abstract_in = Sources::NONE;
+    let mut status = StatusBy::default();
+    let mut references: SmallVec<[Other<u32>; 3]> = SmallVec::new();
+    let mut cited_by: SmallVec<[Other<u32>; 3]> = SmallVec::new();
+    for c in &cands {
+        if c.view.has_abstract {
+            abstract_in.insert(c.source);
+        }
+        if c.view.status.retracted {
+            status.retracted.insert(c.source);
+        }
+        if c.view.status.corrected {
+            status.corrected.insert(c.source);
+        }
+        if c.view.status.concern {
+            status.concern.insert(c.source);
+        }
+        if let Some(n) = c.view.references {
+            references.push(Other {
+                source: c.source,
+                value: n,
+            });
+        }
+        if let Some(n) = c.view.cited_by {
+            cited_by.push(Other {
+                source: c.source,
+                value: n,
+            });
+        }
+    }
+    if !cands.is_empty() {
+        let stat = tallies.fields.entry("abstract").or_default();
+        stat.present += u64::from(!abstract_in.is_empty());
+        stat.compared += u64::from(cands.len() > 1);
+        stat.disputed += u64::from(!abstract_in.is_empty() && abstract_in.len() < cands.len());
+    }
+    for (flag, by) in [
+        ("retracted", status.retracted),
+        ("corrected", status.corrected),
+        ("concern", status.concern),
+    ] {
+        if !by.is_empty() {
+            *tallies.status.entry((flag, by.to_string())).or_default() += 1;
+        }
+    }
+    let kind_conflict = match (&form, &genre) {
+        (Some(f), Some(g)) => {
+            *tallies.kinds.entry((f.value, g.value)).or_default() += 1;
+            let conflict = !f.value.admits(g.value);
+            tallies.kind_conflicts += u64::from(conflict);
+            conflict
+        }
+        _ => false,
+    };
+    let names: SmallVec<[OwnedNamed; 4]> = work
+        .names
+        .iter()
+        .map(|n| OwnedNamed {
+            name: arena.get(n.name).clone(),
+            standing: n.standing,
+            by: n.by,
+            native: n.native,
+        })
+        .collect();
+    let rejected: SmallVec<[OwnedRejected; 1]> = work
+        .rejected
+        .iter()
+        .map(|r| OwnedRejected {
+            name: arena.get(r.name).clone(),
+            by: res.records[r.record as usize].source,
+            holder: arena.get(res.records[r.holder as usize].native).clone(),
+        })
+        .collect();
+    OwnedWork {
+        id,
+        stub: false,
+        records,
+        flags: Flags {
+            duplicates: work.duplicates,
+            shared: work.names.iter().any(|n| n.standing == Standing::Shared),
+            uncorroborated: work.uncorroborated,
+            kind_conflict,
+        },
+        names,
+        rejected,
+        fields: OwnedFields {
+            title,
+            abstract_in,
+            authors,
+            venue,
+            published,
+            language,
+            form,
+            genre,
+            status,
+            access,
+            references,
+            cited_by,
+        },
+    }
+}
+
+/// One stub's row: names, one promoted per namespace, nothing else.
+fn stub(res: &Resolution, names: &[OwnedName], id: WorkId) -> OwnedWork {
+    let mut seen: SmallVec<[Key; 4]> = SmallVec::new();
+    let rows: SmallVec<[OwnedNamed; 4]> = names
+        .iter()
+        .map(|name| {
+            let key = name.key();
+            let standing = if seen.contains(&key) {
+                Standing::Alias
+            } else {
+                seen.push(key);
+                Standing::Promoted
+            };
+            let by = res
+                .stubs
+                .find(name.as_name())
+                .and_then(|ix| res.stub_by.get(ix as usize).copied())
+                .unwrap_or(Sources::NONE);
+            OwnedNamed {
+                name: name.clone(),
+                standing,
+                by,
+                native: false,
+            }
+        })
+        .collect();
+    OwnedWork {
+        id,
+        stub: true,
+        records: SmallVec::new(),
+        names: rows,
+        rejected: SmallVec::new(),
+        fields: OwnedFields::default(),
+        flags: Flags::default(),
+    }
+}
+
+/// A venue's borrowed form is what the disagreement rule reads.
+impl OwnedVenue {
+    /// The disagreement rule of §5 on owned venues.
+    #[must_use]
+    pub fn disjoint(&self, other: &Self) -> bool {
+        issns_disjoint(&self.issns, &other.issns)
+    }
+}
+
+#[allow(dead_code)] // the borrowed rule, kept beside the owned one
+fn venue_disjoint(a: &Venue<'_>, b: &Venue<'_>) -> bool {
+    a.disjoint(b)
+}
+
+#[cfg(test)]
+#[allow(clippy::unreadable_literal)] // real ids, as the sample spells them
+mod tests {
+    use model::date::Bound;
+    use model::{Day, Issn, Lang, Month, OpenAlexId, Pmid, Year};
+
+    use super::{Builder, Ids};
+    use crate::identity::{Identity, Standing};
+    use crate::kind::{Form, Genre};
+    use crate::name::{Assertion, Name};
+    use crate::record::{Citation, Why};
+    use crate::registry::Registry;
+    use crate::relation::{Kind, Related};
+    use crate::title::Titles;
+    use crate::view::{Status, Venue, View};
+    use crate::work::{SourceId, Sources, WorkId};
+
+    fn pmid(n: u32) -> Pmid {
+        Pmid::new(n).unwrap()
+    }
+
+    fn w(n: u64) -> OpenAlexId {
+        OpenAlexId::from_bare(&format!("W{n}")).unwrap()
+    }
+
+    fn bound(y: u16, m: Option<u8>, d: Option<u8>) -> Bound {
+        Bound {
+            year: Year::new(y).unwrap(),
+            month: m.map(|m| Month::from_number(m).unwrap()),
+            day: d.map(|d| Day::new(d).unwrap()),
+        }
+    }
+
+    /// Three records of one work, one of another, references between
+    /// them and to a stub.
+    fn scenario() -> (Builder, [WorkId; 3]) {
+        let mut id = Identity::new();
+        let t = |s: &'static str| Titles {
+            title: Some(s),
+            vernacular: None,
+        };
+        id.push(
+            SourceId::Pubmed,
+            &[
+                Assertion {
+                    name: Name::Pmid(pmid(1)),
+                    field: "pmid",
+                    native: true,
+                },
+                Assertion {
+                    name: Name::Doi("10.1000/a"),
+                    field: "ids.doi",
+                    native: false,
+                },
+            ],
+            t("Alpha"),
+        )
+        .unwrap();
+        id.push(
+            SourceId::Crossref,
+            &[Assertion {
+                name: Name::Doi("10.1000/a"),
+                field: "doi",
+                native: true,
+            }],
+            t("Alpha"),
+        )
+        .unwrap();
+        id.push(
+            SourceId::OpenAlex,
+            &[
+                Assertion {
+                    name: Name::OpenAlex(w(1)),
+                    field: "id",
+                    native: true,
+                },
+                Assertion {
+                    name: Name::Doi("10.1000/a"),
+                    field: "doi",
+                    native: false,
+                },
+            ],
+            t("Alpha"),
+        )
+        .unwrap();
+        id.push(
+            SourceId::Crossref,
+            &[Assertion {
+                name: Name::Doi("10.1000/b"),
+                field: "doi",
+                native: true,
+            }],
+            t("Beta"),
+        )
+        .unwrap();
+        id.mark();
+        assert_eq!(
+            id.cite(SourceId::Crossref, &[Name::Doi("10.1000/stub")]),
+            "stub"
+        );
+        let res = id.resolve(false).unwrap();
+        assert_eq!(res.works.len(), 2);
+        let mut registry = Registry::default();
+        let order = res.held_order();
+        let all: Vec<_> = order
+            .iter()
+            .map(|(_, n)| n.clone())
+            .chain(res.stub_works())
+            .collect();
+        let assignment = registry.assign(&all, "t", false);
+        let (held_ids, stub_ids) = assignment.ids.split_at(order.len());
+        let mut ids = Ids {
+            held: vec![WorkId::FIRST; res.works.len()],
+            stubs: stub_ids.to_vec(),
+        };
+        for ((w, _), id) in order.iter().zip(held_ids) {
+            ids.held[*w] = *id;
+        }
+        let alpha = ids.held[res.works.iter().position(|w| w.records.len() == 3).unwrap()];
+        let beta = ids.held[res.works.iter().position(|w| w.records.len() == 1).unwrap()];
+        let stub = ids.stubs[0];
+        (Builder::new(res, ids).unwrap(), [alpha, beta, stub])
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)] // one scenario, every rule
+    fn fields_are_promoted_by_precedence_with_disagreements_kept() {
+        let (mut b, [alpha, beta, stub]) = scenario();
+        let base = View {
+            titles: Titles {
+                title: Some("Alpha"),
+                vernacular: None,
+            },
+            ..View::default()
+        };
+        assert!(b.view(
+            Name::Pmid(pmid(1)),
+            &View {
+                has_abstract: true,
+                authors: 3,
+                published: Some(bound(2014, Some(11), None)),
+                language: Lang::from_bibliographic("fre").ok(),
+                form: Some(Form::JournalArticle),
+                genre: Some(Genre::Review),
+                status: Status {
+                    retracted: true,
+                    ..Status::default()
+                },
+                venue: Venue {
+                    issns: [Issn::parse("0960-1481").unwrap()].into_iter().collect(),
+                    ..Venue::default()
+                },
+                ..base.clone()
+            }
+        ));
+        assert!(b.view(
+            Name::Doi("10.1000/a"),
+            &View {
+                titles: Titles {
+                    title: Some("Alpha: a subtitle nobody else has"),
+                    vernacular: None,
+                },
+                authors: 4,
+                published: Some(bound(2014, Some(6), Some(15))),
+                language: Lang::from_bibliographic("eng").ok(),
+                form: Some(Form::JournalArticle),
+                genre: Some(Genre::Article),
+                venue: Venue {
+                    issns: [Issn::parse("1879-0682").unwrap()].into_iter().collect(),
+                    ..Venue::default()
+                },
+                access: Some(true),
+                references: Some(12),
+                ..base.clone()
+            }
+        ));
+        assert!(b.view(
+            Name::OpenAlex(w(1)),
+            &View {
+                authors: 4,
+                published: Some(bound(2015, None, None)),
+                form: Some(Form::PostedContent),
+                genre: Some(Genre::Preprint),
+                access: Some(false),
+                cited_by: Some(7),
+                ..base.clone()
+            }
+        ));
+        assert!(!b.view(Name::Doi("10.1000/nobody"), &base));
+        // Edges: alpha cites beta by two sources, beta cites the stub, a
+        // reference with no name, one through disagreeing names.
+        assert_eq!(
+            b.reference(
+                alpha,
+                SourceId::Crossref,
+                &[Name::Doi("10.1000/b")],
+                &Citation::default()
+            ),
+            "held"
+        );
+        assert_eq!(
+            b.reference(
+                alpha,
+                SourceId::Pubmed,
+                &[Name::Doi("10.1000/b")],
+                &Citation::default()
+            ),
+            "held"
+        );
+        assert_eq!(
+            b.reference(
+                beta,
+                SourceId::Crossref,
+                &[Name::Doi("10.1000/stub")],
+                &Citation::default()
+            ),
+            "stub"
+        );
+        assert_eq!(
+            b.reference(
+                beta,
+                SourceId::Crossref,
+                &[],
+                &Citation {
+                    year: Some("1999"),
+                    ..Citation::default()
+                }
+            ),
+            "no name"
+        );
+        assert_eq!(
+            b.reference(beta, SourceId::Crossref, &[], &Citation::default()),
+            "empty"
+        );
+        assert_eq!(
+            b.reference(
+                beta,
+                SourceId::Pubmed,
+                &[Name::Pmid(pmid(1)), Name::Doi("10.1000/b")],
+                &Citation::default()
+            ),
+            "disagree",
+            "the PMID wins: an edge to alpha"
+        );
+        assert_eq!(
+            b.reference(
+                alpha,
+                SourceId::OpenAlex,
+                &[Name::OpenAlex(w(1))],
+                &Citation::default()
+            ),
+            "self"
+        );
+        b.relate(
+            alpha,
+            SourceId::Crossref,
+            &Related {
+                kind: Kind::HasPreprint,
+                target: Some(Name::Doi("10.1000/stub").to_owned()),
+            },
+        );
+        b.relate(
+            alpha,
+            SourceId::Crossref,
+            &Related {
+                kind: Kind::IsSupplementedBy,
+                target: None,
+            },
+        );
+        let merged = b.finish().unwrap();
+        assert_eq!(merged.works.len(), 3);
+        assert_eq!((merged.held, merged.stubs), (2, 1));
+        let a = merged.works.iter().find(|w| w.id == alpha).unwrap();
+        let f = &a.fields;
+        let title = f.title.as_ref().unwrap();
+        assert_eq!((&*title.value, title.from), ("Alpha", SourceId::Pubmed));
+        assert_eq!(title.others.len(), 1, "Crossref's subtitle differs");
+        assert_eq!(title.others[0].source, SourceId::Crossref);
+        let authors = f.authors.as_ref().unwrap();
+        assert_eq!((authors.value, authors.from), (4, SourceId::Crossref));
+        assert_eq!(
+            authors
+                .others
+                .iter()
+                .map(|o| (o.source, o.value))
+                .collect::<Vec<_>>(),
+            [(SourceId::Pubmed, 3)]
+        );
+        let published = f.published.as_ref().unwrap();
+        assert_eq!(
+            (published.value, published.from),
+            (bound(2014, Some(6), Some(15)), SourceId::Crossref),
+            "the earliest date"
+        );
+        assert_eq!(published.others.len(), 1, "OpenAlex's 2015 differs by year");
+        let language = f.language.as_ref().unwrap();
+        assert_eq!(language.from, SourceId::Pubmed);
+        assert_eq!(language.others.len(), 1);
+        assert_eq!(f.form.as_ref().unwrap().value, Form::JournalArticle);
+        assert_eq!(
+            f.form.as_ref().unwrap().others[0].value,
+            Form::PostedContent
+        );
+        assert_eq!(
+            f.genre.as_ref().unwrap().value,
+            Genre::Review,
+            "PubMed first"
+        );
+        assert_eq!(f.genre.as_ref().unwrap().others.len(), 2);
+        assert!(!a.flags.kind_conflict, "a review in a journal article");
+        assert_eq!(f.venue.as_ref().unwrap().from, SourceId::Crossref);
+        assert_eq!(f.venue.as_ref().unwrap().others.len(), 1, "disjoint ISSNs");
+        assert!(!f.access.as_ref().unwrap().value, "OpenAlex first");
+        assert_eq!(f.access.as_ref().unwrap().others.len(), 1);
+        assert_eq!(
+            f.abstract_in,
+            [SourceId::Pubmed].into_iter().collect::<Sources>()
+        );
+        assert_eq!(
+            f.status.retracted,
+            [SourceId::Pubmed].into_iter().collect::<Sources>()
+        );
+        assert_eq!(f.references[0].value, 12);
+        assert_eq!(f.cited_by[0].value, 7);
+        assert!(a.records.iter().all(|r| r.promoted));
+        assert_eq!(a.names.len(), 3);
+        let b_work = merged.works.iter().find(|w| w.id == beta).unwrap();
+        assert!(b_work.fields.title.is_none(), "no view was given");
+        let s = merged.works.iter().find(|w| w.id == stub).unwrap();
+        assert!(s.stub && s.records.is_empty());
+        assert_eq!(s.names[0].standing, Standing::Promoted);
+        assert!(s.names[0].by.contains(SourceId::Crossref));
+        // Edges.
+        let edges: Vec<_> = merged
+            .edges
+            .iter()
+            .map(|e| (e.from, e.to, e.by.to_string()))
+            .collect();
+        assert_eq!(
+            edges,
+            [
+                (alpha, alpha, "openalex".to_owned()),
+                (alpha, beta, "pubmed+crossref".to_owned()),
+                (beta, alpha, "pubmed".to_owned()),
+                (beta, stub, "crossref".to_owned()),
+            ]
+        );
+        assert_eq!(merged.self_citations, 1);
+        assert_eq!(merged.unresolved.len(), 2);
+        assert_eq!(merged.unresolved[0].why, Why::NoName);
+        assert_eq!(merged.unresolved[0].citation.year.as_deref(), Some("1999"));
+        assert_eq!(merged.unresolved[1].why, Why::Disagree);
+        assert_eq!(merged.unresolved[1].names.len(), 2);
+        assert_eq!(merged.relations.len(), 1);
+        assert_eq!(merged.relations[0].kind, Kind::HasPreprint);
+        assert_eq!(
+            merged.stats.relations[&(SourceId::Crossref, "not a name")],
+            1
+        );
+        assert_eq!(merged.fields["title"].disputed, 1);
+        assert_eq!(merged.fields["title"].compared, 1);
+        assert_eq!(merged.fields["published"].present, 1);
+        assert_eq!(merged.kind_conflicts, 0);
+        assert_eq!(merged.kinds[&(Form::JournalArticle, Genre::Review)], 1);
+        assert_eq!(merged.status[&("retracted", "pubmed".to_owned())], 1);
+        assert_eq!(
+            merged.agreement[&(SourceId::Pubmed, SourceId::Crossref)],
+            [1, 0, 0],
+            "alpha holds both; alpha -> beta by both"
+        );
+        let json = serde_json::to_string(&a.borrow()).unwrap();
+        assert!(json.contains("\"kind_conflict\":false"));
+        assert!(json.contains("\"genre\":{\"value\":\"review\""));
+    }
+
+    #[test]
+    fn ids_must_match_the_resolution() {
+        let (b, _) = scenario();
+        let res = b.res;
+        let bad = Ids {
+            held: vec![WorkId::FIRST],
+            stubs: vec![],
+        };
+        assert!(Builder::new(res, bad).is_err());
+    }
+}

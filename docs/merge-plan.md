@@ -263,19 +263,26 @@ normalizer already uses for its census-derived fields — so a consistent
 work is small and a disagreement is visible. The first-cut table is a
 hypothesis the report revises (§10):
 
-| field       | promoted from, in order                                | a disagreement is                       | on the sample                                                                                      |
-|-------------|--------------------------------------------------------|-----------------------------------------|----------------------------------------------------------------------------------------------------|
-| `title`     | PubMed, Crossref, OpenAlex                             | the §3.3 comparison failing             | 5 % of PubMed–Crossref pairs differ under the strict rule; markup whitespace, quotes, subtitles      |
-| `abstract`  | PubMed, OpenAlex, Crossref                             | presence only                           | Crossref lacks one on 40 % of the works PubMed has one for; OpenAlex on 11 %                        |
-| `authors`   | Crossref, OpenAlex, PubMed                             | the count differing                     | 1.6–2.6 % of pairs                                                                                 |
-| `venue`     | OpenAlex source id, Crossref ISSNs, PubMed NLM id      | disjoint ISSN sets                      | 1 %                                                                                                |
-| `published` | the earliest date any source gives, at its precision   | years differing                         | 9 % of PubMed–Crossref pairs, 98 % of those by one year: online-first against the print issue       |
-| `language`  | PubMed, Crossref, OpenAlex                             | codes differing                         | 0.5 %; PubMed is right when they do (`fra` against a publisher's `eng`)                             |
-| `form`      | Crossref, then PubMed mapped, then OpenAlex mapped     | a genre that cannot live in the form    | below                                                                                              |
-| `genre`     | OpenAlex, then PubMed mapped, then Crossref mapped     | as above                                | below                                                                                              |
-| `status`    | retracted if any source says so; corrected, concern likewise | a source not knowing               | 46 of the 61 retractions are known to OpenAlex alone                                                |
-| `access`    | OpenAlex, Crossref license, PubMed PMC                 | flags differing                         | not yet measured                                                                                   |
-| counts      | kept per source, never promoted                        | —                                       | the graph computes its own                                                                         |
+| field       | promoted from, in order                                | a disagreement is                       | measured 2026-09-15, over works with two or more candidates (§7)                                          |
+|-------------|--------------------------------------------------------|-----------------------------------------|------------------------------------------------------------------------------------------------------------|
+| `title`     | PubMed, Crossref, OpenAlex                             | the §3.3 comparison failing             | 0.7 % of 50,114: Crossref's `<subtitle>` markup and `RETRACTED:` prefixes, PubMed's own abbreviations      |
+| `abstract`  | PubMed, OpenAlex, Crossref                             | presence only                           | 40.1 % of 50,116 have one in some sources and not others                                                   |
+| `authors`   | Crossref, OpenAlex, PubMed                             | the count differing                     | 2.6 %; Crossref–PubMed 1.4 %, Crossref–OpenAlex 1.6 %                                                     |
+| `venue`     | OpenAlex source id, Crossref ISSNs, PubMed NLM id      | disjoint ISSN sets                      | 0.3 %; 78 of the 138 are Crossref's electronic ISSN against PubMed's print one for one journal (§11, 6)    |
+| `published` | the earliest date any source gives, at its precision   | years differing                         | 10.2 %; PubMed–Crossref 4,078 of 39,934, 4,040 of them one year apart: online-first against the issue      |
+| `language`  | PubMed, Crossref, OpenAlex                             | codes differing                         | 0.5 %; `fra`, `kor`, `rus` at PubMed against a publisher's `eng`                                            |
+| `form`      | Crossref, then PubMed mapped, then OpenAlex mapped     | a genre that cannot live in the form    | 0.7 %; Crossref's book-chapter against PubMed's implied journal-article 140 times                          |
+| `genre`     | PubMed, then OpenAlex, then Crossref mapped            | as above                                | 22.7 %; PubMed–OpenAlex 7,998 of 44,791, `review` against `article` 5,726 of them; the order was revised   |
+| `status`    | retracted if any source says so; corrected, concern likewise | a source not knowing               | 46 of 67 retractions known to OpenAlex alone; 141 corrections to PubMed alone, 280 to Crossref alone       |
+| `access`    | OpenAlex, a Creative Commons license at Crossref, a PMC copy at PubMed | flags differing         | 0.1 %; the 52 pairs of duplicate OpenAlex records differ 16 times                                           |
+| counts      | kept per source, never promoted                        | —                                       | the graph computes its own                                                                                 |
+
+The first cut put OpenAlex before PubMed for `genre`; the first report
+reversed it. Where the two differed, PubMed's curated publication type
+was the specific one — review, letter, editorial, news, guideline
+against OpenAlex's `article` — 7,070 times, and OpenAlex's the specific
+one 288 times, mostly on records PubMed holds at `Publisher` status with
+the publisher's types alone.
 
 Kind is two fields because the sources' vocabularies are two different
 things. Crossref's `type` is the registry's *form* — journal-article,
@@ -286,8 +293,15 @@ editorial, letter, retraction, preprint, data-paper — and the census
 cross-tab shows one form holding a dozen genres: journal-article is
 40,955 articles, 1,928 reviews, 484 errata, 318 editorials, 162 letters,
 54 retractions and 39 preprints. Both are closed enums with explicit
-mapping tables from the three sources; an unmapped value stops the run.
-The disagreement worth storing is a genre that cannot live in its form.
+mapping tables from the three sources — in each source crate's `view`
+module, keyed by Crossref's and OpenAlex's types and by PubMed's
+publication-type descriptor UIs, a record's genre being the most
+specific of its types by a fixed priority; an unmapped value stops the
+run, or `--survey` counts it. The genre vocabulary is OpenAlex's plus
+the four PubMed adds (comment, expression of concern, guideline, news).
+The disagreement worth storing is a genre that cannot live in its form:
+20 works on the sample after the revision above, 12 of them PubMed
+articles whose DOI Crossref registered as a journal issue.
 
 Status is derived, not copied: retracted from PubMed's `Retracted
 Publication` type or `RetractionIn` relation, Crossref's `updated-by:
@@ -305,38 +319,56 @@ three sources is one edge with three bits. `A → B` is "A cites B", the
 architecture summary's convention. Each source's reference stream resolves
 its target through the names table:
 
-| source   | a reference's target                                                            | on the sample                                                                                                       |
+| source   | a reference's target                                                            | resolved 2026-09-15 (MM3): held, stub, self-citation, no name, disagree, empty                                       |
 |----------|---------------------------------------------------------------------------------|---------------------------------------------------------------------------------------------------------------------|
-| OpenAlex | an OpenAlex id, always                                                          | 2,262,555 edges: 39,426 to held works, the rest to stubs                                                            |
-| PubMed   | a PMID, a DOI, a PMC id, in any combination, as claims; or none                 | 1,231,899: 878,529 carry a name, 353,370 do not; 4 carry a PMID and a DOI that resolve to different works           |
-| Crossref | a DOI claim; or structured fields; or an unstructured string; or nothing        | 2,744,441: 2,437,507 carry a DOI (14,343 malformed), 291,687 fields only, 15,247 empty                             |
+| OpenAlex | an OpenAlex id, always                                                          | 2,262,555: 39,237 held, 2,223,129 stubs, 189 self                                                                   |
+| PubMed   | a PMID, a DOI, a PMC id, in any combination, as claims; or none                 | 1,231,899: 43,137 held, 834,857 stubs, 211 self, 353,356 no name, 338 whose PMID and DOI resolve to different works |
+| Crossref | a DOI claim; or structured fields; or an unstructured string; or nothing        | 2,744,441: 64,781 held, 2,372,645 stubs, 81 self, 292,080 fields or text only, 14,854 empty                         |
 
 A target that resolves is an edge. A target whose name no held work has is
-a stub (§4), and an edge to it. A PubMed reference whose PMID and DOI
-disagree follows the PMID and records the DOI as a rejected reference
-claim. A target through a shared name is ambiguous and goes to the
-unresolved stream with that reason. A target with no name goes to the
-unresolved stream with whatever the source gave — Crossref's key, year,
-author, titles, volume and page or its unstructured string; PubMed's
-citation text — keyed by the citing `WorkId`, for the matching stage.
-Self-citations, an edge inside one work, are allowed and counted: 399 on
-the sample, to be looked at.
+a stub (§4), and an edge to it. A reference whose names resolve to
+different works follows the registry id — PMID, then PMC id, then
+OpenAlex id, before a DOI — and keeps every name in the unresolved
+stream as a `disagree` row. The 338 on the sample are a name beside a
+held one (§11, item 14) that is also a stub of its own, and the examples
+are Cochrane reviews: the PMID names one version, the bare DOI
+(`10.1002/14651858.cd010508`) names the review across versions — lineage
+evidence (§11, item 1). A target through a shared name alone is ambiguous
+and goes to the unresolved stream with that reason (none on the sample:
+every reference through a shared DOI carried a PMID beside it). A target
+with no name goes to the unresolved stream with whatever the source
+gave — Crossref's key, year, author, titles, volume and page or its
+unstructured string; PubMed's citation text — keyed by the citing
+`WorkId`, for the matching stage: 645,436 rows on the sample. A reference
+with neither a name nor any of that is counted and dropped (14,854, all
+Crossref's). Self-citations, an edge inside one work, are allowed and
+counted: 399 on the sample, to be looked at.
 
 Relations that are not identity become a typed stream `(from, to, kind,
-source)`, kinds closed: PubMed's `CommentsCorrections` (23 kinds),
-Crossref's `relation` (`has-preprint` 1,688 times and `is-supplemented-by`
-822 on the sample, among some thirty kinds) and Crossmark updates both
-ways, and the OpenAlex location DOIs of §3.1 as `has-version`. Status
+source)`, kinds closed (`merge::relation::Kind`): PubMed's
+`CommentsCorrections` (23 kinds), Crossref's `relation` types (the deposit
+schema's, plus the Crossmark words some publishers deposit there) and
+Crossmark updates both ways as `update-to:<type>` / `updated-by:<type>`,
+and the OpenAlex location DOIs and PMIDs of §3.1 as `has-version`. Status
 derives from them (§5); lineage will (§11). A relation's other end
 resolves through the names table like an edge's, minting a stub if need
-be.
+be: 15,303 relations on the sample — `has-version` 3,834, `has-review`
+3,450, `comment-in` 2,573, `has-preprint` 1,687, `is-supplemented-by` 743,
+`erratum-for` 511 — of which 284 point at held works and 15,206 at stubs,
+14,267 of the stubs minted for them; 355 targets were outside our
+namespaces (a URI, an accession number, a PubMed relation without a
+PMID) and are counted, not kept.
 
 Agreement, restricted to citing works held by both sources and targets
 held: Crossref and OpenAlex share 36,837 edges, Crossref alone asserts
-14,678, OpenAlex alone 1,731; PubMed and Crossref share 39,494, PubMed
-alone 3,257, Crossref alone 24,498. PubMed's lists are partial by
+14,676, OpenAlex alone 1,730; PubMed and Crossref share 39,462, PubMed
+alone 3,259, Crossref alone 24,530; PubMed and OpenAlex share 23,269,
+PubMed alone 9,712, OpenAlex alone 15,403. PubMed's lists are partial by
 construction; OpenAlex's, derived from Crossref's, miss a fifth of them on
-this sample, which the report keeps measuring.
+this sample, which the report keeps measuring. In all, 5,021,301 distinct
+edges on the sample: 2,222,128 by OpenAlex alone, 1,909,179 by Crossref
+alone, 483,820 by PubMed and Crossref, 368,316 by PubMed alone, 22,248 by
+all three.
 
 ## 7. What the sample says
 
@@ -385,11 +417,26 @@ Status, over the 44,245 works all three hold: 61 retracted by some source —
 Crossref alone; corrected by both PubMed and Crossref 198, by Crossref alone
 267, by PubMed alone 99.
 
-Field agreement is in §5's table. Two samples worth keeping: PubMed's
-language disagrees with Crossref's on 217 works and it is `fra` against
-`eng` every time in the sample of six; PubMed's title is a bracketed
-English translation where Crossref carries the vernacular on 158 works,
-and PubMed's `VernacularTitle` matches Crossref's title on every one.
+Field agreement is in §5's table, measured by the merge's own report
+(`ol-rht merge`, 2026-09-15) after the census's estimates: the title
+rule of §3.3 leaves 0.7 % of pairs in disagreement where the census's
+strict comparison had 5 %, and the census's 217 language disagreements
+are 216 under the merge. Two samples worth keeping: PubMed's language
+disagrees with Crossref's on 216 works and it is `fra` against `eng`
+every time in the sample of six; PubMed's title is a bracketed English
+translation where Crossref carries the vernacular on 158 works, and
+PubMed's `VernacularTitle` matches Crossref's title on every one. The
+kinds cross-tab after the genre revision of §5: journal-article holds
+60,374 articles, 8,693 reviews, 835 letters, 784 editorials, 518 errata,
+113 news items, 103 guidelines, 88 comments, 57 retractions and 9
+expressions of concern; the other forms are 5,693 dissertations, 3,565
+preprints, 606 books, 504 chapters, 58 conference papers, 57 datasets,
+48 reports, 21 components.
+
+The merged layer as written: 4,039,076 works (82,744 held, 3,956,332
+stubs), 5,021,301 edges, 4,704,928 names, 15,303 relations, 645,774
+unresolved rows, in 62 shards, 120.8 MiB; 48 s and 5.0 GB resident on
+the laptop, of which the identity pass and the registry are 25 s (§8).
 
 ## 8. Machinery
 
@@ -422,22 +469,31 @@ and not by records.
      candidates, every reference resolves through the names table; the
      merged sets are written.
   The names table is in memory: a few million names on the sample, well
-  under a gigabyte. Pass 2 accumulates each work's candidate values in
-  memory as well — small, owned, a few hundred bytes a work on the
-  sample. At full scale that does not fit, and the shape's answer is to
-  run pass 2 once per range of `WorkId`s, keeping only that range's
-  candidates — the input read *k* times, memory bounded by *N/k* — which
-  dense ids make trivial. Pass 1's table becomes a sorted file read
-  through a memory map. Neither changes the code's shape; both are the
-  ingestion plan's M9.
+  under a gigabyte. Pass 2 accumulates each record's view, every edge,
+  every relation and every unresolved row in memory as well and writes
+  the shards at the end: 5.0 GB resident on the sample, the unresolved
+  rows' citation text and the four million works' rows most of it. At
+  full scale that does not fit, and the shape's answer is to run pass 2
+  once per range of `WorkId`s, keeping only that range's candidates and
+  rows — the input read *k* times, memory bounded by *N/k* — which dense
+  ids make trivial. Pass 1's table becomes a sorted file read through a
+  memory map. Neither changes the code's shape; both are the ingestion
+  plan's M9.
 - **Layout**, under the store: `merged/registry.jsonl` (of record, §4) and
-  `merged/v<model>.<merge>/` (a cache), the merge having a version of its
-  own that any change to its rules or shapes bumps. Sets are sharded by
-  `WorkId` range, 65,536 works a shard, in the normalized layout's
-  framing — a header, length-prefixed postcard values, zstd, a symbol table
-  per set — with the record kinds this layer has: `works` (held and
-  stubs), `edges`, `names`, `relations`, `unresolved`, `symbols`. A work's
-  shard is its id's; an edge's is its citing work's.
+  `merged/v<model>.<merge>/` (a cache, replaced whole by every complete
+  run), the merge having a version of its own that any change to its
+  rules or shapes bumps. Sets are sharded by `WorkId` range, 65,536 works
+  a shard (`shard_00000` …), in the normalized layout's framing — a
+  header, length-prefixed postcard values, zstd, a symbol table per
+  set — through `ingest::binary::Writer`, the framing factored out of the
+  normalized sink with the record kinds this layer has appended to
+  `ingest::Kind`: `works` (held and stubs), `edges`, `names`,
+  `relations`, `unresolved`, `symbols`. A work's shard is its id's; an
+  edge's, a relation's or an unresolved row's is its citing work's. A
+  set's header names the merge as its source and the model version; the
+  directory names the merge version, which `merge dump` checks. Rows
+  borrow their text from the set they are read from, names as the text
+  form of §2 (`doi:…`, `pmid:…`).
 - **Fail fast.** A conflict shape outside §3.3 stops the run; an unmapped
   kind stops the run; `--survey` tallies both without writing. Invariants
   checked at the end of every run: one promoted name per namespace per
@@ -448,14 +504,23 @@ and not by records.
   report — landed 2026-09-15: 22 s over the sample, 2.4 s of it reading
   every record's names, the rest the registry's four million lines;
   `--limit` and `--survey` write nothing. `ol-rht merge [--store <root>]
-  [--survey] [--limit N]` will run both passes and write the sets; `ol-rht
-  merge dump <set.zst>...` will print any merged set as JSON lines.
+  [--survey] [--limit N]` runs both passes, appends the registry's lines,
+  writes the sets and prints both reports — landed the same day: 48 s
+  over the sample, byte-identical between two runs, nothing appended to
+  the registry by the second; `--survey` counts a value outside the
+  merge's tables instead of stopping on it, and it and `--limit` write
+  nothing. `ol-rht merge dump <set.zst>... [--limit N]` prints any merged
+  set as JSON lines.
 - **The report.** Works by source pattern; conflict components by shape and
-  verdict; registry churn; per promoted field, the agreement rate and the
-  disagreement count; per source, references resolved to held works, to
-  stubs, ambiguous, unresolved; edge agreement between each pair of
-  sources; self-citations; stubs by namespace; throughput and allocations,
-  as every report has.
+  verdict; registry churn; per promoted field, works with a value, works
+  compared, works disputed, who it was promoted from, and per pair of
+  sources how many candidates differed; the form × genre cross-tab and
+  the conflicts; status by the sources asserting it; per source,
+  references resolved to held works, to stubs, self-citations, no name,
+  shared, disagreeing, empty; edges by the sources asserting them and the
+  agreement between each pair; relations by kind and by what their
+  targets were; the unresolved by reason; what was written; throughput
+  and allocations, as every report has.
 
 What ingestion's symbol tables are worth is decided here (ingestion plan
 §10): the merge resolves each set's symbols to text and interns into its
@@ -482,7 +547,15 @@ stays.
 - **MM3** — records and edges: views, the promoted fields and their
   comparison rules, the `form` and `genre` tables, status, relations,
   stubs, the unresolved stream; the merged sets and `dump`; `merge` whole;
-  the field-agreement report that revises §5's table.
+  the field-agreement report that revises §5's table. *Landed 2026-09-15:
+  `Contributor` gained `view`, `relations`, `citation` and `native`;
+  `crates/merge` gained `view`, `kind`, `relation`, `record`, `build` and
+  `layout`; `ingest::binary::Writer` and the merged kinds; `ol-rht merge`
+  and `merge dump`. The first run is in §5, §6 and §7. What running it
+  changed: the genre precedence (§5), relation targets minting stubs (§6:
+  14,267 on the sample), the reference-disagreement rule (§6), and the
+  338 disagreements and the ISSN pairs as evidence for items 14, 1 and 6
+  of §11.*
 - **MM4** — the graph handoff: forward and transpose CSR from the edges set,
   keyed by `WorkId`, held works and stubs selectable; the architecture
   summary's experiment begins. The sample's subgraph settles tooling and
@@ -550,6 +623,25 @@ stays.
   the metadata is another paper's; and a translation, a PubMed record in
   two languages whose DOI's Crossref title is the vernacular one, which
   the rules split for want of a vernacular title on the PubMed side.
+- 2026-09-15, MM3 landed — the second pass keeps one owned view per
+  record and promotes per work at the end; the merged sets are written
+  through the normalized layer's own framing, its `Writer` factored out
+  and the merged kinds appended, rather than a second framing. What the
+  first report changed: genre is PubMed's before OpenAlex's (§5, the
+  7,070-to-288 count); a relation's target mints a stub like a reference's
+  (14,267 more stubs, 0.4 %); a reference whose names disagree follows
+  the registry id and keeps every name as a `disagree` row rather than
+  guessing (§6). Kept as hypotheses the numbers did not overturn: the
+  access rule (a Creative Commons license at Crossref, a PMC copy at
+  PubMed, OpenAlex's status), which disagrees 27 times in 31,957; the
+  venue rule, whose 138 disagreements are mostly one journal's two ISSNs.
+  Two runs of the same store write byte-identical shards, and the second
+  appends nothing to the registry — the zero-churn test now covers the
+  whole merge. A `--limit` run then found that assigning held works and
+  stubs to the registry in two calls could give one id twice — a name a
+  vanished record held that a reference still cites is a held work's in
+  the registry and a stub's in the run — so the assignment is one call
+  over held works then stubs, and that case is a split, as §4 says.
 
 ## 11. Open items
 
@@ -566,18 +658,28 @@ stays.
    first split observed.
 4. **Stubs at scale.** Expected to be DataCite DOIs, mistyped DOIs and
    works no source holds; the count per namespace is in every report.
-5. **`form` and `genre` tables.** The mapping from three vocabularies is
-   MM3's modelling task; PubMed's 60-odd publication types are qualifiers
-   on a base type and map to genre only where one is specific (Review,
-   Letter, Editorial, Published Erratum, Retraction Notice, Comment,
-   Preprint, Dataset).
+5. ~~**`form` and `genre` tables.**~~ Done 2026-09-15, in each source
+   crate's `view` module: Crossref's 30 types are the forms and imply a
+   genre; OpenAlex's 25 types are the genres and imply a form; PubMed's
+   61 publication types the sample showed map by descriptor UI to a genre
+   with a priority or to nothing (a study design, a funding note), and a
+   type outside the table stops the run — the rest of NLM's list gets
+   added as the corpus shows it. Open within it: OpenAlex's `article` on
+   5,726 works PubMed calls reviews is why the precedence flipped, and
+   PubMed's `Publisher`-status records carry only the publisher's types.
 6. **Author and venue identity.** Entity resolution problems of their own;
    the first cut promotes one source's list and one source's venue id and
-   counts disagreements.
+   counts disagreements. The venue rule's false positives are known: 78 of
+   its 138 disagreements are Crossref's electronic ISSN against PubMed's
+   print one for one journal (`2380-6583` / `2380-6591`); the ISSN-L table
+   would settle them.
 7. **Abstracts for the search sinks.** PubMed's sections joined, Crossref's
    JATS stripped, OpenAlex's inverted index rebuilt — the merge's own text
    functions, after MM3.
-8. **`access`.** The rule is written, the disagreement unmeasured.
+8. **`access`.** Measured 2026-09-15: 27 disagreements in 31,957
+   comparisons, 16 of them between the old and new record of one work at
+   OpenAlex; but Crossref and PubMed can only say "open", never "closed",
+   so the rule is really OpenAlex's status with two corroborations.
 9. **Crossref's `alternative-id` and `is-same-as`** as name sources, on
    evidence.
 10. **The registry at scale.** A binary log and a memory-mapped fold; the
@@ -597,10 +699,29 @@ stays.
 14. **Reference-level assertions.** A reference carrying a held name and
     an unheld one asserts that the unheld name is that work's: 514 on the
     sample, all PubMed's. Counted, not used, until a case shows their
-    error rate.
+    error rate. The merge found 338 of them are also stubs of their own
+    (§6), so an edge and a stub stand for one work; and the examples are
+    Cochrane reviews whose PMID is one version and whose DOI is the
+    review, so using the assertion would be wrong for them — item 1's
+    lineage is the answer, not a merge.
 15. **The registry's size.** 94 bytes a line as JSON, 379 MB for the
     sample's four million ids; the binary form of item 10 before the
     corpus.
+16. **Pass 2's memory.** 5.0 GB resident on the sample (§8), most of it
+    the unresolved rows' citation text and the four million works' rows;
+    the range shape of §8 bounds it, and the unresolved stream could be
+    written as it is read once shards are open per range. Before the
+    corpus, with item 10.
+17. **Journal-issue DOIs on articles.** 12 PubMed articles carry a DOI
+    Crossref registered as a `journal-issue`: the publisher deposited the
+    issue's DOI on every article. Flagged as a kind conflict; whether the
+    DOI should be an alias or rejected is a rule to write on evidence.
+18. **Duplicate OpenAlex records disagree with themselves.** The 52 works
+    with two OpenAlex records differ on access 16 times and on genre 3: the
+    older record is stale. The promoted record of a source is the one
+    whose native id is the promoted name (the lower W number, §3.4), which
+    is the older one; the revision stamp the merged record keeps is the
+    evidence for a rule that prefers the newer.
 
 ## 12. Sources consulted
 

@@ -23,6 +23,11 @@
 //! its thread while a set is open and writes the table when the set
 //! closes; the reader loads a set's table beside its records and resolves
 //! through it.
+//!
+//! [`Writer`] is the framing on its own — a set of any [`Kind`]s, one
+//! file each, a symbol table beside them — which the merged layer's sets
+//! use too (merge plan §8); [`Binary`] is a writer per raw file with the
+//! normalized layer's four kinds.
 
 use std::fmt;
 use std::fs::{self, File};
@@ -43,8 +48,11 @@ pub const FORMAT: u8 = 2;
 /// turned (plan §5, second measurement).
 const LEVEL: i32 = 3;
 
-/// The three record kinds and the symbol table, one file each.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// The record kinds a set can hold, one file each: the normalized
+/// layer's three and its symbol table, then the merged layer's (merge
+/// plan §8). The order is written into headers as a variant index, so a
+/// new kind appends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum Kind {
     /// One record per work.
     Works,
@@ -54,11 +62,31 @@ pub enum Kind {
     Deletions,
     /// One string per symbol, in symbol order: the set's table.
     Symbols,
+    /// Merged: one record per edge between works, by `WorkId`.
+    Edges,
+    /// Merged: one record per name, with the work it belongs to.
+    Names,
+    /// Merged: one record per typed relation between works.
+    Relations,
+    /// Merged: one record per reference that resolved to no work.
+    Unresolved,
 }
 
 impl Kind {
     /// Every kind, in file order.
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 8] = [
+        Self::Works,
+        Self::References,
+        Self::Deletions,
+        Self::Symbols,
+        Self::Edges,
+        Self::Names,
+        Self::Relations,
+        Self::Unresolved,
+    ];
+
+    /// The normalized layer's kinds: what [`Binary`] writes per raw file.
+    pub const NORMALIZED: [Self; 4] = [
         Self::Works,
         Self::References,
         Self::Deletions,
@@ -73,6 +101,10 @@ impl Kind {
             Self::References => "references",
             Self::Deletions => "deletions",
             Self::Symbols => "symbols",
+            Self::Edges => "edges",
+            Self::Names => "names",
+            Self::Relations => "relations",
+            Self::Unresolved => "unresolved",
         }
     }
 
@@ -129,10 +161,22 @@ impl Header {
 pub struct Written {
     /// The set's prefix: its files are [`Kind::path`] of it.
     pub prefix: PathBuf,
-    /// Records per kind, in [`Kind::ALL`] order; the fourth is the
+    /// Records per kind, in [`Kind::NORMALIZED`] order; the fourth is the
     /// table's size.
     pub records: [u64; 4],
     /// Compressed bytes on disk, all four files.
+    pub bytes: u64,
+}
+
+/// What one finished set of any kinds holds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Finished {
+    /// The set's prefix: its files are [`Kind::path`] of it.
+    pub prefix: PathBuf,
+    /// Records per kind, in the order the writer was given them; the
+    /// symbols entry is the table's size.
+    pub records: Vec<(Kind, u64)>,
+    /// Compressed bytes on disk, every file.
     pub bytes: u64,
 }
 
@@ -141,95 +185,163 @@ struct Stream {
     records: u64,
 }
 
-/// One raw file's output set. Its files are removed when it is dropped
-/// unfinished, so nothing partial survives an error.
-struct Set {
+/// One set being written, of whatever kinds the layer has: the framing
+/// the normalized and the merged layers share. Its files are removed
+/// when it is dropped unfinished, so nothing partial survives an error.
+///
+/// One set is written at a time on a thread: the symbol table is the
+/// thread's interner, installed at [`Writer::create`] and taken back at
+/// [`Writer::finish`].
+pub struct Writer {
     prefix: PathBuf,
+    kinds: Vec<Kind>,
+    symbols: usize,
     streams: Vec<Stream>,
+    buf: Vec<u8>,
     finished: bool,
 }
 
-impl Set {
-    fn create(prefix: &Path, source: &str, model: u32, buf: &mut Vec<u8>) -> io::Result<Self> {
+impl fmt::Debug for Writer {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Writer")
+            .field("prefix", &self.prefix)
+            .field("kinds", &self.kinds)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Writer {
+    /// Creates the set's files and their directory and writes the headers,
+    /// one file per kind given, which must include [`Kind::Symbols`] and
+    /// name no kind twice.
+    ///
+    /// # Errors
+    ///
+    /// The kinds are not a set, a symbol table is already installed on
+    /// this thread, or I/O.
+    pub fn create(prefix: &Path, source: &str, model: u32, kinds: &[Kind]) -> io::Result<Self> {
+        let distinct = kinds
+            .iter()
+            .enumerate()
+            .all(|(i, k)| !kinds[..i].contains(k));
+        let symbols = kinds.iter().position(|k| *k == Kind::Symbols);
+        let (true, Some(symbols)) = (distinct, symbols) else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "a set's kinds are distinct and include the symbol table",
+            ));
+        };
         if let Some(parent) = prefix.parent()
             && !parent.as_os_str().is_empty()
         {
             fs::create_dir_all(parent)?;
         }
-        let mut set = Self {
+        let mut writer = Self {
             prefix: prefix.to_path_buf(),
-            streams: Vec::with_capacity(4),
+            kinds: kinds.to_vec(),
+            symbols,
+            streams: Vec::with_capacity(kinds.len()),
+            buf: Vec::with_capacity(1 << 16),
             finished: false,
         };
-        for kind in Kind::ALL {
+        for kind in kinds {
             let file = File::create(kind.path(prefix))?;
             let out = zstd::stream::write::Encoder::new(BufWriter::new(file), LEVEL)?;
-            set.streams.push(Stream { out, records: 0 });
+            writer.streams.push(Stream { out, records: 0 });
         }
-        for (i, kind) in Kind::ALL.into_iter().enumerate() {
+        for (i, kind) in kinds.iter().enumerate() {
             let header = Header {
                 magic: Header::MAGIC,
                 format: FORMAT,
                 model,
                 source: source.to_owned(),
-                kind,
+                kind: *kind,
             };
-            set.put(i, &header, buf)?;
+            writer.put_at(i, &header)?;
             // Headers are not records.
-            set.streams[i].records = 0;
+            writer.streams[i].records = 0;
         }
         symbol::begin_writing().map_err(io::Error::other)?;
-        Ok(set)
+        Ok(writer)
+    }
+
+    /// The kinds, in file order.
+    #[must_use]
+    pub fn kinds(&self) -> &[Kind] {
+        &self.kinds
+    }
+
+    /// Writes one record to the file of `kind`.
+    ///
+    /// # Errors
+    ///
+    /// A kind the set does not have, the symbol table (which is written
+    /// at the end), a value that does not encode, or I/O.
+    pub fn put<T: Serialize + ?Sized>(&mut self, kind: Kind, value: &T) -> io::Result<()> {
+        if kind == Kind::Symbols {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "the symbol table is written when the set finishes",
+            ));
+        }
+        let i = self.kinds.iter().position(|k| *k == kind).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("this set has no {kind} file"),
+            )
+        })?;
+        self.put_at(i, value)
     }
 
     /// Encodes one value into the reusable buffer and writes it,
     /// length-prefixed, to stream `i`.
-    fn put<T: Serialize + ?Sized>(
-        &mut self,
-        i: usize,
-        value: &T,
-        buf: &mut Vec<u8>,
-    ) -> io::Result<()> {
-        buf.clear();
-        *buf = postcard::to_extend(value, std::mem::take(buf))
+    fn put_at<T: Serialize + ?Sized>(&mut self, i: usize, value: &T) -> io::Result<()> {
+        self.buf.clear();
+        self.buf = postcard::to_extend(value, std::mem::take(&mut self.buf))
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         let stream = &mut self.streams[i];
-        write_varint(&mut stream.out, buf.len() as u64)?;
-        stream.out.write_all(buf)?;
+        write_varint(&mut stream.out, self.buf.len() as u64)?;
+        stream.out.write_all(&self.buf)?;
         stream.records += 1;
         Ok(())
     }
 
-    fn finish(mut self, buf: &mut Vec<u8>) -> io::Result<Written> {
+    /// Writes the symbol table, ends the compression streams and flushes
+    /// the files.
+    ///
+    /// # Errors
+    ///
+    /// I/O; the set's files are removed.
+    pub fn finish(mut self) -> io::Result<Finished> {
         let table =
             symbol::end_writing().ok_or_else(|| io::Error::other("the set's interner is gone"))?;
         for s in table.iter() {
-            self.put(3, s, buf)?;
+            self.put_at(self.symbols, s)?;
         }
         let streams = std::mem::take(&mut self.streams);
-        let mut written = Written {
+        let mut finished = Finished {
             prefix: self.prefix.clone(),
-            records: [0; 4],
+            records: Vec::with_capacity(streams.len()),
             bytes: 0,
         };
-        for (i, s) in streams.into_iter().enumerate() {
-            written.records[i] = s.records;
+        for (kind, s) in self.kinds.iter().zip(streams) {
+            finished.records.push((*kind, s.records));
             let mut file = s.out.finish()?;
             file.flush()?;
-            written.bytes += file.get_ref().metadata().map_or(0, |m| m.len());
+            finished.bytes += file.get_ref().metadata().map_or(0, |m| m.len());
         }
         self.finished = true;
-        Ok(written)
+        Ok(finished)
     }
 
     fn remove_files(&self) {
-        for kind in Kind::ALL {
+        for kind in &self.kinds {
             let _ = fs::remove_file(kind.path(&self.prefix));
         }
     }
 }
 
-impl Drop for Set {
+impl Drop for Writer {
     fn drop(&mut self) {
         if !self.finished {
             let _ = symbol::end_writing();
@@ -256,9 +368,8 @@ pub struct Binary {
     source: String,
     model: u32,
     prefix_of: PrefixOf,
-    current: Option<Set>,
+    current: Option<Writer>,
     written: Vec<Written>,
-    buf: Vec<u8>,
     error: Option<io::Error>,
     poisoned: bool,
 }
@@ -289,7 +400,6 @@ impl Binary {
             prefix_of: Box::new(prefix_of),
             current: None,
             written: Vec::new(),
-            buf: Vec::with_capacity(1 << 16),
             error: None,
             poisoned: false,
         }
@@ -310,11 +420,11 @@ impl Binary {
             return Err(io::Error::other("a raw file is still open"));
         }
         let prefix = (self.prefix_of)(index, path);
-        self.current = Some(Set::create(
+        self.current = Some(Writer::create(
             &prefix,
             &self.source,
             self.model,
-            &mut self.buf,
+            &Kind::NORMALIZED,
         )?);
         Ok(())
     }
@@ -336,7 +446,16 @@ impl Binary {
             .current
             .take()
             .ok_or_else(|| io::Error::other("no raw file is open"))?;
-        self.written.push(set.finish(&mut self.buf)?);
+        let finished = set.finish()?;
+        let mut records = [0u64; 4];
+        for (slot, (_, n)) in records.iter_mut().zip(&finished.records) {
+            *slot = *n;
+        }
+        self.written.push(Written {
+            prefix: finished.prefix,
+            records,
+            bytes: finished.bytes,
+        });
         Ok(())
     }
 
@@ -360,7 +479,7 @@ impl Binary {
         }
         match &mut self.current {
             Some(set) => {
-                if let Err(e) = set.put(i, value, &mut self.buf) {
+                if let Err(e) = set.put(Kind::NORMALIZED[i], value) {
                     self.error = Some(e);
                 }
             }
@@ -396,7 +515,7 @@ impl Binary {
     pub fn discard(mut self) {
         self.current = None;
         for w in std::mem::take(&mut self.written) {
-            for kind in Kind::ALL {
+            for kind in Kind::NORMALIZED {
                 let _ = fs::remove_file(kind.path(&w.prefix));
             }
         }

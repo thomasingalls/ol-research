@@ -551,7 +551,7 @@ fn the_binary_layout_roundtrips_every_fixture() {
     let refs = Reader::open(&Kind::References.path(&prefix)).unwrap();
     let back: Vec<(OpenAlexId, OpenAlexId)> = refs.records().map(Result::unwrap).collect();
     assert_eq!(back, collect.edges);
-    for kind in Kind::ALL {
+    for kind in Kind::NORMALIZED {
         std::fs::remove_file(kind.path(&prefix)).unwrap();
     }
 }

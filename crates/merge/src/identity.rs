@@ -9,9 +9,10 @@
 //! [`Identity::mark`] finds the conflict components; [`Identity::titles`]
 //! re-reads the sets that hold a conflict record and keeps those records'
 //! titles, the corroboration §3.3 needs; [`Identity::targets`] reads the
-//! references sets for the names they point at. [`Identity::resolve`]
-//! then applies the rules. Memory is names, not records: a record is a
-//! source, a native name and a few name indices.
+//! references sets for the names they point at, and [`Identity::relate`]
+//! does the same for the relation targets `add` collected (§6).
+//! [`Identity::resolve`] then applies the rules. Memory is names, not
+//! records: a record is a source, a native name and a few name indices.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
@@ -19,6 +20,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use ingest::{Key, Kind};
+use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 
 use crate::arena::{Arena, NameIx};
@@ -26,6 +28,7 @@ use crate::contributor::Contributor;
 use crate::name::OwnedName;
 use crate::sets;
 use crate::title::{self, Agreement, OwnedTitles};
+use crate::view::Unmapped;
 use crate::work::{SourceId, Sources};
 
 /// An index into [`Resolution::records`].
@@ -84,6 +87,17 @@ pub enum Error {
     },
     /// A set given to a later phase that [`Identity::add`] never read.
     UnknownSet(PathBuf),
+    /// A set without its symbol table beside it.
+    NoTable(PathBuf),
+    /// A record's value outside the merge's tables (merge plan §5, §6).
+    Unmapped {
+        #[allow(missing_docs)]
+        path: PathBuf,
+        /// From one.
+        ordinal: u64,
+        #[allow(missing_docs)]
+        source: Unmapped,
+    },
     /// A component too large for the rules (merge plan §3.3).
     Hairball {
         #[allow(missing_docs)]
@@ -107,6 +121,12 @@ impl fmt::Display for Error {
             Self::UnknownSet(path) => {
                 write!(f, "{}: not read by the identity pass", path.display())
             }
+            Self::NoTable(path) => write!(f, "{}: no symbol table beside it", path.display()),
+            Self::Unmapped {
+                path,
+                ordinal,
+                source,
+            } => write!(f, "{}: record {ordinal}: {source}", path.display()),
             Self::Hairball {
                 records,
                 names,
@@ -124,6 +144,7 @@ impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Io { source, .. } => Some(source),
+            Self::Unmapped { source, .. } => Some(source),
             _ => None,
         }
     }
@@ -146,6 +167,11 @@ pub struct Stats {
     /// Per source: references whose names include a held work's, whose
     /// names are all unheld (stubs), and with no name at all.
     pub targets: BTreeMap<(SourceId, &'static str), u64>,
+    /// Per source: relation targets likewise (merge plan §6).
+    pub related: BTreeMap<(SourceId, &'static str), u64>,
+    /// Under `--survey`: values outside the merge's tables, by source
+    /// and `field: value`, that stopped nothing.
+    pub unmapped: BTreeMap<(SourceId, String), u64>,
 }
 
 /// The identity pass, accumulating over every set of every source.
@@ -164,6 +190,9 @@ pub struct Identity {
     titles: HashMap<RecordIx, OwnedTitles>,
     stubs: Arena,
     stub_parent: Vec<NameIx>,
+    stub_by: Vec<Sources>,
+    pending: Vec<(SourceId, OwnedName)>,
+    survey: bool,
     /// Counts so far.
     pub stats: Stats,
 }
@@ -173,6 +202,12 @@ impl Identity {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Under `--survey`, a value outside the merge's tables is counted
+    /// in [`Stats::unmapped`] instead of stopping the run.
+    pub fn set_survey(&mut self, on: bool) {
+        self.survey = on;
     }
 
     /// How many records so far.
@@ -207,17 +242,22 @@ impl Identity {
     }
 
     /// Reads one works set of `S`: every record's names, interned and
-    /// joined; at most `limit` records.
+    /// joined, and the names its relations point at, kept for
+    /// [`Identity::relate`]; at most `limit` records.
     ///
     /// # Errors
     ///
-    /// The set cannot be read, or a record has no native name.
+    /// The set cannot be read or has no symbol table, a record has no
+    /// native name, or a relation's type is outside the table.
     pub fn add<S: Contributor>(&mut self, path: &Path, limit: Option<usize>) -> Result<u64, Error> {
         let io = |source| Error::Io {
             path: path.to_path_buf(),
             source,
         };
         let reader = sets::open::<S>(path, Kind::Works).map_err(io)?;
+        let table = reader
+            .table()
+            .ok_or_else(|| Error::NoTable(path.to_path_buf()))?;
         let set =
             u32::try_from(self.sets.len()).map_err(|_| io(io::Error::other("too many sets")))?;
         self.sets.push(SetInfo {
@@ -237,6 +277,28 @@ impl Identity {
                         path: path.to_path_buf(),
                         ordinal: i as u64 + 1,
                     });
+                }
+                let related = S::relations(&work, table, &mut |r| {
+                    if let Some(target) = r.target {
+                        self.pending.push((S::SOURCE, target));
+                    }
+                });
+                match related {
+                    Ok(()) => {}
+                    Err(source) if self.survey => {
+                        *self
+                            .stats
+                            .unmapped
+                            .entry((S::SOURCE, source.to_string()))
+                            .or_default() += 1;
+                    }
+                    Err(source) => {
+                        return Err(Error::Unmapped {
+                            path: path.to_path_buf(),
+                            ordinal: i as u64 + 1,
+                            source,
+                        });
+                    }
                 }
                 read += 1;
             }
@@ -498,11 +560,31 @@ impl Identity {
         Ok(read)
     }
 
+    /// The relation targets [`Identity::add`] collected, cited like a
+    /// reference's names (merge plan §6): a name no work has is a stub's.
+    /// Call after [`Identity::mark`].
+    pub fn relate(&mut self) {
+        for (source, name) in std::mem::take(&mut self.pending) {
+            self.cite_in(source, &[name.as_name()], true);
+        }
+    }
+
     /// One reference's names, as [`Identity::targets`] sees them: a
     /// reference names one work, so a name beside a held one is that
     /// work's (asserted by the citing record; counted, not used), and
     /// names beside no held one are one stub's. Returns what it was.
     pub fn cite(&mut self, source: SourceId, names: &[crate::name::Name<'_>]) -> &'static str {
+        self.cite_in(source, names, false)
+    }
+
+    /// [`Identity::cite`], counted among references or among relation
+    /// targets.
+    fn cite_in(
+        &mut self,
+        source: SourceId,
+        names: &[crate::name::Name<'_>],
+        related: bool,
+    ) -> &'static str {
         let mut held: SmallVec<[NameIx; 2]> = SmallVec::new();
         let mut unheld: SmallVec<[crate::name::Name<'_>; 2]> = SmallVec::new();
         for &name in names {
@@ -520,7 +602,9 @@ impl Identity {
                     let ix = self.stubs.intern(name);
                     if self.stub_parent.len() <= ix as usize {
                         self.stub_parent.push(ix);
+                        self.stub_by.push(Sources::NONE);
                     }
+                    self.stub_by[ix as usize].insert(source);
                     match first {
                         None => first = Some(ix),
                         Some(f) => stub_union(&mut self.stub_parent, f, ix),
@@ -536,15 +620,22 @@ impl Identity {
         } else {
             if !unheld.is_empty() {
                 *self
-                    .stats
-                    .targets
+                    .counter(related)
                     .entry((source, "alias beside a held name"))
                     .or_default() += 1;
             }
             "held"
         };
-        *self.stats.targets.entry((source, outcome)).or_default() += 1;
+        *self.counter(related).entry((source, outcome)).or_default() += 1;
         outcome
+    }
+
+    fn counter(&mut self, related: bool) -> &mut BTreeMap<(SourceId, &'static str), u64> {
+        if related {
+            &mut self.stats.related
+        } else {
+            &mut self.stats.targets
+        }
     }
 
     /// Applies the rules of merge plan §3.3 to every component. With
@@ -636,6 +727,7 @@ impl Identity {
             arena: self.arena,
             stubs: self.stubs,
             stub_parent: self.stub_parent,
+            stub_by: self.stub_by,
             records: self.records,
             works,
             stats: self.stats,
@@ -960,7 +1052,8 @@ fn key_ix(key: Key) -> usize {
 }
 
 /// What the rules said about a name's place in a work (merge plan §2).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Standing {
     /// The one name of its namespace used for display and link-out.
     Promoted,
@@ -1137,6 +1230,8 @@ pub struct Resolution {
     /// Names cited and held by no work: the stubs' names.
     pub stubs: Arena,
     stub_parent: Vec<NameIx>,
+    /// Per stub name, the sources whose references or relations cite it.
+    pub stub_by: Vec<Sources>,
     #[allow(missing_docs)]
     pub records: Vec<Record>,
     #[allow(missing_docs)]
@@ -1148,6 +1243,21 @@ pub struct Resolution {
 }
 
 impl Resolution {
+    /// The held works in the registry's order (merge plan §4): each
+    /// work's index into [`Resolution::works`] with its registry names,
+    /// sorted by the names, then by index for the works that have none.
+    #[must_use]
+    pub fn held_order(&self) -> Vec<(usize, Vec<OwnedName>)> {
+        let mut held: Vec<(usize, Vec<OwnedName>)> = self
+            .works
+            .iter()
+            .enumerate()
+            .map(|(i, w)| (i, w.registry_names(&self.arena)))
+            .collect();
+        held.sort_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0)));
+        held
+    }
+
     /// The stubs (merge plan §4), each the names one or more references
     /// gave one uncited work, sorted within and between, so the registry
     /// sees them in one order every run.

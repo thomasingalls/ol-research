@@ -42,6 +42,15 @@
 //!   every work its `WorkId` through the registry (§4), appending the
 //!   registry's lines unless `--survey` or `--limit` is given; prints
 //!   the identity report.
+//! * `merge [--store <root>] [--limit N] [--survey]` runs both passes:
+//!   identity and the registry as above, then every record's view and
+//!   every reference through the names table (§5, §6), and writes the
+//!   merged sets under the store's `merged/v<model>.<merge>/` (§8),
+//!   replacing what was there; prints both reports. `--survey` counts
+//!   values outside the merge's tables instead of stopping; it and
+//!   `--limit` write nothing.
+//! * `merge dump <set.zst>... [--limit N]` prints a merged set as JSON
+//!   lines, for eyes.
 //!
 //! `--survey` (plan §6) keeps going past records that do not normalize and
 //! reports every distinct failure signature with counts and examples; it
@@ -71,7 +80,8 @@ use ingest::list::Lister;
 use ingest::{
     Binary, Client, Failure, Key, Keys, Kind, Reader, Sink, Source, Stage, Store, Written,
 };
-use merge::{Contributor, Identity, OwnedName, Registry};
+use merge::identity::Resolution;
+use merge::{Builder, Contributor, Identity, OwnedName, Registry, WorkId};
 use model::{Claim, Doi, OpenAlexId, ParseError, Pmid};
 use source_crossref::Crossref;
 use source_openalex::OpenAlex;
@@ -92,7 +102,9 @@ const USAGE: &str = "usage:
   ol-rht <pubmed|crossref|openalex> list [--store <root>] [--mailto <address>] [--seed <file> --by <doi|pmid|pmc|openalex>]
   ol-rht <pubmed|crossref|openalex> fetch <listing> [--store <root>] [--workers N] [--limit N] [--mailto <address>]
   ol-rht <pubmed|crossref|openalex> ingest <listing> [--store <root>] [--workers N] [--limit N] [--out <dir>] [--mailto <address>]
-  ol-rht merge identity [--store <root>] [--limit N] [--survey]";
+  ol-rht merge identity [--store <root>] [--limit N] [--survey]
+  ol-rht merge [--store <root>] [--limit N] [--survey]
+  ol-rht merge dump <set.zst>... [--limit N]";
 
 /// Who we say we are; `--mailto` adds an address inside the parenthesis.
 const USER_AGENT: &str = "ol-rht/0.1 (citation-graph ingestion";
@@ -120,6 +132,12 @@ fn main() -> ExitCode {
             Some(parse) => ids(parse),
             None => usage(),
         },
+        ["merge", rest @ ..] if rest.first().is_none_or(|a| a.starts_with("--")) => {
+            match Options::parse(rest) {
+                Some(opts) => merge_all(&opts),
+                None => usage(),
+            }
+        }
         [source, action, rest @ ..] => {
             let Some(opts) = Options::parse(rest) else {
                 return usage();
@@ -147,6 +165,7 @@ fn main() -> ExitCode {
                 ("openalex", "fetch") => fetch::<OpenAlex>(&opts),
                 ("openalex", "ingest") => ingest::<OpenAlex, OpenAlexStats>(&opts),
                 ("merge", "identity") => merge_identity(&opts),
+                ("merge", "dump") => merge_dump(&opts),
                 _ => usage(),
             }
         }
@@ -390,7 +409,7 @@ where
             }
             if let Some(e) = error {
                 for w in &written {
-                    for kind in Kind::ALL {
+                    for kind in Kind::NORMALIZED {
                         let _ = std::fs::remove_file(kind.path(&w.prefix));
                     }
                 }
@@ -502,6 +521,10 @@ fn dump_one<S: Source>(path: &Path, limit: Option<u64>, out: &mut impl Write) ->
         Kind::References => json_lines::<(S::Id<'_>, S::Reference<'_>)>(&reader, limit, out),
         Kind::Deletions => json_lines::<S::Id<'_>>(&reader, limit, out),
         Kind::Symbols => json_lines::<&str>(&reader, limit, out),
+        Kind::Edges | Kind::Names | Kind::Relations | Kind::Unresolved => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "a merged set; use merge dump",
+        )),
     })
 }
 
@@ -596,7 +619,12 @@ fn keys_one<S: Keys>(
             }
             Ok(records)
         }
-        Kind::Deletions | Kind::Symbols => Err(io::Error::new(
+        Kind::Deletions
+        | Kind::Symbols
+        | Kind::Edges
+        | Kind::Names
+        | Kind::Relations
+        | Kind::Unresolved => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "keys come from a works or references set",
         )),
@@ -896,48 +924,54 @@ where
     code
 }
 
-/// The merge's identity pass over the store (merge plan §3, §4, §8):
-/// the phases in the plan's order, then the registry, then the report.
-#[allow(clippy::too_many_lines)]
-fn merge_identity(opts: &Options) -> ExitCode {
-    if !opts.paths.is_empty()
-        || opts.workers.is_some()
-        || opts.out.is_some()
-        || opts.mailto.is_some()
-        || opts.seed.is_some()
-        || opts.by.is_some()
-    {
-        return usage();
-    }
-    let store = opts.store();
-    let limit = opts.limit.map(|n| records_limit(Some(n)));
+/// The options no merge command takes.
+fn merge_options_ok(opts: &Options) -> bool {
+    opts.paths.is_empty()
+        && opts.workers.is_none()
+        && opts.out.is_none()
+        && opts.mailto.is_none()
+        && opts.seed.is_none()
+        && opts.by.is_none()
+}
+
+/// What the identity pass leaves for the registry and the second pass:
+/// the resolution, and per source the works and references sets read.
+struct Pass1 {
+    res: Resolution,
+    pubmed: (Vec<PathBuf>, Vec<PathBuf>),
+    crossref: (Vec<PathBuf>, Vec<PathBuf>),
+    openalex: (Vec<PathBuf>, Vec<PathBuf>),
+}
+
+/// The identity pass over the store (merge plan §3, §8): the phases in
+/// the plan's order, ending in the verdicts.
+fn merge_pass1(
+    opts: &Options,
+    store: &Store,
+    limit: Option<usize>,
+    what: &str,
+) -> Result<Pass1, ExitCode> {
     let started = std::time::Instant::now();
-    let allocations = ingest::alloc::allocations();
     let mut identity = Identity::new();
+    identity.set_survey(opts.survey);
     let sources = (|| -> Result<_, merge::identity::Error> {
-        let pubmed = merge_add::<Pubmed>(&mut identity, &store, limit)?;
-        let crossref = merge_add::<Crossref>(&mut identity, &store, limit)?;
-        let openalex = merge_add::<OpenAlex>(&mut identity, &store, limit)?;
+        let pubmed = merge_add::<Pubmed>(&mut identity, store, limit)?;
+        let crossref = merge_add::<Crossref>(&mut identity, store, limit)?;
+        let openalex = merge_add::<OpenAlex>(&mut identity, store, limit)?;
         Ok((pubmed, crossref, openalex))
     })();
-    let (pubmed, crossref, openalex) = match sources {
-        Ok(sources) => sources,
-        Err(e) => {
-            eprintln!("merge identity: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
+    let (pubmed, crossref, openalex) = sources.map_err(|e| {
+        eprintln!("{what}: {e}");
+        ExitCode::FAILURE
+    })?;
     eprintln!(
-        "merge identity: {} records, {} names read in {:.1} s",
+        "{what}: {} records, {} names read in {:.1} s",
         identity.records(),
         identity.names(),
         started.elapsed().as_secs_f64()
     );
     identity.mark();
-    eprintln!(
-        "merge identity: {} conflict components",
-        identity.conflicts()
-    );
+    eprintln!("{what}: {} conflict components", identity.conflicts());
     let phases = (|| -> Result<(), merge::identity::Error> {
         merge_titles::<Pubmed>(&mut identity, &pubmed.0, limit)?;
         merge_titles::<Crossref>(&mut identity, &crossref.0, limit)?;
@@ -945,88 +979,325 @@ fn merge_identity(opts: &Options) -> ExitCode {
         merge_targets::<Pubmed>(&mut identity, &pubmed.1, limit)?;
         merge_targets::<Crossref>(&mut identity, &crossref.1, limit)?;
         merge_targets::<OpenAlex>(&mut identity, &openalex.1, limit)?;
+        identity.relate();
         Ok(())
     })();
-    if let Err(e) = phases {
-        eprintln!("merge identity: {e}");
-        return ExitCode::FAILURE;
+    phases.map_err(|e| {
+        eprintln!("{what}: {e}");
+        ExitCode::FAILURE
+    })?;
+    let res = identity.resolve(opts.survey).map_err(|e| {
+        eprintln!("{what}: {e}");
+        ExitCode::FAILURE
+    })?;
+    Ok(Pass1 {
+        res,
+        pubmed,
+        crossref,
+        openalex,
+    })
+}
+
+/// The registry's answer for one resolution.
+struct Assigned {
+    ids: merge::Ids,
+    assignment: merge::registry::Assignment,
+    stub_works: Vec<Vec<OwnedName>>,
+    dropped: Vec<merge::registry::Line>,
+}
+
+impl Assigned {
+    /// The lines to append, in order.
+    fn lines(self) -> Vec<merge::registry::Line> {
+        self.assignment
+            .lines
+            .into_iter()
+            .chain(self.dropped)
+            .collect()
     }
-    let res = match identity.resolve(opts.survey) {
-        Ok(res) => res,
-        Err(e) => {
-            eprintln!("merge identity: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
-    // The registry: held works in a deterministic order, then stubs.
-    let registry_path = store.registry();
-    let mut registry = match Registry::read(&registry_path) {
-        Ok(registry) => registry,
-        Err(e) => {
-            eprintln!("merge identity: {}: {e}", registry_path.display());
-            return ExitCode::FAILURE;
-        }
-    };
-    let mut held: Vec<Vec<OwnedName>> = res
-        .works
+}
+
+/// Gives every work its id through the registry (merge plan §4): held
+/// works in the registry's order, then stubs, in one assignment, so an
+/// id that a held work and a stub both claim — a name a vanished record
+/// held that a reference still cites — is split rather than given
+/// twice; on a complete run, names no longer seen are dropped.
+fn merge_assign(registry: &mut Registry, res: &Resolution, complete: bool) -> Assigned {
+    let order = res.held_order();
+    let stub_works = res.stub_works();
+    let all: Vec<Vec<OwnedName>> = order
         .iter()
-        .map(|w| w.registry_names(&res.arena))
+        .map(|(_, n)| n.clone())
+        .chain(stub_works.iter().cloned())
         .collect();
-    held.sort();
-    let stubs = res.stub_works();
     let at = ingest::time::now();
-    let complete = limit.is_none() && !opts.survey;
-    let held_assignment = registry.assign(&held, &at, false);
-    let stub_assignment = registry.assign(&stubs, &at, false);
+    let assignment = registry.assign(&all, &at, false);
     let dropped = if complete {
-        let seen: HashSet<&OwnedName> = held.iter().chain(&stubs).flatten().collect();
+        let seen: HashSet<&OwnedName> = all.iter().flatten().collect();
         registry.drop_unseen(|n| seen.contains(n), &at)
     } else {
         Vec::new()
     };
-    let mut out = io::stdout().lock();
-    if let Err(e) = merge::report::identity(
-        &mut out,
-        &res,
-        &stubs,
-        Some(&held_assignment),
-        Some(&stub_assignment),
-    ) {
-        eprintln!("merge identity: {e}");
-        return ExitCode::FAILURE;
+    let (held_ids, stub_ids) = assignment.ids.split_at(order.len());
+    let mut ids = merge::Ids {
+        held: vec![WorkId::FIRST; res.works.len()],
+        stubs: stub_ids.to_vec(),
+    };
+    for ((w, _), id) in order.iter().zip(held_ids) {
+        ids.held[*w] = *id;
     }
-    let lines = held_assignment.lines.len() + stub_assignment.lines.len() + dropped.len();
+    Assigned {
+        ids,
+        assignment,
+        stub_works,
+        dropped,
+    }
+}
+
+/// Appends the registry's new lines — the one thing of record — unless
+/// the run was partial.
+fn merge_commit(
+    what: &str,
+    path: &Path,
+    registry: &Registry,
+    lines: &[merge::registry::Line],
+    complete: bool,
+) -> Result<(), ExitCode> {
     if complete {
-        let all: Vec<merge::registry::Line> = held_assignment
-            .lines
-            .into_iter()
-            .chain(stub_assignment.lines)
-            .chain(dropped)
-            .collect();
-        if let Err(e) = Registry::append(&registry_path, &all) {
-            eprintln!("merge identity: {}: {e}", registry_path.display());
-            return ExitCode::FAILURE;
-        }
+        let n = lines.len();
+        Registry::append(path, lines).map_err(|e| {
+            eprintln!("{what}: {}: {e}", path.display());
+            ExitCode::FAILURE
+        })?;
         eprintln!(
-            "merge identity: {lines} lines appended to {}; {} ids minted in all",
-            registry_path.display(),
+            "{what}: {n} lines appended to {}; {} ids minted in all",
+            path.display(),
             registry.minted()
         );
     } else {
         eprintln!(
-            "merge identity: {lines} registry lines computed, none written (--limit or --survey)"
+            "{what}: {} registry lines computed, none written (--limit or --survey)",
+            lines.len()
         );
     }
+    Ok(())
+}
+
+/// The merge's identity pass over the store (merge plan §3, §4, §8):
+/// the phases in the plan's order, then the registry, then the report.
+fn merge_identity(opts: &Options) -> ExitCode {
+    if !merge_options_ok(opts) {
+        return usage();
+    }
+    let what = "merge identity";
+    let store = opts.store();
+    let limit = opts.limit.map(|n| records_limit(Some(n)));
+    let started = std::time::Instant::now();
+    let allocations = ingest::alloc::allocations();
+    let pass = match merge_pass1(opts, &store, limit, what) {
+        Ok(pass) => pass,
+        Err(code) => return code,
+    };
+    let registry_path = store.registry();
+    let mut registry = match Registry::read(&registry_path) {
+        Ok(registry) => registry,
+        Err(e) => {
+            eprintln!("{what}: {}: {e}", registry_path.display());
+            return ExitCode::FAILURE;
+        }
+    };
+    let complete = limit.is_none() && !opts.survey;
+    let assigned = merge_assign(&mut registry, &pass.res, complete);
+    let mut out = io::stdout().lock();
+    if let Err(e) = merge::report::identity(
+        &mut out,
+        &pass.res,
+        &assigned.stub_works,
+        Some(&assigned.assignment),
+    ) {
+        eprintln!("{what}: {e}");
+        return ExitCode::FAILURE;
+    }
+    if let Err(code) = merge_commit(what, &registry_path, &registry, &assigned.lines(), complete) {
+        return code;
+    }
     eprintln!(
-        "merge identity: {:.1} s, {} allocations",
+        "{what}: {:.1} s, {} allocations",
         started.elapsed().as_secs_f64(),
         ingest::alloc::allocations() - allocations
     );
-    if res.components.unresolved.is_empty() {
+    if pass.res.components.unresolved.is_empty() && pass.res.stats.unmapped.is_empty() {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE
     }
+}
+
+/// The whole merge (merge plan §8): the identity pass and the registry,
+/// then every record's view and every reference through the names
+/// table, the merged sets written, both reports printed.
+#[allow(clippy::too_many_lines)]
+fn merge_all(opts: &Options) -> ExitCode {
+    if !merge_options_ok(opts) {
+        return usage();
+    }
+    let what = "merge";
+    let store = opts.store();
+    let limit = opts.limit.map(|n| records_limit(Some(n)));
+    let started = std::time::Instant::now();
+    let allocations = ingest::alloc::allocations();
+    let Pass1 {
+        res,
+        pubmed,
+        crossref,
+        openalex,
+    } = match merge_pass1(opts, &store, limit, what) {
+        Ok(pass) => pass,
+        Err(code) => return code,
+    };
+    let registry_path = store.registry();
+    let mut registry = match Registry::read(&registry_path) {
+        Ok(registry) => registry,
+        Err(e) => {
+            eprintln!("{what}: {}: {e}", registry_path.display());
+            return ExitCode::FAILURE;
+        }
+    };
+    let complete = limit.is_none() && !opts.survey;
+    let assigned = merge_assign(&mut registry, &res, complete);
+    let mut out = io::stdout().lock();
+    if let Err(e) = merge::report::identity(
+        &mut out,
+        &res,
+        &assigned.stub_works,
+        Some(&assigned.assignment),
+    ) {
+        eprintln!("{what}: {e}");
+        return ExitCode::FAILURE;
+    }
+    let pass1_clean = res.components.unresolved.is_empty() && res.stats.unmapped.is_empty();
+    let ids = assigned.ids.clone();
+    if let Err(code) = merge_commit(what, &registry_path, &registry, &assigned.lines(), complete) {
+        return code;
+    }
+    eprintln!(
+        "{what}: identity and registry done in {:.1} s",
+        started.elapsed().as_secs_f64()
+    );
+    let mut builder = match Builder::new(res, ids) {
+        Ok(builder) => builder,
+        Err(e) => {
+            eprintln!("{what}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    builder.set_survey(opts.survey);
+    let phases = (|| -> Result<(), merge::build::Error> {
+        for path in &pubmed.0 {
+            builder.works::<Pubmed>(path, limit)?;
+        }
+        for path in &crossref.0 {
+            builder.works::<Crossref>(path, limit)?;
+        }
+        for path in &openalex.0 {
+            builder.works::<OpenAlex>(path, limit)?;
+        }
+        for path in &pubmed.1 {
+            builder.references::<Pubmed>(path, limit)?;
+        }
+        for path in &crossref.1 {
+            builder.references::<Crossref>(path, limit)?;
+        }
+        for path in &openalex.1 {
+            builder.references::<OpenAlex>(path, limit)?;
+        }
+        Ok(())
+    })();
+    if let Err(e) = phases {
+        eprintln!("{what}: {e}");
+        return ExitCode::FAILURE;
+    }
+    eprintln!(
+        "{what}: views and references read in {:.1} s",
+        started.elapsed().as_secs_f64()
+    );
+    let merged = match builder.finish() {
+        Ok(merged) => merged,
+        Err(e) => {
+            eprintln!("{what}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let written = if complete {
+        let dir = merge::layout::dir(&store);
+        match merge::layout::write(&dir, &merged) {
+            Ok(summary) => Some(summary),
+            Err(e) => {
+                eprintln!("{what}: {}: {e}", dir.display());
+                return ExitCode::FAILURE;
+            }
+        }
+    } else {
+        eprintln!("{what}: merged sets computed, none written (--limit or --survey)");
+        None
+    };
+    if let Err(e) = merge::report::merge(&mut out, &merged, written.as_ref()) {
+        eprintln!("{what}: {e}");
+        return ExitCode::FAILURE;
+    }
+    eprintln!(
+        "{what}: {:.1} s, {} allocations",
+        started.elapsed().as_secs_f64(),
+        ingest::alloc::allocations() - allocations
+    );
+    if pass1_clean && merged.stats.unmapped.is_empty() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
+/// Prints merged sets as JSON lines.
+fn merge_dump(opts: &Options) -> ExitCode {
+    if opts.out.is_some()
+        || opts.workers.is_some()
+        || opts.by.is_some()
+        || !opts.reads_only()
+        || !opts.no_survey()
+    {
+        return usage();
+    }
+    let mut out = io::BufWriter::new(io::stdout().lock());
+    for path in &opts.paths {
+        if let Err(err) = merge_dump_one(path, opts.limit, &mut out) {
+            eprintln!("{}: {err}", path.display());
+            return ExitCode::FAILURE;
+        }
+    }
+    match out.flush() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(err) => {
+            eprintln!("stdout: {err}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn merge_dump_one(path: &Path, limit: Option<u64>, out: &mut impl Write) -> io::Result<()> {
+    let reader = merge::layout::open(path)?;
+    let limit = records_limit(limit);
+    reader.with_table(|| match reader.header().kind {
+        Kind::Works => json_lines::<merge::record::Work<'_>>(&reader, limit, out),
+        Kind::Edges => json_lines::<merge::record::Edge>(&reader, limit, out),
+        Kind::Names => json_lines::<merge::record::NameRow<'_>>(&reader, limit, out),
+        Kind::Relations => json_lines::<merge::record::Relation>(&reader, limit, out),
+        Kind::Unresolved => json_lines::<merge::record::Unresolved<'_>>(&reader, limit, out),
+        Kind::Symbols => json_lines::<&str>(&reader, limit, out),
+        Kind::References | Kind::Deletions => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "a normalized set; use <source> dump",
+        )),
+    })
 }
 
 /// Reads every works set of one source into the identity pass; returns

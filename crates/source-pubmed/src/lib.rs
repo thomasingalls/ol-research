@@ -25,6 +25,7 @@ pub mod normalize;
 mod parse;
 pub mod record;
 pub mod text;
+pub mod view;
 
 pub use error::{Error, ErrorKind};
 pub use parse::{ArticleSet, records};
@@ -116,11 +117,36 @@ impl merge::Contributor for Pubmed {
         }
     }
 
+    fn native(id: &model::Pmid) -> merge::Name<'_> {
+        merge::Name::Pmid(*id)
+    }
+
     fn titles<'w>(work: &'w normalize::Citation<'_>) -> merge::Titles<'w> {
         merge::Titles {
             title: Some(work.title).filter(|t| !t.trim().is_empty()),
             vernacular: work.vernacular_title,
         }
+    }
+
+    fn view<'w>(
+        work: &'w normalize::Citation<'_>,
+        table: &'w model::Table,
+    ) -> Result<merge::View<'w>, merge::view::Unmapped> {
+        view::view(work, table)
+    }
+
+    fn relations(
+        work: &normalize::Citation<'_>,
+        _: &model::Table,
+        out: &mut dyn FnMut(merge::relation::Related),
+    ) -> Result<(), merge::view::Unmapped> {
+        for r in &work.relations {
+            out(merge::relation::Related {
+                kind: view::relation_kind(r.kind),
+                target: r.pmid.map(merge::OwnedName::Pmid),
+            });
+        }
+        Ok(())
     }
 
     fn targets<'w>(reference: &'w normalize::Reference<'_>, out: &mut dyn FnMut(merge::Name<'w>)) {
@@ -132,6 +158,13 @@ impl merge::Contributor for Pubmed {
         }
         if let Some(pmc) = reference.pmc.as_ref().and_then(model::Claim::valid) {
             out(merge::Name::Pmc(*pmc));
+        }
+    }
+
+    fn citation<'w>(reference: &'w normalize::Reference<'_>) -> merge::record::Citation<'w> {
+        merge::record::Citation {
+            text: Some(reference.citation).filter(|t| !t.trim().is_empty()),
+            ..merge::record::Citation::default()
         }
     }
 }

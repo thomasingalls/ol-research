@@ -25,6 +25,7 @@ pub mod list;
 pub mod normalize;
 pub mod parse;
 pub mod record;
+pub mod view;
 pub mod vocab;
 
 pub use error::Error;
@@ -67,6 +68,10 @@ impl merge::Contributor for Crossref {
         });
     }
 
+    fn native<'w>(id: &'w model::Doi<'_>) -> merge::Name<'w> {
+        merge::Name::Doi(id.as_str())
+    }
+
     fn titles<'w>(work: &'w normalize::Work<'_>) -> merge::Titles<'w> {
         merge::Titles {
             title: work.title.filter(|t| !t.trim().is_empty()),
@@ -74,10 +79,29 @@ impl merge::Contributor for Crossref {
         }
     }
 
+    fn view<'w>(
+        work: &'w normalize::Work<'_>,
+        table: &'w model::Table,
+    ) -> Result<merge::View<'w>, merge::view::Unmapped> {
+        view::view(work, table)
+    }
+
+    fn relations(
+        work: &normalize::Work<'_>,
+        table: &model::Table,
+        out: &mut dyn FnMut(merge::relation::Related),
+    ) -> Result<(), merge::view::Unmapped> {
+        view::relations(work, table, out)
+    }
+
     fn targets<'w>(reference: &'w normalize::Reference<'_>, out: &mut dyn FnMut(merge::Name<'w>)) {
         if let Some(doi) = reference.doi.as_ref().and_then(model::Claim::valid) {
             out(merge::Name::Doi(doi.as_str()));
         }
+    }
+
+    fn citation<'w>(reference: &'w normalize::Reference<'_>) -> merge::record::Citation<'w> {
+        view::citation(reference)
     }
 }
 

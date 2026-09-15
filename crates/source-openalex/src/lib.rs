@@ -21,6 +21,7 @@ pub mod list;
 pub mod normalize;
 pub mod parse;
 pub mod record;
+pub mod view;
 pub mod vocab;
 
 pub use error::Error;
@@ -86,6 +87,10 @@ impl merge::Contributor for OpenAlex {
         }
     }
 
+    fn native(id: &model::OpenAlexId) -> merge::Name<'_> {
+        merge::Name::OpenAlex(*id)
+    }
+
     fn titles<'w>(work: &'w normalize::Work<'_>) -> merge::Titles<'w> {
         merge::Titles {
             title: work.title.filter(|t| !t.trim().is_empty()),
@@ -93,8 +98,28 @@ impl merge::Contributor for OpenAlex {
         }
     }
 
+    fn view<'w>(
+        work: &'w normalize::Work<'_>,
+        table: &'w model::Table,
+    ) -> Result<merge::View<'w>, merge::view::Unmapped> {
+        view::view(work, table)
+    }
+
+    fn relations(
+        work: &normalize::Work<'_>,
+        _: &model::Table,
+        out: &mut dyn FnMut(merge::relation::Related),
+    ) -> Result<(), merge::view::Unmapped> {
+        view::relations(work, out);
+        Ok(())
+    }
+
     fn targets<'w>(reference: &'w model::OpenAlexId, out: &mut dyn FnMut(merge::Name<'w>)) {
         out(merge::Name::OpenAlex(*reference));
+    }
+
+    fn citation(_: &model::OpenAlexId) -> merge::record::Citation<'_> {
+        merge::record::Citation::default()
     }
 }
 

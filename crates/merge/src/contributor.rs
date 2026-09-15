@@ -1,12 +1,16 @@
 //! What a source crate implements for the merge (merge plan §8): the
-//! three questions the merge asks of a record, answered by the crate that
+//! questions the merge asks of a record, answered by the crate that
 //! knows the record's shape. The merge is written once against the
 //! answers, the way the runner is written once against [`Source`].
 
 use ingest::Source;
+use model::symbol::Table;
 
 use crate::name::{Assertion, Name};
+use crate::record::Citation;
+use crate::relation::Related;
 use crate::title::Titles;
+use crate::view::{Unmapped, View};
 use crate::work::SourceId;
 
 /// A source's records, as the merge sees them.
@@ -19,11 +23,41 @@ pub trait Contributor: Source {
     /// not a name and is not emitted.
     fn names<'w>(work: &'w Self::Work<'_>, out: &mut dyn FnMut(Assertion<'w>));
 
+    /// The native id a references set carries with each edge, as a name.
+    fn native<'w>(id: &'w Self::Id<'_>) -> Name<'w>;
+
     /// The record's titles, raw markup and all, for the corroboration of
     /// merge plan §3.3.
     fn titles<'w>(work: &'w Self::Work<'_>) -> Titles<'w>;
 
+    /// The record's values for the promoted fields of §5, interned text
+    /// resolved through the set's `table` (see [`crate::view::text`]),
+    /// the source's own vocabularies mapped into the merge's.
+    ///
+    /// # Errors
+    ///
+    /// A value the mapping tables do not have, or a symbol the table does
+    /// not: the run stops on it, or `--survey` counts it.
+    fn view<'w>(work: &'w Self::Work<'_>, table: &'w Table) -> Result<View<'w>, Unmapped>;
+
+    /// The typed relations of §6 the record asserts, each with the other
+    /// work's name when it has one in our namespaces.
+    ///
+    /// # Errors
+    ///
+    /// A relation type the table does not have, or a symbol the set's
+    /// table does not.
+    fn relations(
+        work: &Self::Work<'_>,
+        table: &Table,
+        out: &mut dyn FnMut(Related),
+    ) -> Result<(), Unmapped>;
+
     /// The names a reference points at, each that parsed; none for a
     /// reference that carries only text or structured fields.
     fn targets<'w>(reference: &'w Self::Reference<'_>, out: &mut dyn FnMut(Name<'w>));
+
+    /// What a reference gives besides names, for the unresolved stream of
+    /// §6; empty for a source whose references are ids alone.
+    fn citation<'w>(reference: &'w Self::Reference<'_>) -> Citation<'w>;
 }
