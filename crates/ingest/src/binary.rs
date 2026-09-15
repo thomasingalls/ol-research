@@ -1,14 +1,18 @@
 //! The binary sink (plan §5, rule 12), and the reader for what it writes.
 //!
-//! One run of one source produces up to three files, one per record kind
-//! the [`Sink`] receives: `<prefix>.works.zst`, `<prefix>.references.zst`,
-//! `<prefix>.deletions.zst`. Each is a zstd stream of length-prefixed
-//! postcard values: first a [`Header`] naming the source, the record kind
-//! and the model version, then the records. Postcard is a compact,
-//! non-self-describing encoding, so a file is readable only with the types
-//! of the model version in its header — which is the point: output is a
-//! pure function of raw data and model version, and a model change
-//! invalidates it (plan §6).
+//! Every raw file becomes one output set of up to three files, one per
+//! record kind the [`Sink`] receives: `<prefix>.works.zst`,
+//! `<prefix>.references.zst`, `<prefix>.deletions.zst`, where the prefix
+//! is named from the raw file (the runner's [`crate::run::mirror`]). Each
+//! is a zstd stream of length-prefixed postcard values: first a [`Header`]
+//! naming the source, the record kind and the model version, then the
+//! records. Postcard is a compact, non-self-describing encoding, so a file
+//! is readable only with the types of the model version in its header —
+//! which is the point: output is a pure function of raw data and model
+//! version, and a model change invalidates it (plan §6).
+//!
+//! One raw file, one set: a rebuild of one raw file replaces one set, and
+//! workers write in parallel sharing nothing (plan §5, rule 4).
 //!
 //! Writing allocates nothing per record in the steady state: each value is
 //! encoded into one reusable buffer and copied into the compressor.
@@ -27,6 +31,10 @@ use crate::source::{Sink, Source};
 
 /// The layout version, independent of the model version.
 pub const FORMAT: u8 = 1;
+
+/// zstd level: fast; the level and the frame size are knobs not yet
+/// turned (plan §5, second measurement).
+const LEVEL: i32 = 3;
 
 /// The three record kinds, one file each.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -88,83 +96,47 @@ impl Header {
     pub const MAGIC: [u8; 5] = *b"OLRHT";
 }
 
-/// What a finished sink wrote.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// What one finished output set holds.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Written {
+    /// The set's prefix: its files are [`Kind::path`] of it.
+    pub prefix: PathBuf,
     /// Records per kind, in [`Kind::ALL`] order.
     pub records: [u64; 3],
-    /// Compressed bytes on disk, all files.
+    /// Compressed bytes on disk, all three files.
     pub bytes: u64,
 }
 
 struct Stream {
-    path: PathBuf,
     out: zstd::stream::write::Encoder<'static, BufWriter<File>>,
     records: u64,
 }
 
-/// A [`Sink`] writing the layout described in the module docs.
-///
-/// An I/O error is remembered rather than raised — the sink methods cannot
-/// fail — and reported through [`Sink::failed`], which the runner checks
-/// after every record, so a full disk stops the run at the record it hit.
-/// Nothing is written after an error; [`Binary::finish`] then removes the
-/// files.
-pub struct Binary {
+/// One raw file's output set. Its files are removed when it is dropped
+/// unfinished, so nothing partial survives an error.
+struct Set {
     prefix: PathBuf,
-    streams: [Stream; 3],
-    buf: Vec<u8>,
-    error: Option<io::Error>,
-    poisoned: bool,
+    streams: Vec<Stream>,
+    finished: bool,
 }
 
-impl fmt::Debug for Binary {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Binary")
-            .field("prefix", &self.prefix)
-            .field("poisoned", &self.poisoned)
-            .finish_non_exhaustive()
-    }
-}
-
-/// zstd level: fast, and still several times smaller than gzip's ratio
-/// would need to be measured against.
-const LEVEL: i32 = 3;
-
-impl Binary {
-    /// Creates the three files, their parent directory if needed, and
-    /// writes each header. `model` is the model version to tag them with.
-    ///
-    /// # Errors
-    ///
-    /// Any I/O error creating or writing.
-    pub fn create(prefix: &Path, source: &str, model: u32) -> io::Result<Self> {
+impl Set {
+    fn create(prefix: &Path, source: &str, model: u32, buf: &mut Vec<u8>) -> io::Result<Self> {
         if let Some(parent) = prefix.parent()
             && !parent.as_os_str().is_empty()
         {
             fs::create_dir_all(parent)?;
         }
-        let mut streams = Vec::with_capacity(3);
-        for kind in Kind::ALL {
-            let path = kind.path(prefix);
-            let out =
-                zstd::stream::write::Encoder::new(BufWriter::new(File::create(&path)?), LEVEL)?;
-            streams.push(Stream {
-                path,
-                out,
-                records: 0,
-            });
-        }
-        let Ok(streams) = <[Stream; 3]>::try_from(streams) else {
-            unreachable!("three kinds, three streams")
-        };
-        let mut sink = Self {
+        let mut set = Self {
             prefix: prefix.to_path_buf(),
-            streams,
-            buf: Vec::with_capacity(1 << 16),
-            error: None,
-            poisoned: false,
+            streams: Vec::with_capacity(3),
+            finished: false,
         };
+        for kind in Kind::ALL {
+            let file = File::create(kind.path(prefix))?;
+            let out = zstd::stream::write::Encoder::new(BufWriter::new(file), LEVEL)?;
+            set.streams.push(Stream { out, records: 0 });
+        }
         for (i, kind) in Kind::ALL.into_iter().enumerate() {
             let header = Header {
                 magic: Header::MAGIC,
@@ -173,133 +145,226 @@ impl Binary {
                 source: source.to_owned(),
                 kind,
             };
-            sink.put(i, &header);
+            set.put(i, &header, buf)?;
             // Headers are not records.
-            sink.streams[i].records = 0;
+            set.streams[i].records = 0;
         }
-        match sink.error.take() {
-            Some(e) => {
-                sink.remove();
-                Err(e)
-            }
-            None => Ok(sink),
-        }
-    }
-
-    /// The files this sink writes.
-    #[must_use]
-    pub fn paths(&self) -> [&Path; 3] {
-        [
-            &self.streams[0].path,
-            &self.streams[1].path,
-            &self.streams[2].path,
-        ]
+        Ok(set)
     }
 
     /// Encodes one value into the reusable buffer and writes it,
-    /// length-prefixed, to stream `i`. After an error, nothing.
+    /// length-prefixed, to stream `i`.
+    fn put<T: Serialize + ?Sized>(
+        &mut self,
+        i: usize,
+        value: &T,
+        buf: &mut Vec<u8>,
+    ) -> io::Result<()> {
+        buf.clear();
+        *buf = postcard::to_extend(value, std::mem::take(buf))
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let stream = &mut self.streams[i];
+        write_varint(&mut stream.out, buf.len() as u64)?;
+        stream.out.write_all(buf)?;
+        stream.records += 1;
+        Ok(())
+    }
+
+    fn finish(mut self) -> io::Result<Written> {
+        let streams = std::mem::take(&mut self.streams);
+        let mut written = Written {
+            prefix: self.prefix.clone(),
+            records: [0; 3],
+            bytes: 0,
+        };
+        for (i, s) in streams.into_iter().enumerate() {
+            written.records[i] = s.records;
+            let mut file = s.out.finish()?;
+            file.flush()?;
+            written.bytes += file.get_ref().metadata().map_or(0, |m| m.len());
+        }
+        self.finished = true;
+        Ok(written)
+    }
+
+    fn remove_files(&self) {
+        for kind in Kind::ALL {
+            let _ = fs::remove_file(kind.path(&self.prefix));
+        }
+    }
+}
+
+impl Drop for Set {
+    fn drop(&mut self) {
+        if !self.finished {
+            self.remove_files();
+        }
+    }
+}
+
+/// How a raw file's index and path name its output set.
+type PrefixOf = Box<dyn Fn(usize, &Path) -> PathBuf + Send + Sync>;
+
+/// A [`Sink`] writing the layout described in the module docs: one output
+/// set per raw file, opened at [`Sink::begin_file`] and finished at
+/// [`Sink::end_file`], named by a function of the raw file's index and
+/// path.
+///
+/// An I/O error is remembered rather than raised — the record methods
+/// cannot fail — and reported through [`Sink::failed`], which the runner
+/// checks after every record, so a full disk stops the run at the record
+/// it hit. Nothing is written after an error; [`Binary::finish`] then
+/// removes every set this sink wrote, as does [`Binary::discard`] when a
+/// run failed for another reason.
+pub struct Binary {
+    source: String,
+    model: u32,
+    prefix_of: PrefixOf,
+    current: Option<Set>,
+    written: Vec<Written>,
+    buf: Vec<u8>,
+    error: Option<io::Error>,
+    poisoned: bool,
+}
+
+impl fmt::Debug for Binary {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Binary")
+            .field("source", &self.source)
+            .field("model", &self.model)
+            .field("open", &self.current.as_ref().map(|s| &s.prefix))
+            .field("written", &self.written.len())
+            .field("poisoned", &self.poisoned)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Binary {
+    /// A sink for `source`, tagging every set with model version `model`
+    /// and naming the set of the raw file at `index` with `prefix_of`.
+    pub fn new(
+        source: &str,
+        model: u32,
+        prefix_of: impl Fn(usize, &Path) -> PathBuf + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            source: source.to_owned(),
+            model,
+            prefix_of: Box::new(prefix_of),
+            current: None,
+            written: Vec::new(),
+            buf: Vec::with_capacity(1 << 16),
+            error: None,
+            poisoned: false,
+        }
+    }
+
+    /// Opens the output set for raw file `index` at `path`: creates its
+    /// files and their directory and writes the headers. What
+    /// [`Sink::begin_file`] does.
+    ///
+    /// # Errors
+    ///
+    /// A set is already open, the sink has failed, or I/O.
+    pub fn open_file(&mut self, path: &Path, index: usize) -> io::Result<()> {
+        if self.poisoned || self.error.is_some() {
+            return Err(io::Error::other("the sink failed earlier in the run"));
+        }
+        if self.current.is_some() {
+            return Err(io::Error::other("a raw file is still open"));
+        }
+        let prefix = (self.prefix_of)(index, path);
+        self.current = Some(Set::create(
+            &prefix,
+            &self.source,
+            self.model,
+            &mut self.buf,
+        )?);
+        Ok(())
+    }
+
+    /// Finishes the open set: ends the compression streams and flushes the
+    /// files. What [`Sink::end_file`] does.
+    ///
+    /// # Errors
+    ///
+    /// A write error since the set was opened, no set open, or I/O while
+    /// finishing; the set's files are removed on any of them.
+    pub fn close_file(&mut self) -> io::Result<()> {
+        if let Some(e) = self.error.take() {
+            self.poisoned = true;
+            self.current = None;
+            return Err(e);
+        }
+        let set = self
+            .current
+            .take()
+            .ok_or_else(|| io::Error::other("no raw file is open"))?;
+        self.written.push(set.finish()?);
+        Ok(())
+    }
+
+    /// The sets finished so far.
+    #[must_use]
+    pub fn written(&self) -> &[Written] {
+        &self.written
+    }
+
+    /// Abandons the set of the raw file still open, if there is one: its
+    /// files are removed and the sets before it stay. For a run that
+    /// stopped inside a file — `ingest` cut short by the record limit, or
+    /// a failure whose earlier files are complete and receipted.
+    pub fn abandon_open(&mut self) {
+        self.current = None;
+    }
+
     fn put<T: Serialize + ?Sized>(&mut self, i: usize, value: &T) {
         if self.error.is_some() || self.poisoned {
             return;
         }
-        self.buf.clear();
-        let buf = std::mem::take(&mut self.buf);
-        match postcard::to_extend(value, buf) {
-            Ok(buf) => self.buf = buf,
-            Err(e) => {
-                self.error = Some(io::Error::new(io::ErrorKind::InvalidData, e));
-                return;
+        match &mut self.current {
+            Some(set) => {
+                if let Err(e) = set.put(i, value, &mut self.buf) {
+                    self.error = Some(e);
+                }
             }
-        }
-        let stream = &mut self.streams[i];
-        let result = write_varint(&mut stream.out, self.buf.len() as u64)
-            .and_then(|()| stream.out.write_all(&self.buf));
-        match result {
-            Ok(()) => stream.records += 1,
-            Err(e) => self.error = Some(e),
+            None => self.error = Some(io::Error::other("a record outside a raw file")),
         }
     }
 
-    fn remove(&self) {
-        for s in &self.streams {
-            let _ = fs::remove_file(&s.path);
-        }
-    }
-
-    /// Finishes the compression streams and flushes the files.
+    /// Ends the run: the sets written, in the order their files finished.
     ///
     /// # Errors
     ///
-    /// An earlier write error, or one from finishing; the files are
-    /// removed in either case, so nothing partial is left behind.
-    pub fn finish(mut self) -> io::Result<Written> {
+    /// A set is still open, or an error was remembered; every set this
+    /// sink wrote is removed first, so nothing partial is left behind.
+    pub fn finish(mut self) -> io::Result<Vec<Written>> {
+        if self.current.is_some() {
+            self.discard();
+            return Err(io::Error::other("a raw file is still open"));
+        }
         if let Some(e) = self.error.take() {
-            self.remove();
+            self.discard();
             return Err(e);
         }
         if self.poisoned {
-            self.remove();
+            self.discard();
             return Err(io::Error::other("the sink failed earlier in the run"));
         }
-        let mut written = Written::default();
-        let streams = std::mem::replace(
-            &mut self.streams,
-            // Placeholders are never written to; `self` is consumed.
-            match Self::placeholders(&self.prefix) {
-                Ok(p) => p,
-                Err(e) => {
-                    self.remove();
-                    return Err(e);
-                }
-            },
-        );
-        for (i, s) in streams.into_iter().enumerate() {
-            written.records[i] = s.records;
-            let result = s.out.finish().and_then(|mut w| w.flush().map(|()| w));
-            match result {
-                Ok(_) => written.bytes += fs::metadata(&s.path).map_or(0, |m| m.len()),
-                Err(e) => {
-                    self.remove();
-                    return Err(e);
-                }
+        Ok(std::mem::take(&mut self.written))
+    }
+
+    /// Removes every set this sink wrote and the one open, if any: the run
+    /// failed for a reason that was not the sink's, and nothing partial
+    /// may remain (plan §6).
+    pub fn discard(mut self) {
+        self.current = None;
+        for w in std::mem::take(&mut self.written) {
+            for kind in Kind::ALL {
+                let _ = fs::remove_file(kind.path(&w.prefix));
             }
         }
-        self.poisoned = true; // the placeholders must not be removed
-        Ok(written)
     }
-
-    /// Removes the files: the run failed for a reason that was not the
-    /// sink's, and nothing partial may remain (plan §6).
-    pub fn discard(self) {
-        self.remove();
-    }
-
-    fn placeholders(prefix: &Path) -> io::Result<[Stream; 3]> {
-        let mut v = Vec::with_capacity(3);
-        for kind in Kind::ALL {
-            v.push(Stream {
-                path: kind.path(prefix),
-                out: zstd::stream::write::Encoder::new(BufWriter::new(tempfile()?), LEVEL)?,
-                records: 0,
-            });
-        }
-        let Ok(streams) = <[Stream; 3]>::try_from(v) else {
-            unreachable!("three kinds, three streams")
-        };
-        Ok(streams)
-    }
-}
-
-/// An anonymous file that vanishes when closed, for the placeholders.
-fn tempfile() -> io::Result<File> {
-    let path = std::env::temp_dir().join(format!(
-        "ol-rht-placeholder-{}-{:p}",
-        std::process::id(),
-        &LEVEL
-    ));
-    let file = File::create(&path)?;
-    let _ = fs::remove_file(&path);
-    Ok(file)
 }
 
 impl<'n, S: Source> Sink<'n, S> for Binary {
@@ -313,6 +378,14 @@ impl<'n, S: Source> Sink<'n, S> for Binary {
 
     fn deletion(&mut self, id: &S::Id<'n>) {
         self.put(2, id);
+    }
+
+    fn begin_file(&mut self, path: &Path, index: usize) -> io::Result<()> {
+        self.open_file(path, index)
+    }
+
+    fn end_file(&mut self) -> io::Result<()> {
+        self.close_file()
     }
 
     fn failed(&mut self) -> Option<io::Error> {

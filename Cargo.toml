@@ -23,6 +23,11 @@ quick-xml = "0.42"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
 zstd = "0.13"
+# Fetching (plan §3.5): rustls, no transparent decompression — raw bytes
+# must land as served — and the two digests the sources publish or imply.
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+sha2 = "0.11"
+md-5 = "0.11"
 
 [workspace.lints.rust]
 missing_debug_implementations = "warn"

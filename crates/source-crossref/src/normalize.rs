@@ -293,7 +293,13 @@ impl fmt::Display for Error {
             None => f.write_str("DOI unknown: ")?,
         }
         write!(f, "{} = {:?}: ", self.field, self.raw)?;
-        match &self.kind {
+        fmt::Display::fmt(&self.kind, f)
+    }
+}
+
+impl fmt::Display for ErrorKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
             ErrorKind::Doi(e) => write!(f, "{e}"),
             ErrorKind::Orcid(e) => write!(f, "{e}"),
             ErrorKind::Issn(e) => write!(f, "{e}"),
@@ -304,6 +310,12 @@ impl fmt::Display for Error {
             ErrorKind::Inconsistent(what) => write!(f, "inconsistent: {what}"),
             ErrorKind::Unmodelled(what) => write!(f, "not modelled yet: {what}"),
         }
+    }
+}
+
+impl ingest::source::Signature for Error {
+    fn signature(&self) -> String {
+        format!("{}: {}", self.field, self.kind)
     }
 }
 

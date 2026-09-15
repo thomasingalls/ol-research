@@ -1,0 +1,731 @@
+<PubmedArticle>
+    <MedlineCitation Status="MEDLINE" IndexingMethod="Automated" Owner="NLM">
+      <PMID Version="1">41576088</PMID>
+      <DateCompleted>
+        <Year>2026</Year>
+        <Month>01</Month>
+        <Day>23</Day>
+      </DateCompleted>
+      <DateRevised>
+        <Year>2026</Year>
+        <Month>01</Month>
+        <Day>29</Day>
+      </DateRevised>
+      <Article PubModel="Print-Electronic">
+        <Journal>
+          <ISSN IssnType="Electronic">1091-6490</ISSN>
+          <JournalIssue CitedMedium="Internet">
+            <Volume>123</Volume>
+            <Issue>4</Issue>
+            <PubDate>
+              <Year>2026</Year>
+              <Month>Jan</Month>
+              <Day>27</Day>
+            </PubDate>
+          </JournalIssue>
+          <Title>Proceedings of the National Academy of Sciences of the United States of America</Title>
+          <ISOAbbreviation>Proc Natl Acad Sci U S A</ISOAbbreviation>
+        </Journal>
+        <ArticleTitle>A quorum-sensing molecule from <i>Pseudomonas aeruginosa</i> induces defensive multicellularity in a coinfecting pathogen.</ArticleTitle>
+        <Pagination>
+          <MedlinePgn>e2513122123</MedlinePgn>
+        </Pagination>
+        <ELocationID EIdType="doi" ValidYN="Y">10.1073/pnas.2513122123</ELocationID>
+        <Abstract>
+          <AbstractText>Microorganisms commonly exist in polymicrobial communities, where they can respond to interspecies secreted molecules by altering behaviors and physiology; however, the underlying mechanisms remain underexplored. Here, we investigated interactions between <i>Stenotrophomonas maltophilia</i> and <i><i>Pseudomonas aeruginosa</i></i>, coinfecting opportunistic pathogens found in pneumonia and chronic lung infections, such as in cystic fibrosis. We found that <i>S. maltophilia</i> forms large protective multicellular aggregates upon exposure to <i><i>P. aeruginosa</i></i> secreted factors. Experimental evolution for lack of aggregation selected for fimbrial mutations and we found that fimbriae are required on both interacting <i>S. maltophilia</i> cells for aggregation. Untargeted metabolomics and targeted validations revealed that the quorum-sensing molecule <i><i>Pseudomonas</i></i> quinolone signal (PQS) directly induced <i>S. maltophilia</i> aggregation, and colocalized with the aggregates. Further, in coculture with <i><i>P. aeruginosa</i></i>, wild-type <i>S. maltophilia</i> formed aggregates, resulting in up to 75-fold increased survival from <i><i>P. aeruginosa</i></i> competition compared to fimbrial mutants. Finally, multiple other bacterial species similarly aggregated upon exposure to <i><i>P. aeruginosa</i></i> PQS, indicating a more general response. Collectively, our work identifies a multispecies interaction where a quorum-sensing molecule from a coinfecting pathogen is sensed as a "danger" signal, thereby inducing a protective multicellular response.</AbstractText>
+        </Abstract>
+        <AuthorList CompleteYN="Y">
+          <Author ValidYN="Y">
+            <LastName>Katharios-Lanwermeyer</LastName>
+            <ForeName>Stefan</ForeName>
+            <Initials>S</Initials>
+            <Identifier Source="ORCID">0000-0001-8710-2058</Identifier>
+            <AffiliationInfo>
+              <Affiliation>Laboratory of Molecular Biology, Center for Cancer Research, National Cancer Institute, National Institutes of Health, Bethesda, MD 20892.</Affiliation>
+            </AffiliationInfo>
+            <AffiliationInfo>
+              <Affiliation>Postdoctoral Research Associate Training Program, National Institute of General Medical Sciences, National Institutes of Health, Bethesda, MD 20892.</Affiliation>
+            </AffiliationInfo>
+          </Author>
+          <Author ValidYN="Y">
+            <LastName>Zarrella</LastName>
+            <ForeName>Tiffany M</ForeName>
+            <Initials>TM</Initials>
+            <Identifier Source="ORCID">0000-0002-3053-4025</Identifier>
+            <AffiliationInfo>
+              <Affiliation>Laboratory of Molecular Biology, Center for Cancer Research, National Cancer Institute, National Institutes of Health, Bethesda, MD 20892.</Affiliation>
+            </AffiliationInfo>
+            <AffiliationInfo>
+              <Affiliation>Postdoctoral Research Associate Training Program, National Institute of General Medical Sciences, National Institutes of Health, Bethesda, MD 20892.</Affiliation>
+            </AffiliationInfo>
+          </Author>
+          <Author ValidYN="Y">
+            <LastName>Godsil</LastName>
+            <ForeName>Marshall</ForeName>
+            <Initials>M</Initials>
+            <AffiliationInfo>
+              <Affiliation>Laboratory of Molecular Biology, Center for Cancer Research, National Cancer Institute, National Institutes of Health, Bethesda, MD 20892.</Affiliation>
+            </AffiliationInfo>
+          </Author>
+          <Author ValidYN="Y">
+            <LastName>Severin</LastName>
+            <ForeName>Stefanie</ForeName>
+            <Initials>S</Initials>
+            <Identifier Source="ORCID">0009-0000-2680-0020</Identifier>
+            <AffiliationInfo>
+              <Affiliation>Laboratory of Molecular Biology, Center for Cancer Research, National Cancer Institute, National Institutes of Health, Bethesda, MD 20892.</Affiliation>
+            </AffiliationInfo>
+          </Author>
+          <Author ValidYN="Y">
+            <LastName>Casiano</LastName>
+            <ForeName>Alejandro E</ForeName>
+            <Initials>AE</Initials>
+            <AffiliationInfo>
+              <Affiliation>Laboratory of Molecular Biology, Center for Cancer Research, National Cancer Institute, National Institutes of Health, Bethesda, MD 20892.</Affiliation>
+            </AffiliationInfo>
+          </Author>
+          <Author ValidYN="Y">
+            <LastName>Tai</LastName>
+            <ForeName>Chin-Hsien</ForeName>
+            <Initials>CH</Initials>
+            <AffiliationInfo>
+              <Affiliation>Laboratory of Molecular Biology, Center for Cancer Research, National Cancer Institute, National Institutes of Health, Bethesda, MD 20892.</Affiliation>
+            </AffiliationInfo>
+          </Author>
+          <Author ValidYN="Y">
+            <LastName>Khare</LastName>
+            <ForeName>Anupama</ForeName>
+            <Initials>A</Initials>
+            <Identifier Source="ORCID">0000-0003-1231-670X</Identifier>
+            <AffiliationInfo>
+              <Affiliation>Laboratory of Molecular Biology, Center for Cancer Research, National Cancer Institute, National Institutes of Health, Bethesda, MD 20892.</Affiliation>
+            </AffiliationInfo>
+          </Author>
+        </AuthorList>
+        <Language>eng</Language>
+        <GrantList CompleteYN="Y">
+          <Grant>
+            <GrantID>1FI2GM150430-01</GrantID>
+            <Agency>HHS | NIH | National Institute of General Medical Sciences (NIGMS)</Agency>
+            <Country/>
+          </Grant>
+          <Grant>
+            <GrantID>ZIA BC011819</GrantID>
+            <Acronym>ImNIH</Acronym>
+            <Agency>Intramural NIH HHS</Agency>
+            <Country>United States</Country>
+          </Grant>
+          <Grant>
+            <GrantID>FI2 GM150430</GrantID>
+            <Acronym>GM</Acronym>
+            <Agency>NIGMS NIH HHS</Agency>
+            <Country>United States</Country>
+          </Grant>
+          <Grant>
+            <GrantID>1FI2GM137843-01</GrantID>
+            <Agency>HHS | NIH | National Institute of General Medical Sciences (NIGMS)</Agency>
+            <Country/>
+          </Grant>
+          <Grant>
+            <GrantID>Z99 CA999999</GrantID>
+            <Acronym>ImNIH</Acronym>
+            <Agency>Intramural NIH HHS</Agency>
+            <Country>United States</Country>
+          </Grant>
+          <Grant>
+            <GrantID>FI2 GM137843</GrantID>
+            <Acronym>GM</Acronym>
+            <Agency>NIGMS NIH HHS</Agency>
+            <Country>United States</Country>
+          </Grant>
+        </GrantList>
+        <PublicationTypeList>
+          <PublicationType UI="D016428">Journal Article</PublicationType>
+        </PublicationTypeList>
+        <ArticleDate DateType="Electronic">
+          <Year>2026</Year>
+          <Month>01</Month>
+          <Day>23</Day>
+        </ArticleDate>
+      </Article>
+      <MedlineJournalInfo>
+        <Country>United States</Country>
+        <MedlineTA>Proc Natl Acad Sci U S A</MedlineTA>
+        <NlmUniqueID>7505876</NlmUniqueID>
+        <ISSNLinking>0027-8424</ISSNLinking>
+      </MedlineJournalInfo>
+      <ChemicalList>
+        <Chemical>
+          <RegistryNumber>0</RegistryNumber>
+          <NameOfSubstance UI="D015363">Quinolones</NameOfSubstance>
+        </Chemical>
+      </ChemicalList>
+      <CitationSubset>IM</CitationSubset>
+      <CommentsCorrectionsList>
+        <CommentsCorrections RefType="UpdateOf">
+          <RefSource>bioRxiv. 2025 May 02:2025.05.02.651457. doi: 10.1101/2025.05.02.651457.</RefSource>
+          <PMID Version="1">40568125</PMID>
+        </CommentsCorrections>
+      </CommentsCorrectionsList>
+      <MeshHeadingList>
+        <MeshHeading>
+          <DescriptorName UI="D011550" MajorTopicYN="Y">Pseudomonas aeruginosa</DescriptorName>
+          <QualifierName UI="Q000378" MajorTopicYN="N">metabolism</QualifierName>
+          <QualifierName UI="Q000502" MajorTopicYN="N">physiology</QualifierName>
+          <QualifierName UI="Q000235" MajorTopicYN="N">genetics</QualifierName>
+        </MeshHeading>
+        <MeshHeading>
+          <DescriptorName UI="D053038" MajorTopicYN="Y">Quorum Sensing</DescriptorName>
+          <QualifierName UI="Q000502" MajorTopicYN="N">physiology</QualifierName>
+        </MeshHeading>
+        <MeshHeading>
+          <DescriptorName UI="D020615" MajorTopicYN="Y">Stenotrophomonas maltophilia</DescriptorName>
+          <QualifierName UI="Q000502" MajorTopicYN="N">physiology</QualifierName>
+          <QualifierName UI="Q000378" MajorTopicYN="N">metabolism</QualifierName>
+          <QualifierName UI="Q000235" MajorTopicYN="N">genetics</QualifierName>
+        </MeshHeading>
+        <MeshHeading>
+          <DescriptorName UI="D015363" MajorTopicYN="N">Quinolones</DescriptorName>
+          <QualifierName UI="Q000378" MajorTopicYN="N">metabolism</QualifierName>
+        </MeshHeading>
+        <MeshHeading>
+          <DescriptorName UI="D060085" MajorTopicYN="Y">Coinfection</DescriptorName>
+          <QualifierName UI="Q000382" MajorTopicYN="N">microbiology</QualifierName>
+        </MeshHeading>
+        <MeshHeading>
+          <DescriptorName UI="D010861" MajorTopicYN="N">Fimbriae, Bacterial</DescriptorName>
+          <QualifierName UI="Q000378" MajorTopicYN="N">metabolism</QualifierName>
+          <QualifierName UI="Q000235" MajorTopicYN="N">genetics</QualifierName>
+        </MeshHeading>
+        <MeshHeading>
+          <DescriptorName UI="D006801" MajorTopicYN="N">Humans</DescriptorName>
+        </MeshHeading>
+        <MeshHeading>
+          <DescriptorName UI="D011552" MajorTopicYN="N">Pseudomonas Infections</DescriptorName>
+          <QualifierName UI="Q000382" MajorTopicYN="N">microbiology</QualifierName>
+        </MeshHeading>
+        <MeshHeading>
+          <DescriptorName UI="D009154" MajorTopicYN="N">Mutation</DescriptorName>
+        </MeshHeading>
+        <MeshHeading>
+          <DescriptorName UI="D056265" MajorTopicYN="N">Microbial Interactions</DescriptorName>
+        </MeshHeading>
+      </MeshHeadingList>
+      <KeywordList Owner="NOTNLM">
+        <Keyword MajorTopicYN="N">Pseudomonas aeruginosa</Keyword>
+        <Keyword MajorTopicYN="N">Stenotrophomonas maltophilia</Keyword>
+        <Keyword MajorTopicYN="N">aggregation</Keyword>
+        <Keyword MajorTopicYN="N">competition</Keyword>
+        <Keyword MajorTopicYN="N">microbial interactions</Keyword>
+      </KeywordList>
+      <CoiStatement>Competing interests statement:The authors declare no competing interest.</CoiStatement>
+    </MedlineCitation>
+    <PubmedData>
+      <History>
+        <PubMedPubDate PubStatus="medline">
+          <Year>2026</Year>
+          <Month>1</Month>
+          <Day>23</Day>
+          <Hour>18</Hour>
+          <Minute>37</Minute>
+        </PubMedPubDate>
+        <PubMedPubDate PubStatus="pubmed">
+          <Year>2026</Year>
+          <Month>1</Month>
+          <Day>23</Day>
+          <Hour>18</Hour>
+          <Minute>36</Minute>
+        </PubMedPubDate>
+        <PubMedPubDate PubStatus="entrez">
+          <Year>2026</Year>
+          <Month>1</Month>
+          <Day>23</Day>
+          <Hour>13</Hour>
+          <Minute>54</Minute>
+        </PubMedPubDate>
+      </History>
+      <PublicationStatus>ppublish</PublicationStatus>
+      <ArticleIdList>
+        <ArticleId IdType="pubmed">41576088</ArticleId>
+        <ArticleId IdType="doi">10.1073/pnas.2513122123</ArticleId>
+        <ArticleId IdType="pmc">PMC12834488</ArticleId>
+        <ArticleId IdType="mid">NIHMS2140043</ArticleId>
+      </ArticleIdList>
+      <ReferenceList>
+        <Reference>
+          <Citation>Eur J Clin Microbiol Infect Dis. 2017 Nov;36(11):2231-2235</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">28669016</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>PLoS Biol. 2022 Jun 21;20(6):e3001679</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">35727825</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>J Bacteriol. 2019 Jul 10;201(15):</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">31109991</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>PLoS One. 2011;6(11):e27943</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">22132176</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Chem Sci. 2018 Jan 19;9(8):2290-2294</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">29719702</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>ISME J. 2012 Dec;6(12):2219-28</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">22763647</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Infect Immun. 2019 Aug 21;87(9):</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">31235638</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>J Bacteriol. 2015 Jul;197(14):2252-64</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">25917910</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Nat Commun. 2024 Mar 6;15(1):2018</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">38443393</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Pediatr Pulmonol. 2018 Apr;53(4):426-430</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">29314745</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Appl Environ Microbiol. 2009 Nov;75(21):6910-2</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">19717621</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Microbiol Spectr. 2023 Feb 14;11(1):e0384622</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">36472421</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>J Cyst Fibros. 2011 Sep;10(5):318-25</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">21463972</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>mSystems. 2019 Sep 24;4(5):</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">31551401</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>J Proteome Res. 2013 Dec 6;12(12):5357-69</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">23991618</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Nat Microbiol. 2025 Jan;10(1):144-157</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">39753671</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Proc Natl Acad Sci U S A. 2018 Oct 16;115(42):10780-10785</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">30275316</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>PLoS Pathog. 2014 Oct 02;10(10):e1004405</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">25275396</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Front Microbiol. 2015 Sep 16;6:951</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">26441885</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Cell Microbiol. 2003 Sep;5(9):625-36</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">12925132</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Nucleic Acids Res. 2025 Jan 6;53(D1):D609-D617</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">39552041</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Microbiology (Reading). 2020 Jan;166(1):44-55</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">31778108</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>J Bacteriol. 2024 Oct 24;206(10):e0028124</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">39235232</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Front Cell Infect Microbiol. 2017 Apr 03;7:106</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">28421166</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>J Biol Chem. 1993 Apr 5;268(10):7503-8</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">8463280</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Mol Microbiol. 2012 Nov;86(3):628-44</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">22931126</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>mBio. 2016 Sep 27;7(5):</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">27677788</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>J Mol Biol. 2015 Nov 20;427(23):3744-53</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">26434507</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Biochem J. 1967 May;103(2):601-8</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">4962086</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>NPJ Biofilms Microbiomes. 2018 Oct 3;4:22</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">30302271</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Pediatr Pulmonol. 2017 Oct;52(10):1276-1282</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">28815999</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Front Cell Infect Microbiol. 2014 Jan 07;3:115</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">24432250</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Front Microbiol. 2015 Sep 02;6:893</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">26388847</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Nat Rev Microbiol. 2025 Nov;23(11):701-717</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">40442328</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Trends Microbiol. 2022 Oct;30(10):986-996</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">35487848</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>NPJ Biofilms Microbiomes. 2022 Apr 8;8(1):20</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">35396507</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>ISME J. 2024 Jan 8;18(1):</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">38365935</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Front Cell Infect Microbiol. 2020 May 14;10:213</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">32477966</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Can J Microbiol. 2002 Aug;48(8):707-16</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">12381027</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>J Bacteriol. 2005 Jul;187(13):4372-80</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">15968046</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Nat Commun. 2024 Jan 2;15(1):61</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">38168042</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Environ Microbiol. 2003 Dec;5(12):1350-69</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">14641579</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Front Cell Infect Microbiol. 2022 Jun 16;12:869736</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">35782109</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Nat Rev Microbiol. 2013 Apr;11(4):285-93</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">23456045</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>J Bacteriol. 1988 Aug;170(8):3547-53</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">2900237</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Proc Natl Acad Sci U S A. 2023 Jan 24;120(4):e2212694120</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">36652481</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Curr Biol. 2021 Jun 21;31(12):2643-2651.e3</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">33826904</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Front Cell Infect Microbiol. 2015 May 15;5:41</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">26029670</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Chem Sci. 2016 Apr 21;7(4):2553-2562</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">28660026</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Mol Microbiol. 2012 Nov;86(4):882-93</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">22988966</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>EcoSal Plus. 2018 Mar;8(1):</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">29536829</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>mSphere. 2023 Dec 20;8(6):e0058423</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">37975665</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Proc Natl Acad Sci U S A. 2004 Feb 3;101(5):1339-44</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">14739337</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>PLoS Genet. 2025 Mar 07;21(3):e1011610</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">40053555</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>FEMS Microbiol Lett. 2018 Oct 1;365(19):</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">30124833</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Microbiology (Reading). 2001 Jan;147(Pt 1):3-9</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">11160795</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>J Cell Biol. 1975 Jul;66(1):188-93</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">49354</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Nature. 2016 Jul 06;535(7610):85-93</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">27383983</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Annu Rev Biophys. 2021 May 6;50:401-417</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">33637007</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>BMC Microbiol. 2008 Mar 06;8:43</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">18325110</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Nat Rev Microbiol. 2022 Nov;20(11):671-684</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">35614346</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>ISME J. 2023 Nov;17(11):2090-2102</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">37737252</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Mol Microbiol. 2008 Apr;68(1):75-86</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">18312265</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Infect Immun. 1999 Apr;67(4):1672-6</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">10085002</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>J Glob Antimicrob Resist. 2020 Dec;23:321-326</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">33137534</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>EMBO Rep. 2006 Jul;7(7):734-8</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">16767077</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Science. 1999 Aug 13;285(5430):1061-6</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">10446051</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Proc Natl Acad Sci U S A. 2015 Mar 31;112(13):4110-5</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">25775563</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Semin Respir Crit Care Med. 2015 Apr;36(2):225-35</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">25826590</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>mBio. 2024 Sep 11;15(9):e0095624</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">39105585</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Gene. 1995 Dec 1;166(1):175-6</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">8529885</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Infect Immun. 2012 Sep;80(9):3289-96</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">22778099</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Trends Microbiol. 2020 May;28(5):387-400</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">32298616</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Int Wound J. 2006 Sep;3(3):225-31</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">16984578</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>mBio. 2025 Oct 8;16(10):e0159425</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">40938140</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Infect Immun. 2020 Mar 23;88(4):</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">31932329</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Methods Mol Biol. 2011;692:207-17</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">21031314</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Elife. 2019 Nov 12;8:</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">31713513</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Antibiotics (Basel). 2024 Aug 30;13(9):</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">39334997</ArticleId>
+          </ArticleIdList>
+        </Reference>
+      </ReferenceList>
+    </PubmedData>
+  </PubmedArticle>

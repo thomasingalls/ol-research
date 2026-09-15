@@ -50,7 +50,7 @@ fn one<'n>(native: &'n source_openalex::Work<'_>) -> (Work<'n>, Vec<(OpenAlexId,
     (sink.works.into_iter().next().unwrap(), sink.edges)
 }
 
-const ALL: [&str; 14] = [
+const ALL: [&str; 18] = [
     "smallest",
     "pubmed_with_mesh",
     "dissertation_repo_pdf",
@@ -65,6 +65,10 @@ const ALL: [&str; 14] = [
     "mag_differs",
     "lone_last_author",
     "self_reference",
+    "null_institution_ror_type",
+    "apc_no_usd",
+    "null_title_paratext",
+    "null_publication_date",
 ];
 
 #[test]
@@ -88,7 +92,11 @@ fn every_fixture_normalizes_with_its_edges() {
         assert!(sink.edges.iter().all(|(from, _)| *from == w.id), "{name}");
         assert_eq!(w.locations.len(), native.locations.len(), "{name}");
         assert_eq!(w.authorships.len(), native.authorships.len(), "{name}");
-        assert_eq!(w.published.to_string(), native.publication_date, "{name}");
+        assert_eq!(
+            w.published.map(|d| d.to_string()),
+            native.publication_date.as_ref().map(ToString::to_string),
+            "{name}"
+        );
         assert_eq!(
             w.created.date().to_string(),
             &native.created_date[..10],
@@ -297,9 +305,15 @@ fn rors_and_host_organizations_roundtrip() {
         let (w, _) = one(&native);
         for (a, na) in w.authorships.iter().zip(&native.authorships) {
             for (i, ni) in a.institutions.iter().zip(&na.institutions) {
-                assert_eq!(format!("{}{}", Ror::URL_PREFIX, i.ror), ni.ror, "{name}");
+                match (i.ror, &ni.ror) {
+                    (Some(ror), Some(raw)) => {
+                        assert_eq!(format!("{}{ror}", Ror::URL_PREFIX), *raw, "{name}");
+                        rors += 1;
+                    }
+                    (None, None) => assert!(i.kind.is_none(), "{name}: no ror, no type"),
+                    _ => panic!("{name}: ror presence differs between native and normalized"),
+                }
                 assert!(i.lineage.contains(&i.id));
-                rors += 1;
             }
             assert_eq!(a.countries.len(), na.countries.len());
         }
@@ -423,14 +437,23 @@ fn broken_invariants_stop_with_id_and_field() {
 fn the_binary_layout_roundtrips_every_fixture() {
     use ingest::{Binary, Kind, Reader};
     let prefix = std::env::temp_dir().join(format!("ol-rht-openalex-{}", std::process::id()));
-    let mut binary = Binary::create(&prefix, "openalex", model::VERSION).unwrap();
+    let mut binary = Binary::new("openalex", model::VERSION, {
+        let prefix = prefix.clone();
+        move |_: usize, _: &std::path::Path| prefix.clone()
+    });
+    binary
+        .open_file(std::path::Path::new("fixtures"), 0)
+        .unwrap();
     let inputs: Vec<String> = ALL.iter().map(|n| fixture(n)).collect();
     let natives: Vec<source_openalex::Work<'_>> = inputs.iter().map(|i| parse(i)).collect();
     let mut collect = Collect::default();
     for native in &natives {
         normalize(native, &mut (&mut collect, &mut binary)).unwrap();
     }
+    binary.close_file().unwrap();
     let written = binary.finish().unwrap();
+    assert_eq!(written.len(), 1);
+    let written = &written[0];
     assert_eq!(written.records[0], ALL.len() as u64);
     assert_eq!(written.records[1], collect.edges.len() as u64);
     let works = Reader::open(&Kind::Works.path(&prefix)).unwrap();

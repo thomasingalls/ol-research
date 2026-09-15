@@ -1,18 +1,42 @@
 //! Command line for the pipeline.
 //!
 //! * `id <kind>` runs one identifier parser over stdin, one value per line.
-//! * `<source> check <file>... [--limit N]` reads raw files through the
-//!   source's strict native types and reports counts and throughput.
-//! * `<source> normalize <file>... [--limit N] [--out <prefix>]` parses and
-//!   normalizes, prints the source's stats report — what every field held —
-//!   and, with `--out`, writes the normalized layer: `<prefix>.works.zst`,
-//!   `<prefix>.references.zst` and `<prefix>.deletions.zst` (plan §5, rule
-//!   12), tagged with the model version.
+//! * `<source> check <file>... [--limit N] [--workers N]` reads raw files
+//!   through the source's strict native types and reports counts and
+//!   throughput.
+//! * `<source> normalize <file>... [--limit N] [--workers N] [--out <dir>]
+//!   [--survey]` parses and normalizes, prints the source's stats report —
+//!   what every field held — and, with `--out`, writes the normalized
+//!   layer: one set
+//!   of `<prefix>.works.zst`, `<prefix>.references.zst` and
+//!   `<prefix>.deletions.zst` per raw file, the prefix mirroring the raw
+//!   path below the inputs' common directory (plan §5, rule 12), tagged
+//!   with the model version.
 //! * `<source> dump <file.zst>... [--limit N]` prints a normalized file as
 //!   JSON lines, for eyes.
+//! * `<source> list [--store <root>]` writes what the source offers now as
+//!   a listing under the store (plan §3.5), with the index document it was
+//!   read from beside it.
+//! * `<source> fetch <listing> [--store <root>] [--workers N] [--limit N]`
+//!   brings in every entry of the listing that has no receipt yet,
+//!   verified, and appends a receipt per file.
+//! * `<source> ingest <listing> [--store <root>] [--workers N] [--limit N]
+//!   [--out <dir>]` does the same while normalizing, each download
+//!   streamed straight through the framer on its own worker; the output
+//!   sets land under the store's normalized layer unless `--out` says
+//!   where. `--limit` counts records; a file it cuts short gets neither
+//!   receipt nor output set, and its partial bytes wait for a resume.
+//!
+//! `--survey` (plan §6) keeps going past records that do not normalize and
+//! reports every distinct failure signature with counts and examples; it
+//! writes no output and exits non-zero when anything failed.
+//! `--store` is the root of the store of record, `data` by default.
+//! `--mailto <address>` puts an address in the User-Agent for sources
+//! that reward it; none is sent unless given.
 //!
 //! Sources are `pubmed`, `crossref` and `openalex`. Every one goes through
-//! the same runner (`ingest::normalize`); what differs per source is one
+//! the same runner (`ingest::normalize_parallel`, one worker per core by
+//! default, files shared through a queue); what differs per source is one
 //! registration line and its stats sink. All exit non-zero on the first
 //! failure and say exactly where it was — source, file, record ordinal,
 //! stage, native id, field, raw value — the seed of the "reproduce against
@@ -22,10 +46,13 @@
 use std::collections::BTreeMap;
 use std::fmt::Display;
 use std::io::{self, BufRead, Write};
+use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::Arc;
 
-use ingest::{Binary, Failure, Kind, Reader, Sink, Source, Stage};
+use ingest::list::Lister;
+use ingest::{Binary, Client, Failure, Kind, Reader, Sink, Source, Stage, Store, Written};
 use model::{Claim, Doi, OpenAlexId, ParseError, Pmid};
 use source_crossref::Crossref;
 use source_openalex::OpenAlex;
@@ -39,9 +66,18 @@ static ALLOC: ingest::alloc::Counting = ingest::alloc::Counting;
 
 const USAGE: &str = "usage:
   ol-rht id <pmid|pmid-url|openalex|openalex-url> < values.txt
-  ol-rht <pubmed|crossref|openalex> check <file>... [--limit N]
-  ol-rht <pubmed|crossref|openalex> normalize <file>... [--limit N] [--out <prefix>]
-  ol-rht <pubmed|crossref|openalex> dump <file.zst>... [--limit N]";
+  ol-rht <pubmed|crossref|openalex> check <file>... [--limit N] [--workers N]
+  ol-rht <pubmed|crossref|openalex> normalize <file>... [--limit N] [--workers N] [--out <dir> | --survey]
+  ol-rht <pubmed|crossref|openalex> dump <file.zst>... [--limit N]
+  ol-rht <pubmed|crossref|openalex> list [--store <root>] [--mailto <address>]
+  ol-rht <pubmed|crossref|openalex> fetch <listing> [--store <root>] [--workers N] [--limit N] [--mailto <address>]
+  ol-rht <pubmed|crossref|openalex> ingest <listing> [--store <root>] [--workers N] [--limit N] [--out <dir>] [--mailto <address>]";
+
+/// Who we say we are; `--mailto` adds an address inside the parenthesis.
+const USER_AGENT: &str = "ol-rht/0.1 (citation-graph ingestion";
+
+/// Parallel transfers unless `--workers` says otherwise.
+const FETCH_WORKERS: usize = 4;
 
 type Parser = fn(&str) -> Result<(), ParseError>;
 
@@ -71,12 +107,21 @@ fn main() -> ExitCode {
                 ("pubmed", "check") => check::<Pubmed>(&opts),
                 ("pubmed", "normalize") => normalize::<Pubmed, PubmedStats>(&opts),
                 ("pubmed", "dump") => dump::<Pubmed>(&opts),
+                ("pubmed", "list") => list::<Pubmed>(&opts),
+                ("pubmed", "fetch") => fetch::<Pubmed>(&opts),
+                ("pubmed", "ingest") => ingest::<Pubmed, PubmedStats>(&opts),
                 ("crossref", "check") => check::<Crossref>(&opts),
                 ("crossref", "normalize") => normalize::<Crossref, CrossrefStats>(&opts),
                 ("crossref", "dump") => dump::<Crossref>(&opts),
+                ("crossref", "list") => list::<Crossref>(&opts),
+                ("crossref", "fetch") => fetch::<Crossref>(&opts),
+                ("crossref", "ingest") => ingest::<Crossref, CrossrefStats>(&opts),
                 ("openalex", "check") => check::<OpenAlex>(&opts),
                 ("openalex", "normalize") => normalize::<OpenAlex, OpenAlexStats>(&opts),
                 ("openalex", "dump") => dump::<OpenAlex>(&opts),
+                ("openalex", "list") => list::<OpenAlex>(&opts),
+                ("openalex", "fetch") => fetch::<OpenAlex>(&opts),
+                ("openalex", "ingest") => ingest::<OpenAlex, OpenAlexStats>(&opts),
                 _ => usage(),
             }
         }
@@ -88,19 +133,53 @@ fn main() -> ExitCode {
 struct Options {
     paths: Vec<PathBuf>,
     limit: Option<u64>,
+    workers: Option<usize>,
     out: Option<PathBuf>,
+    store: Option<PathBuf>,
+    mailto: Option<String>,
+    survey: bool,
 }
 
 impl Options {
-    /// `None` when there are no paths, an option is malformed or repeated,
-    /// or an unknown one appears.
+    /// `None` when an option is malformed or repeated, or an unknown one
+    /// appears. Paths may be absent (`list` takes none).
     fn parse(args: &[&str]) -> Option<Self> {
         let mut rest = args;
-        let (mut limit, mut out) = (None, None);
+        let (mut limit, mut workers, mut out, mut store, mut mailto) =
+            (None, None, None, None, None);
+        let mut survey = false;
         loop {
             match rest {
+                [before @ .., "--survey"] => {
+                    if survey {
+                        return None;
+                    }
+                    survey = true;
+                    rest = before;
+                }
+                [before @ .., "--store", p] => {
+                    if store.replace(PathBuf::from(p)).is_some() {
+                        return None;
+                    }
+                    rest = before;
+                }
+                [before @ .., "--mailto", m] => {
+                    if mailto.replace((*m).to_owned()).is_some() {
+                        return None;
+                    }
+                    rest = before;
+                }
                 [before @ .., "--limit", n] => {
                     if limit.replace(n.parse::<u64>().ok()?).is_some() {
+                        return None;
+                    }
+                    rest = before;
+                }
+                [before @ .., "--workers", n] => {
+                    if workers
+                        .replace(n.parse::<NonZeroUsize>().ok()?.get())
+                        .is_some()
+                    {
                         return None;
                     }
                     rest = before;
@@ -114,14 +193,47 @@ impl Options {
                 _ => break,
             }
         }
-        if rest.is_empty() || rest.iter().any(|a| a.starts_with("--")) {
+        if rest.iter().any(|a| a.starts_with("--")) {
             return None;
         }
         Some(Self {
             paths: rest.iter().map(PathBuf::from).collect(),
             limit,
+            workers,
             out,
+            store,
+            mailto,
+            survey,
         })
+    }
+
+    /// `--workers`, or one per core.
+    fn workers(&self) -> usize {
+        self.workers
+            .unwrap_or_else(|| std::thread::available_parallelism().map_or(1, NonZeroUsize::get))
+    }
+
+    /// `--store`, or `data`.
+    fn store(&self) -> Store {
+        Store::new(self.store.clone().unwrap_or_else(|| PathBuf::from("data")))
+    }
+
+    /// The User-Agent, with `--mailto` when given.
+    fn user_agent(&self) -> String {
+        match &self.mailto {
+            Some(address) => format!("{USER_AGENT}; mailto:{address})"),
+            None => format!("{USER_AGENT})"),
+        }
+    }
+
+    /// The options a reading command does not take.
+    fn reads_only(&self) -> bool {
+        self.store.is_none() && self.mailto.is_none() && !self.paths.is_empty()
+    }
+
+    /// The options a command that does not normalize does not take.
+    fn no_survey(&self) -> bool {
+        !self.survey
     }
 }
 
@@ -157,15 +269,16 @@ fn ids(parse: Parser) -> ExitCode {
 }
 
 /// A source's stats report (plan §6): what every normalized field held.
-trait StatsReport: Default {
+/// One per worker, merged at the end.
+trait StatsReport: Default + Merge + Send {
     fn report(&self);
 }
 
 fn check<S: Source>(opts: &Options) -> ExitCode {
-    if opts.out.is_some() {
+    if opts.out.is_some() || !opts.reads_only() || !opts.no_survey() {
         return usage();
     }
-    match ingest::parse::<S>(&opts.paths, opts.limit) {
+    match ingest::run::parse_parallel::<S, _>(&opts.paths, opts.limit, opts.workers()) {
         Ok(report) => {
             eprintln!("{}: {report}", S::NAME);
             ExitCode::SUCCESS
@@ -180,46 +293,94 @@ where
     S: Source,
     K: StatsReport + for<'n> Sink<'n, S>,
 {
-    let binary = match &opts.out {
-        Some(prefix) => match Binary::create(prefix, S::NAME, model::VERSION) {
-            Ok(binary) => Some(binary),
-            Err(err) => {
-                eprintln!("{}: {err}", prefix.display());
+    if !opts.reads_only() || (opts.survey && opts.out.is_some()) {
+        return usage();
+    }
+    let prefixes: Option<Arc<[PathBuf]>> = match &opts.out {
+        Some(dir) => match ingest::run::mirror(&opts.paths, dir) {
+            Ok(prefixes) => Some(prefixes.into()),
+            Err(collision) => {
+                eprintln!("{collision}");
                 return ExitCode::from(2);
             }
         },
         None => None,
     };
-    let mut sink = (K::default(), binary);
-    let result = ingest::normalize::<S, _>(&opts.paths, opts.limit, &mut sink);
-    let (stats, binary) = sink;
+    let make = |_: usize| {
+        let binary = prefixes.clone().map(|prefixes| {
+            Binary::new(S::NAME, model::VERSION, move |i, _: &Path| {
+                prefixes[i].clone()
+            })
+        });
+        Ok((K::default(), binary))
+    };
+    let outcome = ingest::run::normalize_parallel::<S, _, _, _>(
+        &opts.paths,
+        opts.limit,
+        opts.workers(),
+        opts.survey,
+        make,
+    );
+    let mut stats = K::default();
+    let mut binaries = Vec::new();
+    for (s, b) in outcome.sinks {
+        stats.merge(s);
+        binaries.extend(b);
+    }
     stats.report();
-    match result {
+    match outcome.result {
         Ok(report) => {
-            if let Some(binary) = binary {
+            let mut written: Vec<Written> = Vec::new();
+            let mut error = None;
+            for binary in binaries {
                 match binary.finish() {
-                    Ok(written) => eprintln!(
-                        "wrote {} works, {} references, {} deletions: {:.1} MiB under {}.*.zst",
-                        written.records[0],
-                        written.records[1],
-                        written.records[2],
-                        written.bytes as f64 / (1024.0 * 1024.0),
-                        opts.out
-                            .as_deref()
-                            .map_or_else(String::new, |p| p.display().to_string())
-                    ),
-                    Err(err) => {
-                        eprintln!("{} write: {err}", S::NAME);
-                        return ExitCode::FAILURE;
-                    }
+                    Ok(sets) => written.extend(sets),
+                    Err(e) => error = Some(e),
                 }
             }
+            if let Some(e) = error {
+                for w in &written {
+                    for kind in Kind::ALL {
+                        let _ = std::fs::remove_file(kind.path(&w.prefix));
+                    }
+                }
+                eprintln!("{} write: {e}", S::NAME);
+                eprintln!("no output written");
+                return ExitCode::FAILURE;
+            }
+            if let Some(dir) = &opts.out {
+                let records = written.iter().fold([0u64; 3], |a, w| {
+                    [
+                        a[0] + w.records[0],
+                        a[1] + w.records[1],
+                        a[2] + w.records[2],
+                    ]
+                });
+                let bytes: u64 = written.iter().map(|w| w.bytes).sum();
+                eprintln!(
+                    "wrote {} works, {} references, {} deletions in {} sets under {}: {:.1} MiB",
+                    records[0],
+                    records[1],
+                    records[2],
+                    written.len(),
+                    dir.display(),
+                    bytes as f64 / (1024.0 * 1024.0)
+                );
+            }
             eprintln!("{}: {report}", S::NAME);
+            if opts.survey {
+                eprint!("{}: survey: {}", S::NAME, outcome.survey);
+                if !outcome.survey.is_empty() {
+                    return ExitCode::FAILURE;
+                }
+            }
             ExitCode::SUCCESS
         }
         Err(failure) => {
-            if let Some(binary) = binary {
+            for binary in binaries {
                 binary.discard();
+            }
+            if opts.out.is_some() {
                 eprintln!("no output written");
             }
             failed(&failure)
@@ -228,7 +389,7 @@ where
 }
 
 fn dump<S: Source>(opts: &Options) -> ExitCode {
-    if opts.out.is_some() {
+    if opts.out.is_some() || opts.workers.is_some() || !opts.reads_only() || !opts.no_survey() {
         return usage();
     }
     let mut out = io::BufWriter::new(io::stdout().lock());
@@ -286,6 +447,276 @@ fn json_lines<'a, T: serde::Deserialize<'a> + serde::Serialize>(
     Ok(())
 }
 
+#[allow(clippy::cast_precision_loss)] // reporting only
+fn list<S: Lister>(opts: &Options) -> ExitCode {
+    if !opts.paths.is_empty()
+        || opts.limit.is_some()
+        || opts.workers.is_some()
+        || opts.out.is_some()
+    {
+        return usage();
+    }
+    let store = opts.store();
+    let client = Client::new(&opts.user_agent());
+    match ingest::list::list::<S>(&store, &client) {
+        Ok(listed) => {
+            let bytes: u64 = listed.entries.iter().filter_map(|e| e.bytes).sum();
+            let records: u64 = listed.entries.iter().filter_map(|e| e.records).sum();
+            let sized = listed.entries.iter().filter(|e| e.bytes.is_some()).count();
+            eprint!(
+                "{}: listed {} entries to {}",
+                S::NAME,
+                listed.entries.len(),
+                listed.path.display()
+            );
+            if sized > 0 {
+                eprint!(
+                    "; {:.1} GiB in the {sized} with a size",
+                    bytes as f64 / (1024.0 * 1024.0 * 1024.0)
+                );
+            }
+            if records > 0 {
+                eprint!("; {records} records declared");
+            }
+            eprintln!();
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("{} list: {e}", S::NAME);
+            ExitCode::FAILURE
+        }
+    }
+}
+
+#[allow(clippy::cast_precision_loss)] // reporting only
+fn fetch<S: Source>(opts: &Options) -> ExitCode {
+    let [listing] = opts.paths.as_slice() else {
+        return usage();
+    };
+    if opts.out.is_some() {
+        return usage();
+    }
+    let store = opts.store();
+    let entries = match ingest::listing::read(listing) {
+        Ok(entries) => entries,
+        Err(e) => {
+            eprintln!("{} fetch: {e}", S::NAME);
+            return ExitCode::from(2);
+        }
+    };
+    let client = Client::new(&opts.user_agent());
+    let run = ingest::fetch::Run {
+        store: &store,
+        source: S::NAME,
+        listing,
+        workers: opts.workers.unwrap_or(FETCH_WORKERS),
+        limit: opts.limit.map(|n| usize::try_from(n).unwrap_or(usize::MAX)),
+    };
+    let result = ingest::fetch::fetch(&run, &entries, &client, |entry, receipt| {
+        eprintln!(
+            "fetched {} ({:.1} MiB in {:.1}s{}; {})",
+            entry.path,
+            receipt.bytes as f64 / (1024.0 * 1024.0),
+            receipt.took_ms as f64 / 1000.0,
+            receipt
+                .resumed_from
+                .map_or(String::new(), |b| format!(", resumed at {b}")),
+            if receipt.checks.is_empty() {
+                "no check available".to_owned()
+            } else {
+                format!("{:?}", receipt.checks)
+            }
+        );
+    });
+    match result {
+        Ok(fetched) => {
+            let bytes: u64 = fetched.receipts.iter().map(|r| r.bytes).sum();
+            eprintln!(
+                "{}: fetched {} files, {:.1} MiB in {:.1}s; {} already receipted",
+                S::NAME,
+                fetched.receipts.len(),
+                bytes as f64 / (1024.0 * 1024.0),
+                fetched.elapsed.as_secs_f64(),
+                fetched.skipped
+            );
+            ExitCode::SUCCESS
+        }
+        Err(ingest::fetch::Error::Torrent(torrents)) => {
+            eprintln!(
+                "{} fetch: torrents are fetched by aria2c, run by you:",
+                S::NAME
+            );
+            for t in &torrents {
+                eprintln!(
+                    "  aria2c --file-allocation=none --seed-time=0 -d {} {}",
+                    store.raw(S::NAME, &t.path).display(),
+                    t.url
+                );
+            }
+            ExitCode::from(2)
+        }
+        Err(e) => {
+            eprintln!("{} fetch: {e}", S::NAME);
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// The output prefix of a listing entry under `out`: its own path with
+/// `.gz` and one more extension dropped, so the normalized layer mirrors
+/// the raw one.
+fn prefix_of(out: &Path, entry_path: &str) -> PathBuf {
+    let raw = Path::new(entry_path);
+    let mut prefix = out.to_path_buf();
+    if let Some(parent) = raw.parent() {
+        prefix.push(parent);
+    }
+    prefix.push(ingest::run::stem(raw));
+    prefix
+}
+
+#[allow(clippy::cast_precision_loss, clippy::too_many_lines)] // reporting only; one command
+fn ingest<S, K>(opts: &Options) -> ExitCode
+where
+    S: Source,
+    K: StatsReport + for<'n> Sink<'n, S>,
+{
+    let [listing] = opts.paths.as_slice() else {
+        return usage();
+    };
+    if opts.survey {
+        return usage();
+    }
+    let store = opts.store();
+    let entries = match ingest::listing::read(listing) {
+        Ok(entries) => entries,
+        Err(e) => {
+            eprintln!("{} ingest: {e}", S::NAME);
+            return ExitCode::from(2);
+        }
+    };
+    let out = opts
+        .out
+        .clone()
+        .unwrap_or_else(|| store.normalized(model::VERSION, S::NAME));
+    let prefixes: Arc<[PathBuf]> = entries.iter().map(|e| prefix_of(&out, &e.path)).collect();
+    let make = |_: usize| {
+        let prefixes = Arc::clone(&prefixes);
+        Ok((
+            K::default(),
+            Binary::new(S::NAME, model::VERSION, move |i, _: &Path| {
+                prefixes[i].clone()
+            }),
+        ))
+    };
+    let client = Client::new(&opts.user_agent());
+    let run = ingest::fetch::Run {
+        store: &store,
+        source: S::NAME,
+        listing,
+        workers: opts.workers.unwrap_or(FETCH_WORKERS),
+        limit: None,
+    };
+    let result = ingest::stream::ingest_parallel::<S, _, _, _>(
+        &run,
+        &entries,
+        &client,
+        opts.workers.unwrap_or(FETCH_WORKERS),
+        opts.limit,
+        make,
+        |entry, receipt| {
+            eprintln!(
+                "ingested {} ({:.1} MiB in {:.1}s{}; {:?})",
+                entry.path,
+                receipt.bytes as f64 / (1024.0 * 1024.0),
+                receipt.took_ms as f64 / 1000.0,
+                receipt
+                    .resumed_from
+                    .map_or(String::new(), |b| format!(", resumed at {b}")),
+                receipt.checks
+            );
+        },
+    );
+    let ingested = match result {
+        Ok(ingested) => ingested,
+        Err(ingest::fetch::Error::Torrent(torrents)) => {
+            eprintln!(
+                "{} ingest: torrents are fetched by aria2c, run by you:",
+                S::NAME
+            );
+            for t in &torrents {
+                eprintln!(
+                    "  aria2c --file-allocation=none --seed-time=0 -d {} {}",
+                    store.raw(S::NAME, &t.path).display(),
+                    t.url
+                );
+            }
+            return ExitCode::from(2);
+        }
+        Err(e) => {
+            eprintln!("{} ingest: {e}", S::NAME);
+            return ExitCode::FAILURE;
+        }
+    };
+    let mut stats = K::default();
+    let mut written: Vec<Written> = Vec::new();
+    let mut write_error = None;
+    for (s, mut binary) in ingested.outcome.sinks {
+        stats.merge(s);
+        // Sets of receipted files are complete and stay; the one left
+        // open by a failure or the limit is abandoned with its files.
+        binary.abandon_open();
+        match binary.finish() {
+            Ok(sets) => written.extend(sets),
+            Err(e) => write_error = Some(e),
+        }
+    }
+    stats.report();
+    let records = written.iter().fold([0u64; 3], |a, w| {
+        [
+            a[0] + w.records[0],
+            a[1] + w.records[1],
+            a[2] + w.records[2],
+        ]
+    });
+    let bytes: u64 = written.iter().map(|w| w.bytes).sum();
+    eprintln!(
+        "wrote {} works, {} references, {} deletions in {} sets under {}: {:.1} MiB",
+        records[0],
+        records[1],
+        records[2],
+        written.len(),
+        out.display(),
+        bytes as f64 / (1024.0 * 1024.0)
+    );
+    let fetched: u64 = ingested.receipts.iter().map(|r| r.bytes).sum();
+    eprintln!(
+        "{}: ingested {} files, {:.1} MiB; {} already receipted",
+        S::NAME,
+        ingested.receipts.len(),
+        fetched as f64 / (1024.0 * 1024.0),
+        ingested.skipped
+    );
+    if let Some(path) = &ingested.cut_short {
+        eprintln!(
+            "left unfinished: {} (the run stopped inside it): partial transfer kept, no receipt, no output set",
+            path.display()
+        );
+    }
+    let code = match ingested.outcome.result {
+        Ok(report) => {
+            eprintln!("{}: {report}", S::NAME);
+            ExitCode::SUCCESS
+        }
+        Err(failure) => failed(&failure),
+    };
+    if let Some(e) = write_error {
+        eprintln!("{} write: {e}", S::NAME);
+        return ExitCode::FAILURE;
+    }
+    code
+}
+
 fn failed(failure: &Failure) -> ExitCode {
     eprintln!("{failure}");
     if failure.stage == Stage::Read {
@@ -293,6 +724,57 @@ fn failed(failure: &Failure) -> ExitCode {
     } else {
         ExitCode::FAILURE
     }
+}
+
+/// Merging one worker's stats into another's.
+trait Merge {
+    fn merge(&mut self, other: Self);
+}
+
+/// Adding one worker's counter, map or sample list into another's.
+trait Absorb {
+    fn absorb(&mut self, other: Self);
+}
+
+impl Absorb for u64 {
+    fn absorb(&mut self, other: Self) {
+        *self += other;
+    }
+}
+
+impl<const N: usize> Absorb for [u64; N] {
+    fn absorb(&mut self, other: Self) {
+        for (a, b) in self.iter_mut().zip(other) {
+            *a += b;
+        }
+    }
+}
+
+impl<K: Ord> Absorb for BTreeMap<K, u64> {
+    fn absorb(&mut self, other: Self) {
+        for (k, v) in other {
+            *self.entry(k).or_default() += v;
+        }
+    }
+}
+
+impl Absorb for Vec<String> {
+    fn absorb(&mut self, other: Self) {
+        for s in other {
+            if self.len() < 8 {
+                self.push(s);
+            }
+        }
+    }
+}
+
+/// Destructures `other` exhaustively — a new field is a compile error here
+/// until it is listed — and absorbs every field.
+macro_rules! absorb_all {
+    ($self:ident, $other:ident: $ty:ident { $($field:ident),* $(,)? }) => {
+        let $ty { $($field),* } = $other;
+        $( $self.$field.absorb($field); )*
+    };
 }
 
 /// Keeps the first few malformed values for the report.
@@ -327,6 +809,7 @@ struct PubmedStats {
     other_abstracts: u64,
     journal_issn: u64,
     journal_issn_linking: u64,
+    journal_issn_malformed: u64,
     persons: u64,
     collectives: u64,
     orcid: [u64; 3],
@@ -346,6 +829,8 @@ struct PubmedStats {
     references: u64,
     reference_ids: BTreeMap<&'static str, u64>,
     reference_doi_malformed: u64,
+    reference_pmid_malformed: u64,
+    reference_pmc_malformed: u64,
     malformed_samples: Vec<String>,
 }
 
@@ -410,8 +895,8 @@ impl StatsReport for PubmedStats {
             self.other_abstracts
         );
         eprintln!(
-            "  journal issn {}  issn linking {}",
-            self.journal_issn, self.journal_issn_linking
+            "  journal issn {}  issn linking {}  malformed {}",
+            self.journal_issn, self.journal_issn_linking, self.journal_issn_malformed
         );
         eprintln!(
             "  authors persons {} collectives {}  orcid valid {} malformed {} none {}",
@@ -436,7 +921,12 @@ impl StatsReport for PubmedStats {
         eprintln!("  relations {:?}", self.relations);
         eprintln!("references {}", self.references);
         eprintln!("  ids {:?}", self.reference_ids);
-        eprintln!("  doi malformed {}", self.reference_doi_malformed);
+        eprintln!(
+            "  malformed: doi {} pmid {} pmc {}",
+            self.reference_doi_malformed,
+            self.reference_pmid_malformed,
+            self.reference_pmc_malformed
+        );
         if !self.malformed_samples.is_empty() {
             eprintln!("  malformed samples:");
             for sample in &self.malformed_samples {
@@ -489,6 +979,19 @@ impl<'n> Sink<'n, Pubmed> for PubmedStats {
         self.other_abstracts += c.other_abstracts.len() as u64;
         self.journal_issn += u64::from(c.journal.issn.is_some());
         self.journal_issn_linking += u64::from(c.journal.issn_linking.is_some());
+        for claim in c
+            .journal
+            .issn
+            .as_ref()
+            .map(|i| &i.issn)
+            .into_iter()
+            .chain(c.journal.issn_linking.as_ref())
+        {
+            if let Claim::Malformed { raw, error } = claim {
+                self.journal_issn_malformed += 1;
+                sample(&mut self.malformed_samples, raw, error);
+            }
+        }
         for a in &c.authors {
             match a.name {
                 AuthorName::Person(_) => self.persons += 1,
@@ -547,6 +1050,14 @@ impl<'n> Sink<'n, Pubmed> for PubmedStats {
         *self.reference_ids.entry(key).or_default() += 1;
         if let Some(Claim::Malformed { raw, error }) = &r.doi {
             self.reference_doi_malformed += 1;
+            sample(&mut self.malformed_samples, raw, error);
+        }
+        if let Some(Claim::Malformed { raw, error }) = &r.pmid {
+            self.reference_pmid_malformed += 1;
+            sample(&mut self.malformed_samples, raw, error);
+        }
+        if let Some(Claim::Malformed { raw, error }) = &r.pmc {
+            self.reference_pmc_malformed += 1;
             sample(&mut self.malformed_samples, raw, error);
         }
     }
@@ -725,6 +1236,7 @@ struct OpenAlexStats {
     corresponding: u64,
     institutions: u64,
     institution_countries: u64,
+    institutions_without_ror: u64,
     authorship_countries: u64,
     affiliations: u64,
     locations: u64,
@@ -789,9 +1301,10 @@ impl StatsReport for OpenAlexStats {
             self.corresponding
         );
         eprintln!(
-            "  institutions {} (with country {})  authorship countries {}  affiliations {}",
+            "  institutions {} (with country {}, without ror {})  authorship countries {}  affiliations {}",
             self.institutions,
             self.institution_countries,
+            self.institutions_without_ror,
             self.authorship_countries,
             self.affiliations
         );
@@ -863,12 +1376,10 @@ impl<'n> Sink<'n, OpenAlex> for OpenAlexStats {
                 sample(&mut self.malformed_samples, raw, error);
             }
         }
-        if w.title.is_empty() {
-            self.title[2] += 1;
-        } else if w.title.contains('<') {
-            self.title[1] += 1;
-        } else {
-            self.title[0] += 1;
+        match w.title {
+            None | Some("") => self.title[2] += 1,
+            Some(t) if t.contains('<') => self.title[1] += 1,
+            Some(_) => self.title[0] += 1,
         }
         *self
             .oa_status
@@ -892,6 +1403,8 @@ impl<'n> Sink<'n, OpenAlex> for OpenAlexStats {
                 .iter()
                 .filter(|i| i.country.is_some())
                 .count() as u64;
+            self.institutions_without_ror +=
+                a.institutions.iter().filter(|i| i.ror.is_none()).count() as u64;
             self.authorship_countries += a.countries.len() as u64;
             self.affiliations += a.affiliations.len() as u64;
         }
@@ -944,7 +1457,7 @@ impl<'n> Sink<'n, OpenAlex> for OpenAlexStats {
         for i in w.indexed_in.iter() {
             *self.indexed_in.entry(format!("{i:?}")).or_default() += 1;
         }
-        self.flags[0] += u64::from(w.is_retracted);
+        self.flags[0] += u64::from(w.is_retracted == Some(true));
         self.flags[1] += u64::from(w.is_xpac);
         self.flags[2] += u64::from(w.has_fulltext);
         self.related += w.related_works.len() as u64;
@@ -957,5 +1470,23 @@ impl<'n> Sink<'n, OpenAlex> for OpenAlexStats {
 
     fn deletion(&mut self, _: &OpenAlexId) {
         self.deletions += 1;
+    }
+}
+
+impl Merge for PubmedStats {
+    fn merge(&mut self, other: Self) {
+        absorb_all!(self, other: PubmedStats { citations, deletions, doi, elocation_doi, doi_lowercased, pii, pmc, published, electronic, revised, completed, status, languages, publication_types, title, abstracts, sections, sections_markup, sections_math, other_abstracts, journal_issn, journal_issn_linking, journal_issn_malformed, persons, collectives, orcid, affiliations, affiliation_ids, investigators, mesh_headings, mesh_major, chemicals, keywords, grants, grants_with_country, data_banks, history, publication_status, relations, references, reference_ids, reference_doi_malformed, reference_pmid_malformed, reference_pmc_malformed, malformed_samples });
+    }
+}
+
+impl Merge for CrossrefStats {
+    fn merge(&mut self, other: Self) {
+        absorb_all!(self, other: CrossrefStats { works, deletions, types, doi_lowercased, owner_differs, issued, title, alternate_titles, subtitle_empty, abstracts, persons, orgs, with_orcid, affiliations_with_ror, issns, isbns, languages, references, reference_doi, reference_empty, updates, relations, licenses, malformed_samples });
+    }
+}
+
+impl Merge for OpenAlexStats {
+    fn merge(&mut self, other: Self) {
+        absorb_all!(self, other: OpenAlexStats { works, deletions, types, doi, doi_lowercased, pmid, mag, languages, language_malformed, title, oa_status, oa_url, with_best_oa, authorships, authors_with_id, with_orcid, with_raw_orcid, orcid_conflicts, corresponding, institutions, institution_countries, institutions_without_ror, authorship_countries, affiliations, locations, provenance, location_ids, with_source, issn_l, issn, host_lineage, licenses, versions, topics, keywords, concepts, mesh, sdgs, awards, funders, funders_with_ror, apc, abstracts, counts_by_year, indexed_in, flags, references, self_references, related, malformed_samples });
     }
 }

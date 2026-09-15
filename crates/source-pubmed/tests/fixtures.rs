@@ -199,7 +199,6 @@ mod normalized {
         AffiliationIdSource, IssnType, PubStatus, PublicationStatus, RefType,
     };
     use source_pubmed::normalize::{AuthorName, Citation, Reference, normalize};
-    use source_pubmed::record::Record;
 
     #[derive(Default)]
     struct Collect<'n> {
@@ -229,9 +228,7 @@ mod normalized {
             "<DeleteCitation><PMID Version=\"1\">41609757</PMID><PMID Version=\"1\">12</PMID></DeleteCitation></PubmedArticleSet>",
             1,
         );
-        let records: Vec<Record<'_>> = Pubmed::records(&input)
-            .map(|r| r.expect("parses"))
-            .collect();
+        let records = super::all_records(&input);
         assert_eq!(records.len(), 2);
         let mut out = Collect::default();
         for r in &records {
@@ -247,9 +244,16 @@ mod normalized {
             "<PMID Version=\"1\">012</PMID>",
             1,
         );
-        let records: Vec<Record<'_>> = Pubmed::records(&bad).map(|r| r.expect("parses")).collect();
+        let records = super::all_records(&bad);
         let err = Pubmed::normalize(&records[1], &mut Collect::default()).unwrap_err();
         assert_eq!(err.field, "DeleteCitation/PMID");
+    }
+
+    #[test]
+    fn an_author_manuscript_carries_its_nihms_id() {
+        let out = run("nihms_mid");
+        assert_eq!(out.citations.len(), 1);
+        assert_eq!(out.citations[0].ids.mid, Some("NIHMS2140043"));
     }
 
     fn run(name: &str) -> Collect<'static> {
@@ -282,10 +286,19 @@ mod normalized {
         assert_eq!(c.journal.title, Some("JAMA"));
         assert_eq!(c.journal.medline_ta, "JAMA");
         assert_eq!(c.journal.nlm_unique_id, Some("7501160"));
-        let issn = c.journal.issn.unwrap();
+        let issn = c.journal.issn.as_ref().unwrap();
         assert_eq!(issn.kind, IssnType::Electronic);
-        assert_eq!(issn.issn.to_string(), "1538-3598");
-        assert_eq!(c.journal.issn_linking.unwrap().to_string(), "0098-7484");
+        assert_eq!(issn.issn.valid().unwrap().to_string(), "1538-3598");
+        assert_eq!(
+            c.journal
+                .issn_linking
+                .as_ref()
+                .unwrap()
+                .valid()
+                .unwrap()
+                .to_string(),
+            "0098-7484"
+        );
         assert_eq!(c.journal.country, Some("United States"));
         assert_eq!(c.languages[0].alpha_3(), "eng");
         assert_eq!(c.publication_types[0].ui.as_str(), "D016428");
@@ -444,7 +457,13 @@ mod normalized {
         use super::{fixture, only_article};
         use ingest::{Binary, Kind, Reader};
         let prefix = std::env::temp_dir().join(format!("ol-rht-pubmed-{}", std::process::id()));
-        let mut binary = Binary::create(&prefix, "pubmed", model::VERSION).unwrap();
+        let mut binary = Binary::new("pubmed", model::VERSION, {
+            let prefix = prefix.clone();
+            move |_: usize, _: &std::path::Path| prefix.clone()
+        });
+        binary
+            .open_file(std::path::Path::new("fixtures"), 0)
+            .unwrap();
         let inputs: Vec<String> = ["shortest", "mathml_refs_mesh", "refs_pmcid_corrections"]
             .iter()
             .map(|n| fixture(n))
@@ -454,7 +473,10 @@ mod normalized {
         for article in &articles {
             normalize(article, &mut (&mut collect, &mut binary)).expect("normalizes");
         }
+        binary.close_file().unwrap();
         let written = binary.finish().unwrap();
+        assert_eq!(written.len(), 1);
+        let written = &written[0];
         assert_eq!(written.records[0], 3);
         assert_eq!(written.records[1], collect.references.len() as u64);
         let works = Reader::open(&Kind::Works.path(&prefix)).unwrap();
@@ -481,5 +503,98 @@ mod normalized {
         for kind in Kind::ALL {
             std::fs::remove_file(kind.path(&prefix)).unwrap();
         }
+    }
+}
+
+/// Every record of a whole document, through the whole-document reader.
+fn all_records(input: &str) -> Vec<Record<'_>> {
+    let mut set = ArticleSet::new(input);
+    let mut records = Vec::new();
+    while let Some(record) = set.next_record().expect("parses") {
+        records.push(record);
+    }
+    records
+}
+
+mod streaming {
+    use std::io::Cursor;
+    use std::ops::ControlFlow;
+
+    use ingest::ReadError;
+    use source_pubmed::{ArticleSet, ErrorKind, records};
+
+    use super::{all_records, fixture};
+
+    /// Debug renderings of every record, as the streaming reader sees them.
+    fn streamed(input: &str) -> Result<Vec<String>, source_pubmed::Error> {
+        let mut out = Vec::new();
+        match records(Cursor::new(input), |r| {
+            out.push(format!("{r:?}"));
+            ControlFlow::Continue(())
+        }) {
+            Ok(()) => Ok(out),
+            Err(ReadError::Parse(e)) => Err(e),
+            Err(ReadError::Io(e)) => panic!("{e}"),
+        }
+    }
+
+    #[test]
+    fn the_stream_reads_exactly_what_the_whole_document_reader_reads() {
+        for name in [
+            "shortest",
+            "collective_name",
+            "mathml_refs_mesh",
+            "medline_date",
+            "refs_pmcid_corrections",
+        ] {
+            let input = fixture(name);
+            let whole: Vec<String> = all_records(&input)
+                .iter()
+                .map(|r| format!("{r:?}"))
+                .collect();
+            assert_eq!(streamed(&input).unwrap(), whole, "{name}");
+        }
+        let input = fixture("shortest").replacen(
+            "</PubmedArticleSet>",
+            "<DeleteCitation><PMID Version=\"1\">41609757</PMID><PMID Version=\"1\">12</PMID></DeleteCitation></PubmedArticleSet>",
+            1,
+        );
+        let whole: Vec<String> = all_records(&input)
+            .iter()
+            .map(|r| format!("{r:?}"))
+            .collect();
+        assert_eq!(whole.len(), 2);
+        assert_eq!(streamed(&input).unwrap(), whole);
+    }
+
+    #[test]
+    fn the_stream_reports_the_same_error_at_the_same_file_offset() {
+        let input = fixture("shortest").replacen(
+            "</PubmedArticleSet>",
+            "<DeleteCitation><PMID Version=\"1\">41609757</PMID><PMIDX Version=\"1\">12</PMIDX></DeleteCitation></PubmedArticleSet>",
+            1,
+        );
+        let whole = ArticleSet::new(&input);
+        let mut whole = whole;
+        whole.next_record().expect("the article parses");
+        let expected = whole.next_record().unwrap_err();
+        let err = streamed(&input).unwrap_err();
+        assert!(
+            matches!(err.kind, ErrorKind::UnexpectedElement(ref n) if n == "PMIDX"),
+            "{err}"
+        );
+        assert_eq!(
+            (err.position, err.path, err.pmid),
+            (expected.position, expected.path, expected.pmid)
+        );
+        assert!(err.position > input.find("<DeleteCitation>").unwrap() as u64);
+
+        let input = fixture("shortest").replacen("<ArticleTitle>", "<ArticleTitel>", 1);
+        let expected = ArticleSet::new(&input).next_record().unwrap_err();
+        let err = streamed(&input).unwrap_err();
+        assert_eq!(
+            (err.position, err.path, err.pmid),
+            (expected.position, expected.path, expected.pmid)
+        );
     }
 }

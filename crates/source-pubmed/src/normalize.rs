@@ -41,6 +41,14 @@ use crate::text::RawXml;
 
 /// A DOI as a source asserted it.
 pub type DoiClaim<'n> = Claim<'n, Doi<'n>, DoiError>;
+/// A PMID as a reference asserted it; pubmed26n1333 had a PMC id and a
+/// DOI under `IdType="pubmed"`.
+pub type PmidClaim<'n> = Claim<'n, Pmid, ParseError>;
+/// A PMC id as a reference asserted it.
+pub type PmcClaim<'n> = Claim<'n, PmcId, ParseError>;
+/// An ISSN as the record asserted it; pubmed26n1333 had one with a wrong
+/// check digit, the DOI-claim policy of plan §6 applied.
+pub type IssnClaim<'n> = Claim<'n, Issn, IssnError>;
 /// An ORCID as an author typed it: 17 of 7,607 in the first file were
 /// truncated to fifteen characters.
 pub type OrcidClaim<'n> = Claim<'n, Orcid, OrcidError>;
@@ -135,6 +143,10 @@ pub struct Identifiers<'n> {
     /// `ArticleId IdType="pii"`, an opaque publisher item identifier.
     #[serde(borrow)]
     pub pii: Option<&'n str>,
+    /// `mid`: a manuscript id on a record with an author manuscript —
+    /// NIH's `NIHMS…` or Europe PMC's `EMS…` (both first seen in
+    /// pubmed26n1333, PMIDs 41576088 and 41583386).
+    pub mid: Option<&'n str>,
     /// `ELocationID EIdType="pii"`, which need not equal `pii`.
     #[serde(borrow)]
     pub elocation_pii: Option<&'n str>,
@@ -171,10 +183,12 @@ pub struct Journal<'n> {
     /// letter.
     #[serde(borrow)]
     pub nlm_unique_id: Option<&'n str>,
-    /// `Journal/ISSN` with its type.
-    pub issn: Option<TypedIssn>,
-    /// `MedlineJournalInfo/ISSNLinking`.
-    pub issn_linking: Option<Issn>,
+    /// `Journal/ISSN` with its type, as claimed.
+    #[serde(borrow)]
+    pub issn: Option<TypedIssn<'n>>,
+    /// `MedlineJournalInfo/ISSNLinking`, as claimed.
+    #[serde(borrow)]
+    pub issn_linking: Option<IssnClaim<'n>>,
     /// `MedlineJournalInfo/Country`, NLM's spelling (`United States`,
     /// `England`, `Korea (South)`).
     #[serde(borrow)]
@@ -196,11 +210,12 @@ pub struct Journal<'n> {
 
 /// An ISSN with its type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TypedIssn {
+pub struct TypedIssn<'n> {
     #[allow(missing_docs)]
     pub kind: IssnType,
     #[allow(missing_docs)]
-    pub issn: Issn,
+    #[serde(borrow)]
+    pub issn: IssnClaim<'n>,
 }
 
 /// `Pagination`, as text: `1-8`, `e2025072830`.
@@ -476,13 +491,15 @@ pub struct Relation {
 /// identified by whichever of three namespaces the source supplied.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Reference<'n> {
-    /// `ArticleId IdType="pubmed"`.
-    pub pmid: Option<Pmid>,
+    /// `ArticleId IdType="pubmed"`, as claimed.
+    #[serde(borrow)]
+    pub pmid: Option<PmidClaim<'n>>,
     /// `ArticleId IdType="doi"`.
     #[serde(borrow)]
     pub doi: Option<DoiClaim<'n>>,
-    /// `ArticleId IdType="pmcid"`.
-    pub pmc: Option<PmcId>,
+    /// `ArticleId IdType="pmcid"`, as claimed.
+    #[serde(borrow)]
+    pub pmc: Option<PmcClaim<'n>>,
     /// The citation text, raw markup.
     pub citation: &'n str,
 }
@@ -525,7 +542,13 @@ impl fmt::Display for Error {
             None => f.write_str("PMID unknown: ")?,
         }
         write!(f, "{} = {:?}: ", self.field, self.raw)?;
-        match &self.kind {
+        fmt::Display::fmt(&self.kind, f)
+    }
+}
+
+impl fmt::Display for ErrorKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
             ErrorKind::Id(e) => write!(f, "{e}"),
             ErrorKind::Date(e) => write!(f, "{e}"),
             ErrorKind::MedlineDate(e) => write!(f, "{e}"),
@@ -536,6 +559,12 @@ impl fmt::Display for Error {
             ErrorKind::Inconsistent(what) => write!(f, "inconsistent: {what}"),
             ErrorKind::Unmodelled(what) => write!(f, "not modelled yet: {what}"),
         }
+    }
+}
+
+impl ingest::source::Signature for Error {
+    fn signature(&self) -> String {
+        format!("{}: {}", self.field, self.kind)
     }
 }
 
@@ -625,10 +654,6 @@ impl Ctx {
                 .map_err(|e| self.err(field, &keyed.ui, ErrorKind::MeshUi(e)))?,
             name: &keyed.value,
         })
-    }
-
-    fn issn(&self, field: &'static str, s: &str) -> Result<Issn, Error> {
-        Issn::parse(s).map_err(|e| self.err(field, s, ErrorKind::Issn(e)))
     }
 
     fn lang(&self, field: &'static str, s: &str) -> Result<Lang, Error> {
@@ -808,6 +833,7 @@ struct Own<'n> {
     doi: Option<&'n str>,
     pii: Option<&'n str>,
     pmc: Option<&'n str>,
+    mid: Option<&'n str>,
 }
 
 impl<'n> Own<'n> {
@@ -818,6 +844,20 @@ impl<'n> Own<'n> {
             IdType::Doi => &mut self.doi,
             IdType::Pii => &mut self.pii,
             IdType::Pmc => &mut self.pmc,
+            IdType::Mid => {
+                let digits = ["NIHMS", "EMS"]
+                    .iter()
+                    .find_map(|prefix| id.value.strip_prefix(prefix))
+                    .unwrap_or("");
+                if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+                    return Err(ctx.err(
+                        FIELD,
+                        &id.value,
+                        ErrorKind::Unmodelled("a mid that is not NIHMS or EMS followed by digits"),
+                    ));
+                }
+                &mut self.mid
+            }
             _ => {
                 return Err(ctx.err(
                     FIELD,
@@ -899,6 +939,7 @@ fn identifiers<'n>(
         doi,
         elocation_doi,
         pii: own.pii,
+        mid: own.mid,
         elocation_pii,
         pmc,
     })
@@ -933,19 +974,13 @@ fn dates(ctx: &Ctx, c: &MedlineCitation<'_>) -> Result<Dates, Error> {
     })
 }
 
-fn journal<'n>(ctx: &Ctx, c: &'n MedlineCitation<'_>) -> Result<Journal<'n>, Error> {
+fn journal<'n>(c: &'n MedlineCitation<'_>) -> Journal<'n> {
     let j = &c.article.journal;
     let info = &c.medline_journal_info;
-    let issn = j
-        .issn
-        .as_ref()
-        .map(|i| {
-            Ok(TypedIssn {
-                kind: i.issn_type,
-                issn: ctx.issn("Journal/ISSN", &i.value)?,
-            })
-        })
-        .transpose()?;
+    let issn = j.issn.as_ref().map(|i| TypedIssn {
+        kind: i.issn_type,
+        issn: Claim::from_parse(&i.value, Issn::parse(&i.value)),
+    });
     let pagination = c.article.pagination.as_ref().map(|p| match p {
         NativePagination::Pages {
             start_page,
@@ -958,7 +993,7 @@ fn journal<'n>(ctx: &Ctx, c: &'n MedlineCitation<'_>) -> Result<Journal<'n>, Err
         },
         NativePagination::MedlinePgn(p) => Pagination::Medline(p),
     });
-    Ok(Journal {
+    Journal {
         title: j.title.as_deref(),
         iso_abbreviation: j.iso_abbreviation.as_deref(),
         medline_ta: &info.medline_ta,
@@ -967,15 +1002,14 @@ fn journal<'n>(ctx: &Ctx, c: &'n MedlineCitation<'_>) -> Result<Journal<'n>, Err
         issn_linking: info
             .issn_linking
             .as_deref()
-            .map(|s| ctx.issn("MedlineJournalInfo/ISSNLinking", s))
-            .transpose()?,
+            .map(|s| Claim::from_parse(s, Issn::parse(s))),
         country: info.country.as_deref(),
         pub_model: c.article.pub_model,
         cited_medium: j.journal_issue.cited_medium,
         volume: j.journal_issue.volume.as_deref(),
         issue: j.journal_issue.issue.as_deref(),
         pagination,
-    })
+    }
 }
 
 /// DTD content the file has never contained: an error on first sight.
@@ -1033,7 +1067,7 @@ pub fn normalize<'n, K: Sink<'n, Pubmed>>(
 
     let ids = identifiers(&ctx, article, pmid)?;
     let dates = dates(&ctx, c)?;
-    let journal = journal(&ctx, c)?;
+    let journal = journal(c);
 
     let r#abstract = c.article.r#abstract.as_ref().map(|a| Abstract {
         sections: Ctx::sections(&a.texts),
@@ -1287,19 +1321,13 @@ fn references<'n, K: Sink<'n, Pubmed>>(
             for id in &r.article_ids {
                 let taken = match id.id_type {
                     IdType::Pubmed => pmid
-                        .replace(
-                            Pmid::from_digits(&id.value)
-                                .map_err(|e| ctx.err(FIELD, &id.value, ErrorKind::Id(e)))?,
-                        )
+                        .replace(Claim::from_parse(&id.value, Pmid::from_digits(&id.value)))
                         .is_some(),
                     IdType::Doi => doi
                         .replace(Claim::from_parse(&id.value, Doi::parse(&id.value)))
                         .is_some(),
                     IdType::Pmcid => pmc
-                        .replace(
-                            PmcId::from_digits(&id.value)
-                                .map_err(|e| ctx.err(FIELD, &id.value, ErrorKind::Id(e)))?,
-                        )
+                        .replace(Claim::from_parse(&id.value, PmcId::from_digits(&id.value)))
                         .is_some(),
                     _ => {
                         return Err(ctx.err(

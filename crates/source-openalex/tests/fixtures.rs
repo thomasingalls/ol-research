@@ -17,7 +17,7 @@ fn work(input: &str) -> Work<'_> {
     serde_json::from_str(input).expect("parses")
 }
 
-const ALL: [&str; 14] = [
+const ALL: [&str; 18] = [
     "smallest",
     "pubmed_with_mesh",
     "dissertation_repo_pdf",
@@ -32,7 +32,22 @@ const ALL: [&str; 14] = [
     "mag_differs",
     "lone_last_author",
     "self_reference",
+    "null_institution_ror_type",
+    "apc_no_usd",
+    "null_title_paratext",
+    "null_publication_date",
 ];
+
+#[test]
+fn an_institution_may_lack_ror_and_type() {
+    let input = fixture("null_institution_ror_type");
+    let w = work(&input);
+    let institutions: Vec<_> = w.authorships.iter().flat_map(|a| &a.institutions).collect();
+    assert_eq!(institutions.len(), 2);
+    assert!(institutions[0].ror.is_some() && institutions[0].r#type.is_some());
+    assert!(institutions[1].ror.is_none() && institutions[1].r#type.is_none());
+    assert_eq!(&*institutions[1].id, "https://openalex.org/I4210137868");
+}
 
 #[test]
 fn pubmed_sourced_work_has_mesh_and_a_pmid() {
@@ -129,4 +144,25 @@ fn a_new_key_anywhere_fails_with_line_and_id() {
     assert!(input.contains("\"oa_status\":\"x"));
     let err = jsonl(&input).next().unwrap().unwrap_err();
     assert!(err.to_string().contains("unknown variant `x"), "{err}");
+}
+
+#[test]
+fn a_paratext_work_may_lack_title_and_retraction_flag_and_an_apc_its_usd_value() {
+    let input = fixture("null_title_paratext");
+    let w = work(&input);
+    assert!(w.title.is_none() && w.display_name.is_none() && w.is_retracted.is_none());
+    let input = fixture("apc_no_usd");
+    let w = work(&input);
+    assert_eq!(
+        w.apc_list.as_ref().map(|a| (a.value, a.value_usd)),
+        Some((6_000_000, None))
+    );
+}
+
+#[test]
+fn a_work_may_have_no_publication_date_at_all() {
+    let input = fixture("null_publication_date");
+    let w = work(&input);
+    assert!(w.publication_date.is_none() && w.publication_year.is_none());
+    assert!(w.doi.is_none());
 }

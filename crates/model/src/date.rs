@@ -687,7 +687,9 @@ impl PartialDate {
         }
         let (month, rest) = take_month(rest)?;
         if let Some(rest) = rest.strip_prefix('-') {
-            // `-Mon` or `-YYYY Mon`
+            // `-Mon` or `-YYYY Mon`, either with an optional ` DD` on the
+            // end month: `2026 Jan-Feb 01`, 56 records of one journal in
+            // pubmed26n1333.
             let (end_year, end_month, rest) = if let Ok((end_year, rest)) = take_year(rest) {
                 let rest = rest.strip_prefix(' ').ok_or(MedlineError::Unrecognized)?;
                 let (end_month, rest) = take_month(rest)?;
@@ -696,10 +698,17 @@ impl PartialDate {
                 let (end_month, rest) = take_month(rest)?;
                 (year, end_month, rest)
             };
+            let (end_day, rest) = match rest.strip_prefix(' ') {
+                Some(rest) => {
+                    let (day, rest) = take_day(rest)?;
+                    (Some(day), rest)
+                }
+                None => (None, rest),
+            };
             done(rest)?;
             return Ok(Self::Span(Span {
                 start: bound(year, Some(month), None)?,
-                end: bound(end_year, Some(end_month), None)?,
+                end: bound(end_year, Some(end_month), end_day)?,
             }));
         }
         let rest = rest.strip_prefix(' ').ok_or(MedlineError::Unrecognized)?;
@@ -954,6 +963,14 @@ mod tests {
                 b(1999, Some(Month::January), None)
             ))
         );
+        assert_eq!(
+            PartialDate::parse_medline("2026 Jan-Feb 01"),
+            Ok(span(
+                b(2026, Some(Month::January), None),
+                b(2026, Some(Month::February), Some(1))
+            ))
+        );
+        assert!(PartialDate::parse_medline("2026 Jan-Feb 01 x").is_err());
         assert_eq!(
             PartialDate::parse_medline("1999 Dec 20-27"),
             Ok(span(

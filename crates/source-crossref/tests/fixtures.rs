@@ -252,7 +252,13 @@ mod normalized {
     fn the_binary_layout_roundtrips_the_fixtures() {
         use ingest::{Binary, Kind, Reader};
         let prefix = std::env::temp_dir().join(format!("ol-rht-crossref-{}", std::process::id()));
-        let mut binary = Binary::create(&prefix, "crossref", model::VERSION).unwrap();
+        let mut binary = Binary::new("crossref", model::VERSION, {
+            let prefix = prefix.clone();
+            move |_: usize, _: &std::path::Path| prefix.clone()
+        });
+        binary
+            .open_file(std::path::Path::new("fixtures"), 0)
+            .unwrap();
         let inputs: Vec<String> = ["journal_article_full", "grant_project"]
             .iter()
             .map(|n| fixture(n))
@@ -262,7 +268,10 @@ mod normalized {
         for native in &natives {
             normalize(native, &mut (&mut collect, &mut binary)).expect("normalizes");
         }
+        binary.close_file().unwrap();
         let written = binary.finish().unwrap();
+        assert_eq!(written.len(), 1);
+        let written = &written[0];
         assert_eq!(written.records[0], 2);
         let works = Reader::open(&Kind::Works.path(&prefix)).unwrap();
         let back: Vec<Work<'_>> = works.records().map(Result::unwrap).collect();

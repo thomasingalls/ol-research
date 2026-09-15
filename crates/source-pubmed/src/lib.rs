@@ -15,17 +15,19 @@
 //! or attribute value the DTD does not allow stops the run with a byte
 //! offset, an element path and the record's PMID.
 
+use std::io::BufRead;
+use std::ops::ControlFlow;
+
 pub mod attr;
 pub mod error;
-/// Reading raw files; shared with the other sources.
-pub use ingest::gz;
+pub mod list;
 pub mod normalize;
 mod parse;
 pub mod record;
 pub mod text;
 
 pub use error::{Error, ErrorKind};
-pub use parse::ArticleSet;
+pub use parse::{ArticleSet, records};
 pub use text::{RawXml, Text};
 
 /// The source, for the ingest traits: baseline and update files, each a
@@ -42,9 +44,11 @@ impl ingest::Source for Pubmed {
     type ParseError = Error;
     type NormalizeError = normalize::Error;
 
-    fn records(input: &str) -> impl Iterator<Item = Result<record::Record<'_>, Error>> + '_ {
-        let mut set = ArticleSet::new(input);
-        std::iter::from_fn(move || set.next_record().transpose())
+    fn records<R: BufRead, F>(input: R, each: F) -> Result<(), ingest::ReadError<Error>>
+    where
+        F: FnMut(&record::Record<'_>) -> ControlFlow<()>,
+    {
+        records(input, each)
     }
 
     fn normalize<'n, K: ingest::Sink<'n, Self>>(

@@ -315,7 +315,7 @@ scope here; it changes that arithmetic.
 ### 3.1 Stages
 
 ```text
-acquire    bytes to data/raw/, byte-identical where the channel allows, manifest entry per file
+acquire    list → fetch: bytes to <store>/raw/, byte-identical, verified, a receipt per file (§3.5) — or ingest, streamed through the stages below
 parse      bytes → source-native typed record, borrowed from the buffer   (strict, §6)
 normalize  native record → normalized records, pushed to the sink          (no copies, §5)
 sink       normalized output, tagged with the model version, plus a stats report
@@ -347,12 +347,24 @@ the point (§5):
 
 ```text
 Source    NAME; Native<'a>, Id<'n>, Work<'n>, Reference<'n>; ParseError, NormalizeError
-          records(&'a str) → Iterator<Result<Native<'a>>>        borrows; strict (structural)
+          records(impl BufRead, each: FnMut(&Native<'_>) → ControlFlow)   frames the stream; strict (structural)
           normalize(&'n Native, &mut impl Sink<'n>) → Result<()>  pushes by reference; strict (value-level)
 Sink<'n>  work(&Work<'n>)   reference(&Id<'n>, &Reference<'n>)   deletion(&Id<'n>)
 Runner    ingest::normalize::<S>(paths, limit, &mut sink) → Report, or
           Failure { source, path, record ordinal, stage, the source's error }
 ```
+
+`records` streams (landed 2026-09-15, the second shape of this method):
+the source cuts the raw byte stream into one record's frame at a time — a
+line for JSON lines, one `PubmedArticle`/`DeleteCitation` element cut at
+its own end tag for PubMed, a whole API page for Crossref's envelope —
+parses the frame from a buffer reused for the next, and hands the record
+to the runner's callback; `Break` ends the read before the next record is
+parsed. A worker therefore holds one record's text, never a file's, and
+the same code runs over a file on disk, an inflating decoder, or a
+download in flight. The first shape took the whole inflated file as one
+`&str`; on OpenAlex's largest parts (1.1 GB gzipped, 6.6 GB inflated)
+that was one worker's memory, not a laptop's.
 
 Parser and normalizer are two methods of one `Source` trait: they share
 the native type and nothing else needed a boundary between them. Each
@@ -379,11 +391,12 @@ crates/
   source-arxiv/
   source-openalex/
   source-s2/
-  ol-rht/             CLI:  fetch <source> | normalize <source> [--limit N] [--survey] | dump --json
-manifests/<source>.json   committed: every raw file's URL, fetched_at, bytes, sha256
-data/                     gitignored
-  raw/<source>/…          source of truth
-  normalized/<model-version>/<source>/…   rebuildable
+  ol-rht/             CLI:  <source> list | fetch <listing> | ingest <listing> | check | normalize [--survey] | dump
+<store>/                  the store of record (§3.5): one root, `--store`, never committed
+  raw/<source>/<path>     bytes as served, write-once, at the source's own path; `<path>.part` while in flight
+  listings/<source>/<stamp>.jsonl   what the source offered, one entry per line, beside the index document it came from
+  receipts/<source>.jsonl what was fetched: one verified file per line, append-only — the completion marker
+  normalized/v<model>/<source>/<path minus extensions>.{works,references,deletions}.zst   rebuildable
 ```
 
 Each source crate carries `fixtures/`: single raw records that once failed to
@@ -393,11 +406,83 @@ normalize, each with a test asserting they now do (§6).
 
 ### 3.4 Concurrency
 
-Bulk inputs are already sharded into many files. Parallelism is a work queue
-over files (rayon), one file per task, sequential within a file, no shared
-mutable state between workers. PubMed needs a streaming parser: files are
-tens of MB gzipped with tens of thousands of records each. API mode is async
-and rate-limited per source.
+Bulk inputs are already sharded into many files. Parallelism is a work
+queue over files — `std::thread::scope`, no `rayon` — one worker per core,
+each taking the next raw file from a shared index, sequential within a
+file, and one sink per worker so nothing mutable is shared. A sink is told
+where each raw file begins and ends, and the binary sink writes one output
+set per raw file, named by mirroring the raw path below the inputs' common
+directory, so a rebuild of one raw file replaces one set. A record limit
+is claimed through one shared counter and is exact across workers; the
+first failure raises a stop flag every worker checks between records.
+Every worker's sink comes back to the caller either way, to be finished
+or discarded — a failed run still leaves nothing. Landed 2026-09-15.
+Within a file the runner claims the record limit one record ahead, so the
+record after the limit is never parsed, and returns the spare claim when
+the file ends, so the limit stays exact across workers. API mode is
+rate-limited per source.
+
+### 3.5 Store of record
+
+Decided 2026-09-15. Everything the pipeline produces or depends on lives
+under one store root, including its bookkeeping; git holds code and
+fixtures only. The lesson is HDFS's: it stayed the store of record at a
+previous shop because the bookkeeping lived in the same namespace as the
+bytes — a file at a path was the fact, a `_SUCCESS` marker meant a stage
+had finished, and every job spoke the same root. Committing per-file
+manifests to git while the bytes sit gitignored splits that; the copy that
+survives would be the pointers, which is backwards. The three manifests
+committed under `manifests/` on 2026-09-14 move into the store when
+`fetch` lands.
+
+- One root, `--store`, the way `fs.defaultFS` was. Paths under it are the
+  addresses the pipeline uses; the code speaks root plus relative path
+  and nothing else.
+- Raw bytes are write-once under `raw/<source>/` at the source's own
+  paths. What a source offered and what was fetched are objects under the
+  same root, beside what they describe, immutable once written; the
+  record of a fetch is the completion marker for its raw file.
+- Normalized output is a cache under a model-versioned prefix,
+  rebuildable, never of record. The merge output will be of record when
+  it exists.
+- Nothing derived from data is committed.
+
+Backing: a directory on this laptop for the POC; a box, not yet ready, for
+the whole corpus (~1.3 TB raw across the five sources, §7), with plain
+files on a checksumming filesystem or an S3-compatible store (MinIO,
+Garage) on it. S3-compatible is today's HDFS — one API every tool speaks,
+write-once objects, listing as the catalog — and the target once compute
+moves next to the data. Filesystem paths now, the S3 API later; in
+between, the layout must sync losslessly to a bucket. Record-level
+streaming (§3.2, landed) is what makes reading straight from a bucket one
+pass with no local copy. Not wanted: lakeFS, DVC, table
+formats — they version mutable data, and raw here is immutable, with the
+model version naming every derived layer.
+
+Landed 2026-09-15. `list` asks a source what it offers — OpenAlex's works
+manifest, NCBI's two directory indexes, Crossref's one torrent — reads the
+index strictly (it fired on first contact: NCBI's update index carries a
+`_stats.html` page per file) and writes a *listing*, one JSON line per
+file with the source's own path, byte and record counts and sidecar URL
+where the source gives them, beside the index document it came from.
+Selection is a grep of the listing. `fetch` takes a listing and brings in
+every entry without a matching receipt: into `<path>.part`, hashed on the
+way, resumed by `Range` from a partial file, then checked against
+everything promised — `Content-Length`, the listing's bytes, NCBI's `.md5`
+sidecar, S3's `ETag` when it is an MD5 — synced, renamed, and only then
+receipted. A file is its own transaction: a run stops at its first
+failure with the files before it complete and the one in flight
+resumable. It refuses torrents (printing the `aria2c` line) and any raw
+file that exists without a receipt. `ingest` does the same while
+normalizing: one worker owns one file from first byte to receipt, the
+body tee'd to disk and the hashers, inflated, framed, parsed, normalized
+and written on that thread, nothing handed between threads; on a resume
+the partial file is replayed through the framer first. A transfer the
+run stops inside — the record limit, another worker's failure — gets no
+receipt and no output set. Three parts, 15 MB, on three workers: 1.3 s
+end to end at 40 MB peak resident. The three POC files moved to their
+sources' own paths and their manifests became receipts in the store;
+`manifests/` is gone from the repository.
 
 ## 4. Model — what is committed
 
@@ -483,7 +568,25 @@ level 3), release build, one core, Apple Silicon:
 | Crossref |   1,000 | 28.5k rec/s* | 14.4k rec/s | 195 parse only, 207 all | 1.8 MiB vs 11 MB JSON |
 | OpenAlex |  10,873 | 22.5k rec/s  | 15.2k rec/s | 162 parse only, 184 all | 13.2 MiB vs 20 MB gz  |
 
-\* uncompressed input; the others include gzip inflation. Three findings.
+\* uncompressed input; the others include gzip inflation.
+
+Third measurement, 2026-09-15, after record framing (§3.2) replaced the
+whole-file `&str` — same machine, same files, one core, peak resident set
+from `time -l`:
+
+| source   | parse only          | with sink           | peak RSS before → after | bytes allocated / record |
+|----------|--------------------:|--------------------:|------------------------:|-------------------------:|
+| PubMed   | 14.9k → 13.0k rec/s |  6.6k → 8.2k rec/s  | 77 MB → 4.9 MB          | 66.5 KB → 13.6 KB        |
+| Crossref | 26.4k → 24.4k rec/s | 14.5k → 15.3k rec/s |  5 MB → 7.3 MB          | 48.6 KB → 66.8 KB        |
+| OpenAlex | 20.5k → 25.4k rec/s | 15.4k → 16.0k rec/s | 123 MB → 5.3 MB         | 37.7 KB → 13.2 KB        |
+
+Throughput is within noise either way (the OpenAlex gain is the giant
+string leaving the cache); memory is now one record plus buffers, which
+is what lets eight workers take the largest OpenAlex parts. Crossref's
+API pages are one document each and are still held whole, as they must
+be; its public data file is JSON lines and streams. Output is
+byte-identical to the second measurement's on all 36 files. Three
+findings from the second measurement stand.
 (1) The sink costs 30–45 % of the throughput at zstd level 3; the level
 and the frame size are knobs not yet turned. (2) Rule 1 is not met: 75 to
 200 allocations per record, nearly all of them the `Vec`s inside the
@@ -652,9 +755,9 @@ installed and run by you, not by me; the plan gives commands.
 | Source           | What to fetch                                                                    | ≈ size     | Notes                                                              |
 |------------------|----------------------------------------------------------------------------------|------------|--------------------------------------------------------------------|
 | Crossref         | **arrived via the API fallback**: 10 × `sample=100` (5 plain, 5 `has-references:true`) — 1,000 works, 733 with references, 19 types, 71 top-level keys | 9 MB | the sample torrent is unreachable: `No route to host` to both seeders; see below |
-| PubMed           | `pubmed26n1334.xml.gz`, the highest-numbered baseline file (most recent records)  | 13 MB      | direct HTTPS; `--limit` for 10k                                    |
+| PubMed           | two baseline files: `pubmed26n1333` (66 MB, 30,000 records) and `pubmed26n1334` (the last, 4,989) | 79 MB | `ol-rht pubmed list` then `fetch` of a grep'd listing; md5 sidecars verified |
 | arXiv            | OAI-PMH `ListRecords`, ~10 pages, one date window or `set`                        | 10–20 MB   | each page saved verbatim                                           |
-| OpenAlex         | `updated_date=2025-07-25/part_0000.gz`, 10,873 records                            | 20 MB      | direct HTTPS; byte-identical                                       |
+| OpenAlex         | 17 parts across 2016–2025 `updated_date`s, 31,353 works: the POC part plus 16 through `fetch` and `ingest` | 65 MB | `ol-rht openalex list` then `fetch`/`ingest`; ETag-as-md5 verified |
 | Semantic Scholar | **paused** — first ~10k lines each of one `papers`, `abstracts`, `citations` shard, streamed, once a key exists | ~10 MB | not byte-identical files — manifest records release, shard, line count. The three prefixes will not share corpus IDs; fine for schema coverage |
 
 Sampling goal for the POC is *schema diversity*, not a connected subgraph.
@@ -668,9 +771,10 @@ later.
 
 ### POC fetch commands
 
-Run by you. Everything lands under `data/raw/<source>/`; `ol-rht fetch` (M2)
-takes over from here and writes the manifests — these first files get their
-manifest entries backfilled from disk.
+Historical: how the first three files arrived on 2026-09-14, run by you.
+Since 2026-09-15 `ol-rht <source> list`, `fetch <listing>` and
+`ingest <listing>` do this (§3.5); the files below now live at their
+sources' own paths under the store, with receipts.
 
 ```bash
 brew install aria2
@@ -747,14 +851,31 @@ in your environment, never in the repo or in this conversation.
 2. NLM and arXiv data terms (§2) — gate product use, not the POC.
 3. Semantic Scholar API key — paused; M5 resumes when one exists.
 4. ~~`--survey` opt-in is assumed (§6).~~ Confirmed 2026-09-15: keep it,
-   opt-in, default stop-at-first.
+   opt-in, default stop-at-first. Built the same day: `normalize --survey`
+   tallies every distinct failure signature (field and kind, no values)
+   with counts and three examples, writes nothing, exits non-zero if
+   anything failed; parse failures still stop it. First use found five
+   warts in one PubMed file in one pass.
 5. Country (ISO 3166-1) and currency (ISO 4217) vocabularies: `CountryCode`
    and `CurrencyCode` check shape only (two or three uppercase letters). A
    generated table like `Lang`'s, from Debian iso-codes, would close them;
    small, and worth doing the first time a bad code shows.
 6. `Claim<Lang>` for OpenAlex's deprecated `sh` (one work in 10,873) and
    `Claim<Issn>` for its four wrong check digits: the DOI-claim policy (§6)
-   applied to two more categories, open to veto.
+   applied to two more categories, open to veto. Extended 2026-09-15 to
+   PubMed's journal ISSNs (one bad check digit in 30,000 records) and to
+   a PubMed reference's PMID and PMC id (a PMC id and a DOI arrived under
+   `IdType="pubmed"`).
+7. Snapshot diff — noted 2026-09-15, not designed. Consecutive corpora
+   from one source overlap substantially (OpenAlex's June 2026 snapshot
+   carries `updated_date` partitions back to 2016; PubMed rebuilds the
+   baseline yearly and adds daily update files). A diff step that fetches
+   and normalizes only what changed would cut both the download and the
+   rebuild. It sounds simple and is not: identity across snapshots,
+   records moving between partitions, deletions and merges,
+   re-partitioning. The file-level half is cheap and falls out of the
+   per-file fetch records (same URL, size and hash: skip); the
+   record-level half is the hard part and is deliberately not sketched.
 
 ## 9. Milestones
 
@@ -803,6 +924,30 @@ in your environment, never in the repo or in this conversation.
   every normalized and model type, with canonical text in JSON and packed
   numbers on disk. First numbers in §5. Left: fetch with manifests,
   parallelism over files, symbol tables, the allocation work.*
+  *Parallel runner landed 2026-09-15 (§3.4): `std::thread::scope`, a
+  shared file index, one sink per worker, an exact shared record limit, a
+  stop flag; the binary sink writes one output set per raw file, named by
+  mirroring the raw path below the inputs' common directory; `--workers`
+  (default one per core) on `check` and `normalize`; `--out` is now a
+  directory. Ten Crossref files go from 25k to 41k records/s on ten
+  workers, which says only that the machinery scales — 8.7 MiB is too
+  little to measure; PubMed and OpenAlex have one POC file each, so their
+  numbers are unchanged until a second file is fetched.*
+  *Record framing landed 2026-09-15 (§3.2): `records` reads a byte stream
+  and frames one record at a time — lines, PubMed elements cut at their
+  end tags, one Crossref page — so peak memory fell from the inflated file
+  (123 MB on the OpenAlex part) to one record (5 MB), throughput held,
+  output byte-identical (§5, third measurement). The same reader now
+  serves a file on disk or a download in flight.*
+  *Fetch landed 2026-09-15 (§3.5): `list`, `fetch` and `ingest` with
+  listings and receipts under the store root; `--survey`. Second files
+  brought the first real warts — OpenAlex: institutions without ROR or
+  type, an APC without a USD value, a paratext work with no title and a
+  null retraction flag, 32 DOAJ works with no date; PubMed: `mid`
+  manuscript ids (NIHMS and EMS), a `YYYY Mon-Mon DD` MedlineDate, a
+  reference's PMID or PMC id that is a DOI or a PMC id, an ISSN with a
+  bad check digit — each a fixture now, all 17 OpenAlex parts and both
+  PubMed files survey-clean. Left: symbol tables, the allocation work.*
 - **M3** — `source-openalex` (widest schema, second edge source, cross-IDs).
   *Native struct landed 2026-09-15 from the census: every object
   `deny_unknown_fields`, closed enums for type / OA status / version /
@@ -931,6 +1076,17 @@ cross-IDs and a second edge namespace early.
   3 (a knob), rule 1's allocation goal is far (75–200 per record, the
   native `Vec`s), and the layout is not smaller than gzipped raw (symbol
   tables and the abstract are the levers).
+- 2026-09-15, parallel runner — files are the unit of work; workers pull
+  from a shared index and own their sinks (§3.4). The sink contract grew
+  `begin_file` / `end_file`, so one raw file is one output set and a
+  rebuild of one raw file replaces one set; output names mirror the raw
+  path below the inputs' common directory, and two raw files that would
+  collide stop the run before it starts. A record limit is claimed
+  through one counter and is exact across workers. Every worker's sink
+  comes back to the caller, finished on success and discarded on failure,
+  so "a failed run leaves nothing" holds with workers too. Stats sinks are
+  merged by exhaustive destructuring, so a new counter cannot be forgotten
+  silently. No `rayon`: `std::thread::scope` is enough for a file queue.
 - 2026-09-14, normalizer first cut — value-level layer over the native
   record; the `Claim<Doi>` decision above (§6); `Lang` from ISO 639-2 via
   Debian iso-codes (NLM's own language page is retired); publication types
@@ -982,6 +1138,42 @@ cross-IDs and a second edge namespace early.
   strictness separate: structural here, value-level there. `ol-rht pubmed
   check` parses a file and reports throughput. `pmc`/`pmcid` resolved as one
   identifier in two serializations.
+- 2026-09-15, store of record — one store root for bytes and bookkeeping,
+  `--store`, never committed; filesystem paths now, S3-compatible later, a
+  box to be pressed into service for the whole corpus (§3.5). Fetch design
+  under discussion: a command that writes the list of URLs to disk,
+  separate from the command that fetches them; a record per fetched file;
+  streaming at file level with fetch, and at record level as its own step.
+  Snapshot diff noted as a future optimization (§8, item 7).
+- 2026-09-15, record framing — "streaming" meant record level all along:
+  `Source::records` now takes a `BufRead` and a callback, each source
+  frames its own records (a line; a PubMed element cut at its end tag,
+  parsed with the frame's file offset so errors are unchanged; one
+  Crossref page), and the runner claims the limit one record ahead. Peak
+  memory is one record, not one file; output byte-identical; numbers in
+  §5. Names settled: *listing* (what a source offers, written by `list`)
+  and *receipt* (what was fetched, appended by `fetch`), both under the
+  store root; "manifest" is OpenAlex's own file. HTTP via `ureq` over
+  rustls, no transparent decompression; `sha2` and `md-5` for the digests
+  the sources publish or imply (NCBI's `.md5` sidecars; S3's ETag is the
+  object's md5 for single-part uploads, and matches the POC part).
+- 2026-09-15, fetch landed — `list` per source (strict about the index;
+  NCBI's `_stats.html` pages tripped it on first contact and are now a
+  known kind), `fetch` (partial file, hash while writing, Range resume,
+  four checks, one receipt per verified file, refuses torrents and
+  unreceipted files), `ingest` (the download run straight through the
+  framer on the worker that owns it; a resume replays the partial file
+  first), `--survey` (§8, item 4). Measured: a 66 MB PubMed file in
+  3.1 s with its md5 checked; an 11 MB part killed mid-transfer resumed
+  at 6.0 MB and verified; three parts ingested on three workers in 1.3 s
+  at 40 MB resident. The POC files moved to their sources' own paths;
+  `manifests/` became `receipts/` in the store and left the repository.
+- 2026-09-15, second files — five OpenAlex fields and four PubMed forms
+  the first files never showed (§9, M2); the model gained `Option`s, two
+  `Claim`s and one MedlineDate form, each with a fixture from the record
+  that failed. None of it was a surprise in kind: this is the loop §6
+  describes, and `--survey` made it one pass per file instead of one
+  round per wart.
 
 ## 11. Dependencies
 
@@ -992,9 +1184,11 @@ wire format, varints, borrowing deserialization). Not yet needed and not
 added: `thiserror`, `anyhow`, `clap` (the binary's argument grammar is a
 `match`), `rayon` (parallelism over files can be `std::thread::scope`),
 `proptest`, `tracing`. No date crate: `PartialDate` is a packed integer
-with its own calendar check. For fetching, when it comes: `reqwest` +
-`tokio` (arXiv and Semantic Scholar have no plain-download channel for
-the POC).
+with its own calendar check. Fetching (2026-09-15): `ureq` 3 over rustls
+with transparent decompression off, so raw bytes land as served, plus
+`sha2` and `md-5` for the digests the sources publish or imply; no async
+runtime — one thread per transfer is the runner's own shape. arXiv's and
+Semantic Scholar's paging will use the same client.
 
 ## 12. Sources consulted
 

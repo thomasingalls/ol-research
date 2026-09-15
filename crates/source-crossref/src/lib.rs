@@ -16,15 +16,16 @@
 //! (`message.items[]`, the POC input) and the public data file's JSON lines.
 //! [`normalize`] is where values become `model` types.
 
+use std::io::BufRead;
+use std::ops::ControlFlow;
+
 pub mod date;
 pub mod error;
+pub mod list;
 pub mod normalize;
 pub mod parse;
 pub mod record;
 pub mod vocab;
-
-/// Reading raw files; shared with the other sources.
-pub use ingest::gz;
 
 pub use error::Error;
 pub use parse::{Page, jsonl, records};
@@ -44,8 +45,11 @@ impl ingest::Source for Crossref {
     type ParseError = Error;
     type NormalizeError = normalize::Error;
 
-    fn records(input: &str) -> impl Iterator<Item = Result<Work<'_>, Error>> + '_ {
-        records(input)
+    fn records<R: BufRead, F>(input: R, each: F) -> Result<(), ingest::ReadError<Error>>
+    where
+        F: FnMut(&Work<'_>) -> ControlFlow<()>,
+    {
+        records(input, each)
     }
 
     fn normalize<'n, K: ingest::Sink<'n, Self>>(

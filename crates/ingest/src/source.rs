@@ -3,22 +3,28 @@
 //! normalizers that existed before it, not designed ahead of them.
 
 use std::error::Error;
-use std::io;
+use std::io::{self, BufRead};
+use std::ops::ControlFlow;
+use std::path::Path;
 
 use serde::{Deserialize, Serialize};
+
+use crate::frame::ReadError;
 
 /// A source of scholarly records: how its raw files parse into native
 /// records, and how a native record normalizes into the records a
 /// [`Sink`] receives.
 ///
 /// The lifetimes are the point (plan §5). A native record borrows from the
-/// text of one raw file; the normalized records borrow from the native
-/// one; the sink sees each by reference, once. Nothing is copied on the
-/// way from bytes to sink.
+/// text of one record, framed out of the raw file's byte stream into a
+/// buffer that is reused for the next; the normalized records borrow from
+/// the native one; the sink sees each by reference, once. Nothing is
+/// copied on the way from bytes to sink, and nothing larger than a record
+/// is held.
 ///
 /// Parsing and normalizing are two methods of one trait because they share
 /// the native type and nothing else needed a boundary between them: the
-/// runner reads a file, asks for its records, and hands each to
+/// runner opens a file, asks for its records, and hands each to
 /// [`Source::normalize`].
 pub trait Source: Sized {
     /// The source's name in reports: `pubmed`, `crossref`, `openalex`.
@@ -40,14 +46,25 @@ pub trait Source: Sized {
     /// Why a record did not parse: structural strictness (plan §6).
     type ParseError: Error + Send + Sync + 'static;
     /// Why a value did not fit the model: value-level strictness (plan §6).
-    type NormalizeError: Error + Send + Sync + 'static;
+    /// Signed, so `--survey` can group failures.
+    type NormalizeError: Error + Signature + Send + Sync + 'static;
 
-    /// The records of one raw file's text, each parsed on demand and
-    /// borrowed from it. The first error ends the run; what follows it is
-    /// never read.
-    fn records(
-        input: &str,
-    ) -> impl Iterator<Item = Result<Self::Native<'_>, Self::ParseError>> + '_;
+    /// Reads the records of one raw file, in order, from its text as a
+    /// byte stream — the file itself, or an inflating decoder over it, or
+    /// a download in flight — and hands each to `each`, borrowed from a
+    /// buffer that is reused for the next. `each` returning `Break` ends
+    /// the read before the next record is parsed; the first record that
+    /// does not parse ends it with the error, and what follows is never
+    /// read.
+    ///
+    /// # Errors
+    ///
+    /// The stream (I/O, gzip, bytes that are not UTF-8), or a record that
+    /// did not parse: structural strictness (plan §6).
+    fn records<R, F>(input: R, each: F) -> Result<(), ReadError<Self::ParseError>>
+    where
+        R: BufRead,
+        F: FnMut(&Self::Native<'_>) -> ControlFlow<()>;
 
     /// Normalizes one record, pushing what it becomes to `sink`: a work and
     /// then each of its edges, or a deletion.
@@ -62,6 +79,14 @@ pub trait Source: Sized {
     ) -> Result<(), Self::NormalizeError>;
 }
 
+/// A normalize error's signature (plan §6, `--survey`): what failed and
+/// how — the field and the kind of disagreement — without the record's
+/// own values, so that one wart seen a thousand times is one line.
+pub trait Signature {
+    #[allow(missing_docs)]
+    fn signature(&self) -> String;
+}
+
 /// Where normalized records go. Called by reference, once per record, in
 /// the order the source emits them: a work, then each of its edges.
 ///
@@ -70,6 +95,11 @@ pub trait Source: Sized {
 /// file's records can keep nothing it was given: it serializes immediately
 /// (plan §5, rule 3). A sink for one lifetime — a test collecting records —
 /// is called through [`Source::normalize`] directly.
+///
+/// The runner gives one worker's files to one sink, one file at a time,
+/// and says where each begins and ends, so a sink can write one output
+/// per raw file (plan §5, rule 4: one table per output file, workers
+/// sharing nothing).
 pub trait Sink<'n, S: Source> {
     /// One work.
     fn work(&mut self, work: &S::Work<'n>);
@@ -78,8 +108,29 @@ pub trait Sink<'n, S: Source> {
     /// A record the source has withdrawn: PubMed's `DeleteCitation`.
     fn deletion(&mut self, id: &S::Id<'n>);
 
+    /// Called before the first record of each raw file, with the file's
+    /// path and its index among the run's files.
+    ///
+    /// # Errors
+    ///
+    /// An I/O error stops the run at this file.
+    fn begin_file(&mut self, path: &Path, index: usize) -> io::Result<()> {
+        let _ = (path, index);
+        Ok(())
+    }
+
+    /// Called after the last record of a raw file, including a file cut
+    /// short by a record limit.
+    ///
+    /// # Errors
+    ///
+    /// An I/O error stops the run at this file.
+    fn end_file(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+
     /// The first I/O error since the last call, for sinks that write. The
-    /// three methods above cannot fail, so a writing sink remembers its
+    /// three record methods cannot fail, so a writing sink remembers its
     /// error and the runner asks after every record, stopping at the one
     /// the error hit. Sinks that do not write leave the default.
     fn failed(&mut self) -> Option<io::Error> {
@@ -87,27 +138,13 @@ pub trait Sink<'n, S: Source> {
     }
 }
 
-/// Two sinks fed the same records, the first before the second: a stats
-/// report beside the binary output.
-impl<'n, S: Source, A: Sink<'n, S>, B: Sink<'n, S>> Sink<'n, S> for (A, B) {
-    fn work(&mut self, work: &S::Work<'n>) {
-        self.0.work(work);
-        self.1.work(work);
-    }
+/// The sink that drops everything: parsing without normalizing.
+impl<'n, S: Source> Sink<'n, S> for () {
+    fn work(&mut self, _: &S::Work<'n>) {}
 
-    fn reference(&mut self, from: &S::Id<'n>, reference: &S::Reference<'n>) {
-        self.0.reference(from, reference);
-        self.1.reference(from, reference);
-    }
+    fn reference(&mut self, _: &S::Id<'n>, _: &S::Reference<'n>) {}
 
-    fn deletion(&mut self, id: &S::Id<'n>) {
-        self.0.deletion(id);
-        self.1.deletion(id);
-    }
-
-    fn failed(&mut self) -> Option<io::Error> {
-        self.0.failed().or_else(|| self.1.failed())
-    }
+    fn deletion(&mut self, _: &S::Id<'n>) {}
 }
 
 /// A sink by mutable reference.
@@ -122,6 +159,14 @@ impl<'n, S: Source, K: Sink<'n, S>> Sink<'n, S> for &mut K {
 
     fn deletion(&mut self, id: &S::Id<'n>) {
         (**self).deletion(id);
+    }
+
+    fn begin_file(&mut self, path: &Path, index: usize) -> io::Result<()> {
+        (**self).begin_file(path, index)
+    }
+
+    fn end_file(&mut self) -> io::Result<()> {
+        (**self).end_file()
     }
 
     fn failed(&mut self) -> Option<io::Error> {
@@ -149,8 +194,49 @@ impl<'n, S: Source, K: Sink<'n, S>> Sink<'n, S> for Option<K> {
         }
     }
 
+    fn begin_file(&mut self, path: &Path, index: usize) -> io::Result<()> {
+        self.as_mut().map_or(Ok(()), |k| k.begin_file(path, index))
+    }
+
+    fn end_file(&mut self) -> io::Result<()> {
+        self.as_mut().map_or(Ok(()), Sink::end_file)
+    }
+
     fn failed(&mut self) -> Option<io::Error> {
         self.as_mut().and_then(Sink::failed)
+    }
+}
+
+/// Two sinks fed the same records, the first before the second: a stats
+/// report beside the binary output.
+impl<'n, S: Source, A: Sink<'n, S>, B: Sink<'n, S>> Sink<'n, S> for (A, B) {
+    fn work(&mut self, work: &S::Work<'n>) {
+        self.0.work(work);
+        self.1.work(work);
+    }
+
+    fn reference(&mut self, from: &S::Id<'n>, reference: &S::Reference<'n>) {
+        self.0.reference(from, reference);
+        self.1.reference(from, reference);
+    }
+
+    fn deletion(&mut self, id: &S::Id<'n>) {
+        self.0.deletion(id);
+        self.1.deletion(id);
+    }
+
+    fn begin_file(&mut self, path: &Path, index: usize) -> io::Result<()> {
+        self.0.begin_file(path, index)?;
+        self.1.begin_file(path, index)
+    }
+
+    fn end_file(&mut self) -> io::Result<()> {
+        self.0.end_file()?;
+        self.1.end_file()
+    }
+
+    fn failed(&mut self) -> Option<io::Error> {
+        self.0.failed().or_else(|| self.1.failed())
     }
 }
 

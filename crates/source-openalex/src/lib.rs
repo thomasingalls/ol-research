@@ -13,17 +13,18 @@
 //! as the raw JSON slice, uninterpreted, in the same spirit as the other
 //! sources' raw markup. [`normalize`] is the value-level layer over it.
 
+use std::io::BufRead;
+use std::ops::ControlFlow;
+
 pub mod error;
+pub mod list;
 pub mod normalize;
 pub mod parse;
 pub mod record;
 pub mod vocab;
 
-/// Reading raw files; shared with the other sources.
-pub use ingest::gz;
-
 pub use error::Error;
-pub use parse::jsonl;
+pub use parse::{jsonl, line, records};
 pub use record::Work;
 
 /// The source, for the ingest traits: snapshot part files, one work per
@@ -40,8 +41,11 @@ impl ingest::Source for OpenAlex {
     type ParseError = Error;
     type NormalizeError = normalize::Error;
 
-    fn records(input: &str) -> impl Iterator<Item = Result<Work<'_>, Error>> + '_ {
-        jsonl(input)
+    fn records<R: BufRead, F>(input: R, each: F) -> Result<(), ingest::ReadError<Error>>
+    where
+        F: FnMut(&Work<'_>) -> ControlFlow<()>,
+    {
+        records(input, each)
     }
 
     fn normalize<'n, K: ingest::Sink<'n, Self>>(

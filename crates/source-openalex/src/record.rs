@@ -29,15 +29,17 @@ pub struct Work<'a> {
     pub doi: Option<Text<'a>>,
     #[serde(borrow)]
     #[allow(missing_docs)]
-    pub title: Text<'a>,
+    pub title: Option<Text<'a>>,
     /// The same as `title` in the sample.
     #[serde(borrow)]
-    pub display_name: Text<'a>,
+    pub display_name: Option<Text<'a>>,
     /// 1823..2026 in the sample.
-    pub publication_year: u16,
+    /// Null together with `publication_date` (32 DOAJ-indexed works in the
+    /// 2025-10-17 part, e.g. `W7050100049`).
+    pub publication_year: Option<u16>,
     /// `YYYY-MM-DD`.
     #[serde(borrow)]
-    pub publication_date: Text<'a>,
+    pub publication_date: Option<Text<'a>>,
     #[serde(borrow)]
     #[allow(missing_docs)]
     pub ids: Ids<'a>,
@@ -92,7 +94,9 @@ pub struct Work<'a> {
     #[allow(missing_docs)]
     pub biblio: Biblio<'a>,
     #[allow(missing_docs)]
-    pub is_retracted: bool,
+    /// Null on a paratext work (first seen 2025-07-29 part, `W4288097146`,
+    /// which had no `title` or `display_name` either).
+    pub is_retracted: Option<bool>,
     #[allow(missing_docs)]
     pub is_paratext: bool,
     /// Undocumented.
@@ -402,15 +406,16 @@ pub struct Institution<'a> {
     #[serde(borrow)]
     #[allow(missing_docs)]
     pub display_name: Text<'a>,
-    /// `https://ror.org/…`, always present in the sample.
+    /// `https://ror.org/…`; null for an institution without one (first
+    /// seen 2025-07-29 part: `I4210137868`, together with a null `type`).
     #[serde(borrow)]
-    pub ror: Text<'a>,
+    pub ror: Option<Text<'a>>,
     #[serde(borrow)]
     #[allow(missing_docs)]
     pub country_code: Option<Text<'a>>,
     #[serde(rename = "type")]
     #[allow(missing_docs)]
-    pub r#type: InstitutionType,
+    pub r#type: Option<InstitutionType>,
     /// The institution and its parents; 1 to 28.
     #[serde(borrow)]
     pub lineage: Vec<Text<'a>>,
@@ -438,7 +443,8 @@ pub struct Apc<'a> {
     #[allow(missing_docs)]
     pub currency: Text<'a>,
     #[allow(missing_docs)]
-    pub value_usd: u32,
+    /// Null when the currency has no conversion (`IRR`, 2025-07-29 part).
+    pub value_usd: Option<u32>,
 }
 
 /// `apc_paid`: what was paid, floats in the one observed.

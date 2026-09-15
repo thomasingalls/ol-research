@@ -80,10 +80,13 @@ pub struct Work<'n> {
     /// `ids.mag`: the Microsoft Academic Graph id, which is the `W` number
     /// on all but 2 of 10,471.
     pub mag: Option<NonZeroU32>,
-    /// `title`, raw; one empty, two with inline markup in the sample.
-    pub title: &'n str,
-    /// `publication_date`, always a full date.
-    pub published: Date,
+    /// `title`, raw; one empty, two with inline markup in the sample;
+    /// absent on a paratext work that has none (`W4288097146`, which has
+    /// no `display_name` and no `is_retracted` either).
+    pub title: Option<&'n str>,
+    /// `publication_date`, a full date when there is one; 32 DOAJ-indexed
+    /// works in the 2025-10-17 part had none, and no year either.
+    pub published: Option<Date>,
     /// `language`: ISO 639-1, or ISO 639-2 for a language without a
     /// two-letter code.
     #[serde(borrow)]
@@ -115,8 +118,8 @@ pub struct Work<'n> {
     #[allow(missing_docs)]
     #[serde(borrow)]
     pub biblio: Biblio<'n>,
-    #[allow(missing_docs)]
-    pub is_retracted: bool,
+    /// Absent when OpenAlex did not say (a paratext work).
+    pub is_retracted: Option<bool>,
     /// Undocumented.
     pub is_xpac: bool,
     /// `topics`, best first; `primary_topic` is the first.
@@ -241,12 +244,13 @@ pub struct Institution<'n> {
     pub id: InstitutionId,
     #[allow(missing_docs)]
     pub name: &'n str,
-    #[allow(missing_docs)]
-    pub ror: Ror,
+    /// Absent for an institution OpenAlex has not matched to ROR; the
+    /// 2025-07-29 part had one such, with no `type` either.
+    pub ror: Option<Ror>,
     #[allow(missing_docs)]
     pub country: Option<CountryCode>,
-    #[allow(missing_docs)]
-    pub kind: InstitutionType,
+    /// Absent together with `ror`.
+    pub kind: Option<InstitutionType>,
     /// The institution and its parents, the institution not always first.
     pub lineage: Vec<InstitutionId>,
 }
@@ -268,8 +272,8 @@ pub struct Apc {
     pub value: u32,
     #[allow(missing_docs)]
     pub currency: CurrencyCode,
-    #[allow(missing_docs)]
-    pub value_usd: u32,
+    /// Absent when the currency has no conversion (`IRR`).
+    pub value_usd: Option<u32>,
 }
 
 /// `biblio`, raw.
@@ -565,7 +569,13 @@ impl fmt::Display for Error {
             None => f.write_str("id unknown: ")?,
         }
         write!(f, "{} = {:?}: ", self.field, self.raw)?;
-        match &self.kind {
+        fmt::Display::fmt(&self.kind, f)
+    }
+}
+
+impl fmt::Display for ErrorKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
             ErrorKind::Id(e) => write!(f, "{e}"),
             ErrorKind::Doi(e) => write!(f, "{e}"),
             ErrorKind::Orcid(e) => write!(f, "{e}"),
@@ -578,6 +588,12 @@ impl fmt::Display for Error {
             ErrorKind::Inconsistent(what) => write!(f, "inconsistent: {what}"),
             ErrorKind::Unmodelled(what) => write!(f, "not modelled yet: {what}"),
         }
+    }
+}
+
+impl ingest::source::Signature for Error {
+    fn signature(&self) -> String {
+        format!("{}: {}", self.field, self.kind)
     }
 }
 
@@ -713,13 +729,13 @@ impl Ctx {
         field: &'static str,
         value: f64,
         currency: &str,
-        value_usd: f64,
+        value_usd: Option<f64>,
     ) -> Result<Apc, Error> {
         Ok(Apc {
             value: self.whole(field, value)?,
             currency: CurrencyCode::parse(currency)
                 .map_err(|e| self.err(field, currency, ErrorKind::Code(e)))?,
-            value_usd: self.whole(field, value_usd)?,
+            value_usd: value_usd.map(|v| self.whole(field, v)).transpose()?,
         })
     }
 
@@ -736,8 +752,13 @@ impl Ctx {
         Ok(Institution {
             id,
             name: &i.display_name,
-            ror: Ror::from_url(&i.ror)
-                .map_err(|e| self.err("institutions.ror", &i.ror, ErrorKind::Ror(e)))?,
+            ror: i
+                .ror
+                .as_deref()
+                .map(|r| {
+                    Ror::from_url(r).map_err(|e| self.err("institutions.ror", r, ErrorKind::Ror(e)))
+                })
+                .transpose()?,
             country: i
                 .country_code
                 .as_deref()
@@ -1041,17 +1062,28 @@ pub fn normalize<'n, K: Sink<'n, OpenAlex>>(w: &'n Native<'_>, emit: &mut K) -> 
         })
         .transpose()?;
 
-    let published = Date::parse_iso(&w.publication_date)
-        .map_err(|e| ctx.err("publication_date", &w.publication_date, ErrorKind::Date(e)))?;
-    if published.year().get() != w.publication_year {
-        return Err(ctx.inconsistent(
-            "publication_year",
-            &w.publication_year.to_string(),
-            "differs from publication_date",
-        ));
+    let published = w
+        .publication_date
+        .as_deref()
+        .map(|d| Date::parse_iso(d).map_err(|e| ctx.err("publication_date", d, ErrorKind::Date(e))))
+        .transpose()?;
+    match (published, w.publication_year) {
+        (Some(date), Some(year)) if date.year().get() == year => {}
+        (None, None) => {}
+        (_, year) => {
+            return Err(ctx.inconsistent(
+                "publication_year",
+                &year.map_or_else(|| "null".to_owned(), |y| y.to_string()),
+                "differs from publication_date",
+            ));
+        }
     }
     if w.display_name != w.title {
-        return Err(ctx.inconsistent("display_name", &w.display_name, "differs from title"));
+        return Err(ctx.inconsistent(
+            "display_name",
+            w.display_name.as_deref().unwrap_or("null"),
+            "differs from title",
+        ));
     }
     let created = ctx.stamp("created_date", &w.created_date)?;
     let updated = ctx.stamp("updated_date", &w.updated_date)?;
@@ -1378,7 +1410,7 @@ pub fn normalize<'n, K: Sink<'n, OpenAlex>>(w: &'n Native<'_>, emit: &mut K) -> 
         doi,
         pmid,
         mag,
-        title: &w.title,
+        title: w.title.as_deref(),
         published,
         language,
         kind: w.r#type,
@@ -1396,14 +1428,14 @@ pub fn normalize<'n, K: Sink<'n, OpenAlex>>(w: &'n Native<'_>, emit: &mut K) -> 
                     "apc_list",
                     f64::from(a.value),
                     &a.currency,
-                    f64::from(a.value_usd),
+                    a.value_usd.map(f64::from),
                 )
             })
             .transpose()?,
         apc_paid: w
             .apc_paid
             .as_ref()
-            .map(|a| ctx.apc("apc_paid", a.value, &a.currency, a.value_usd))
+            .map(|a| ctx.apc("apc_paid", a.value, &a.currency, Some(a.value_usd)))
             .transpose()?,
         fwci: w.fwci,
         has_fulltext: w.has_fulltext,

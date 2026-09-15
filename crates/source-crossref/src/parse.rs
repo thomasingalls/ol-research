@@ -1,7 +1,10 @@
 //! The two containers, and per-item error context.
 
 use std::borrow::Cow;
+use std::io::BufRead;
+use std::ops::ControlFlow;
 
+use ingest::frame::{self, ReadError};
 use serde::Deserialize;
 use serde_json::value::RawValue;
 
@@ -174,25 +177,56 @@ pub fn jsonl(input: &str) -> impl Iterator<Item = Result<Work<'_>, Error>> + '_ 
         .map(|(index, line)| work(line, Context::Line(index + 1)))
 }
 
-/// The records of a raw file in either container, told apart by its first
-/// bytes: an API page starts with `{"status"`, a public data file with a
-/// work. A malformed envelope is the first and only record's error.
-#[must_use]
-pub fn records(input: &str) -> Box<dyn Iterator<Item = Result<Work<'_>, Error>> + '_> {
-    if input.trim_start().starts_with("{\"status\"") {
-        match Page::parse(input) {
-            Ok(page) => Box::new(page.into_works()),
-            Err(e) => Box::new(std::iter::once(Err(e))),
+/// The records of a raw file in either container, read as a stream and
+/// told apart by the first bytes: an API page starts with `{"status"`, a
+/// public data file with a work. A page is one document, held whole while
+/// its items are parsed one by one; lines are read one at a time from a
+/// buffer reused for the next.
+///
+/// # Errors
+///
+/// The stream's, a malformed envelope, or the first item or line that
+/// does not parse.
+pub fn records<R: BufRead, F>(mut input: R, mut each: F) -> Result<(), ReadError<Error>>
+where
+    F: FnMut(&Work<'_>) -> ControlFlow<()>,
+{
+    if frame::starts_with(&mut input, b"{\"status\"")? {
+        let mut buf = Vec::new();
+        input.read_to_end(&mut buf)?;
+        let page = Page::parse(frame::utf8(&buf)?).map_err(ReadError::Parse)?;
+        for work in page.works() {
+            if each(&work.map_err(ReadError::Parse)?).is_break() {
+                break;
+            }
         }
+        Ok(())
     } else {
-        Box::new(jsonl(input))
+        frame::lines(input, |number, line| {
+            work(line, Context::Line(number)).map(|w| each(&w))
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::io::Cursor;
+    use std::ops::ControlFlow;
+
+    use ingest::ReadError;
+
     use super::{Page, jsonl, records};
-    use crate::error::Context;
+    use crate::error::{Context, Error};
+
+    /// How many records the streaming reader yields from `text`.
+    fn count(text: &str) -> Result<usize, ReadError<Error>> {
+        let mut n = 0;
+        records(Cursor::new(text), |_| {
+            n += 1;
+            ControlFlow::Continue(())
+        })?;
+        Ok(n)
+    }
 
     const WORK: &str = r#"{"DOI":"10.1000/x","URL":"https://doi.org/10.1000/x","type":"journal-article","source":"Crossref","prefix":"10.1000","member":"1","score":0.0,"created":{"date-parts":[[2020,1,2]],"date-time":"2020-01-02T00:00:00Z","timestamp":1577923200000},"deposited":{"date-parts":[[2020,1,2]],"date-time":"2020-01-02T00:00:00Z","timestamp":1577923200000},"indexed":{"date-parts":[[2020,1,2]],"date-time":"2020-01-02T00:00:00Z","timestamp":1577923200000},"issued":{"date-parts":[[2020]]},"publisher":"P","resource":{"primary":{"URL":"https://example.org/x"}}}"#;
 
@@ -214,9 +248,19 @@ mod tests {
         let lines = format!("{WORK}\n\n{WORK}\n");
         let works: Vec<_> = jsonl(&lines).map(Result::unwrap).collect();
         assert_eq!(works.len(), 2);
-        assert_eq!(records(&input).count(), 1);
-        assert_eq!(records(&lines).count(), 2);
-        assert!(records("{\"status\":\"failed\"}").next().unwrap().is_err());
+        assert_eq!(count(&input).unwrap(), 1);
+        assert_eq!(count(&lines).unwrap(), 2);
+        assert!(matches!(
+            count("{\"status\":\"failed\"}").unwrap_err(),
+            ReadError::Parse(_)
+        ));
+        let mut seen = 0;
+        records(Cursor::new(&lines), |_| {
+            seen += 1;
+            ControlFlow::Break(())
+        })
+        .unwrap();
+        assert_eq!(seen, 1, "break stops before the next line");
     }
 
     #[test]

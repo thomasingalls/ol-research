@@ -38,6 +38,9 @@ macro_rules! set_once {
 mod article;
 mod citation;
 mod data;
+mod stream;
+
+pub use stream::records;
 
 pub(crate) type Result<T> = std::result::Result<T, Error>;
 
@@ -71,17 +74,26 @@ pub(crate) enum Child<'a> {
 pub(crate) struct Parser<'a> {
     input: &'a str,
     reader: Reader<&'a [u8]>,
+    /// Where `input` begins in the file, so errors say file offsets even
+    /// when `input` is one frame of it.
+    base: u64,
     path: Vec<&'a str>,
     pmid: Option<Text<'a>>,
 }
 
 impl<'a> Parser<'a> {
     fn new(input: &'a str) -> Self {
+        Self::at(input, 0)
+    }
+
+    /// A parser over `input`, which begins `base` bytes into the file.
+    fn at(input: &'a str, base: u64) -> Self {
         // quick-xml skips a BOM; skip it here too so offsets agree.
         let input = input.strip_prefix('\u{feff}').unwrap_or(input);
         Self {
             input,
             reader: Reader::from_str(input),
+            base,
             path: Vec::with_capacity(16),
             pmid: None,
         }
@@ -90,7 +102,7 @@ impl<'a> Parser<'a> {
     pub(crate) fn error(&self, kind: ErrorKind) -> Error {
         Error {
             kind,
-            position: self.reader.buffer_position(),
+            position: self.base + self.reader.buffer_position(),
             path: self.path.join("/"),
             pmid: self.pmid.as_deref().map(str::to_owned),
         }
