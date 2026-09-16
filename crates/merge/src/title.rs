@@ -2,14 +2,18 @@
 //! deliberately weak, because it only ever decides among two or three
 //! records that already share a name.
 
+use serde::{Deserialize, Serialize};
+
 /// A record's titles, borrowed: the title, and the vernacular title a
 /// source keeps beside a translation (PubMed's `VernacularTitle`,
 /// Crossref's first alternate title).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Titles<'a> {
     #[allow(missing_docs)]
+    #[serde(borrow)]
     pub title: Option<&'a str>,
     #[allow(missing_docs)]
+    #[serde(borrow)]
     pub vernacular: Option<&'a str>,
 }
 

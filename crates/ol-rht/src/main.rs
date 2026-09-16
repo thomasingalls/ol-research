@@ -49,6 +49,13 @@
 //!   replacing what was there; prints both reports. `--survey` counts
 //!   values outside the merge's tables instead of stopping; it and
 //!   `--limit` write nothing.
+//! * `merge --batch <path>... [--store <root>] [--public-key <file>]`
+//!   merges the normalized sets at the paths — set files, set prefixes
+//!   or directories of sets, any source — incrementally against the
+//!   live tables (serving plan §5): registry and public lines for what
+//!   it mints, the four delta logs, the journal line, the batch absorbed
+//!   into the lexical index; the current epoch must be at the last full
+//!   merge.
 //! * `merge dump <set.zst>... [--limit N]` prints a merged set as JSON
 //!   lines, for eyes.
 //!
@@ -105,6 +112,7 @@ const USAGE: &str = "usage:
   ol-rht <pubmed|crossref|openalex> ingest <listing> [--store <root>] [--workers N] [--limit N] [--out <dir>] [--mailto <address>]
   ol-rht merge identity [--store <root>] [--limit N] [--survey]
   ol-rht merge [--store <root>] [--limit N] [--survey] [--public-key <file>]
+  ol-rht merge --batch <path>... [--store <root>] [--public-key <file>]
   ol-rht merge dump <set.zst>... [--limit N]
   ol-rht graph build [--store <root>] [--held]
   ol-rht graph query <#id|name> [--store <root>] [--held] [--limit N]
@@ -149,7 +157,10 @@ fn main() -> ExitCode {
             let Some((public_key, rest)) = strip_value(rest, "--public-key") else {
                 return usage();
             };
+            let batch = rest.contains(&"--batch");
+            let rest: Vec<&str> = rest.into_iter().filter(|a| *a != "--batch").collect();
             match Options::parse(&rest) {
+                Some(opts) if batch => merge_batch(&opts, public_key.map(Path::new)),
                 Some(opts) => merge_all(&opts, public_key.map(Path::new)),
                 None => usage(),
             }
@@ -1125,6 +1136,13 @@ fn merge_identity(opts: &Options) -> ExitCode {
     let limit = opts.limit.map(|n| records_limit(Some(n)));
     let started = std::time::Instant::now();
     let allocations = ingest::alloc::allocations();
+    let _lock = match merge::layout::Lock::acquire(&store) {
+        Ok(lock) => lock,
+        Err(e) => {
+            eprintln!("{what}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
     let pass = match merge_pass1(opts, &store, limit, what) {
         Ok(pass) => pass,
         Err(code) => return code,
@@ -1177,6 +1195,13 @@ fn merge_all(opts: &Options, public_key: Option<&Path>) -> ExitCode {
     let limit = opts.limit.map(|n| records_limit(Some(n)));
     let started = std::time::Instant::now();
     let allocations = ingest::alloc::allocations();
+    let _lock = match merge::layout::Lock::acquire(&store) {
+        Ok(lock) => lock,
+        Err(e) => {
+            eprintln!("{what}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
     let Pass1 {
         res,
         pubmed,
@@ -1215,7 +1240,6 @@ fn merge_all(opts: &Options, public_key: Option<&Path>) -> ExitCode {
         dropped: assigned.dropped.len() as u64,
     };
     let lines = assigned.lines();
-    let appended = lines.len() as u64;
     if let Err(code) = merge_commit(what, &registry_path, &registry, &lines, complete) {
         return code;
     }
@@ -1284,10 +1308,7 @@ fn merge_all(opts: &Options, public_key: Option<&Path>) -> ExitCode {
         eprintln!("{what}: {e}");
         return ExitCode::FAILURE;
     }
-    if complete
-        && let Err(code) = merge_clock(
-            what, &store, &registry, appended, counts, &merged, public_key,
-        )
+    if complete && let Err(code) = merge_clock(what, &store, &registry, counts, &merged, public_key)
     {
         return code;
     }
@@ -1319,7 +1340,6 @@ fn merge_clock(
     what: &str,
     store: &Store,
     registry: &Registry,
-    appended: u64,
     counts: Counts,
     merged: &merge::Merged,
     public_key: Option<&Path>,
@@ -1354,13 +1374,23 @@ fn merge_clock(
     let journal_path = store.journal();
     let last = merge::journal::last(&journal_path)
         .map_err(|e| fail(format!("{}: {e}", journal_path.display())))?;
+    let size = |path: &Path| -> Result<u64, ExitCode> {
+        merge::delta::len(path).map_err(|e| fail(format!("{}: {e}", path.display())))
+    };
     let line = merge::journal::Line {
         batch: last.map_or(1, |l| l.batch + 1),
         at,
         kind: merge::journal::Kind::Full,
-        registry: registry.lines() + appended,
+        registry: registry.lines(),
         public: public.lines(),
         delta: BTreeMap::new(),
+        bytes: [
+            ("registry".to_owned(), size(&store.registry())?),
+            ("public".to_owned(), size(&public_path)?),
+        ]
+        .into_iter()
+        .collect(),
+        inputs: Vec::new(),
         records: merged.stats.viewed.values().sum(),
         minted: counts.minted,
         merged: counts.merged,
@@ -1371,6 +1401,289 @@ fn merge_clock(
         .map_err(|e| fail(format!("{}: {e}", journal_path.display())))?;
     eprintln!("{what}: journal batch {} appended", line.batch);
     Ok(())
+}
+
+/// The sets of one prefix a batch merges, by source.
+#[derive(Debug, Default)]
+struct BatchSets {
+    prefixes: BTreeMap<PathBuf, String>,
+}
+
+impl BatchSets {
+    /// Every set prefix at or below the paths given, with the source
+    /// that wrote it.
+    fn find(paths: &[PathBuf]) -> io::Result<Self> {
+        let mut this = Self::default();
+        for path in paths {
+            let files: Vec<PathBuf> = if path.is_dir() {
+                let mut all = Vec::new();
+                for kind in [Kind::Works, Kind::References, Kind::Deletions] {
+                    all.extend(merge::sets::find(path, kind)?);
+                }
+                all
+            } else {
+                vec![path.clone()]
+            };
+            for file in files {
+                let prefix = Kind::prefix_of(&file).ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("{}: not a normalized set", file.display()),
+                    )
+                })?;
+                if this.prefixes.contains_key(&prefix) {
+                    continue;
+                }
+                let header = ingest::binary::header(&file)?;
+                this.prefixes.insert(prefix, header.source);
+            }
+        }
+        Ok(this)
+    }
+}
+
+/// Reads one prefix's works, references and deletions sets of `S` into a
+/// batch.
+fn batch_add<S: Contributor>(
+    prefix: &Path,
+    batch: &mut serve::incremental::Batch,
+) -> Result<u64, merge::build::Error> {
+    let io = |path: &Path, source| merge::build::Error::Io {
+        path: path.to_path_buf(),
+        source,
+    };
+    let mut by_native: BTreeMap<String, usize> = BTreeMap::new();
+    let mut read = 0u64;
+    let works_path = Kind::Works.path(prefix);
+    if works_path.exists() {
+        let reader =
+            merge::sets::open::<S>(&works_path, Kind::Works).map_err(|e| io(&works_path, e))?;
+        let table = reader
+            .table()
+            .ok_or_else(|| merge::build::Error::NoTable(works_path.clone()))?;
+        reader.with_table(|| -> Result<(), merge::build::Error> {
+            for (i, work) in reader.records::<S::Work<'_>>().enumerate() {
+                let work = work.map_err(|e| io(&works_path, e))?;
+                let unmapped = |source| merge::build::Error::Unmapped {
+                    path: works_path.clone(),
+                    ordinal: i as u64 + 1,
+                    source,
+                };
+                let mut asserts = Vec::new();
+                S::names(&work, &mut |a| {
+                    asserts.push(merge::build::OwnedAssert {
+                        name: a.name.to_owned(),
+                        field: a.field.into(),
+                        native: a.native,
+                    });
+                });
+                let Some(native) = asserts.iter().find(|a| a.native).map(|a| a.name.clone()) else {
+                    return Err(merge::build::Error::Invariant(format!(
+                        "{}: record {} has no native name",
+                        works_path.display(),
+                        i + 1
+                    )));
+                };
+                let view = S::view(&work, table).map_err(unmapped)?;
+                let text = S::text(&work, table).map_err(unmapped)?;
+                let mut relations = Vec::new();
+                S::relations(&work, table, &mut |r| relations.push(r)).map_err(unmapped)?;
+                let key = native.to_string();
+                if by_native.contains_key(&key) {
+                    continue;
+                }
+                by_native.insert(key, batch.records.len());
+                batch.records.push(serve::incremental::Incoming {
+                    source: S::SOURCE,
+                    native,
+                    asserts,
+                    view: merge::view::Owned::resolve(&view, table),
+                    text,
+                    relations,
+                    references: Vec::new(),
+                });
+                read += 1;
+            }
+            Ok(())
+        })?;
+    }
+    let references_path = Kind::References.path(prefix);
+    if references_path.exists() {
+        let reader = merge::sets::open::<S>(&references_path, Kind::References)
+            .map_err(|e| io(&references_path, e))?;
+        let table = reader.table();
+        reader.with_table(|| -> Result<(), merge::build::Error> {
+            for record in reader.records::<(S::Id<'_>, S::Reference<'_>)>() {
+                let (id, reference) = record.map_err(|e| io(&references_path, e))?;
+                let native = S::native(&id).to_string();
+                let Some(&ix) = by_native.get(&native) else {
+                    return Err(merge::build::Error::Invariant(format!(
+                        "{}: a reference of {native}, which the works set beside it does not hold",
+                        references_path.display()
+                    )));
+                };
+                let mut names = Vec::new();
+                S::targets(&reference, &mut |n| names.push(n.to_owned()));
+                batch.records[ix]
+                    .references
+                    .push(serve::incremental::Reference {
+                        names,
+                        citation: merge::build::OwnedCitation::of(&S::citation(&reference), table),
+                    });
+            }
+            Ok(())
+        })?;
+    }
+    let deletions_path = Kind::Deletions.path(prefix);
+    if deletions_path.exists() {
+        let reader = merge::sets::open::<S>(&deletions_path, Kind::Deletions)
+            .map_err(|e| io(&deletions_path, e))?;
+        for record in reader.records::<S::Id<'_>>() {
+            let id = record.map_err(|e| io(&deletions_path, e))?;
+            batch.deletions.push((S::SOURCE, S::native(&id).to_owned()));
+        }
+    }
+    Ok(read)
+}
+
+/// The incremental merge (serving plan §5): the sets at the paths given
+/// merged against the live tables and appended to the deltas.
+#[allow(clippy::too_many_lines)]
+fn merge_batch(opts: &Options, public_key: Option<&Path>) -> ExitCode {
+    if opts.paths.is_empty()
+        || opts.limit.is_some()
+        || opts.survey
+        || opts.workers.is_some()
+        || opts.out.is_some()
+        || opts.mailto.is_some()
+        || opts.seed.is_some()
+        || opts.by.is_some()
+    {
+        return usage();
+    }
+    let what = "merge --batch";
+    let store = opts.store();
+    let started = std::time::Instant::now();
+    let fail = |e: String| {
+        eprintln!("{what}: {e}");
+        ExitCode::FAILURE
+    };
+    let key = match public_key {
+        Some(path) => match merge::public::Key::read(path) {
+            Ok(key) => Some(key),
+            Err(e) => return fail(format!("{}: {e}", path.display())),
+        },
+        None => None,
+    };
+    let sets = match BatchSets::find(&opts.paths) {
+        Ok(sets) => sets,
+        Err(e) => return fail(e.to_string()),
+    };
+    if sets.prefixes.is_empty() {
+        return fail("no normalized sets at the paths given".into());
+    }
+    let mut batch = serve::incremental::Batch::default();
+    for (prefix, source) in &sets.prefixes {
+        let read = match source.as_str() {
+            "pubmed" => batch_add::<Pubmed>(prefix, &mut batch),
+            "crossref" => batch_add::<Crossref>(prefix, &mut batch),
+            "openalex" => batch_add::<OpenAlex>(prefix, &mut batch),
+            other => Err(merge::build::Error::Invariant(format!(
+                "{}: written by {other:?}, which this binary does not merge",
+                prefix.display()
+            ))),
+        };
+        match read {
+            Ok(n) => eprintln!("{what}: {}: {n} records", prefix.display()),
+            Err(e) => return fail(e.to_string()),
+        }
+        let relative = prefix
+            .strip_prefix(store.root())
+            .unwrap_or(prefix)
+            .to_string_lossy()
+            .into_owned();
+        batch.inputs.push(relative);
+    }
+    eprintln!(
+        "{what}: {} records, {} deletions read in {:.1} s",
+        batch.records.len(),
+        batch.deletions.len(),
+        started.elapsed().as_secs_f64()
+    );
+    let _lock = match merge::layout::Lock::acquire(&store) {
+        Ok(lock) => lock,
+        Err(e) => return fail(e.to_string()),
+    };
+    let serving = match serve::Serving::open(&store) {
+        Ok(serving) => serving,
+        Err(e) => {
+            return fail(format!(
+                "{e} (an epoch at the last full merge is the batch's base)"
+            ));
+        }
+    };
+    eprintln!(
+        "{what}: epoch {} at batch {}, folded to {}, opened in {:.1} s",
+        serving.epoch().epoch,
+        serving.epoch().batch,
+        serving.watermark().batch,
+        started.elapsed().as_secs_f64()
+    );
+    let applied = match serve::incremental::apply(&store, &serving, batch, key.as_ref()) {
+        Ok(applied) => applied,
+        Err(e) => return fail(e.to_string()),
+    };
+    let a = &applied;
+    println!("batch {} at {}", a.batch, a.at);
+    println!(
+        "  records: {} merged ({} repeated), {} deletions ({} of records no work had)",
+        a.records, a.repeated, a.deleted, a.deletions_unknown
+    );
+    println!(
+        "  identity: {} components; {} ids minted ({} stubs), {} merged into an older id, {} dropped; {} names attached, {} dropped",
+        a.components,
+        a.minted,
+        a.stubs_minted,
+        a.merged,
+        a.dropped,
+        a.names_attached,
+        a.names_dropped
+    );
+    println!(
+        "  rows: {} held works, {} stubs written; {} public ids minted",
+        a.works_put, a.stubs_put, a.public_minted
+    );
+    println!(
+        "  references: {}",
+        a.references
+            .iter()
+            .map(|(k, v)| format!("{k} {v}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    println!(
+        "  arcs: {} added, {} removed, {} moved with a retired id; {} relation lists, {} unresolved lists",
+        a.arcs_added, a.arcs_removed, a.arcs_moved, a.relations_put, a.unresolved_put
+    );
+    if a.union_only > 0 || a.uncited_stubs > 0 {
+        println!(
+            "  until a full merge: {} works with a duplicate record outside the batch had arcs added and none removed; {} stubs are left uncited",
+            a.union_only, a.uncited_stubs
+        );
+    }
+    for t in &a.truncated {
+        println!("  cut: {t}");
+    }
+    println!(
+        "  lexical index: {} documents put, {} removed; {} in all",
+        a.lexical.put, a.lexical.removed, a.lexical.documents
+    );
+    println!(
+        "  folded: the serving layer answers at batch {}",
+        serving.watermark().batch
+    );
+    eprintln!("{what}: {:.1} s", started.elapsed().as_secs_f64());
+    ExitCode::SUCCESS
 }
 
 /// Prints merged sets as JSON lines.
@@ -1709,7 +2022,7 @@ fn graph_list(
     out: &mut impl Write,
     what: &str,
     degree: u64,
-    arcs: graph::Arcs<'_>,
+    arcs: impl Iterator<Item = graph::Arc>,
     limit: usize,
 ) -> io::Result<()> {
     writeln!(out, "  {what}: {degree}")?;
@@ -1987,6 +2300,12 @@ fn epoch_publish(opts: &Options) -> ExitCode {
         eprintln!("{what}: {e}");
         ExitCode::FAILURE
     };
+    if batch.kind != merge::journal::Kind::Full {
+        return fail(format!(
+            "batch {} is an incremental merge; an epoch is published at a full one (serving plan §4): run merge first",
+            batch.batch
+        ));
+    }
     let published = (|| -> Result<serve::epoch::Manifest, ExitCode> {
         let names_dir = store.names(model::VERSION, merge::VERSION, serve::VERSION);
         if !serve::names::Manifest::read(&names_dir).is_ok_and(|m| m.batch == batch.batch) {
@@ -2013,7 +2332,8 @@ fn epoch_publish(opts: &Options) -> ExitCode {
                 Some(docs) => docs,
                 None => assemble(what, &store)?.0,
             };
-            search::index::build(&search_dir, &docs).map_err(|e| fail(e.to_string()))?;
+            search::index::build(&search_dir, &docs, batch.batch)
+                .map_err(|e| fail(e.to_string()))?;
         }
         let n = serve::epoch::current(&store)
             .map_err(|e| fail(e.to_string()))?
@@ -2241,14 +2561,14 @@ fn print_row(
     graph_list(
         out,
         "references",
-        serving.graph().out_degree(row.id),
+        serving.references(row.id).count() as u64,
         serving.references(row.id),
         limit,
     )?;
     graph_list(
         out,
         "citers",
-        serving.graph().in_degree(row.id),
+        serving.citers(row.id).count() as u64,
         serving.citers(row.id),
         limit,
     )
@@ -2544,8 +2864,12 @@ fn search_build(opts: &Options) -> ExitCode {
         documents.len(),
         started.elapsed().as_secs_f64()
     );
+    let batch = match current_batch(what, &store) {
+        Ok(line) => line,
+        Err(code) => return code,
+    };
     let dir = search::dir(&store);
-    let built = match search::index::build(&dir, &documents) {
+    let built = match search::index::build(&dir, &documents, batch.batch) {
         Ok(built) => built,
         Err(e) => {
             eprintln!("{what}: {e}");
@@ -2643,8 +2967,54 @@ fn search_query(opts: &Options) -> ExitCode {
     }
 }
 
-/// Reads every works set of one source into the identity pass; returns
-/// the works and references sets found.
+/// The records a source has withdrawn (PubMed's `DeleteCitation`),
+/// each with the deletions set that says so: a record is dead when a
+/// set later in path order than its own withdraws it.
+#[derive(Debug, Default)]
+struct Deleted {
+    by_name: std::collections::HashMap<OwnedName, PathBuf>,
+}
+
+impl Deleted {
+    /// Reads every deletions set of one source under the store.
+    fn read<S: Contributor>(store: &Store) -> Result<Self, merge::identity::Error> {
+        let dir = store.normalized(model::VERSION, S::NAME);
+        let io = |path: &Path, source| merge::identity::Error::Io {
+            path: path.to_path_buf(),
+            source,
+        };
+        let mut this = Self::default();
+        for path in merge::sets::find(&dir, Kind::Deletions).map_err(|e| io(&dir, e))? {
+            let prefix = Kind::prefix_of(&path).unwrap_or_else(|| path.clone());
+            let reader =
+                merge::sets::open::<S>(&path, Kind::Deletions).map_err(|e| io(&path, e))?;
+            for record in reader.records::<S::Id<'_>>() {
+                let id = record.map_err(|e| io(&path, e))?;
+                let name = S::native(&id).to_owned();
+                let slot = this.by_name.entry(name).or_insert_with(|| prefix.clone());
+                if *slot < prefix {
+                    slot.clone_from(&prefix);
+                }
+            }
+        }
+        Ok(this)
+    }
+
+    /// Whether a record of the set at `prefix` is dead.
+    fn dead(&self, prefix: &Path, name: merge::Name<'_>) -> bool {
+        self.by_name
+            .get(&name.to_owned())
+            .is_some_and(|deleted| deleted.as_path() > prefix)
+    }
+
+    fn len(&self) -> usize {
+        self.by_name.len()
+    }
+}
+
+/// Reads every works set of one source into the identity pass, the
+/// records a later deletions set withdrew left out; returns the works
+/// and references sets found.
 fn merge_add<S: Contributor>(
     identity: &mut Identity,
     store: &Store,
@@ -2657,8 +3027,17 @@ fn merge_add<S: Contributor>(
     };
     let works = merge::sets::find(&dir, Kind::Works).map_err(io)?;
     let references = merge::sets::find(&dir, Kind::References).map_err(io)?;
+    let deleted = Deleted::read::<S>(store)?;
+    if deleted.len() > 0 {
+        eprintln!(
+            "merge: {}: {} records withdrawn by deletions sets",
+            S::NAME,
+            deleted.len()
+        );
+    }
     for path in &works {
-        identity.add::<S>(path, limit)?;
+        let prefix = Kind::prefix_of(path).unwrap_or_else(|| path.clone());
+        identity.add::<S>(path, limit, &|name| deleted.dead(&prefix, name))?;
     }
     Ok((works, references))
 }

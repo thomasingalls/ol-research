@@ -25,7 +25,7 @@ use smallvec::SmallVec;
 
 use crate::arena::{Arena, NameIx};
 use crate::contributor::Contributor;
-use crate::name::OwnedName;
+use crate::name::{Assertion, Name, OwnedName};
 use crate::sets;
 use crate::title::{self, Agreement, OwnedTitles};
 use crate::view::Unmapped;
@@ -160,6 +160,8 @@ pub struct Stats {
     /// Records skipped because their native name was already a record's:
     /// the same work fetched twice.
     pub repeated: BTreeMap<SourceId, u64>,
+    /// Records skipped because a later deletions set withdrew them.
+    pub deleted: BTreeMap<SourceId, u64>,
     /// Assertions per source and field.
     pub asserted: BTreeMap<(SourceId, &'static str), u64>,
     /// References read per source.
@@ -243,13 +245,20 @@ impl Identity {
 
     /// Reads one works set of `S`: every record's names, interned and
     /// joined, and the names its relations point at, kept for
-    /// [`Identity::relate`]; at most `limit` records.
+    /// [`Identity::relate`]; at most `limit` records. A record whose
+    /// native name `dead` vouches for — withdrawn by a later deletions
+    /// set — is skipped and counted.
     ///
     /// # Errors
     ///
     /// The set cannot be read or has no symbol table, a record has no
     /// native name, or a relation's type is outside the table.
-    pub fn add<S: Contributor>(&mut self, path: &Path, limit: Option<usize>) -> Result<u64, Error> {
+    pub fn add<S: Contributor>(
+        &mut self,
+        path: &Path,
+        limit: Option<usize>,
+        dead: &dyn Fn(Name<'_>) -> bool,
+    ) -> Result<u64, Error> {
         let io = |source| Error::Io {
             path: path.to_path_buf(),
             source,
@@ -272,11 +281,15 @@ impl Identity {
                 .enumerate()
             {
                 let work = work.map_err(io)?;
-                if !self.record::<S>(&work, set) {
-                    return Err(Error::NoNativeName {
-                        path: path.to_path_buf(),
-                        ordinal: i as u64 + 1,
-                    });
+                match self.record::<S>(&work, set, dead) {
+                    Kept::Record => {}
+                    Kept::Dead => continue,
+                    Kept::NoNative => {
+                        return Err(Error::NoNativeName {
+                            path: path.to_path_buf(),
+                            ordinal: i as u64 + 1,
+                        });
+                    }
                 }
                 let related = S::relations(&work, table, &mut |r| {
                     if let Some(target) = r.target {
@@ -318,7 +331,7 @@ impl Identity {
     pub fn push(
         &mut self,
         source: SourceId,
-        assertions: &[crate::name::Assertion<'_>],
+        assertions: &[Assertion<'_>],
         titles: title::Titles<'_>,
     ) -> Result<RecordIx, Error> {
         let before = self.records.len();
@@ -373,14 +386,28 @@ impl Identity {
         Ok(rix)
     }
 
-    /// Interns one record's names and joins them; `false` when it asserted
-    /// no native name.
+    /// Interns one record's names and joins them, unless it is dead or
+    /// asserts no native name.
     #[allow(clippy::cast_possible_truncation)] // fewer than 2^32 records in a run
-    fn record<S: Contributor>(&mut self, work: &S::Work<'_>, set: u32) -> bool {
+    fn record<S: Contributor>(
+        &mut self,
+        work: &S::Work<'_>,
+        set: u32,
+        dead: &dyn Fn(Name<'_>) -> bool,
+    ) -> Kept {
+        let mut assertions: SmallVec<[Assertion<'_>; 3]> = SmallVec::new();
+        S::names(work, &mut |a| assertions.push(a));
+        let Some(native_name) = assertions.iter().find(|a| a.native).map(|a| a.name) else {
+            return Kept::NoNative;
+        };
+        if dead(native_name) {
+            *self.stats.deleted.entry(S::SOURCE).or_default() += 1;
+            return Kept::Dead;
+        }
         let mut asserts: SmallVec<[Assert; 3]> = SmallVec::new();
         let mut native = None;
         let (arena, parent) = (&mut self.arena, &mut self.parent);
-        S::names(work, &mut |a| {
+        for a in &assertions {
             let ix = arena.intern(a.name);
             if parent.len() <= ix as usize {
                 parent.push(ix);
@@ -395,13 +422,13 @@ impl Identity {
                     native: a.native,
                 });
             }
-        });
+        }
         let Some(native) = native else {
-            return false;
+            return Kept::NoNative;
         };
         if self.natives.contains_key(&native) {
             *self.stats.repeated.entry(S::SOURCE).or_default() += 1;
-            return true;
+            return Kept::Record;
         }
         for a in &asserts {
             self.union(native, a.name);
@@ -416,7 +443,7 @@ impl Identity {
         });
         self.set_of.push(set);
         *self.stats.records.entry(S::SOURCE).or_default() += 1;
-        true
+        Kept::Record
     }
 
     /// Finds the conflict components (merge plan §3.2): more than one name
@@ -549,7 +576,7 @@ impl Identity {
                 .take(limit.unwrap_or(usize::MAX))
             {
                 let (_, reference) = record.map_err(io)?;
-                let mut names: SmallVec<[crate::name::Name<'_>; 3]> = SmallVec::new();
+                let mut names: SmallVec<[Name<'_>; 3]> = SmallVec::new();
                 S::targets(&reference, &mut |name| names.push(name));
                 self.cite(S::SOURCE, &names);
                 read += 1;
@@ -573,20 +600,15 @@ impl Identity {
     /// reference names one work, so a name beside a held one is that
     /// work's (asserted by the citing record; counted, not used), and
     /// names beside no held one are one stub's. Returns what it was.
-    pub fn cite(&mut self, source: SourceId, names: &[crate::name::Name<'_>]) -> &'static str {
+    pub fn cite(&mut self, source: SourceId, names: &[Name<'_>]) -> &'static str {
         self.cite_in(source, names, false)
     }
 
     /// [`Identity::cite`], counted among references or among relation
     /// targets.
-    fn cite_in(
-        &mut self,
-        source: SourceId,
-        names: &[crate::name::Name<'_>],
-        related: bool,
-    ) -> &'static str {
+    fn cite_in(&mut self, source: SourceId, names: &[Name<'_>], related: bool) -> &'static str {
         let mut held: SmallVec<[NameIx; 2]> = SmallVec::new();
-        let mut unheld: SmallVec<[crate::name::Name<'_>; 2]> = SmallVec::new();
+        let mut unheld: SmallVec<[Name<'_>; 2]> = SmallVec::new();
         for &name in names {
             match self.arena.find(name) {
                 Some(ix) => held.push(ix),
@@ -1010,6 +1032,14 @@ impl Identity {
         }
         out
     }
+}
+
+/// What became of one record read from a set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Kept {
+    Record,
+    Dead,
+    NoNative,
 }
 
 /// Names per namespace and records per source in one component.

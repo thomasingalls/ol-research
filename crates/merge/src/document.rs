@@ -104,6 +104,41 @@ pub struct Document {
     pub held_by: Sources,
 }
 
+impl Document {
+    /// A held work's document from its merged row and, when given, the
+    /// text its promoted records carry; a stub's document is empty but
+    /// for its id.
+    #[must_use]
+    pub fn of(work: &Work<'_>, text: Option<&Text>) -> Self {
+        let f = &work.fields;
+        Self {
+            id: work.id,
+            title: f.title.as_ref().map(|t| crate::view::strip_markup(t.value)),
+            abstract_text: text.and_then(|t| t.abstract_text.clone()),
+            authors: text.map(|t| t.authors.clone()).unwrap_or_default(),
+            venue: text.and_then(|t| t.venue.clone()),
+            year: f.published.as_ref().map(|p| p.value.year.get()),
+            form: f.form.as_ref().map(|x| x.value),
+            genre: f.genre.as_ref().map(|x| x.value),
+            language: f.language.as_ref().map(|x| x.value),
+            retracted: !f.status.retracted.is_empty(),
+            corrected: !f.status.corrected.is_empty(),
+            concern: !f.status.concern.is_empty(),
+            access: f.access.as_ref().map(|x| x.value),
+            held_by: work.records.iter().map(|r| r.source).collect(),
+        }
+    }
+}
+
+/// The source a work's abstract comes from: the first in the merge
+/// plan's precedence — PubMed, OpenAlex, Crossref — that has one.
+#[must_use]
+pub fn abstract_source(work: &Work<'_>) -> Option<SourceId> {
+    [SourceId::Pubmed, SourceId::OpenAlex, SourceId::Crossref]
+        .into_iter()
+        .find(|s| work.fields.abstract_in.contains(*s))
+}
+
 /// Which sources a document still wants text from.
 #[derive(Debug, Clone, Copy, Default)]
 struct Wanted {
@@ -187,25 +222,7 @@ impl Assembler {
             return;
         }
         let f = &work.fields;
-        let abstract_from = [SourceId::Pubmed, SourceId::OpenAlex, SourceId::Crossref]
-            .into_iter()
-            .find(|s| f.abstract_in.contains(*s));
-        let document = Document {
-            id: work.id,
-            title: f.title.as_ref().map(|t| crate::view::strip_markup(t.value)),
-            abstract_text: None,
-            authors: Vec::new(),
-            venue: None,
-            year: f.published.as_ref().map(|p| p.value.year.get()),
-            form: f.form.as_ref().map(|x| x.value),
-            genre: f.genre.as_ref().map(|x| x.value),
-            language: f.language.as_ref().map(|x| x.value),
-            retracted: !f.status.retracted.is_empty(),
-            corrected: !f.status.corrected.is_empty(),
-            concern: !f.status.concern.is_empty(),
-            access: f.access.as_ref().map(|x| x.value),
-            held_by: work.records.iter().map(|r| r.source).collect(),
-        };
+        let document = Document::of(work, None);
         let ix = self.documents.len();
         for record in &work.records {
             self.by_native
@@ -217,7 +234,7 @@ impl Assembler {
         }
         self.documents.push(document);
         self.wanted.push(Wanted {
-            abstract_text: abstract_from,
+            abstract_text: abstract_source(work),
             authors: f.authors.as_ref().map(|a| a.from),
             venue: f.venue.as_ref().map(|v| v.from),
         });

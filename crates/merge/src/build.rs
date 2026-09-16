@@ -16,7 +16,8 @@ use std::path::{Path, PathBuf};
 use ingest::{Key, Kind};
 use model::Issn;
 use model::date::Bound;
-use model::symbol::Interned;
+use model::symbol::{Interned, Table};
+use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 
 use crate::arena::NameIx;
@@ -25,8 +26,8 @@ use crate::identity::{RecordIx, Resolution, Standing, Work as Identified};
 use crate::kind::{Form, Genre};
 use crate::name::{Name, OwnedName};
 use crate::record::{
-    Citation, Edge, Field, Fields, Flags, NameRow, Named, Other, Record, Rejected, Relation,
-    StatusBy, Unresolved, Why, Work,
+    Assert, Citation, Edge, Field, Fields, Flags, NameRow, Named, Other, Record, Rejected,
+    Relation, StatusBy, Unresolved, Why, Work,
 };
 use crate::relation::{self, Related};
 use crate::sets;
@@ -131,21 +132,42 @@ pub struct FieldStat {
     pub pairs: BTreeMap<(SourceId, SourceId), (u64, u64)>,
 }
 
-/// A source record of a work, owned.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// A source record of a work, owned, with its evidence.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OwnedRecord {
     #[allow(missing_docs)]
     pub source: SourceId,
     #[allow(missing_docs)]
     pub native: OwnedName,
     #[allow(missing_docs)]
-    pub revised: Option<model::Date>,
-    #[allow(missing_docs)]
     pub promoted: bool,
+    #[allow(missing_docs)]
+    pub asserts: SmallVec<[OwnedAssert; 3]>,
+    #[allow(missing_docs)]
+    pub view: Owned,
+}
+
+impl OwnedRecord {
+    /// The source's own revision stamp.
+    #[must_use]
+    pub fn revised(&self) -> Option<model::Date> {
+        self.view.revised
+    }
+}
+
+/// An assertion, owned.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OwnedAssert {
+    #[allow(missing_docs)]
+    pub name: OwnedName,
+    #[allow(missing_docs)]
+    pub field: Box<str>,
+    #[allow(missing_docs)]
+    pub native: bool,
 }
 
 /// An accepted name, owned.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OwnedNamed {
     #[allow(missing_docs)]
     pub name: OwnedName,
@@ -155,10 +177,13 @@ pub struct OwnedNamed {
     pub by: Sources,
     #[allow(missing_docs)]
     pub native: bool,
+    /// For a stub's name, the citing works and the sources of their
+    /// records; see [`Named::cited_by`].
+    pub cited_by: SmallVec<[(WorkId, SourceId); 1]>,
 }
 
 /// A rejected assertion, owned.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OwnedRejected {
     #[allow(missing_docs)]
     pub name: OwnedName,
@@ -169,7 +194,7 @@ pub struct OwnedRejected {
 }
 
 /// The promoted fields, owned.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OwnedFields {
     #[allow(missing_docs)]
     pub title: Option<Field<Box<str>>>,
@@ -198,8 +223,8 @@ pub struct OwnedFields {
 }
 
 /// A merged work that owns its text: what the pass holds until the sets
-/// are written.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// are written, and what the works delta carries (serving plan §5).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OwnedWork {
     #[allow(missing_docs)]
     pub id: WorkId,
@@ -231,8 +256,17 @@ impl OwnedWork {
                 .map(|r| Record {
                     source: r.source,
                     native: r.native.as_name(),
-                    revised: r.revised,
                     promoted: r.promoted,
+                    asserts: r
+                        .asserts
+                        .iter()
+                        .map(|a| Assert {
+                            name: a.name.as_name(),
+                            field: &a.field,
+                            native: a.native,
+                        })
+                        .collect(),
+                    view: r.view.borrow(),
                 })
                 .collect(),
             names: self
@@ -243,6 +277,7 @@ impl OwnedWork {
                     standing: n.standing,
                     by: n.by,
                     native: n.native,
+                    cited_by: n.cited_by.clone(),
                 })
                 .collect(),
             rejected: self
@@ -272,6 +307,87 @@ impl OwnedWork {
         }
     }
 
+    /// A copy of a row that owns its text, a venue id given as a symbol
+    /// resolved through the set's `table`.
+    #[must_use]
+    pub fn of(work: &Work<'_>, table: &Table) -> Self {
+        let f = &work.fields;
+        Self {
+            id: work.id,
+            stub: work.stub,
+            records: work
+                .records
+                .iter()
+                .map(|r| OwnedRecord {
+                    source: r.source,
+                    native: r.native.to_owned(),
+                    promoted: r.promoted,
+                    asserts: r
+                        .asserts
+                        .iter()
+                        .map(|a| OwnedAssert {
+                            name: a.name.to_owned(),
+                            field: a.field.into(),
+                            native: a.native,
+                        })
+                        .collect(),
+                    view: Owned::resolve(&r.view, table),
+                })
+                .collect(),
+            names: work
+                .names
+                .iter()
+                .map(|n| OwnedNamed {
+                    name: n.name.to_owned(),
+                    standing: n.standing,
+                    by: n.by,
+                    native: n.native,
+                    cited_by: n.cited_by.clone(),
+                })
+                .collect(),
+            rejected: work
+                .rejected
+                .iter()
+                .map(|r| OwnedRejected {
+                    name: r.name.to_owned(),
+                    by: r.by,
+                    holder: r.holder.to_owned(),
+                })
+                .collect(),
+            fields: OwnedFields {
+                title: f.title.as_ref().map(|t| t.map(|s| Box::from(*s))),
+                abstract_in: f.abstract_in,
+                authors: f.authors.clone(),
+                venue: f.venue.as_ref().map(|v| {
+                    v.map(|x| OwnedVenue {
+                        openalex: x.openalex,
+                        issns: x.issns.clone(),
+                        nlm: x.nlm.as_ref().and_then(|n| n.resolve(table)).map(Box::from),
+                    })
+                }),
+                published: f.published.clone(),
+                language: f.language.clone(),
+                form: f.form.clone(),
+                genre: f.genre.clone(),
+                status: f.status,
+                access: f.access.clone(),
+                references: f.references.clone(),
+                cited_by: f.cited_by.clone(),
+            },
+            flags: work.flags,
+        }
+    }
+
+    /// Every name's citing works and sources, for a stub; empty lists
+    /// for a held work.
+    #[must_use]
+    pub fn citers_by_name(&self) -> BTreeMap<OwnedName, Vec<(WorkId, SourceId)>> {
+        self.names
+            .iter()
+            .map(|n| (n.name.clone(), n.cited_by.to_vec()))
+            .collect()
+    }
+
     /// The names set's rows for this work.
     pub fn name_rows(&self) -> impl Iterator<Item = NameRow<'_>> {
         self.names.iter().map(|n| NameRow {
@@ -285,7 +401,7 @@ impl OwnedWork {
 }
 
 /// A citation that owns its text.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OwnedCitation {
     #[allow(missing_docs)]
     pub text: Option<Box<str>>,
@@ -308,7 +424,10 @@ pub struct OwnedCitation {
 }
 
 impl OwnedCitation {
-    fn of(c: &Citation<'_>) -> Self {
+    /// A copy that owns its text; a container given as a symbol is
+    /// resolved through `table` when one is given.
+    #[must_use]
+    pub fn of(c: &Citation<'_>, table: Option<&Table>) -> Self {
         Self {
             text: c.text.map(Box::from),
             key: c.key.map(Box::from),
@@ -318,7 +437,10 @@ impl OwnedCitation {
             container: c
                 .container
                 .as_ref()
-                .and_then(Interned::as_text)
+                .and_then(|n| match table {
+                    Some(table) => n.resolve(table),
+                    None => n.as_text(),
+                })
                 .map(Box::from),
             volume: c.volume.map(Box::from),
             issue: c.issue.map(Box::from),
@@ -344,7 +466,7 @@ impl OwnedCitation {
 }
 
 /// An unresolved reference that owns its text.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OwnedUnresolved {
     #[allow(missing_docs)]
     pub from: WorkId,
@@ -359,6 +481,18 @@ pub struct OwnedUnresolved {
 }
 
 impl OwnedUnresolved {
+    /// A copy of a row that owns its text.
+    #[must_use]
+    pub fn of(row: &Unresolved<'_>, table: Option<&Table>) -> Self {
+        Self {
+            from: row.from,
+            by: row.by,
+            why: row.why,
+            names: row.names.iter().map(Name::to_owned).collect(),
+            citation: OwnedCitation::of(&row.citation, table),
+        }
+    }
+
     /// The row, borrowed.
     #[must_use]
     pub fn borrow(&self) -> Unresolved<'_> {
@@ -415,11 +549,119 @@ enum Slot {
     Shared,
 }
 
+/// What a name resolves to through a names table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Target {
+pub enum Target {
+    /// A work, and whether it is a stub.
     Work(WorkId, bool),
+    /// A name accepted into more than one work.
     Shared,
+    /// A name no work has.
     Unknown,
+}
+
+/// What one reference resolved to (merge plan §6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Referenced {
+    /// No name and no citation text: nothing at all.
+    Empty,
+    /// No name; the citation goes to the unresolved stream.
+    NoName,
+    /// Names, none of them known.
+    Unknown,
+    /// Only shared names: an unresolved row.
+    SharedOnly,
+    /// An edge to `to`; `disagree` when the names named different works
+    /// and the registry's order chose, which is an unresolved row too.
+    Edge {
+        #[allow(missing_docs)]
+        to: WorkId,
+        #[allow(missing_docs)]
+        stub: bool,
+        #[allow(missing_docs)]
+        disagree: bool,
+    },
+}
+
+impl Referenced {
+    /// The word the report counts it under, `from` being the citing work.
+    #[must_use]
+    pub const fn outcome(self, from: WorkId) -> &'static str {
+        match self {
+            Self::Empty => "empty",
+            Self::NoName => "no name",
+            Self::Unknown => "unknown",
+            Self::SharedOnly => "shared",
+            Self::Edge { disagree: true, .. } => "disagree",
+            Self::Edge { to, stub, .. } => {
+                if to.get() == from.get() {
+                    "self"
+                } else if stub {
+                    "stub"
+                } else {
+                    "held"
+                }
+            }
+        }
+    }
+}
+
+/// One reference through a names table (merge plan §6): one work named
+/// is an edge; only shared names, or none, is an unresolved row; names
+/// naming different works follow the registry id — PMID, PMC id,
+/// OpenAlex id before DOI — and keep the rest as an unresolved row too.
+pub fn resolve_reference(
+    names: &[Name<'_>],
+    citation_empty: bool,
+    resolve: impl Fn(Name<'_>) -> Target,
+) -> Referenced {
+    if names.is_empty() {
+        return if citation_empty {
+            Referenced::Empty
+        } else {
+            Referenced::NoName
+        };
+    }
+    let mut resolved: SmallVec<[(Name<'_>, WorkId, bool); 3]> = SmallVec::new();
+    let mut shared = false;
+    for &name in names {
+        match resolve(name) {
+            Target::Work(id, stub) => resolved.push((name, id, stub)),
+            Target::Shared => shared = true,
+            Target::Unknown => {}
+        }
+    }
+    if resolved.is_empty() {
+        return if shared {
+            Referenced::SharedOnly
+        } else {
+            Referenced::Unknown
+        };
+    }
+    if resolved.iter().all(|r| r.1 == resolved[0].1) {
+        let (_, to, stub) = resolved[0];
+        return Referenced::Edge {
+            to,
+            stub,
+            disagree: false,
+        };
+    }
+    let rank = |k: Key| match k {
+        Key::Pmid => 0,
+        Key::Pmc => 1,
+        Key::OpenAlex => 2,
+        Key::Doi => 3,
+    };
+    let (_, to, stub) = resolved
+        .iter()
+        .min_by_key(|(n, _, _)| rank(n.key()))
+        .copied()
+        .unwrap_or(resolved[0]);
+    Referenced::Edge {
+        to,
+        stub,
+        disagree: true,
+    }
 }
 
 /// Every name's work: one live work unless shared (merge plan §8), and
@@ -507,6 +749,9 @@ pub struct Builder {
     edges: Vec<(WorkId, WorkId, SourceId)>,
     relations: Vec<Relation>,
     unresolved: Vec<OwnedUnresolved>,
+    /// Per stub name, the works whose references or relations gave it,
+    /// with the source of the record that did.
+    stub_citers: HashMap<NameIx, Vec<(WorkId, SourceId)>>,
     survey: bool,
     /// Counts so far.
     pub stats: Stats,
@@ -571,6 +816,7 @@ impl Builder {
             edges: Vec::new(),
             relations: Vec::new(),
             unresolved: Vec::new(),
+            stub_citers: HashMap::new(),
             survey: false,
             stats: Stats::default(),
         })
@@ -585,6 +831,12 @@ impl Builder {
     #[must_use]
     pub fn resolution(&self) -> &Resolution {
         &self.res
+    }
+
+    /// The ids the registry gave it.
+    #[must_use]
+    pub fn ids(&self) -> &Ids {
+        &self.ids
     }
 
     /// The work a name belongs to.
@@ -655,14 +907,21 @@ impl Builder {
                 let Some((rix, from)) = native.and_then(|n| self.record_of(n)) else {
                     continue;
                 };
-                if self.views[rix as usize].is_some() {
-                    // The same work fetched twice: the first copy speaks.
-                    continue;
-                }
                 match S::view(&work, table) {
                     Ok(view) => {
-                        self.views[rix as usize] = Some(Owned::of(&view));
-                        *self.stats.viewed.entry(S::SOURCE).or_default() += 1;
+                        // The same record delivered twice: the latest
+                        // revision's fields speak, the first copy's names
+                        // having been kept by the identity pass.
+                        let seen = self.views[rix as usize].as_ref();
+                        if seen.is_none_or(|s| s.revised < view.revised) {
+                            if seen.is_some() {
+                                *self.stats.viewed.entry(S::SOURCE).or_default() -= 1;
+                            }
+                            self.views[rix as usize] = Some(Owned::resolve(&view, table));
+                            *self.stats.viewed.entry(S::SOURCE).or_default() += 1;
+                        } else {
+                            continue;
+                        }
                     }
                     Err(source) if self.survey => {
                         *self
@@ -699,6 +958,15 @@ impl Builder {
         };
         self.views[rix as usize] = Some(Owned::of(view));
         true
+    }
+
+    /// Notes that a reference of `from`'s record of `source` gave a stub
+    /// `name`. Relations do not count: they are not arcs, and what the
+    /// evidence serves is moving arcs.
+    fn stub_cited(&mut self, name: Name<'_>, from: WorkId, source: SourceId) {
+        if let Some(ix) = self.res.stubs.find(name) {
+            self.stub_citers.entry(ix).or_default().push((from, source));
+        }
     }
 
     /// One relation, resolved: an edge in the relations stream when its
@@ -776,57 +1044,26 @@ impl Builder {
         names: &[Name<'_>],
         citation: &Citation<'_>,
     ) -> &'static str {
-        let outcome = if names.is_empty() {
-            if citation.is_empty() {
-                "empty"
-            } else {
-                self.unresolved(from, source, Why::NoName, names, citation);
-                "no name"
-            }
-        } else {
-            let mut resolved: SmallVec<[(Name<'_>, WorkId, bool); 3]> = SmallVec::new();
-            let mut shared = false;
-            for &name in names {
-                match self.resolve(name) {
-                    Target::Work(id, stub) => resolved.push((name, id, stub)),
-                    Target::Shared => shared = true,
-                    Target::Unknown => {}
-                }
-            }
-            if resolved.is_empty() {
-                if shared {
-                    self.unresolved(from, source, Why::Shared, names, citation);
-                    "shared"
-                } else {
-                    "unknown"
-                }
-            } else if resolved.iter().all(|r| r.1 == resolved[0].1) {
-                let (_, to, stub) = resolved[0];
+        let referenced = resolve_reference(names, citation.is_empty(), |n| self.resolve(n));
+        match referenced {
+            Referenced::Empty | Referenced::Unknown => {}
+            Referenced::NoName => self.unresolved(from, source, Why::NoName, names, citation),
+            Referenced::SharedOnly => self.unresolved(from, source, Why::Shared, names, citation),
+            Referenced::Edge { to, disagree, stub } => {
                 self.edges.push((from, to, source));
-                if from == to {
-                    "self"
-                } else if stub {
-                    "stub"
-                } else {
-                    "held"
+                if stub {
+                    for &name in names {
+                        if self.resolve(name) == Target::Work(to, true) {
+                            self.stub_cited(name, from, source);
+                        }
+                    }
                 }
-            } else {
-                let rank = |k: Key| match k {
-                    Key::Pmid => 0,
-                    Key::Pmc => 1,
-                    Key::OpenAlex => 2,
-                    Key::Doi => 3,
-                };
-                let (_, to, _) = resolved
-                    .iter()
-                    .min_by_key(|(n, _, _)| rank(n.key()))
-                    .copied()
-                    .unwrap_or(resolved[0]);
-                self.edges.push((from, to, source));
-                self.unresolved(from, source, Why::Disagree, names, citation);
-                "disagree"
+                if disagree {
+                    self.unresolved(from, source, Why::Disagree, names, citation);
+                }
             }
-        };
+        }
+        let outcome = referenced.outcome(from);
         *self.stats.references.entry((source, outcome)).or_default() += 1;
         outcome
     }
@@ -844,7 +1081,7 @@ impl Builder {
             by,
             why,
             names: names.iter().map(Name::to_owned).collect(),
-            citation: OwnedCitation::of(citation),
+            citation: OwnedCitation::of(citation, None),
         });
     }
 
@@ -865,6 +1102,7 @@ impl Builder {
             relations,
             mut unresolved,
             stats,
+            mut stub_citers,
             ..
         } = self;
         let mut tallies = Tallies::default();
@@ -873,7 +1111,20 @@ impl Builder {
             works.push(held(&res, work, ids.held[w], &views, &mut tallies));
         }
         for (s, names) in stub_works.iter().enumerate() {
-            works.push(stub(&res, names, ids.stubs[s]));
+            let citers: Vec<Vec<(WorkId, SourceId)>> = names
+                .iter()
+                .map(|name| {
+                    let mut list = res
+                        .stubs
+                        .find(name.as_name())
+                        .and_then(|ix| stub_citers.remove(&ix))
+                        .unwrap_or_default();
+                    list.sort_unstable();
+                    list.dedup();
+                    list
+                })
+                .collect();
+            works.push(stub(&res, names, &citers, ids.stubs[s]));
         }
         works.sort_by_key(|w| w.id);
         let max = works
@@ -972,11 +1223,19 @@ impl Builder {
 
 /// What promoting every work counts.
 #[derive(Debug, Default)]
-struct Tallies {
+pub struct Tallies {
     fields: BTreeMap<&'static str, FieldStat>,
     kinds: BTreeMap<(Form, Genre), u64>,
     kind_conflicts: u64,
     status: BTreeMap<(&'static str, String), u64>,
+}
+
+impl Tallies {
+    /// Nothing counted yet.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
 }
 
 /// One record's view as a candidate for a work's fields.
@@ -1103,9 +1362,12 @@ fn issns_disjoint(a: &[Issn], b: &[Issn]) -> bool {
     !a.is_empty() && !b.is_empty() && !a.iter().any(|i| b.contains(i))
 }
 
-/// One held work's row (merge plan §5).
+/// One held work's row (merge plan §5): the records with their evidence,
+/// the names with their verdicts, the fields promoted from the views,
+/// each list in its canonical order so that a row does not depend on
+/// the order its records arrived in.
 #[allow(clippy::too_many_lines)]
-fn held(
+pub fn held(
     res: &Resolution,
     work: &Identified,
     id: WorkId,
@@ -1119,16 +1381,29 @@ fn held(
             .iter()
             .any(|n| n.name == native && n.standing == Standing::Promoted)
     };
-    let records: SmallVec<[OwnedRecord; 3]> = work
+    let mut records: SmallVec<[OwnedRecord; 3]> = work
         .records
         .iter()
-        .map(|&rix| OwnedRecord {
-            source: res.records[rix as usize].source,
-            native: arena.get(res.records[rix as usize].native).clone(),
-            revised: views[rix as usize].as_ref().and_then(|v| v.revised),
-            promoted: is_promoted(rix),
+        .map(|&rix| {
+            let record = &res.records[rix as usize];
+            OwnedRecord {
+                source: record.source,
+                native: arena.get(record.native).clone(),
+                promoted: is_promoted(rix),
+                asserts: record
+                    .asserts
+                    .iter()
+                    .map(|a| OwnedAssert {
+                        name: arena.get(a.name).clone(),
+                        field: a.field.into(),
+                        native: a.native,
+                    })
+                    .collect(),
+                view: views[rix as usize].clone().unwrap_or_default(),
+            }
         })
         .collect();
+    records.sort_by(|a, b| (a.source, &a.native).cmp(&(b.source, &b.native)));
     let cands: SmallVec<[Cand<'_>; 3]> = work
         .records
         .iter()
@@ -1242,7 +1517,7 @@ fn held(
         }
         _ => false,
     };
-    let names: SmallVec<[OwnedNamed; 4]> = work
+    let mut names: SmallVec<[OwnedNamed; 4]> = work
         .names
         .iter()
         .map(|n| OwnedNamed {
@@ -1250,9 +1525,11 @@ fn held(
             standing: n.standing,
             by: n.by,
             native: n.native,
+            cited_by: SmallVec::new(),
         })
         .collect();
-    let rejected: SmallVec<[OwnedRejected; 1]> = work
+    names.sort_by(|a, b| a.name.cmp(&b.name));
+    let mut rejected: SmallVec<[OwnedRejected; 1]> = work
         .rejected
         .iter()
         .map(|r| OwnedRejected {
@@ -1261,6 +1538,7 @@ fn held(
             holder: arena.get(res.records[r.holder as usize].native).clone(),
         })
         .collect();
+    rejected.sort_by(|a, b| (&a.name, a.by, &a.holder).cmp(&(&b.name, b.by, &b.holder)));
     OwnedWork {
         id,
         stub: false,
@@ -1291,11 +1569,20 @@ fn held(
 }
 
 /// One stub's row: names, one promoted per namespace, nothing else.
-fn stub(res: &Resolution, names: &[OwnedName], id: WorkId) -> OwnedWork {
+/// `names` is sorted, as [`Resolution::stub_works`] gives it, and
+/// `citers` is aligned with it: per name, the citing works and sources.
+#[must_use]
+pub fn stub(
+    res: &Resolution,
+    names: &[OwnedName],
+    citers: &[Vec<(WorkId, SourceId)>],
+    id: WorkId,
+) -> OwnedWork {
     let mut seen: SmallVec<[Key; 4]> = SmallVec::new();
     let rows: SmallVec<[OwnedNamed; 4]> = names
         .iter()
-        .map(|name| {
+        .enumerate()
+        .map(|(i, name)| {
             let key = name.key();
             let standing = if seen.contains(&key) {
                 Standing::Alias
@@ -1313,6 +1600,10 @@ fn stub(res: &Resolution, names: &[OwnedName], id: WorkId) -> OwnedWork {
                 standing,
                 by,
                 native: false,
+                cited_by: citers
+                    .get(i)
+                    .map(|c| c.iter().copied().collect())
+                    .unwrap_or_default(),
             }
         })
         .collect();
@@ -1673,6 +1964,11 @@ mod tests {
         assert!(s.stub && s.records.is_empty());
         assert_eq!(s.names[0].standing, Standing::Promoted);
         assert!(s.names[0].by.contains(SourceId::Crossref));
+        assert_eq!(
+            s.names[0].cited_by.to_vec(),
+            vec![(beta, SourceId::Crossref)],
+            "beta's reference names the stub; alpha's relation is not an arc"
+        );
         // Edges.
         let edges: Vec<_> = merged
             .edges

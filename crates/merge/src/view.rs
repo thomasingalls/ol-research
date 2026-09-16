@@ -61,19 +61,22 @@ pub struct Status {
 }
 
 /// One record's values, borrowed. A field the source does not have is
-/// `None`, which the precedence rules skip.
-#[derive(Debug, Clone, Default)]
+/// `None`, which the precedence rules skip. Written into the merged
+/// record as the evidence its verdicts are drawn from.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct View<'a> {
     /// The source's own revision stamp: Crossref's `indexed`, PubMed's
     /// `DateRevised`, OpenAlex's `updated_date`.
     pub revised: Option<Date>,
     /// The titles, raw markup and all.
+    #[serde(borrow)]
     pub titles: Titles<'a>,
     /// Whether the record carries an abstract in any form.
     pub has_abstract: bool,
     /// How many authors the record lists.
     pub authors: u32,
     #[allow(missing_docs)]
+    #[serde(borrow)]
     pub venue: Venue<'a>,
     /// The earliest publication date the source gives, at its precision.
     pub published: Option<Bound>,
@@ -134,7 +137,7 @@ pub fn text<'a>(
 /// The text a record carries beyond its promoted fields (serving plan
 /// §3): what the merged record indexes but does not hold, as plain text
 /// for the serving layer's documents.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Text {
     /// The abstract as plain text: markup stripped, sections joined under
     /// their labels.
@@ -352,16 +355,21 @@ impl OwnedVenue {
     }
 }
 
-/// A view that owns its text: what the second pass keeps per record. The
-/// title is kept as text, for promotion, and as fingerprints, for the
-/// comparison of §3.3.
-#[derive(Debug, Clone, Default)]
+/// A view that owns its text: what the second pass keeps per record, and
+/// what a merged record carries per source record. The titles are kept
+/// as text, for promotion and for the record, and as fingerprints, for
+/// the comparison of §3.3; the fingerprints are recomputed on reading.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "Raw")]
 pub struct Owned {
     #[allow(missing_docs)]
     pub revised: Option<Date>,
     #[allow(missing_docs)]
     pub title: Option<Box<str>>,
     #[allow(missing_docs)]
+    pub vernacular: Option<Box<str>>,
+    #[allow(missing_docs)]
+    #[serde(skip_serializing)]
     pub titles: OwnedTitles,
     #[allow(missing_docs)]
     pub has_abstract: bool,
@@ -387,26 +395,92 @@ pub struct Owned {
     pub cited_by: Option<u32>,
 }
 
+/// [`Owned`] as it is read back: the fingerprints are not stored.
+#[derive(Deserialize)]
+struct Raw {
+    revised: Option<Date>,
+    title: Option<Box<str>>,
+    vernacular: Option<Box<str>>,
+    has_abstract: bool,
+    authors: u32,
+    venue: OwnedVenue,
+    published: Option<Bound>,
+    language: Option<Lang>,
+    form: Option<Form>,
+    genre: Option<Genre>,
+    status: Status,
+    access: Option<bool>,
+    references: Option<u32>,
+    cited_by: Option<u32>,
+}
+
+impl From<Raw> for Owned {
+    fn from(r: Raw) -> Self {
+        Self {
+            revised: r.revised,
+            titles: OwnedTitles::of(Titles {
+                title: r.title.as_deref(),
+                vernacular: r.vernacular.as_deref(),
+            }),
+            title: r.title,
+            vernacular: r.vernacular,
+            has_abstract: r.has_abstract,
+            authors: r.authors,
+            venue: r.venue,
+            published: r.published,
+            language: r.language,
+            form: r.form,
+            genre: r.genre,
+            status: r.status,
+            access: r.access,
+            references: r.references,
+            cited_by: r.cited_by,
+        }
+    }
+}
+
 impl Owned {
     /// A copy of `view` that owns its text. A venue id given as a symbol
-    /// rather than text is dropped: contributors resolve through [`text`].
+    /// rather than text is dropped: contributors resolve through [`text`],
+    /// and a merged row is read through [`Owned::resolve`].
     #[must_use]
     pub fn of(view: &View<'_>) -> Self {
+        Self::with_nlm(
+            view,
+            view.venue
+                .nlm
+                .as_ref()
+                .and_then(Interned::as_text)
+                .map(Box::from),
+        )
+    }
+
+    /// A copy of `view` that owns its text, a venue id given as a symbol
+    /// resolved through `table`.
+    #[must_use]
+    pub fn resolve(view: &View<'_>, table: &Table) -> Self {
+        Self::with_nlm(
+            view,
+            view.venue
+                .nlm
+                .as_ref()
+                .and_then(|n| n.resolve(table))
+                .map(Box::from),
+        )
+    }
+
+    fn with_nlm(view: &View<'_>, nlm: Option<Box<str>>) -> Self {
         Self {
             revised: view.revised,
             title: view.titles.title.map(Box::from),
+            vernacular: view.titles.vernacular.map(Box::from),
             titles: OwnedTitles::of(view.titles),
             has_abstract: view.has_abstract,
             authors: view.authors,
             venue: OwnedVenue {
                 openalex: view.venue.openalex,
                 issns: view.venue.issns.clone(),
-                nlm: view
-                    .venue
-                    .nlm
-                    .as_ref()
-                    .and_then(Interned::as_text)
-                    .map(Box::from),
+                nlm,
             },
             published: view.published,
             language: view.language,
@@ -416,6 +490,29 @@ impl Owned {
             access: view.access,
             references: view.references,
             cited_by: view.cited_by,
+        }
+    }
+
+    /// The view, borrowed.
+    #[must_use]
+    pub fn borrow(&self) -> View<'_> {
+        View {
+            revised: self.revised,
+            titles: Titles {
+                title: self.title.as_deref(),
+                vernacular: self.vernacular.as_deref(),
+            },
+            has_abstract: self.has_abstract,
+            authors: self.authors,
+            venue: self.venue.borrow(),
+            published: self.published,
+            language: self.language,
+            form: self.form,
+            genre: self.genre,
+            status: self.status,
+            access: self.access,
+            references: self.references,
+            cited_by: self.cited_by,
         }
     }
 }

@@ -1,0 +1,221 @@
+// The serving layer's protocol (serving plan §7): the five questions and
+// which epoch answered. Every work on the wire is its public id; a request
+// may name a work by its public id or by any name in the text form the
+// merge uses (`doi:…`, `pmid:…`, `pmc:PMC…`, `openalex:W…`).
+syntax = "proto3";
+
+package olrht.v1;
+
+service Serving {
+  // Which epoch and batch the server answers from, and its counts.
+  rpc Epoch(EpochRequest) returns (EpochInfo);
+  // Which work a name or public id is.
+  rpc Resolve(ResolveRequest) returns (ResolveResponse);
+  // Everything the merge knows about a work, and its text.
+  rpc GetWork(GetWorkRequest) returns (GetWorkResponse);
+  // The works a work cites, in pages, with who asserted each arc.
+  rpc References(ListRequest) returns (stream WorkPage);
+  // The works citing a work, in pages, with who asserted each arc.
+  rpc Citers(ListRequest) returns (stream WorkPage);
+  // Works matching a query, with facet counts over the matches.
+  rpc Search(SearchRequest) returns (SearchResponse);
+  // One hop out from a seed set, most-touched first.
+  rpc Expand(ExpandRequest) returns (ExpandResponse);
+}
+
+// On every response: which epoch answered, the batch the answer is as
+// of, and the terms.
+message Answered {
+  uint64 epoch = 1;
+  // The watermark: the epoch's batch, or a later one every artifact has
+  // folded from the deltas since. Lists may shift by the arcs a batch
+  // added or removed between two pages.
+  uint64 batch = 2;
+  // That batch's timestamp: how current the answer is.
+  string at = 3;
+  // The sources this answer drew on.
+  repeated string sources = 4;
+  // One attribution line per source.
+  repeated string attribution = 5;
+}
+
+message EpochRequest {}
+
+message EpochInfo {
+  Answered answered = 1;
+  string merged = 2;
+  uint64 nodes = 3;
+  uint64 works = 4;
+  uint64 arcs = 5;
+}
+
+message ResolveRequest {
+  // A public id, or a name in text form.
+  string text = 1;
+}
+
+message ResolveResponse {
+  Answered answered = 1;
+  oneof outcome {
+    // One live work.
+    string public_id = 2;
+    // A shared name: every work it was accepted into.
+    Shared shared = 3;
+    // An id retired by a split: no survivor answers for it.
+    Split split = 4;
+  }
+}
+
+message Shared {
+  repeated string public_ids = 1;
+}
+
+message Split {
+  string public_id = 1;
+}
+
+message GetWorkRequest {
+  // A public id, or a name in text form.
+  string work = 1;
+}
+
+message GetWorkResponse {
+  Answered answered = 1;
+  Work work = 2;
+}
+
+message Name {
+  string namespace = 1;
+  string value = 2;
+  // promoted, alias, shared.
+  string standing = 3;
+  // Who asserted it.
+  repeated string by = 4;
+  bool native = 5;
+}
+
+message Record {
+  string source = 1;
+  string native = 2;
+  bool promoted = 3;
+  string revised = 4;
+}
+
+message Date {
+  uint32 year = 1;
+  // Zero when not given.
+  uint32 month = 2;
+  uint32 day = 3;
+}
+
+// A promoted field another source disagrees with.
+message Disputed {
+  string field = 1;
+  string promoted_from = 2;
+  // "source: value", one per dissenting source.
+  repeated string others = 3;
+}
+
+message Work {
+  string public_id = 1;
+  bool stub = 2;
+  repeated Name names = 3;
+  repeated Record records = 4;
+  repeated string held_by = 5;
+  string title = 6;
+  repeated string authors = 7;
+  string venue = 8;
+  Date published = 9;
+  string language = 10;
+  string form = 11;
+  string genre = 12;
+  repeated string retracted_by = 13;
+  repeated string corrected_by = 14;
+  repeated string concern_by = 15;
+  optional bool open_access = 16;
+  // Empty when absent, or withheld by the terms of its source.
+  string abstract = 17;
+  repeated Disputed disputed = 18;
+  uint64 references = 19;
+  uint64 citers = 20;
+}
+
+message ListRequest {
+  // A public id, or a name in text form.
+  string work = 1;
+  // Arcs per page, at most 100; 50 when zero.
+  uint32 page = 2;
+  // From a previous page, to resume; empty to start.
+  string cursor = 3;
+  // Carry each arc's title and promoted names.
+  bool hydrate = 4;
+  // Stop after this many arcs; zero for all.
+  uint64 limit = 5;
+}
+
+message Arc {
+  string public_id = 1;
+  // Who asserted the arc.
+  repeated string by = 2;
+  // When hydrated.
+  string title = 3;
+  repeated Name names = 4;
+}
+
+message WorkPage {
+  Answered answered = 1;
+  repeated Arc arcs = 2;
+  // Empty on the last page.
+  string cursor = 3;
+  uint64 total = 4;
+}
+
+message SearchRequest {
+  string query = 1;
+  // At most 100; 10 when zero.
+  uint32 limit = 2;
+  // Facet values per root, at most 20; 5 when zero.
+  uint32 facets = 3;
+}
+
+message Hit {
+  string public_id = 1;
+  float score = 2;
+  string title = 3;
+}
+
+message FacetValue {
+  string value = 1;
+  uint64 count = 2;
+}
+
+message Facet {
+  string root = 1;
+  repeated FacetValue values = 2;
+}
+
+message SearchResponse {
+  Answered answered = 1;
+  uint64 total = 2;
+  repeated Hit hits = 3;
+  repeated Facet facets = 4;
+}
+
+message ExpandRequest {
+  // Public ids or names; at most 100.
+  repeated string seeds = 1;
+  // At most 1000; 20 when zero.
+  uint32 budget = 2;
+  bool hydrate = 3;
+}
+
+message Neighbour {
+  string public_id = 1;
+  uint32 touches = 2;
+  string title = 3;
+}
+
+message ExpandResponse {
+  Answered answered = 1;
+  repeated Neighbour neighbours = 2;
+}

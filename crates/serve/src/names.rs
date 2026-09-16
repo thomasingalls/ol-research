@@ -13,7 +13,7 @@ use fst::{Map, MapBuilder};
 use ingest::Kind;
 use memmap2::Mmap;
 use merge::public::Public;
-use merge::record::NameRow;
+use merge::record::{NameRow, Work};
 use merge::{Registry, WorkId};
 use serde::{Deserialize, Serialize};
 
@@ -27,6 +27,12 @@ pub const FST: &str = "names.fst";
 pub const SHARED: &str = "shared.u32";
 #[allow(missing_docs)]
 pub const RETIRED: &str = "retired.u32";
+/// `WorkId` to the 64 bits of its public id, zero for none: the reverse
+/// of the transducer for the one namespace the transport speaks.
+pub const PUBLIC: &str = "public.u64";
+/// One bit per id, set for a stub: what a reference's target is, without
+/// the works index.
+pub const STUBS: &str = "stubs.bits";
 #[allow(missing_docs)]
 pub const MANIFEST: &str = "manifest.json";
 
@@ -47,6 +53,8 @@ pub struct Manifest {
     pub batch: u64,
     #[allow(missing_docs)]
     pub built_at: String,
+    /// Slots in the public array: the highest id.
+    pub nodes: u32,
     /// Distinct keys: names and public ids.
     pub keys: u64,
     /// Keys naming more than one work.
@@ -93,7 +101,7 @@ impl Manifest {
                 crate::version()
             )));
         }
-        for file in [FST, SHARED, RETIRED] {
+        for file in [FST, SHARED, RETIRED, PUBLIC, STUBS] {
             if !self.files.contains_key(file) {
                 return Err(Error::Mismatch(format!(
                     "{}: the manifest lists no {file}",
@@ -144,6 +152,23 @@ pub fn build(
             Ok(())
         })?;
     }
+    let nodes = registry.minted();
+    let mut stubs = vec![0u8; usize::try_from(nodes).unwrap_or(usize::MAX).div_ceil(8)];
+    for path in merge::sets::find(merged, Kind::Works).map_err(|e| Error::io(merged, e))? {
+        let reader = merge::layout::open(&path).map_err(|e| Error::io(&path, e))?;
+        reader.with_table(|| -> Result<(), Error> {
+            for row in reader.records::<Work<'_>>() {
+                let row = row.map_err(|e| Error::io(&path, e))?;
+                if row.stub {
+                    let ix = usize::try_from(row.id.get() - 1).unwrap_or(usize::MAX);
+                    if let Some(byte) = stubs.get_mut(ix / 8) {
+                        *byte |= 1 << (ix % 8);
+                    }
+                }
+            }
+            Ok(())
+        })?;
+    }
     let mut public_keys = 0u64;
     for (id, text) in public.iter() {
         pairs.push((text.to_owned(), id));
@@ -185,31 +210,22 @@ pub fn build(
     retirements.sort_unstable();
 
     let part = part_of(dir);
-    if part.exists() {
-        fs::remove_dir_all(&part).map_err(|e| Error::io(&part, e))?;
-    }
-    fs::create_dir_all(&part).map_err(|e| Error::io(&part, e))?;
-    let mut files = BTreeMap::new();
-    let mut sink = Sink::create(&part.join(FST))?;
-    sink.put(&fst_bytes)?;
-    files.insert(FST.to_owned(), sink.finish()?);
-    let mut sink = Sink::create(&part.join(SHARED))?;
-    for v in &shared {
-        sink.put(&v.to_le_bytes())?;
-    }
-    files.insert(SHARED.to_owned(), sink.finish()?);
-    let mut sink = Sink::create(&part.join(RETIRED))?;
-    for (id, into) in &retirements {
-        sink.put(&id.to_le_bytes())?;
-        sink.put(&into.to_le_bytes())?;
-    }
-    files.insert(RETIRED.to_owned(), sink.finish()?);
+    let files = write_files(
+        &part,
+        &fst_bytes,
+        &shared,
+        &retirements,
+        public,
+        nodes,
+        &stubs,
+    )?;
     let manifest = Manifest {
         serve: crate::VERSION,
         model: model::VERSION,
         merge: merge::VERSION,
         batch,
         built_at: ingest::time::now(),
+        nodes,
         keys,
         shared: shared_keys,
         public: public_keys,
@@ -227,6 +243,55 @@ pub fn build(
     })
 }
 
+/// Writes the five files into a fresh part directory.
+fn write_files(
+    part: &Path,
+    fst_bytes: &[u8],
+    shared: &[u32],
+    retirements: &[(u32, u32)],
+    public: &Public,
+    nodes: u32,
+    stubs: &[u8],
+) -> Result<BTreeMap<String, FileInfo>, Error> {
+    if part.exists() {
+        fs::remove_dir_all(part).map_err(|e| Error::io(part, e))?;
+    }
+    fs::create_dir_all(part).map_err(|e| Error::io(part, e))?;
+    let mut files = BTreeMap::new();
+    let mut sink = Sink::create(&part.join(FST))?;
+    sink.put(fst_bytes)?;
+    files.insert(FST.to_owned(), sink.finish()?);
+    let mut sink = Sink::create(&part.join(SHARED))?;
+    for v in shared {
+        sink.put(&v.to_le_bytes())?;
+    }
+    files.insert(SHARED.to_owned(), sink.finish()?);
+    let mut sink = Sink::create(&part.join(RETIRED))?;
+    for (id, into) in retirements {
+        sink.put(&id.to_le_bytes())?;
+        sink.put(&into.to_le_bytes())?;
+    }
+    files.insert(RETIRED.to_owned(), sink.finish()?);
+    let mut bits = vec![0u64; usize::try_from(nodes).unwrap_or(usize::MAX)];
+    for (id, text) in public.iter() {
+        if let (Some(slot), Ok(value)) = (
+            bits.get_mut(usize::try_from(id.get() - 1).unwrap_or(usize::MAX)),
+            merge::public::decode(text),
+        ) {
+            *slot = value;
+        }
+    }
+    let mut sink = Sink::create(&part.join(PUBLIC))?;
+    for v in &bits {
+        sink.put(&v.to_le_bytes())?;
+    }
+    files.insert(PUBLIC.to_owned(), sink.finish()?);
+    let mut sink = Sink::create(&part.join(STUBS))?;
+    sink.put(stubs)?;
+    files.insert(STUBS.to_owned(), sink.finish()?);
+    Ok(files)
+}
+
 /// What a key names.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Resolved {
@@ -241,6 +306,8 @@ pub struct Names {
     manifest: Manifest,
     map: Map<Mmap>,
     shared: Mapped,
+    public: Mapped,
+    stubs: Mapped,
     retired: HashMap<WorkId, Option<WorkId>>,
 }
 
@@ -268,6 +335,24 @@ impl Names {
             .ok_or_else(|| Error::Mismatch(format!("{}: an empty {FST}", dir.display())))?;
         let map = Map::new(fst_map)?;
         let shared = open(SHARED)?;
+        let public = open(PUBLIC)?;
+        let stubs = open(STUBS)?;
+        if manifest.files[STUBS].bytes != u64::from(manifest.nodes).div_ceil(8) {
+            return Err(Error::Mismatch(format!(
+                "{}: {} nodes but {} stub bytes",
+                dir.display(),
+                manifest.nodes,
+                manifest.files[STUBS].bytes
+            )));
+        }
+        if manifest.files[PUBLIC].bytes != u64::from(manifest.nodes) * 8 {
+            return Err(Error::Mismatch(format!(
+                "{}: {} nodes but {} public bytes",
+                dir.display(),
+                manifest.nodes,
+                manifest.files[PUBLIC].bytes
+            )));
+        }
         let retired_bytes = open(RETIRED)?;
         let bytes = retired_bytes.bytes();
         let mut retired = HashMap::with_capacity(bytes.len() / 8);
@@ -282,8 +367,34 @@ impl Names {
             manifest,
             map,
             shared,
+            public,
+            stubs,
             retired,
         })
+    }
+
+    /// Whether an id is a stub in the base: names and no records. False
+    /// for an id past the base or a retired one.
+    #[must_use]
+    pub fn is_stub(&self, id: WorkId) -> bool {
+        let ix = usize::try_from(id.get() - 1).unwrap_or(usize::MAX);
+        self.stubs
+            .bytes()
+            .get(ix / 8)
+            .is_some_and(|byte| byte & (1 << (ix % 8)) != 0)
+    }
+
+    /// A work's public id in its text form, from the array; `None` when
+    /// none was minted or the id is past the base.
+    #[must_use]
+    pub fn public_of(&self, id: WorkId) -> Option<String> {
+        let ix = usize::try_from(id.get() - 1).ok()?;
+        let bytes = self.public.bytes();
+        if ix * 8 + 8 > bytes.len() {
+            return None;
+        }
+        let bits = crate::mapped::u64_at(bytes, ix);
+        (bits != 0).then(|| merge::public::encode(bits))
     }
 
     #[allow(missing_docs)]
@@ -296,6 +407,12 @@ impl Names {
     #[must_use]
     pub fn keys(&self) -> u64 {
         self.map.len() as u64
+    }
+
+    /// Every key in order, with its stored value.
+    #[must_use]
+    pub fn stream(&self) -> fst::map::Stream<'_> {
+        self.map.stream()
     }
 
     /// The work or works a key names, as stored: ids retired since are

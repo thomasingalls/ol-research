@@ -9,7 +9,7 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::io;
+use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
 
 use ingest::{Kind, Reader, Store, Writer};
@@ -130,6 +130,67 @@ pub fn write(dir: &Path, merged: &Merged) -> io::Result<Summary> {
     Ok(summary)
 }
 
+/// The one merge at a time: a file under `merged/` that a run creates on
+/// its way in and removes on its way out, full and incremental runs
+/// alike, so two never append to the registry or the deltas at once. A
+/// run that died leaves it; the message says to remove it.
+#[derive(Debug)]
+pub struct Lock {
+    path: PathBuf,
+}
+
+impl Lock {
+    /// The lock's path under a store.
+    #[must_use]
+    pub fn path_of(store: &Store) -> PathBuf {
+        store.root().join("merged").join("merge.lock")
+    }
+
+    /// Takes the lock.
+    ///
+    /// # Errors
+    ///
+    /// Another run holds it, or I/O.
+    pub fn acquire(store: &Store) -> io::Result<Self> {
+        let path = Self::path_of(store);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let mut file = match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(file) => file,
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                let holder = fs::read_to_string(&path).unwrap_or_default();
+                return Err(io::Error::new(
+                    io::ErrorKind::WouldBlock,
+                    format!(
+                        "{}: another merge is running ({}); if none is, remove the file",
+                        path.display(),
+                        holder.trim()
+                    ),
+                ));
+            }
+            Err(e) => return Err(e),
+        };
+        writeln!(
+            file,
+            "pid {} since {}",
+            std::process::id(),
+            ingest::time::now()
+        )?;
+        Ok(Self { path })
+    }
+}
+
+impl Drop for Lock {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
 /// Opens one merged set file and checks that a merge wrote it, under this
 /// binary's model version, in a directory named for this binary's merge
 /// version.
@@ -167,6 +228,8 @@ pub fn open(path: &Path) -> io::Result<Reader> {
 
 #[cfg(test)]
 mod tests {
+    use ingest::Store;
+
     use super::{SHARD, first, prefix, shard, version};
     use crate::work::WorkId;
 
@@ -182,5 +245,18 @@ mod tests {
             "m/shard_00003"
         );
         assert!(version().starts_with('v'));
+    }
+
+    #[test]
+    fn one_merge_at_a_time() {
+        let root = std::env::temp_dir().join(format!("ol-rht-merge-lock-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let store = Store::new(&root);
+        let held = super::Lock::acquire(&store).unwrap();
+        let again = super::Lock::acquire(&store).unwrap_err();
+        assert!(again.to_string().contains("another merge"), "{again}");
+        drop(held);
+        assert!(super::Lock::acquire(&store).is_ok());
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }

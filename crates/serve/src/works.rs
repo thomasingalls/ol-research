@@ -10,6 +10,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use ingest::Kind;
 use merge::public::Public;
@@ -326,6 +327,8 @@ pub struct Works {
     manifest: Manifest,
     blocks: Mapped,
     offsets: Mapped,
+    /// The last block decoded, so a scan by id decodes each block once.
+    last: Mutex<Option<(usize, Vec<u8>)>>,
 }
 
 impl Works {
@@ -352,7 +355,27 @@ impl Works {
             manifest,
             blocks,
             offsets,
+            last: Mutex::new(None),
         })
+    }
+
+    /// One block, decompressed: the one decoded last, or decoded now.
+    fn block(&self, block: usize) -> Result<Vec<u8>, Error> {
+        let mut last = self
+            .last
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((b, raw)) = last.as_ref()
+            && *b == block
+        {
+            return Ok(raw.clone());
+        }
+        let start = at(u64_at(self.offsets.bytes(), block));
+        let end = at(u64_at(self.offsets.bytes(), block + 1));
+        let raw = zstd::stream::decode_all(&self.blocks.bytes()[start..end])
+            .map_err(|e| Error::io(Path::new(BLOCKS), e))?;
+        *last = Some((block, raw.clone()));
+        Ok(raw)
     }
 
     #[allow(missing_docs)]
@@ -379,10 +402,7 @@ impl Works {
         }
         let block = at(u64::from(ix / BLOCK));
         let slot = at(u64::from(ix % BLOCK));
-        let start = at(u64_at(self.offsets.bytes(), block));
-        let end = at(u64_at(self.offsets.bytes(), block + 1));
-        let raw = zstd::stream::decode_all(&self.blocks.bytes()[start..end])
-            .map_err(|e| Error::io(Path::new(BLOCKS), e))?;
+        let raw = self.block(block)?;
         let header = at(u64::from(BLOCK) + 1) * 4;
         let s0 = at(u64::from(u32_at(&raw, slot)));
         let s1 = at(u64::from(u32_at(&raw, slot + 1)));

@@ -35,8 +35,18 @@ pub struct Line {
     pub registry: u64,
     /// Public-id lines after this run.
     pub public: u64,
-    /// Bytes each delta file reached after this run; empty for a full run.
+    /// Bytes each delta file reached after this run; empty for a full run,
+    /// whose deltas start over.
     pub delta: BTreeMap<String, u64>,
+    /// Bytes the registry and the public log reached after this run, so
+    /// a reader tails them from here; absent on lines written before
+    /// SP5, where the line counts above position the reader instead.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub bytes: BTreeMap<String, u64>,
+    /// An incremental run's inputs: the normalized sets merged, as
+    /// prefixes relative to the store, so a run can be replayed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inputs: Vec<String>,
     /// Normalized records merged.
     pub records: u64,
     #[allow(missing_docs)]
@@ -92,6 +102,36 @@ pub fn last(path: &Path) -> io::Result<Option<Line>> {
     Ok(read(path)?.pop())
 }
 
+/// The byte offset just after the first `lines` lines of a JSON-lines
+/// file: where a reader that knows a line count starts tailing. Zero
+/// when the file does not exist.
+///
+/// # Errors
+///
+/// I/O, or fewer lines than asked.
+pub fn offset_of(path: &Path, lines: u64) -> io::Result<u64> {
+    let file = match File::open(path) {
+        Ok(file) => file,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(0),
+        Err(e) => return Err(e),
+    };
+    let mut reader = BufReader::with_capacity(1 << 20, file);
+    let mut buf = Vec::new();
+    let mut offset = 0u64;
+    for _ in 0..lines {
+        buf.clear();
+        let n = reader.read_until(b'\n', &mut buf)?;
+        if n == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                format!("{}: fewer than {lines} lines", path.display()),
+            ));
+        }
+        offset += n as u64;
+    }
+    Ok(offset)
+}
+
 /// Appends one line, which must be the batch after the last.
 ///
 /// # Errors
@@ -129,6 +169,8 @@ mod tests {
             registry: 10,
             public: 10,
             delta: BTreeMap::new(),
+            bytes: BTreeMap::new(),
+            inputs: Vec::new(),
             records: 3,
             minted: 1,
             merged: 0,
@@ -148,6 +190,15 @@ mod tests {
         append(&path, &line(2)).unwrap();
         assert_eq!(read(&path).unwrap().len(), 2);
         assert_eq!(last(&path).unwrap().unwrap().batch, 2);
+        let text = std::fs::read_to_string(&path).unwrap();
+        let first = text.lines().next().unwrap();
+        assert!(
+            !first.contains("\"bytes\""),
+            "empty maps are left out: {first}"
+        );
+        assert_eq!(super::offset_of(&path, 1).unwrap(), first.len() as u64 + 1);
+        assert!(super::offset_of(&path, 3).is_err());
+        assert_eq!(super::offset_of(&dir.join("none"), 0).unwrap(), 0);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

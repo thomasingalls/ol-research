@@ -247,11 +247,20 @@ both are the ingestion plan's M9 problem and change nothing here.
 One per work, in the works set (§8). Four parts.
 
 **Records.** Each source record the work is made of: source, native id,
-the source's own revision stamp (Crossref `indexed`, PubMed `DateRevised`,
-OpenAlex `updated_date`), and whether it is the promoted record for its
-source. Everything a record holds that is not promoted below stays in the
+whether it is the promoted record for its source, and — since version 2
+of the merged layout, 2026-09-16 — its evidence: every assertion it made
+(§3.1, the field it came from and whether native) and its view, which is
+its values for the promoted fields below with its titles and its
+revision stamp (Crossref `indexed`, PubMed `DateRevised`, OpenAlex
+`updated_date`). The verdicts — the names' standings, the promoted
+fields — are a function of the records' evidence, and carrying the
+evidence is what lets an incremental merge (serving plan §5) re-run the
+rules on one work with the rows alone. Everything else a record holds —
+its abstract, its author names, its references — stays in the
 normalized layer, reachable through this list: the merged record is a
-summary and an index, not a superset.
+summary and an index, not a superset. A row's lists are in canonical
+order (records by source and native id, names by name), so a row does
+not depend on the order its records arrived in.
 
 **Names.** Every accepted name with its namespace, value, standing
 (promoted, alias, shared) and who asserted it (source and field); every
@@ -477,10 +486,17 @@ and not by records.
   interned values come back as text:
   1. **identity** — assertions to components to verdicts, then the registry:
      look up, mint, attach, merge; the output is the names table, name to
-     `WorkId`, and the registry's new lines;
+     `WorkId`, and the registry's new lines. A record a later deletions
+     set withdrew (PubMed's `DeleteCitation`, in path order) is skipped
+     and counted (2026-09-16); a record delivered twice contributes its
+     first copy's names;
   2. **records and edges** — every work's view joins its `WorkId`'s
      candidates, every reference resolves through the names table; the
-     merged sets are written.
+     merged sets are written. A record delivered twice contributes the
+     view of the copy with the latest revision stamp (2026-09-16), so an
+     update file re-delivering a record is not undone by the baseline
+     file before it; the references of every copy are still read, in
+     both passes (serving plan §11, item 22).
   The names table is in memory: a few million names on the sample, well
   under a gigabyte. Pass 2 accumulates each record's view, every edge,
   every relation and every unresolved row in memory as well and writes
@@ -492,9 +508,13 @@ and not by records.
   ids make trivial. Pass 1's table becomes a sorted file read through a
   memory map. Neither changes the code's shape; both are the ingestion
   plan's M9.
-- **Layout**, under the store: `merged/registry.jsonl` (of record, §4) and
-  `merged/v<model>.<merge>/` (a cache, replaced whole by every complete
-  run), the merge having a version of its own that any change to its
+- **Layout**, under the store: `merged/registry.jsonl` (of record, §4),
+  `merged/journal.jsonl` and `merged/public.jsonl` (of record, serving
+  plan §4 and §6), `merged/v<model>.<merge>/` (a cache, replaced whole by
+  every complete run) with `delta/` beside its shards (what incremental
+  merges append, serving plan §5), and `merged/merge.lock` while any
+  merge runs, so two never append to the registry or the deltas at
+  once; the merge having a version of its own that any change to its
   rules or shapes bumps. Sets are sharded by `WorkId` range, 65,536 works
   a shard (`shard_00000` …), in the normalized layout's framing — a
   header, length-prefixed postcard values, zstd, a symbol table per
@@ -523,7 +543,8 @@ and not by records.
   the registry by the second; `--survey` counts a value outside the
   merge's tables instead of stopping on it, and it and `--limit` write
   nothing. `ol-rht merge dump <set.zst>... [--limit N]` prints any merged
-  set as JSON lines.
+  set as JSON lines. `ol-rht merge --batch <path>... [--public-key
+  <file>]` is the incremental merge, the serving plan's §5.
 - **The report.** Works by source pattern; conflict components by shape and
   verdict; registry churn; per promoted field, works with a value, works
   compared, works disputed, who it was promoted from, and per pair of
@@ -586,11 +607,12 @@ stays.
 - **MM5** — Semantic Scholar and arXiv contributors when their sources land
   (ingestion plan M6, M7); the search sinks over the works set.
 - Then: lineage (§11); the matching stage over the unresolved stream;
-  incremental merges — the [serving plan](serving-plan.md)'s SP5: PubMed's
-  deletions and OpenAlex's `merged_ids` as registry lines, every change
-  to an edge as a line of the delta log (§11, item 20), a journal line
-  per run as the clock, and the public id minted with the `WorkId` (item
-  21); the scale shape of §8 on the box.
+  OpenAlex's `merged_ids` as registry lines; the scale shape of §8 on
+  the box. *Incremental merges landed 2026-09-16 as the [serving
+  plan](serving-plan.md)'s SP5: the delta logs (item 20), the journal,
+  the public id (item 21), PubMed's deletions in both the full and the
+  incremental merge, and the merged layout's version 2, whose rows carry
+  each record's evidence (§5).*
 
 ## 10. Decision log
 
@@ -680,6 +702,14 @@ stays.
   sets have; MM4 is the graph plan's G2. And §6's "a fifth" was a
   miscount: OpenAlex misses 28 % of Crossref's edges on the sample where
   both hold the citing work.
+- 2026-09-17, copies — decided with the user: the newest copy of a
+  record, by the revision-stamp rule its fields already follow, speaks
+  for its names and its references too, since the latest version is the
+  likeliest to be right. Today the first copy's names count and a name
+  only a later copy carries is minted as a work of its own, which a
+  probe showed splitting the work's id once a batch had attached the
+  name (serving plan §11, item 22). Not built; it bumps the merge's
+  version.
 
 ## 11. Open items
 
@@ -693,7 +723,9 @@ stays.
    shared DOI resolves through the PMID and is not affected. Whether the
    five-letters case should be five works or one is a product question.
 3. **The split rule.** Retire-and-mint is the plainest; revisit on the
-   first split observed.
+   first split observed. An incremental batch that would split stops and
+   leaves it to a full merge (serving plan §5, 2026-09-16), since the
+   citing references would have to be resolved anew to follow the parts.
 4. **Stubs at scale.** Expected to be DataCite DOIs, mistyped DOIs and
    works no source holds; the count per namespace is in every report.
 5. ~~**`form` and `genre` tables.**~~ Done 2026-09-15, in each source
@@ -763,7 +795,12 @@ stays.
     older record is stale. The promoted record of a source is the one
     whose native id is the promoted name (the lower W number, §3.4), which
     is the older one; the revision stamp the merged record keeps is the
-    evidence for a rule that prefers the newer.
+    evidence for a rule that prefers the newer. Two *copies* of one record
+    are settled since 2026-09-16 (§8: the latest revision's fields, the
+    first copy's names); two *records* are not. An incremental batch that
+    holds one of a work's duplicates adds that record's arcs and removes
+    none, because the twin's list is only in the normalized layer; a
+    full merge tidies it (serving plan §5).
 19. **`Sources` width.** A byte, one bit per `SourceId`, three used;
     eight is the ceiling, and the ingestion plan's planned sources and
     long tail name at least nine more. Widen to `u16` before the ninth
@@ -781,6 +818,15 @@ stays.
     §4, §8): one delta file per merged kind under the merged directory,
     JSON lines stamped with the batch, and `merged/journal.jsonl` with
     one line per merge run as the clock every artifact is positioned by.
+    Built the same day (`merge::delta`, serving plan SP5).
+22. **A record index into the normalized layer.** Three cases of the
+    incremental merge stop for want of one (serving plan §5): a text
+    only a record outside the batch has, a duplicate's reference list,
+    and the names the citing references gave a work that lost its last
+    record. Each is "read one normalized record by native id", which the
+    sets, being streams, cannot do; a per-source index from native id to
+    set and block is the answer, with the registry's binary form (item
+    10).
 21. ~~**The public id.**~~ Built 2026-09-16 (serving plan SP3):
     `merge::public` mints one for every id lacking it when `merge` is
     given `--public-key <file>` — a keyed BLAKE3 hash of the id, `ol:`

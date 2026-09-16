@@ -225,8 +225,10 @@ impl Public {
     }
 }
 
-/// The 64 bits for an id, at an attempt.
-fn derive(key: &Key, id: WorkId, attempt: u32) -> u64 {
+/// The 64 bits for an id, at an attempt: the keyed hash a mint tries
+/// first at attempt zero, then again with the counter on a collision.
+#[must_use]
+pub fn derive(key: &Key, id: WorkId, attempt: u32) -> u64 {
     let mut input = [0u8; 8];
     input[..4].copy_from_slice(&id.get().to_le_bytes());
     input[4..].copy_from_slice(&attempt.to_le_bytes());

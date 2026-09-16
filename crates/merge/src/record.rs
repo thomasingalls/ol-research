@@ -13,7 +13,7 @@ use crate::identity::Standing;
 use crate::kind::{Form, Genre};
 use crate::name::Name;
 use crate::relation;
-use crate::view::Venue;
+use crate::view::{Venue, View};
 use crate::work::{SourceId, Sources, WorkId};
 
 /// One work: a summary and an index over the normalized layer, not a
@@ -40,7 +40,11 @@ pub struct Work<'a> {
     pub flags: Flags,
 }
 
-/// One source record of a work.
+/// One source record of a work, with the evidence the rules read from
+/// it: its assertions (§3.1) and its view (§5). The verdicts — the names'
+/// standings, the promoted fields — are a function of every record's
+/// evidence, which is what lets an incremental merge (serving plan §5)
+/// re-run the rules on one work without the normalized layer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Record<'a> {
     #[allow(missing_docs)]
@@ -49,12 +53,39 @@ pub struct Record<'a> {
     /// reached.
     #[serde(borrow)]
     pub native: Name<'a>,
-    /// The source's own revision stamp.
-    pub revised: Option<Date>,
     /// The promoted record of its source: the one whose native id is the
     /// promoted name of its namespace, which matters only when a source
     /// holds two records of one work.
     pub promoted: bool,
+    /// Every assertion, the native one included, each name once.
+    #[serde(borrow)]
+    pub asserts: SmallVec<[Assert<'a>; 3]>,
+    /// The record's values for the fields of §5, its revision stamp and
+    /// its titles among them.
+    #[serde(borrow)]
+    pub view: View<'a>,
+}
+
+impl Record<'_> {
+    /// The source's own revision stamp.
+    #[must_use]
+    pub fn revised(&self) -> Option<Date> {
+        self.view.revised
+    }
+}
+
+/// One assertion of a record (§3.1): a name, the normalized field it came
+/// from, and whether it is the record's native id.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Assert<'a> {
+    #[allow(missing_docs)]
+    #[serde(borrow)]
+    pub name: Name<'a>,
+    #[allow(missing_docs)]
+    #[serde(borrow)]
+    pub field: &'a str,
+    #[allow(missing_docs)]
+    pub native: bool,
 }
 
 /// An accepted name.
@@ -69,6 +100,12 @@ pub struct Named<'a> {
     pub by: Sources,
     /// Whether a record of the work holds it natively.
     pub native: bool,
+    /// For a stub's name: the works whose references gave it, each with
+    /// the source of the record that did — the evidence an incremental
+    /// merge needs when a record arrives for some of a stub's names and
+    /// not others (serving plan §5). Empty on a held work's names, which
+    /// records assert; relations are not counted, since they are not arcs.
+    pub cited_by: SmallVec<[(WorkId, SourceId); 1]>,
 }
 
 /// A rejected assertion: `by`'s record claimed `name`, which `holder`'s
@@ -326,10 +363,13 @@ mod tests {
     use model::{Date, Pmid};
     use smallvec::SmallVec;
 
-    use super::{Citation, Edge, Field, Fields, Flags, Named, Record, Unresolved, Why, Work};
+    use super::{
+        Assert, Citation, Edge, Field, Fields, Flags, Named, Record, Unresolved, Why, Work,
+    };
     use crate::identity::Standing;
     use crate::kind::{Form, Genre};
     use crate::name::Name;
+    use crate::view::View;
     use crate::work::{SourceId, Sources, WorkId};
 
     fn sample<'a>() -> Work<'a> {
@@ -339,8 +379,18 @@ mod tests {
             records: [Record {
                 source: SourceId::Pubmed,
                 native: Name::Pmid(Pmid::new(123).unwrap()),
-                revised: Some(Date::parse_iso("2026-01-23").unwrap()),
                 promoted: true,
+                asserts: [Assert {
+                    name: Name::Pmid(Pmid::new(123).unwrap()),
+                    field: "pmid",
+                    native: true,
+                }]
+                .into_iter()
+                .collect(),
+                view: View {
+                    revised: Some(Date::parse_iso("2026-01-23").unwrap()),
+                    ..View::default()
+                },
             }]
             .into_iter()
             .collect(),
@@ -349,6 +399,7 @@ mod tests {
                 standing: Standing::Promoted,
                 by: [SourceId::Pubmed].into_iter().collect(),
                 native: false,
+                cited_by: SmallVec::new(),
             }]
             .into_iter()
             .collect(),
@@ -388,6 +439,8 @@ mod tests {
         let json = with_reading(&table, || serde_json::to_string(&back).unwrap());
         assert!(json.contains("\"doi:10.1000/x\""));
         assert!(json.contains("\"pmid:123\""));
+        assert!(json.contains("\"revised\":\"2026-01-23\""), "{json}");
+        assert_eq!(back.records[0].revised().unwrap().to_string(), "2026-01-23");
         assert!(json.contains("\"journal-article\""));
         assert!(json.contains("\"promoted\""));
         let edge = Edge {

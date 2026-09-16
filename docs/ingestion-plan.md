@@ -417,8 +417,8 @@ crates/
   graph/              the citation graph (graph-plan.md): both orientations over the edges set, a label an arc, the report
   serve/              the serving layer (serving-plan.md): the names lookup, the works index, the epoch, the query core
   search/             the lexical index behind one shape, Tantivy as a module; a second engine when wanted
-  ol-rht-serve/       the transport binary, gRPC first — planned
-  ol-rht/             CLI:  <source> list | fetch <listing> | ingest <listing> | check | normalize [--survey] | dump | keys; merge identity | merge [--public-key] | merge dump; graph build | graph query | graph check; search build | search query; names build | works build | epoch publish | epoch check; query work | query search | query expand
+  ol-rht-serve/       the transport binary: the query core over gRPC, public ids on the wire
+  ol-rht/             CLI:  <source> list | fetch <listing> | ingest <listing> | check | normalize [--survey] | dump | keys; merge identity | merge [--public-key] | merge --batch <sets> | merge dump; graph build | graph query | graph check; search build | search query; names build | works build | epoch publish | epoch check; query work | query search | query expand
 <store>/                  the store of record (§3.5): one root, `--store`, never committed
   raw/<source>/<path>     bytes as served, write-once, at the source's own path; `<path>.part` while in flight
   listings/<source>/<stamp>.jsonl   what the source offered, one entry per line, beside the index document it came from
@@ -429,7 +429,8 @@ crates/
   graph/v<model>.<merge>.<graph>/{manifest.json,perm.u32,inv.u32,forward.*,transpose.*}   the citation graph (graph plan §8): rebuildable
   merged/journal.jsonl    one line per merge run: the clock every artifact is positioned by (serving plan §4): of record
   merged/public.jsonl     the public-id log beside the registry (serving plan §6): of record
-  merged/v<model>.<merge>/delta/{works,edges,relations,unresolved}.jsonl   what incremental merges append (serving plan §3): rebuildable — planned
+  merged/v<model>.<merge>/delta/{works,edges,relations,unresolved}.jsonl   what incremental merges append (serving plan §5): rebuildable
+  merged/merge.lock       while a merge runs, full or incremental: one at a time
   search/<engine>/v<model>.<merge>.<search>/   the lexical index (serving plan §3): rebuildable
   names/v<model>.<merge>.<serve>/   the names lookup (serving plan §3): rebuildable
   works/v<model>.<merge>.<serve>/   the works index (serving plan §3): rebuildable
@@ -1510,6 +1511,18 @@ cross-IDs and a second edge namespace early.
   the key; the store gained `merged/journal.jsonl`, `merged/public.jsonl`,
   `names/`, `works/` and `epochs/`; `fst` and `blake3` joined the
   dependencies.
+- 2026-09-16, the transport landed (serving plan SP4) — `ol-rht-serve`,
+  gRPC on `tonic`, the protocol compiled by `protox` so no compiler is
+  installed; `tokio` joined the dependencies with it.
+- 2026-09-16, the delta path landed (serving plan SP5) — `ol-rht merge
+  --batch <sets>` merges normalized sets incrementally against the live
+  tables and appends to `merged/v<…>/delta/`; the server folds the
+  journal every poll. Two things changed in this layer's ground: the
+  merged layout is at version 2, because every record in a merged row now
+  carries its assertions and its view (merge plan §5); and the full
+  merge honours PubMed's deletions sets and takes the latest revision of
+  a record delivered twice, which update files will do daily. A lock
+  under `merged/` keeps merges from overlapping. No new dependency.
 
 ## 11. Dependencies
 

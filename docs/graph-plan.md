@@ -241,10 +241,14 @@ equals a full rebuild.
   the log.
 - **Query:** the base's list for `perm[id − 1]`, each arc's label replaced
   by the fold's where the fold has that edge, the fold's arcs not in the
-  base appended, empty labels skipped, deduplicated on `WorkId`; a
-  retired id answers as its survivor, whose lists are the union of both
-  ids' base and delta entries. Results are `WorkId`s, `inv` applied to
-  base hits where the format stores positions.
+  base merged in by id, empty labels skipped; a retired id answers as
+  its survivor. Results are `WorkId`s, `inv` applied to base hits where
+  the format stores positions. Landed 2026-09-16 (G4, `serve::fold`):
+  the incremental merge moves a retired id's remaining arcs and its
+  citers to the survivor with explicit `remove` and `add` lines rather
+  than leaving the union to the reader, so the fold is a map of
+  effective labels and nothing else, and the `retire` line only says
+  which id answers for which.
 - **Compaction:** rebuild the base from the edges set and the registry
   fold, recompute the permutation, cut the log at the epoch, switch the
   mapping and the fold together. On the box a full rebuild is two passes
@@ -437,7 +441,13 @@ every arc returned.
   the base-plus-deltas test (§5); fed by the merge plan's incremental
   merges, published under the serving plan's epoch (its §5, SP5). Stands
   while the ten-minute freshness target stands; a daily target would
-  drop it.
+  drop it. *Landed 2026-09-16 with the serving plan's SP5: the edges log
+  is `merged/v<…>/delta/edges.jsonl` (`merge::delta`), the fold and the
+  merged list are `serve::fold`, and the base-plus-deltas test runs on a
+  store built in memory and on the sample with one PubMed file held
+  out. The graph crate itself did not change: the base is still the
+  base, and a label lookup for the fold is a binary search over a
+  work's list.*
 - Then: slices for other kinds as their registries land (ambitions §4);
   the side table of §4 if the ordering needs it.
 
@@ -515,11 +525,11 @@ every arc returned.
    source, a merged-layout version bump; the graph's byte is independent
    of it (§3).
 3. ~~**The delta's framing and place.**~~ Decided 2026-09-16 in the
-   serving plan (§3, §4, §8): JSON lines under the merged directory's
-   `delta/`, one file per merged kind, every line stamped with the batch
-   of the merge run that wrote it; the graph reads the edges delta and
-   needs no log of its own; the epoch and the clock are the serving
-   plan's §4.
+   serving plan (§3, §4, §8) and built the same day: JSON lines under
+   the merged directory's `delta/`, one file per merged kind, every line
+   stamped with the batch of the merge run that wrote it; the graph
+   reads the edges delta and needs no log of its own; the epoch and the
+   clock are the serving plan's §4.
 4. **The side table** for bounded expansion under a graph-derived
    ordering (§4): the top-*k* citers by year of every work over some
    degree. Only if G3 picks ordering 4.
@@ -533,10 +543,12 @@ every arc returned.
    references with no name (merge plan §6) are unresolved rows, not arcs;
    self-citations are arcs (399 on the sample). The report counts what
    the graph left out.
-8. **Slices.** One base per slice with its own label type (ambitions
-   §4); whether slices share `perm` or each has its own position space.
-   Not before the registries per kind exist.
-> ???
+8. **Other graphs later.** The ambitions (§4 there) want graphs over
+   other things than citations between works — authorship, say, or
+   works to persons — each its own base with its own kind of label. Open
+   only whether such a graph would number its nodes the way this one
+   does or its own way. Nothing to do until those things have registries
+   of their own.
 9. **Agreement at scale.** The 28 % figure and its siblings as report
    lines on every build (§3, §8), so that fraction is never a miscount
    again. Landed in G2: both tables, on every build.
@@ -552,11 +564,10 @@ every arc returned.
     a third of the held works, an artifact of the island (part-file works
     that cite nothing the sample holds). The report counts them so a
     corpus build can say whether the number is structural.
-12. **Names lookup.** `query` by name scans the names sets shard by shard
-    until it finds the name: milliseconds for a work in the first shard,
-    seconds for one in the last. The serving plan's names artifact
-    replaces the scan (its §3, SP3).
-> this just genuinely doesn't matter. we'll discover as we go. if it bothers you to have counts that are out of date, we should stop recording such estimates in planning docs. napkin math is on a napkin because most of the time *you throw it away afterward* 
+12. ~~**Names lookup.**~~ Done: `query work` resolves through the names
+    artifact (serving plan SP3); `graph query` keeps its shard scan as a
+    diagnostic. The counts kept in these plans are measured ones from
+    landed milestones and nothing else, per the note that stood here.
 
 ## 12. Sources consulted
 

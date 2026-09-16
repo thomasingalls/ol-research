@@ -68,6 +68,22 @@ pub enum Line {
     },
 }
 
+/// A names table the assignment can run over: the whole log folded
+/// ([`Registry`]), or a names base with the log's tail past it (the
+/// serving layer's live table, serving plan §5).
+pub trait Table {
+    /// The live id a name maps to.
+    fn lookup(&self, name: &OwnedName) -> Option<WorkId>;
+    /// Ids minted so far: the next mint is one more.
+    fn minted(&self) -> u32;
+    /// Folds one event.
+    ///
+    /// # Errors
+    ///
+    /// The event does not fit what came before; see [`Registry::apply`].
+    fn apply(&mut self, line: &Line) -> Result<(), String>;
+}
+
 /// The log, folded: which names map to which ids, which ids are retired.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Registry {
@@ -263,24 +279,54 @@ impl Registry {
         self.names.get(name).and_then(|id| self.live(*id))
     }
 
-    /// Gives every work an id (merge plan §4): each work's names, given in
-    /// the deterministic order the plan asks for, are looked up; none
-    /// known mints, one id reuses, several merge into the oldest, an id
-    /// two works claim is split and both are minted. With `complete`, a
-    /// name the registry maps that no work here has is dropped, so
-    /// `complete` is only for a run over the whole store.
-    ///
-    /// # Panics
-    ///
-    /// Never: every line it applies is one the fold accepts by
-    /// construction.
+    /// Gives every work an id (merge plan §4); see [`assign`]. With
+    /// `complete`, a name the registry maps that no work here has is
+    /// dropped, so `complete` is only for a run over the whole store.
     #[must_use]
     pub fn assign(&mut self, works: &[Vec<OwnedName>], at: &str, complete: bool) -> Assignment {
+        let mut out = assign(self, works, at);
+        if complete {
+            let seen: HashSet<&OwnedName> = works.iter().flatten().collect();
+            let dropped = self.drop_unseen(|n| seen.contains(n), at);
+            out.dropped += dropped.len() as u64;
+            out.lines.extend(dropped);
+        }
+        out
+    }
+}
+
+impl Table for Registry {
+    fn lookup(&self, name: &OwnedName) -> Option<WorkId> {
+        Self::lookup(self, name)
+    }
+
+    fn minted(&self) -> u32 {
+        self.minted
+    }
+
+    fn apply(&mut self, line: &Line) -> Result<(), String> {
+        Self::apply(self, line)
+    }
+}
+
+/// Gives every work an id (merge plan §4): each work's names, given in
+/// the deterministic order the plan asks for, are looked up; none known
+/// mints, one id reuses, several merge into the oldest, an id two works
+/// claim is split and both are minted. Every line is applied to `table`
+/// as it is made, and returned to be appended.
+///
+/// # Panics
+///
+/// Never: every line it applies is one the fold accepts by
+/// construction.
+#[must_use]
+pub fn assign<T: Table>(table: &mut T, works: &[Vec<OwnedName>], at: &str) -> Assignment {
+    {
         let mut out = Assignment::default();
         let claims: Vec<Vec<WorkId>> = works
             .iter()
             .map(|names| {
-                let mut ids: Vec<WorkId> = names.iter().filter_map(|n| self.lookup(n)).collect();
+                let mut ids: Vec<WorkId> = names.iter().filter_map(|n| table.lookup(n)).collect();
                 ids.sort_unstable();
                 ids.dedup();
                 ids
@@ -301,13 +347,13 @@ impl Registry {
                 .collect();
             let id = match unique.as_slice() {
                 [] => {
-                    let id = WorkId::new(self.minted + 1).expect("ids fit u32");
+                    let id = WorkId::new(table.minted() + 1).expect("ids fit u32");
                     let line = Line::Mint {
                         id,
                         names: names.clone(),
                         at: at.to_owned(),
                     };
-                    self.apply(&line).expect("a mint after the last id");
+                    table.apply(&line).expect("a mint after the last id");
                     out.lines.push(line);
                     out.minted += 1;
                     id
@@ -323,7 +369,7 @@ impl Registry {
                             into: *winner,
                             at: at.to_owned(),
                         };
-                        self.apply(&line).expect("both live, winner older");
+                        table.apply(&line).expect("both live, winner older");
                         out.lines.push(line);
                         out.merged += 1;
                     }
@@ -332,13 +378,13 @@ impl Registry {
                 }
             };
             for name in names {
-                if self.lookup(name) != Some(id) {
+                if table.lookup(name) != Some(id) {
                     let line = Line::Name {
                         id,
                         name: name.clone(),
                         at: at.to_owned(),
                     };
-                    self.apply(&line).expect("the id is live");
+                    table.apply(&line).expect("the id is live");
                     out.lines.push(line);
                     out.attached += 1;
                 }
@@ -360,19 +406,15 @@ impl Registry {
                 into,
                 at: at.to_owned(),
             };
-            self.apply(&line).expect("the parts are live");
+            table.apply(&line).expect("the parts are live");
             out.lines.push(line);
             out.split += 1;
         }
-        if complete {
-            let seen: HashSet<&OwnedName> = works.iter().flatten().collect();
-            let dropped = self.drop_unseen(|n| seen.contains(n), at);
-            out.dropped += dropped.len() as u64;
-            out.lines.extend(dropped);
-        }
         out
     }
+}
 
+impl Registry {
     /// Drops every mapped name `seen` does not vouch for, returning the
     /// lines: the end of a run over the whole store, after every work and
     /// stub was assigned.

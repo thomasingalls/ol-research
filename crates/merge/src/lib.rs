@@ -22,11 +22,14 @@
 //! record's [`view`] joins its work, every reference resolves through
 //! the names, and the rows of [`record`] are made — the merged record
 //! with its promoted fields (§5), the edges, relations and unresolved
-//! references (§6) — which [`layout`] writes as sharded sets.
+//! references (§6) — which [`layout`] writes as sharded sets. [`delta`] is
+//! what an incremental merge appends beside them (serving plan §5), and
+//! [`journal`] the clock every run advances.
 
 pub mod arena;
 pub mod build;
 pub mod contributor;
+pub mod delta;
 pub mod document;
 pub mod identity;
 pub mod journal;
@@ -43,7 +46,7 @@ pub mod title;
 pub mod view;
 pub mod work;
 
-pub use build::{Builder, Ids, Merged};
+pub use build::{Builder, Ids, Merged, OwnedWork};
 pub use contributor::Contributor;
 pub use document::{Assembler, Document};
 pub use identity::Identity;
@@ -57,4 +60,7 @@ pub use work::{SourceId, Sources, WorkId};
 /// The merge's own version, beside the model's: any change to the rules
 /// of the plan's §3 or §5 or to the shapes written under `merged/` bumps
 /// it, and merged sets under another version are rebuilt, never patched.
-pub const VERSION: u32 = 1;
+/// Version 2 (2026-09-16): every record in a merged row carries its
+/// assertions and its view, the evidence the incremental merge re-runs
+/// the rules on, and a row's lists are in canonical order.
+pub const VERSION: u32 = 2;

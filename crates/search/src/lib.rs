@@ -15,7 +15,7 @@ pub mod report;
 pub mod schema;
 
 pub use error::Error;
-pub use index::{Built, Hit, Hits, Manifest, Opened};
+pub use index::{Absorbed, Built, Hit, Hits, Manifest, Opened};
 
 /// The index's own version, beside the model's and the merge's: any
 /// change to the mapping or the files bumps it, and an index under

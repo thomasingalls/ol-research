@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use tantivy::collector::{Count, FacetCollector, TopDocs};
 use tantivy::query::{AllQuery, Query, QueryParser};
 use tantivy::schema::{Facet, TantivyDocument, Value};
-use tantivy::{Index, IndexReader, IndexWriter};
+use tantivy::{Index, IndexReader, IndexWriter, ReloadPolicy, Term};
 
 use crate::error::Error;
 use crate::schema::{self, Fields};
@@ -33,7 +33,11 @@ pub struct Manifest {
     pub engine: String,
     #[allow(missing_docs)]
     pub built_at: String,
-    #[allow(missing_docs)]
+    /// The journal batch the build indexed; the batch the index has
+    /// absorbed since is the engine's commit payload, read by
+    /// [`Opened::batch`].
+    pub batch: u64,
+    /// Documents at build time.
     pub documents: u64,
     /// [`schema::DESCRIPTION`] at build time.
     pub mapping: String,
@@ -99,12 +103,45 @@ pub struct Built {
     pub manifest: Manifest,
 }
 
-/// Indexes every document into `dir`, replacing what was there.
+/// A document as the engine takes it.
+fn document(fields: &Fields, d: &Document) -> Result<TantivyDocument, Error> {
+    let mut doc = TantivyDocument::new();
+    doc.add_u64(fields.id, u64::from(d.id.get()));
+    if let Some(title) = &d.title {
+        doc.add_text(fields.title, title);
+    }
+    if let Some(text) = &d.abstract_text {
+        doc.add_text(fields.abstract_text, text);
+    }
+    for author in &d.authors {
+        doc.add_text(fields.authors, author);
+    }
+    if let Some(venue) = &d.venue {
+        doc.add_text(fields.venue, venue);
+    }
+    for path in schema::facets(d) {
+        let facet = Facet::from_text(&path).map_err(|e| Error::Facet(format!("{path}: {e}")))?;
+        doc.add_facet(fields.facet, facet);
+    }
+    Ok(doc)
+}
+
+/// Commits with the batch as the commit's payload: the one clock the
+/// engine's own files carry.
+fn commit(writer: &mut IndexWriter, batch: u64) -> Result<(), Error> {
+    let mut prepared = writer.prepare_commit()?;
+    prepared.set_payload(&batch.to_string());
+    prepared.commit()?;
+    Ok(())
+}
+
+/// Indexes every document into `dir` as of `batch`, replacing what was
+/// there.
 ///
 /// # Errors
 ///
 /// I/O, the engine, or a facet path that is not one.
-pub fn build(dir: &Path, documents: &[Document]) -> Result<Built, Error> {
+pub fn build(dir: &Path, documents: &[Document], batch: u64) -> Result<Built, Error> {
     let io = |path: &Path, e| Error::Io {
         path: path.to_path_buf(),
         source: e,
@@ -118,28 +155,9 @@ pub fn build(dir: &Path, documents: &[Document]) -> Result<Built, Error> {
     let index = Index::create_in_dir(&part, schema)?;
     let mut writer: IndexWriter = index.writer(256 << 20)?;
     for d in documents {
-        let mut doc = TantivyDocument::new();
-        doc.add_u64(fields.id, u64::from(d.id.get()));
-        if let Some(title) = &d.title {
-            doc.add_text(fields.title, title);
-        }
-        if let Some(text) = &d.abstract_text {
-            doc.add_text(fields.abstract_text, text);
-        }
-        for author in &d.authors {
-            doc.add_text(fields.authors, author);
-        }
-        if let Some(venue) = &d.venue {
-            doc.add_text(fields.venue, venue);
-        }
-        for path in schema::facets(d) {
-            let facet =
-                Facet::from_text(&path).map_err(|e| Error::Facet(format!("{path}: {e}")))?;
-            doc.add_facet(fields.facet, facet);
-        }
-        writer.add_document(doc)?;
+        writer.add_document(document(&fields, d)?)?;
     }
-    writer.commit()?;
+    commit(&mut writer, batch)?;
     writer.wait_merging_threads()?;
     let segments = index.searchable_segment_metas()?.len();
     let bytes = bytes_under(&part).map_err(|e| io(&part, e))?;
@@ -149,6 +167,7 @@ pub fn build(dir: &Path, documents: &[Document]) -> Result<Built, Error> {
         merge: merge::VERSION,
         engine: crate::ENGINE.to_owned(),
         built_at: ingest::time::now(),
+        batch,
         documents: documents.len() as u64,
         mapping: schema::DESCRIPTION.to_owned(),
         segments,
@@ -169,6 +188,74 @@ pub fn build(dir: &Path, documents: &[Document]) -> Result<Built, Error> {
 fn part_of(dir: &Path) -> PathBuf {
     let name = dir.file_name().and_then(|n| n.to_str()).unwrap_or("search");
     dir.with_file_name(format!("{name}.part"))
+}
+
+/// What absorbing a batch did.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Absorbed {
+    /// Documents added, each replacing any earlier document of its work.
+    pub put: u64,
+    /// Works whose document was removed.
+    pub removed: u64,
+    /// Documents in the index after the commit.
+    pub documents: u64,
+}
+
+/// Applies one batch in place (serving plan §5): every work in `puts`
+/// gets its document, replacing any it had; every work in `removes`
+/// loses its document; the commit carries `batch`. The manifest beside
+/// the engine's files is not touched: it describes the build, and the
+/// epoch digests it.
+///
+/// # Errors
+///
+/// I/O, the engine — another writer holding the index among them — or a
+/// facet path that is not one.
+pub fn absorb(
+    dir: &Path,
+    batch: u64,
+    puts: &[Document],
+    removes: &[WorkId],
+) -> Result<Absorbed, Error> {
+    let manifest = Manifest::read(dir)?;
+    manifest.check()?;
+    let index = Index::open_in_dir(dir)?;
+    let fields = schema::fields(&index.schema())?;
+    let mut writer: IndexWriter = index.writer(64 << 20)?;
+    for id in removes.iter().chain(puts.iter().map(|d| &d.id)) {
+        writer.delete_term(Term::from_field_u64(fields.id, u64::from(id.get())));
+    }
+    for d in puts {
+        writer.add_document(document(&fields, d)?)?;
+    }
+    commit(&mut writer, batch)?;
+    writer.wait_merging_threads()?;
+    let reader = index
+        .reader_builder()
+        .reload_policy(ReloadPolicy::Manual)
+        .try_into()?;
+    Ok(Absorbed {
+        put: puts.len() as u64,
+        removed: removes.len() as u64,
+        documents: reader.searcher().num_docs(),
+    })
+}
+
+/// The batch an index's last commit carries.
+///
+/// # Errors
+///
+/// The engine, or a payload that is not a batch number.
+pub fn batch_of(index: &Index) -> Result<u64, Error> {
+    let payload = index.load_metas()?.payload;
+    match payload {
+        Some(text) => text.parse().map_err(|_| {
+            Error::Mismatch(format!("the commit payload {text:?} is not a batch number"))
+        }),
+        None => Err(Error::Mismatch(
+            "the index's commit carries no batch number".to_owned(),
+        )),
+    }
 }
 
 /// The engine's files under `dir`, in bytes, the manifest excluded.
@@ -237,7 +324,10 @@ impl Opened {
         manifest.check()?;
         let index = Index::open_in_dir(dir)?;
         let fields = schema::fields(&index.schema())?;
-        let reader = index.reader()?;
+        let reader = index
+            .reader_builder()
+            .reload_policy(ReloadPolicy::Manual)
+            .try_into()?;
         Ok(Self {
             manifest,
             index,
@@ -256,6 +346,26 @@ impl Opened {
     #[must_use]
     pub fn documents(&self) -> u64 {
         self.reader.searcher().num_docs()
+    }
+
+    /// The batch the index has absorbed: its last commit's payload.
+    ///
+    /// # Errors
+    ///
+    /// The engine, or a payload that is not a batch number.
+    pub fn batch(&self) -> Result<u64, Error> {
+        batch_of(&self.index)
+    }
+
+    /// Picks up commits made since the index was opened or last reloaded,
+    /// which is how a batch absorbed by the merge reaches a searcher.
+    ///
+    /// # Errors
+    ///
+    /// The engine.
+    pub fn reload(&self) -> Result<(), Error> {
+        self.reader.reload()?;
+        Ok(())
     }
 
     fn parse(&self, text: &str) -> Result<Box<dyn Query>, Error> {
@@ -378,10 +488,11 @@ mod tests {
             ),
             document(3, "Something else entirely", "Unrelated text.", 2021),
         ];
-        let built = build(&dir, &docs).unwrap();
+        let built = build(&dir, &docs, 7).unwrap();
         assert_eq!(built.manifest.documents, 3);
         let opened = Opened::open(&dir).unwrap();
         assert_eq!(opened.documents(), 3);
+        assert_eq!(opened.batch().unwrap(), 7);
         let hits = opened.search("aspirin", 10, 5).unwrap();
         assert_eq!(hits.total, 2);
         let ids: Vec<u32> = hits.hits.iter().map(|h| h.id.get()).collect();
@@ -404,6 +515,40 @@ mod tests {
         assert_eq!(held.1, vec![("pubmed".to_owned(), 3)]);
         assert_eq!(opened.search("lovelace", 10, 5).unwrap().total, 3);
         assert_eq!(opened.search("\"of tests\"", 10, 5).unwrap().total, 3);
+        // A batch absorbed: one document replaced, one removed, one added.
+        let absorbed = super::absorb(
+            &dir,
+            8,
+            &[
+                document(2, "Aspirin and headache, revised", "Now fine.", 2022),
+                document(4, "A fourth work on aspirin", "New.", 2023),
+            ],
+            &[WorkId::new(3).unwrap()],
+        )
+        .unwrap();
+        assert_eq!(
+            (absorbed.put, absorbed.removed, absorbed.documents),
+            (2, 1, 3)
+        );
+        assert_eq!(opened.documents(), 3, "the searcher lags until reloaded");
+        opened.reload().unwrap();
+        assert_eq!(opened.batch().unwrap(), 8);
+        let hits = opened.search("aspirin", 10, 5).unwrap();
+        let mut ids: Vec<u32> = hits.hits.iter().map(|h| h.id.get()).collect();
+        ids.sort_unstable();
+        assert_eq!(ids, [1, 2, 4]);
+        assert_eq!(opened.search("revised", 10, 5).unwrap().total, 1);
+        assert_eq!(
+            opened.search("entirely", 10, 5).unwrap().total,
+            0,
+            "work 3 is gone"
+        );
+        let status = hits
+            .facets
+            .iter()
+            .find(|(root, _)| root == "/status")
+            .unwrap();
+        assert_eq!(status.1, vec![("retracted".to_owned(), 1)]);
         std::fs::remove_dir_all(&root).unwrap();
     }
 }

@@ -206,6 +206,26 @@ impl fmt::Display for ParseNameError {
 
 impl std::error::Error for ParseNameError {}
 
+/// A field name as the identity pass keys its counts by: the same text
+/// always the same `&'static str`. Field names are a closed, short set
+/// — a source's identifier fields — so the leak is bounded.
+#[must_use]
+pub fn field_static(field: &str) -> &'static str {
+    use std::collections::HashSet;
+    use std::sync::{Mutex, OnceLock};
+    static FIELDS: OnceLock<Mutex<HashSet<&'static str>>> = OnceLock::new();
+    let fields = FIELDS.get_or_init(|| Mutex::new(HashSet::new()));
+    let mut fields = fields
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(known) = fields.get(field) {
+        return known;
+    }
+    let leaked: &'static str = Box::leak(field.to_owned().into_boxed_str());
+    fields.insert(leaked);
+    leaked
+}
+
 /// One record saying a name is its own (merge plan §3.1): the name, the
 /// field it came from, and whether it is the record's native id or a
 /// foreign id it carries.
@@ -268,5 +288,13 @@ mod tests {
             Some(7)
         );
         assert_eq!(Name::Doi("10.1/a").number(), None);
+    }
+
+    #[test]
+    fn field_names_intern_to_one_static() {
+        let a = super::field_static("ids.doi");
+        let b = super::field_static(&String::from("ids.doi"));
+        assert!(std::ptr::eq(a, b));
+        assert_eq!(super::field_static("pmid"), "pmid");
     }
 }

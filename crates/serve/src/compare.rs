@@ -1,0 +1,171 @@
+//! Two open cores against each other (serving plan §5): an epoch plus
+//! the deltas folded over it, and the epoch a full merge built after
+//! them, must answer every question identically. What differs is
+//! returned as text, one line a difference, so a test or a check can
+//! print it; nothing is a difference.
+
+use fst::Streamer;
+use merge::WorkId;
+
+use crate::core::Serving;
+use crate::error::Error;
+
+/// Queries the lexical comparison runs, since the engine's scores depend
+/// on its segments and only the hits can be compared.
+pub const QUERIES: [&str; 6] = [
+    "aspirin",
+    "randomized trial",
+    "systematic review",
+    "protein",
+    "cancer",
+    "learning",
+];
+
+/// Every difference between `a` and `b`: rows by id, names by key, the
+/// lists of every work, the lexical hits of the fixed queries. At most
+/// `limit` lines.
+///
+/// # Errors
+///
+/// A row that does not decode, or the engine.
+#[allow(clippy::too_many_lines)]
+pub fn differences(a: &Serving, b: &Serving, limit: usize) -> Result<Vec<String>, Error> {
+    let mut out: Vec<String> = Vec::new();
+    let mut note = |what: String| {
+        if out.len() < limit {
+            out.push(what);
+        }
+    };
+    let minted = a.minted().max(b.minted());
+    if a.minted() != b.minted() {
+        note(format!("ids minted: {} against {}", a.minted(), b.minted()));
+    }
+    for n in 1..=minted {
+        let Some(id) = WorkId::new(n) else {
+            continue;
+        };
+        let (ra, rb) = (a.work(id)?, b.work(id)?);
+        match (&ra, &rb) {
+            (None, None) => {}
+            (Some(_), None) | (None, Some(_)) => note(format!(
+                "{id}: a row on one side only ({})",
+                if ra.is_some() { "a" } else { "b" }
+            )),
+            (Some(x), Some(y)) => {
+                if x.names != y.names {
+                    note(format!(
+                        "{id}: names differ\n  a: {:?}\n  b: {:?}",
+                        x.names, y.names
+                    ));
+                }
+                if x.records != y.records {
+                    note(format!(
+                        "{id}: records differ\n  a: {:?}\n  b: {:?}",
+                        x.records, y.records
+                    ));
+                }
+                if x.rejected != y.rejected {
+                    note(format!("{id}: rejected assertions differ"));
+                }
+                if x.fields != y.fields {
+                    note(format!(
+                        "{id}: fields differ\n  a: {:?}\n  b: {:?}",
+                        x.fields, y.fields
+                    ));
+                }
+                if x.flags != y.flags {
+                    note(format!("{id}: flags differ"));
+                }
+                if x.stub != y.stub {
+                    note(format!("{id}: a stub on one side only"));
+                }
+                if x.public != y.public {
+                    note(format!(
+                        "{id}: public id {:?} against {:?}",
+                        x.public, y.public
+                    ));
+                }
+                if x.text != y.text {
+                    note(format!(
+                        "{id}: text differs\n  a: {:?}\n  b: {:?}",
+                        x.text, y.text
+                    ));
+                }
+            }
+        }
+        if a.live(id) != b.live(id) {
+            note(format!(
+                "{id}: live as {:?} against {:?}",
+                a.live(id),
+                b.live(id)
+            ));
+        }
+        let refs = |s: &Serving| -> Vec<(WorkId, String)> {
+            s.references(id)
+                .map(|x| (x.work, x.by.to_string()))
+                .collect()
+        };
+        let cites = |s: &Serving| -> Vec<(WorkId, String)> {
+            s.citers(id).map(|x| (x.work, x.by.to_string())).collect()
+        };
+        if refs(a) != refs(b) {
+            note(format!(
+                "{id}: references differ\n  a: {:?}\n  b: {:?}",
+                refs(a),
+                refs(b)
+            ));
+        }
+        if cites(a) != cites(b) {
+            note(format!(
+                "{id}: citers differ\n  a: {:?}\n  b: {:?}",
+                cites(a),
+                cites(b)
+            ));
+        }
+        if a.public_of(id) != b.public_of(id) {
+            note(format!("{id}: public id differs in the lookup"));
+        }
+        if a.is_stub(id) != b.is_stub(id) {
+            note(format!("{id}: stubness differs in the lookup"));
+        }
+    }
+    // Every key either side's base knows resolves the same on both.
+    for (side, s, other) in [("a", a, b), ("b", b, a)] {
+        let mut stream = s.names().stream();
+        while let Some((key, _)) = stream.next() {
+            let key = String::from_utf8_lossy(key).into_owned();
+            let (x, y) = (s.resolve_key(&key), other.resolve_key(&key));
+            if x != y {
+                note(format!("{key} (from {side}): {x:?} against {y:?}"));
+            }
+        }
+    }
+    for query in QUERIES {
+        let (ha, hb) = (a.search(query, 100)?, b.search(query, 100)?);
+        if ha.total != hb.total {
+            note(format!(
+                "search {query:?}: {} hits against {}",
+                ha.total, hb.total
+            ));
+        }
+        let ids = |h: &search::Hits| {
+            let mut ids: Vec<WorkId> = h.hits.iter().map(|x| x.id).collect();
+            ids.sort_unstable();
+            ids
+        };
+        if ha.total <= 100 && ids(&ha) != ids(&hb) {
+            note(format!("search {query:?}: different works hit"));
+        }
+        if ha.facets != hb.facets {
+            note(format!("search {query:?}: facet counts differ"));
+        }
+    }
+    if a.search_index().documents() != b.search_index().documents() {
+        note(format!(
+            "the lexical index holds {} documents against {}",
+            a.search_index().documents(),
+            b.search_index().documents()
+        ));
+    }
+    Ok(out)
+}

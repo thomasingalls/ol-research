@@ -5,25 +5,37 @@
 //! knows about it and the text its records carry; [`epoch`] the manifest
 //! that publishes a set of bases together; [`core`] the query core over
 //! those two, the graph and the lexical index, which answers the five
-//! questions of the plan's §7 and speaks `WorkId` inside.
+//! questions of the plan's §7 and speaks `WorkId` inside; [`fold`] is
+//! what every reader folds past its epoch — the registry's tail, the
+//! works and edges deltas — under one watermark (§5).
 
+pub mod compare;
 pub mod core;
 pub mod digest;
 pub mod epoch;
 pub mod error;
+#[cfg(test)]
+pub(crate) mod fixture;
+pub mod fold;
+pub mod incremental;
+#[cfg(test)]
+mod incremental_tests;
 pub mod mapped;
 pub mod names;
 pub mod row;
 pub mod works;
 
-pub use core::{Resolved, Serving};
+pub use core::{Resolved, Serving, Watermark};
 pub use error::Error;
+pub use fold::Arcs;
 pub use row::Row;
 
 /// The layer's own version, beside the model's and the merge's: any
 /// change to the names or works files or their meaning bumps it, and a
-/// base under another version is rebuilt, never patched.
-pub const VERSION: u32 = 1;
+/// base under another version is rebuilt, never patched. Version 3
+/// (2026-09-16): a row's records carry their evidence, as the merged
+/// record's do.
+pub const VERSION: u32 = 3;
 
 /// The directory name for this binary's versions.
 #[must_use]

@@ -125,6 +125,29 @@ impl Sources {
         self.0 == 0
     }
 
+    /// Removes one source.
+    pub const fn remove(&mut self, source: SourceId) {
+        self.0 &= !source.bit();
+    }
+
+    /// Both sets.
+    #[must_use]
+    pub const fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+
+    /// This set without the other.
+    #[must_use]
+    pub const fn difference(self, other: Self) -> Self {
+        Self(self.0 & !other.0)
+    }
+
+    /// Whether the sets share a source.
+    #[must_use]
+    pub const fn intersects(self, other: Self) -> bool {
+        self.0 & other.0 != 0
+    }
+
     /// The sources, in bit order.
     pub fn iter(self) -> impl Iterator<Item = SourceId> {
         SourceId::ALL.into_iter().filter(move |s| self.contains(*s))
@@ -187,6 +210,13 @@ mod tests {
             [SourceId::Pubmed, SourceId::OpenAlex]
         );
         assert_eq!(SourceId::ALL.into_iter().collect::<Sources>().len(), 3);
+        let one: Sources = [SourceId::Crossref].into_iter().collect();
+        assert_eq!(set.union(one).len(), 3);
+        assert_eq!(set.difference(one), set);
+        assert!(!set.intersects(one) && set.union(one).intersects(one));
+        let mut gone = set;
+        gone.remove(SourceId::Pubmed);
+        assert_eq!(gone.to_string(), "openalex");
         assert_eq!(
             serde_json::to_string(&SourceId::OpenAlex).unwrap(),
             "\"openalex\""
