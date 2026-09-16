@@ -135,7 +135,7 @@ The machinery generalises without new words.
 | a person's trainees, and theirs | graph, n hops over `mentored-by` | a tiny slice |
 | institutions collaborating with I | graph, two hops through works, count | the top few via a search aggregation |
 | works using method M that cite W | search facet ∩ graph one hop | by id, in the query layer |
-| how topics drift along a citation chain | graph n hops, then facets over the frontier | the funnel of the architecture summary |
+| how topics drift along a citation chain | graph n hops, then facets over the frontier | the funnel of the [candidate-management note](candidate-management.md) |
 | "did you mean" | search | the facet distribution over the top results (MeSH, topic, method) offered as refinements |
 
 The last row is the whole of ambition 3's first version: no new query

@@ -2,8 +2,10 @@
 
 **Status:** draft 4 — source facts verified against current documentation on
 2026-09-14 (§12). Nothing here is implemented.
-**Inputs:** [architecture summary](inbox/citation-graph-architecture-summary.md);
-decisions from three rounds of discussion on 2026-09-14, logged in §10.
+**Inputs:** the architecture summary of 2026-09-14, folded 2026-09-15 into
+the [graph plan](graph-plan.md) and the
+[candidate-management note](inbox/candidate-management.md); decisions from
+three rounds of discussion on 2026-09-14, logged in §10.
 
 ## 1. Three layers; this plan covers one
 
@@ -327,7 +329,8 @@ the target type is an enum over namespaces, not a DOI.
 For the architecture doc: Semantic Scholar's `citations` dataset alone is
 2.4 × 10^9 rows, and Crossref and OpenAlex are of the same order. The 2 × 10^10
 its storage budget assumes is ~10× above what any source exposes. Out of
-scope here; it changes that arithmetic.
+scope here; it changes that arithmetic. Taken up 2026-09-15: the graph
+plan's §2 plans on 6 × 10^8 works and 3 × 10^9 edges.
 
 ## 3. Architecture
 
@@ -411,7 +414,8 @@ crates/
   source-openalex/
   source-s2/
   merge/              the merged layer (merge-plan.md): names, identity, the registry, the merged record, edges, the report
-  ol-rht/             CLI:  <source> list | fetch <listing> | ingest <listing> | check | normalize [--survey] | dump | keys; merge identity | merge | merge dump
+  graph/              the citation graph (graph-plan.md): both orientations over the edges set, labels, the delta fold — planned
+  ol-rht/             CLI:  <source> list | fetch <listing> | ingest <listing> | check | normalize [--survey] | dump | keys; merge identity | merge | merge dump; graph build | graph query | graph check (planned)
 <store>/                  the store of record (§3.5): one root, `--store`, never committed
   raw/<source>/<path>     bytes as served, write-once, at the source's own path; `<path>.part` while in flight
   listings/<source>/<stamp>.jsonl   what the source offered, one entry per line, beside the index document it came from
@@ -419,6 +423,7 @@ crates/
   normalized/v<model>/<source>/<path minus extensions>.{works,references,deletions,symbols}.zst   rebuildable
   merged/registry.jsonl   the WorkId registry (merge plan §4): of record, append-only
   merged/v<model>.<merge>/<shard>.{works,edges,names,relations,unresolved,symbols}.zst   rebuildable
+  graph/v<model>.<merge>.<graph>/{manifest.json,perm,inv,offsets,neighbours,labels}   the citation graph (graph plan §8): rebuildable, planned
 ```
 
 Each source crate carries `fixtures/`: single raw records that once failed to
@@ -1197,7 +1202,8 @@ in your environment, never in the repo or in this conversation.
   frame size, once the box says whether disk or CPU is the scarce one.
 - Then: the merge plan — [merge-plan.md](merge-plan.md), draft 1 of
   2026-09-15, written against the sample, with milestones MM1–MM5 of its
-  own.
+  own; and the graph plan — [graph-plan.md](graph-plan.md), draft 1 of
+  2026-09-15, milestones G1–G4, its G2 being the merge plan's MM4.
 - **Search sinks**, noted 2026-09-15 so they are not forgotten: the
   metadata goes into **Meilisearch** and **Tantivy** at least, and probably
   two more for comparison (Quickwit, which is Tantivy at scale; Typesense or
@@ -1205,7 +1211,8 @@ in your environment, never in the repo or in this conversation.
   layer, so they are sinks of the merge stage, not of ingestion; the
   `Sink` trait shape (§3.2) is what they will implement against, with a
   merged `Source` behind it. The citation graph remains the end goal; the
-  search index is the funnel's cheap-scoring stage (architecture doc).
+  search index is the funnel's cheap-scoring stage
+  ([candidate management](inbox/candidate-management.md)).
 
 Order after Crossref is adjustable; OpenAlex second because it exercises
 cross-IDs and a second edge namespace early.
@@ -1465,6 +1472,12 @@ cross-IDs and a second edge namespace early.
   file with the normalized four. `ingest::Kind` gained the merged layer's
   `edges`, `names`, `relations` and `unresolved`, appended, so every
   header written before still reads; the layout version stays 2.
+- 2026-09-15, the graph plan — drafted from the architecture summary and
+  the inbox notes on it as `graph-plan.md`; the summary retired, its
+  funnel a note of its own. What changes here: the store gains `graph/`
+  and the crate list a `graph` crate (§3.3, planned); §2's note on the
+  summary's edge budget is settled there at 6 × 10^8 works and 3 × 10^9
+  edges.
 
 ## 11. Dependencies
 
@@ -1507,7 +1520,7 @@ committed; §4 is.
 
 The per-source normalized shape. Shared across sources so the merge stage is
 source-agnostic; not itself the merged schema. Fields chosen from what the
-architecture doc's funnel consumes: hard filters on date / language / type /
+funnel of the candidate-management note consumes: hard filters on date / language / type /
 retraction / access, cheap scoring on title / abstract / counts / topics.
 
 CR = Crossref, PM = PubMed, AX = arXiv, OA = OpenAlex, S2 = Semantic Scholar.

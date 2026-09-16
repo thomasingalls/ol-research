@@ -7,6 +7,15 @@ consequences (its §2), and the serving-shape decisions of 2026-09-15,
 which have no plan doc yet. What this is: the corrections and decisions
 the summary needs before MM4 builds against it. Left out on purpose: the
 experiment's design; it serves more purposes than bits per edge.
+**Processed:** 2026-09-15, into the [graph plan](../graph-plan.md) draft 1
+(§1–§4 here are its §2–§5, §5 its §6–§7), merge plan §6, §9 MM4, §10 and
+§11 items 19–20, ingestion plan §3.3; the summary retired and its
+candidate-management section moved to [its own note](candidate-management.md).
+Amended on the way: the label byte indexes the build's table of asserter
+sets rather than storing `Sources`, so widening `Sources` leaves the graph
+alone; `retire` carries no `into` for a split; and "a fifth" (§2 here,
+merge plan §6) was a miscount — OpenAlex misses 28 % of Crossref's edges
+on the sample where both hold the citing work.
 
 ## 1. The numbers this note uses
 

@@ -5,9 +5,11 @@ ingestion plan's M5 produced (its §7) and a census of that sample taken the
 same day (§7 here). MM2, the identity pass and the registry, landed the
 same day (§9); §7 carries its first run.
 **Inputs:** [ingestion plan](ingestion-plan.md) §1 (what ingestion owes this
-plan); [architecture summary](inbox/citation-graph-architecture-summary.md)
-(dense ids, two graph orientations, the funnel); the discussion of
-2026-09-15, logged in §10.
+plan); the architecture summary of 2026-09-14 (dense ids, two graph
+orientations, the funnel), folded 2026-09-15 into the
+[graph plan](graph-plan.md) and the
+[candidate-management note](inbox/candidate-management.md); the discussion
+of 2026-09-15, logged in §10.
 
 ## 1. What the merged layer is
 
@@ -230,7 +232,8 @@ log; the second appended nothing; the run after the similarity clause of
 §3.3 landed appended two `merge` lines and nothing else.
 
 Dense ids are for the graph's CSR; they promise stability, not locality,
-and the graph experiment's ordering strategies relabel as they see fit.
+and the graph relabels into a position space of its own at every
+compaction (graph plan §4).
 
 Why a log and not a table: it is the store's existing discipline (raw
 immutable, receipts only grow); a partial write is a truncated last line
@@ -316,7 +319,7 @@ promoted and the sources that do not know are the disagreement.
 
 Edges are `(from: WorkId, to: WorkId, sources)`: the same edge asserted by
 three sources is one edge with three bits. `A → B` is "A cites B", the
-architecture summary's convention. Each source's reference stream resolves
+graph plan's convention (its §1). Each source's reference stream resolves
 its target through the names table:
 
 | source   | a reference's target                                                            | resolved 2026-09-15 (MM3): held, stub, self-citation, no name, disagree, empty                                       |
@@ -364,8 +367,11 @@ held: Crossref and OpenAlex share 36,837 edges, Crossref alone asserts
 14,676, OpenAlex alone 1,730; PubMed and Crossref share 39,462, PubMed
 alone 3,259, Crossref alone 24,530; PubMed and OpenAlex share 23,269,
 PubMed alone 9,712, OpenAlex alone 15,403. PubMed's lists are partial by
-construction; OpenAlex's, derived from Crossref's, miss a fifth of them on
-this sample, which the report keeps measuring. In all, 5,021,301 distinct
+construction; OpenAlex's, derived from Crossref's, miss 28 % of them on
+this sample — 14,676 of the 51,513 Crossref asserts where both hold the
+citing work and the target is held; "a fifth" until 2026-09-15 was a
+miscount — which the report keeps measuring, and the graph will at scale
+(graph plan §3). In all, 5,021,301 distinct
 edges on the sample: 2,222,128 by OpenAlex alone, 1,909,179 by Crossref
 alone, 483,820 by PubMed and Crossref, 368,316 by PubMed alone, 22,248 by
 all three.
@@ -556,15 +562,23 @@ stays.
   14,267 on the sample), the reference-disagreement rule (§6), and the
   338 disagreements and the ISSN pairs as evidence for items 14, 1 and 6
   of §11.*
-- **MM4** — the graph handoff: forward and transpose CSR from the edges set,
-  keyed by `WorkId`, held works and stubs selectable; the architecture
-  summary's experiment begins. The sample's subgraph settles tooling and
-  correctness, not bits per edge — that needs the corpus.
+- **MM4** — the graph handoff, which is the [graph plan](graph-plan.md)'s
+  G2 (2026-09-15): forward and transpose CSR from the edges set in
+  `WorkId` order, a label beside every arc, held works and stubs
+  selectable; the experiment follows as G3. What the merged layer owes
+  it: the edges set as the graph's one input, sorted by citing work with
+  `by` on every edge, which it is; `Sources` widened to `u16` before the
+  ninth source, a merged-layout version bump (§11, item 19); the edges
+  delta log the incremental merges will write, in `WorkId` space, with
+  `add`, `remove` and `retire` lines (§11, item 20; graph plan §5); and
+  the agreement figures of §6 kept at scale. The sample's subgraph settles
+  tooling and correctness, not bits per edge — that needs the corpus.
 - **MM5** — Semantic Scholar and arXiv contributors when their sources land
   (ingestion plan M6, M7); the search sinks over the works set.
 - Then: lineage (§11); the matching stage over the unresolved stream;
   incremental merges — PubMed's deletions and OpenAlex's `merged_ids` as
-  registry lines; the scale shape of §8 on the box.
+  registry lines, and every change to an edge as a line of the delta log
+  (§11, item 20); the scale shape of §8 on the box.
 
 ## 10. Decision log
 
@@ -642,6 +656,18 @@ stays.
   vanished record held that a reference still cites is a held work's in
   the registry and a stub's in the run — so the assignment is one call
   over held works then stubs, and that case is a split, as §4 says.
+- 2026-09-15, the graph notes — the architecture summary's numbers,
+  provenance, updates and ordering were reconsidered in the inbox notes
+  and taken, with two amendments, into a plan of their own
+  ([graph plan](graph-plan.md), draft 1); the summary is retired and its
+  funnel is a note of its own. What changes here: `Sources` stays a byte
+  until the ninth source and widens to `u16` then, a merged-layout
+  version bump the graph's label does not follow; the edges delta log is
+  a merged-layer artifact the incremental merges write; the graph is a
+  cache of the edges set with the same byte-identical test the merged
+  sets have; MM4 is the graph plan's G2. And §6's "a fifth" was a
+  miscount: OpenAlex misses 28 % of Crossref's edges on the sample where
+  both hold the citing work.
 
 ## 11. Open items
 
@@ -722,6 +748,20 @@ stays.
     whose native id is the promoted name (the lower W number, §3.4), which
     is the older one; the revision stamp the merged record keeps is the
     evidence for a rule that prefers the newer.
+19. **`Sources` width.** A byte, one bit per `SourceId`, three used;
+    eight is the ceiling, and the ingestion plan's planned sources and
+    long tail name at least nine more. Widen to `u16` before the ninth
+    source: it is written into every merged set, so that is a
+    merged-layout version bump and a rebuild; the graph's label byte
+    indexes a table of asserter sets and does not follow it (graph plan
+    §3). Nothing to do until the ninth source is scheduled.
+20. **The edges delta log.** The incremental merges of §9 write every
+    change to an edge as a line in `WorkId` space — `add(from, to, by)`,
+    `remove(from, to, by)`, `retire(id, into)` echoing the registry's
+    `merge` and `split` — which the graph folds over its base (graph plan
+    §5). Its framing and place, and whether the other merged sets get a
+    delta of the same shape, are the serving plan's; designed with the
+    incremental merges, after MM5.
 
 ## 12. Sources consulted
 
