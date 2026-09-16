@@ -6,6 +6,7 @@ license.workspace = true
 description = "The merged layer: one work across sources, our own ids, the registry that mints them, and the edges between works."
 
 [dependencies]
+blake3.workspace = true
 ingest.workspace = true
 model.workspace = true
 postcard.workspace = true

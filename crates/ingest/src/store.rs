@@ -13,6 +13,13 @@
 //! <root>/normalized/v<model>/<source>/… rebuildable
 //! <root>/merged/registry.jsonl         the WorkId registry (merge plan §4): of record, append-only
 //! <root>/merged/v<model>.<merge>/…      the merged sets, rebuildable
+//! <root>/graph/v<model>.<merge>.<graph>/… the citation graph (graph plan §8), rebuildable
+//! <root>/search/<engine>/v<model>.<merge>.<search>/… the lexical index (serving plan §3), rebuildable
+//! <root>/merged/journal.jsonl          one line per merge run: the clock (serving plan §4), of record
+//! <root>/merged/public.jsonl           the public-id log (serving plan §6), of record
+//! <root>/names/v<model>.<merge>.<serve>/… the names lookup (serving plan §3), rebuildable
+//! <root>/works/v<model>.<merge>.<serve>/… the works index (serving plan §3), rebuildable
+//! <root>/epochs/<n>.json, epochs/current the epoch manifests and the switch (serving plan §4)
 //! ```
 
 use std::path::{Path, PathBuf};
@@ -95,6 +102,71 @@ impl Store {
     #[must_use]
     pub fn merged(&self, model: u32, merge: u32) -> PathBuf {
         self.root.join("merged").join(format!("v{model}.{merge}"))
+    }
+
+    /// The citation graph under one model, merge and graph version:
+    /// `graph/v<model>.<merge>.<graph>`.
+    #[must_use]
+    pub fn graph(&self, model: u32, merge: u32, graph: u32) -> PathBuf {
+        self.root
+            .join("graph")
+            .join(format!("v{model}.{merge}.{graph}"))
+    }
+
+    /// The lexical index of one engine under one model, merge and search
+    /// version: `search/<engine>/v<model>.<merge>.<search>`.
+    #[must_use]
+    pub fn search(&self, engine: &str, model: u32, merge: u32, search: u32) -> PathBuf {
+        self.root
+            .join("search")
+            .join(engine)
+            .join(format!("v{model}.{merge}.{search}"))
+    }
+
+    /// The journal: `merged/journal.jsonl`.
+    #[must_use]
+    pub fn journal(&self) -> PathBuf {
+        self.root.join("merged").join("journal.jsonl")
+    }
+
+    /// The public-id log: `merged/public.jsonl`.
+    #[must_use]
+    pub fn public(&self) -> PathBuf {
+        self.root.join("merged").join("public.jsonl")
+    }
+
+    /// The names lookup: `names/v<model>.<merge>.<serve>`.
+    #[must_use]
+    pub fn names(&self, model: u32, merge: u32, serve: u32) -> PathBuf {
+        self.root
+            .join("names")
+            .join(format!("v{model}.{merge}.{serve}"))
+    }
+
+    /// The works index: `works/v<model>.<merge>.<serve>`.
+    #[must_use]
+    pub fn works(&self, model: u32, merge: u32, serve: u32) -> PathBuf {
+        self.root
+            .join("works")
+            .join(format!("v{model}.{merge}.{serve}"))
+    }
+
+    /// The epoch manifests: `epochs/`.
+    #[must_use]
+    pub fn epochs(&self) -> PathBuf {
+        self.root.join("epochs")
+    }
+
+    /// One epoch's manifest: `epochs/<n>.json`.
+    #[must_use]
+    pub fn epoch(&self, n: u64) -> PathBuf {
+        self.epochs().join(format!("{n}.json"))
+    }
+
+    /// The switch: `epochs/current`.
+    #[must_use]
+    pub fn current_epoch(&self) -> PathBuf {
+        self.epochs().join("current")
     }
 }
 

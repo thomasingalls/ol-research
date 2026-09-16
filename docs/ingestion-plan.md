@@ -413,9 +413,12 @@ crates/
   source-arxiv/
   source-openalex/
   source-s2/
-  merge/              the merged layer (merge-plan.md): names, identity, the registry, the merged record, edges, the report
-  graph/              the citation graph (graph-plan.md): both orientations over the edges set, labels, the delta fold — planned
-  ol-rht/             CLI:  <source> list | fetch <listing> | ingest <listing> | check | normalize [--survey] | dump | keys; merge identity | merge | merge dump; graph build | graph query | graph check (planned)
+  merge/              the merged layer (merge-plan.md): names, identity, the registry, the merged record, edges, the report; the journal, the public-id log, the assembled document
+  graph/              the citation graph (graph-plan.md): both orientations over the edges set, a label an arc, the report
+  serve/              the serving layer (serving-plan.md): the names lookup, the works index, the epoch, the query core
+  search/             the lexical index behind one shape, Tantivy as a module; a second engine when wanted
+  ol-rht-serve/       the transport binary, gRPC first — planned
+  ol-rht/             CLI:  <source> list | fetch <listing> | ingest <listing> | check | normalize [--survey] | dump | keys; merge identity | merge [--public-key] | merge dump; graph build | graph query | graph check; search build | search query; names build | works build | epoch publish | epoch check; query work | query search | query expand
 <store>/                  the store of record (§3.5): one root, `--store`, never committed
   raw/<source>/<path>     bytes as served, write-once, at the source's own path; `<path>.part` while in flight
   listings/<source>/<stamp>.jsonl   what the source offered, one entry per line, beside the index document it came from
@@ -423,7 +426,14 @@ crates/
   normalized/v<model>/<source>/<path minus extensions>.{works,references,deletions,symbols}.zst   rebuildable
   merged/registry.jsonl   the WorkId registry (merge plan §4): of record, append-only
   merged/v<model>.<merge>/<shard>.{works,edges,names,relations,unresolved,symbols}.zst   rebuildable
-  graph/v<model>.<merge>.<graph>/{manifest.json,perm,inv,offsets,neighbours,labels}   the citation graph (graph plan §8): rebuildable, planned
+  graph/v<model>.<merge>.<graph>/{manifest.json,perm.u32,inv.u32,forward.*,transpose.*}   the citation graph (graph plan §8): rebuildable
+  merged/journal.jsonl    one line per merge run: the clock every artifact is positioned by (serving plan §4): of record
+  merged/public.jsonl     the public-id log beside the registry (serving plan §6): of record
+  merged/v<model>.<merge>/delta/{works,edges,relations,unresolved}.jsonl   what incremental merges append (serving plan §3): rebuildable — planned
+  search/<engine>/v<model>.<merge>.<search>/   the lexical index (serving plan §3): rebuildable
+  names/v<model>.<merge>.<serve>/   the names lookup (serving plan §3): rebuildable
+  works/v<model>.<merge>.<serve>/   the works index (serving plan §3): rebuildable
+  epochs/<n>.json  epochs/current   the epoch manifests and the switch (serving plan §4)
 ```
 
 Each source crate carries `fixtures/`: single raw records that once failed to
@@ -1200,14 +1210,21 @@ in your environment, never in the repo or in this conversation.
 - **M9** — full-scale plan: storage, incremental origins (`DeleteCitation`,
   update files, OAI `from`), model-version invalidation; the zstd level and
   frame size, once the box says whether disk or CPU is the scarce one.
+  The incremental origins are also the serving plan's SP6: a `watch`
+  listing kind with a cursor per source, paced as lookups are.
 - Then: the merge plan — [merge-plan.md](merge-plan.md), draft 1 of
   2026-09-15, written against the sample, with milestones MM1–MM5 of its
-  own; and the graph plan — [graph-plan.md](graph-plan.md), draft 1 of
-  2026-09-15, milestones G1–G4, its G2 being the merge plan's MM4.
+  own; the graph plan — [graph-plan.md](graph-plan.md), draft 1 of
+  2026-09-15, milestones G1–G4, its G2 being the merge plan's MM4; and
+  the serving plan — [serving-plan.md](serving-plan.md), draft 1 of
+  2026-09-16, milestones SP1–SP6, its SP2 the search sinks below and its
+  SP6 M9's incremental origins.
 - **Search sinks**, noted 2026-09-15 so they are not forgotten: the
   metadata goes into **Meilisearch** and **Tantivy** at least, and probably
   two more for comparison (Quickwit, which is Tantivy at scale; Typesense or
-  OpenSearch). The search strategy is undecided. These index the *merged*
+  OpenSearch). The search strategy is the serving plan's SP2
+  (2026-09-16): Tantivy first, embedded, then Meilisearch as the
+  comparison, with the scale caveat in its §11. These index the *merged*
   layer, so they are sinks of the merge stage, not of ingestion; the
   `Sink` trait shape (§3.2) is what they will implement against, with a
   merged `Source` behind it. The citation graph remains the end goal; the
@@ -1478,6 +1495,21 @@ cross-IDs and a second edge namespace early.
   and the crate list a `graph` crate (§3.3, planned); §2's note on the
   summary's edge budget is settled there at 6 × 10^8 works and 3 × 10^9
   edges.
+- 2026-09-16, the serving plan — drafted as `serving-plan.md` from the
+  serving-shape decisions of 2026-09-15. What changes here: the store
+  gains the journal, the public log, the delta files and the serving
+  artifacts' prefixes (§3.3, planned); the search sinks of §9 are its
+  SP2; M9's incremental origins are its SP6.
+- 2026-09-16, the search sink landed (serving plan SP2) — the `serve`
+  and `search` crates, `Contributor` gained `text`, the store gained
+  `search/<engine>/`; Tantivy is the one new external dependency of
+  weight, and the mapping it indexes is provisional by the user's
+  decision.
+- 2026-09-16, the batch shape landed (serving plan SP3) — the merge
+  writes a journal line per complete run and mints public ids when given
+  the key; the store gained `merged/journal.jsonl`, `merged/public.jsonl`,
+  `names/`, `works/` and `epochs/`; `fst` and `blake3` joined the
+  dependencies.
 
 ## 11. Dependencies
 

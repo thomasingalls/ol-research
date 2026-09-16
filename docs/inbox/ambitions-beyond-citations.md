@@ -212,8 +212,8 @@ no advice is wanted on it yet.
   first sink; a method field later is one more field.
 - **The store:** full text under `raw/` with a licence per object;
   annotations under a derived prefix keyed by process and version.
-- **Serving:** works have a public id by decision; persons will need one
-  when they are served.
+- **Serving:** works have a public id by decision (serving plan §6);
+  persons will need one when they are served.
 
 ## 9. Open questions
 

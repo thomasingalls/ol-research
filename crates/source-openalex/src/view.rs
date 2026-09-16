@@ -9,7 +9,7 @@ use model::date::Bound;
 
 use merge::kind::{Form, Genre};
 use merge::relation::{Kind, Related};
-use merge::view::{Status, Unmapped, Venue, View};
+use merge::view::{Status, Text, Unmapped, Venue, View, inverted_index, text};
 use merge::{Name, OwnedName};
 
 use crate::normalize::{LocationId, Work};
@@ -155,6 +155,39 @@ pub fn relations(work: &Work<'_>, out: &mut dyn FnMut(Related)) {
 #[must_use]
 pub const fn own_name(work: &Work<'_>) -> Name<'static> {
     Name::OpenAlex(work.id)
+}
+
+/// The record's text for the serving layer: the inverted index back into
+/// an abstract, each authorship's display name, the primary location's
+/// source name or its raw source name.
+///
+/// # Errors
+///
+/// An inverted index that does not decode, or a symbol beyond the set's
+/// table.
+pub fn text_of(work: &Work<'_>, table: &Table) -> Result<Text, Unmapped> {
+    let abstract_text = match work.abstract_inverted_index {
+        Some(json) => Some(inverted_index(json)?).filter(|t| !t.is_empty()),
+        None => None,
+    };
+    let authors = work
+        .authorships
+        .iter()
+        .map(|a| a.author.name.to_owned())
+        .collect();
+    let venue = match work.locations.first() {
+        Some(location) => match (&location.source, &location.raw_source_name) {
+            (Some(source), _) => Some(text(&source.name, table, "locations.source.name")?),
+            (None, Some(raw)) => Some(text(raw, table, "locations.raw_source_name")?),
+            (None, None) => None,
+        },
+        None => None,
+    };
+    Ok(Text {
+        abstract_text,
+        authors,
+        venue: venue.map(str::to_owned).filter(|v| !v.is_empty()),
+    })
 }
 
 #[cfg(test)]

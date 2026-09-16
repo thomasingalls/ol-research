@@ -15,10 +15,10 @@ use model::{Claim, Table};
 
 use merge::kind::{Form, Genre};
 use merge::relation::Kind;
-use merge::view::{Status, Unmapped, Venue, View, bound, text};
+use merge::view::{Status, Text, Unmapped, Venue, View, bound, join_sections, strip_markup, text};
 
 use crate::attr::RefType;
-use crate::normalize::Citation;
+use crate::normalize::{AuthorName, Citation, PersonName};
 
 /// A PubMed publication type's place in the genre table: a genre with a
 /// priority (higher wins among a record's types), or a qualifier that
@@ -254,6 +254,54 @@ pub const fn relation_kind(kind: RefType) -> Kind {
         RefType::ReprintOf => Kind::ReprintOf,
         RefType::Cites => Kind::Cites,
     }
+}
+
+/// The record's text for the serving layer: the abstract's sections
+/// joined under their labels, one display name per author, the journal's
+/// title or, failing that, its Medline abbreviation.
+///
+/// # Errors
+///
+/// A symbol beyond the set's table.
+pub fn text_of(work: &Citation<'_>, table: &Table) -> Result<Text, Unmapped> {
+    let abstract_text = work
+        .r#abstract
+        .as_ref()
+        .map(|a| join_sections(a.sections.iter().map(|s| (s.label, s.text))))
+        .filter(|t| !t.is_empty());
+    let authors = work
+        .authors
+        .iter()
+        .map(|a| match &a.name {
+            AuthorName::Person(p) => person(p),
+            AuthorName::Collective { name, .. } => strip_markup(name),
+        })
+        .collect();
+    let venue = match &work.journal.title {
+        Some(title) => text(title, table, "journal.title")?,
+        None => text(&work.journal.medline_ta, table, "journal.medline_ta")?,
+    };
+    Ok(Text {
+        abstract_text,
+        authors,
+        venue: Some(venue.to_owned()).filter(|v| !v.is_empty()),
+    })
+}
+
+/// `ForeName LastName`, or the initials when the forename is missing, and
+/// the suffix after.
+fn person(p: &PersonName<'_>) -> String {
+    let mut name = String::new();
+    if let Some(given) = p.fore.or(p.initials) {
+        name.push_str(given);
+        name.push(' ');
+    }
+    name.push_str(p.last);
+    if let Some(suffix) = p.suffix {
+        name.push(' ');
+        name.push_str(&strip_markup(suffix));
+    }
+    name
 }
 
 #[cfg(test)]

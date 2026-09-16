@@ -10,7 +10,7 @@ use crate::name::{Assertion, Name};
 use crate::record::Citation;
 use crate::relation::Related;
 use crate::title::Titles;
-use crate::view::{Unmapped, View};
+use crate::view::{Text, Unmapped, View};
 use crate::work::SourceId;
 
 /// A source's records, as the merge sees them.
@@ -60,4 +60,14 @@ pub trait Contributor: Source {
     /// What a reference gives besides names, for the unresolved stream of
     /// §6; empty for a source whose references are ids alone.
     fn citation<'w>(reference: &'w Self::Reference<'_>) -> Citation<'w>;
+
+    /// The text the record carries beyond its promoted fields — the
+    /// abstract as plain text, the authors' display names, the venue's
+    /// name — for the serving layer's documents (serving plan §3).
+    ///
+    /// # Errors
+    ///
+    /// A symbol the set's table does not have, or an abstract encoded in
+    /// a way that does not decode.
+    fn text(work: &Self::Work<'_>, table: &Table) -> Result<Text, Unmapped>;
 }

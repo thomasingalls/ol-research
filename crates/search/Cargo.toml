@@ -1,0 +1,17 @@
+[package]
+name = "search"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The lexical index: the serving layer's documents in a search engine, Tantivy for the proof of concept, behind one shape."
+
+[dependencies]
+ingest.workspace = true
+merge.workspace = true
+model.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tantivy.workspace = true
+
+[lints]
+workspace = true

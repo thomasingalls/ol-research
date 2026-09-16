@@ -1,0 +1,23 @@
+[package]
+name = "serve"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The serving layer: the names lookup, the works index, the epoch, and the query core over them and the graph and the lexical index."
+
+[dependencies]
+fst.workspace = true
+graph.workspace = true
+ingest.workspace = true
+memmap2.workspace = true
+merge.workspace = true
+model.workspace = true
+postcard.workspace = true
+search.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+zstd.workspace = true
+
+[lints]
+workspace = true

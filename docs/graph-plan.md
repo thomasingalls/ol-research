@@ -269,8 +269,8 @@ Upstream of the graph, ten minutes means the identity pass and the edge
 resolution are incremental too: the names table becomes a live index
 rather than a fold at run start, a new record's references resolve
 against it, and an unheld name mints a stub as a registry append. That is
-the serving-shape plan's problem, noted here because the delta log has to
-be fed by something.
+the [serving plan](serving-plan.md)'s §5, noted here because the delta
+log has to be fed by something.
 
 ## 6. Format
 
@@ -354,34 +354,49 @@ every arc returned.
   than 1, positions are applied as the arcs are placed and each list is
   sorted at the end.
 - **Layout**, under the store: `graph/v<model>.<merge>.<graph>/` — a
-  cache, replaced whole by every build, the graph having a version of its
-  own that any change to its files or their meaning bumps — holding
-  `manifest.json` (epoch, N, M, the ordering, the asserter table of §3,
-  the merged directory's version and the registry line count it was
-  built from, a digest per file), `perm.u32`, `inv.u32`, and per
-  orientation `offsets.u64`, `neighbours.u32`, `labels.u8`; later, one
-  epoch directory beside the delta. Little-endian, no framing, so a
-  reader is a memory map and a slice.
-- **Fail fast.** An edge whose end is outside the registry fold stops the
-  build (the merge's invariant, checked again); more than 256 asserter
-  sets stops it (§3); a manifest whose versions do not match the merged
-  directory or the binary stops the reader. Invariants at the end of
-  every build: every arc in both orientations; degrees sum to M in each;
-  every list sorted; no position twice.
+  cache, replaced whole by every build (made beside it as `.part`, then
+  renamed over it), the graph having a version of its own that any
+  change to its files or their meaning bumps — holding `manifest.json`
+  (the three versions, the ordering, N, M, the counts, the asserter
+  table of §3, the merged directory's name and shard count, and each
+  file's size and SHA-256), `perm.u32`, `inv.u32`, and
+  `forward.offsets.u64`, `forward.neighbours.u32`, `forward.labels.u8`
+  with their three `transpose.*` twins; later, one epoch directory
+  beside the delta. Little-endian, no framing, so a reader is a memory
+  map and a slice: it checks the versions and every file's size on open
+  and leaves the digests to `check`. The held-works subgraph lands
+  beside the graph as `v<…>-held`.
+- **Fail fast.** An edge whose end is not a work stops the build (the
+  merge's invariant, checked again), as does an edge out of order, more
+  than 256 asserter sets (§3), or a second pass that does not agree with
+  the first arc for arc; a manifest whose versions are not the binary's
+  stops the reader, and so does a file whose size is not what the counts
+  imply. A failed build leaves no directory. Invariants `check` verifies:
+  the permutation a bijection; offsets from zero, non-decreasing, summing
+  to M; every list strictly sorted by position, every neighbour a work,
+  every label in the table; every forward arc mirrored in the transpose
+  with the same label; every file the digest its manifest says.
 - **Commands.** `ol-rht graph build [--store <root>] [--held]` builds both
   orientations from the merged directory of this binary's versions and
-  prints the report; `--held` restricts to held works, the sample's
-  68,813-edge subgraph. `ol-rht graph query <work> [--store <root>]
-  [--limit N]` prints a work's references and citers with their
-  asserters, `<work>` a name in the merge plan's text form (`doi:…`,
-  `pmid:…`) resolved through the names set, or `#id`. `ol-rht graph check
-  [--store <root>]` reruns the invariants and rebuilds into scratch to
-  compare byte for byte.
-- **The report.** N and M; degree distributions per orientation (the
-  maximum, the top ten works, percentiles); isolated nodes; self-loops;
-  arcs by asserter set; agreement per pair of sources, corpus-wide — the
-  merge's table (§6 there) at any scale; bytes per file and bits per
-  edge; build time, peak memory and allocations, as every report has.
+  prints the report; `--held` restricts to arcs between held works, the
+  sample's 68,815-arc subgraph. `ol-rht graph query <#id|name> [--store
+  <root>] [--held] [--limit N]` prints a work's names with their
+  standings, then its references and citers with their asserters, fifty
+  a list unless `--limit` says otherwise and "… and n more" after; a
+  name is the merge plan's text form (`doi:…`, `pmid:…`) found by
+  scanning the names sets, an id past the base says so. `ol-rht graph
+  check [--store <root>] [--held]` verifies the digests and the
+  invariants, rebuilds into a `.check` directory beside the graph and
+  compares the eight arrays and the manifest without its timestamp byte
+  for byte, then removes the rebuild.
+- **The report.** Nodes, works, held, stubs and retired ids; arcs and
+  self-citations; per orientation the works with any, p50, p90, p99,
+  p99.9 and the maximum with its work; the ten most cited; the works
+  with no arc either way; arcs by asserter set; agreement per pair of
+  sources twice — corpus-wide, and over arcs whose citing work both
+  sources hold and whose target is held, which is the merge plan's §6
+  table and must equal it; bytes per file and bits an arc; time and
+  allocations on stderr, as every report has.
 
 ## 9. Milestones
 
@@ -392,7 +407,25 @@ every arc returned.
 - **G2** — the raw CSR: `crates/graph`, both orientations in `WorkId`
   order with labels and the asserter table, the manifest, `build`,
   `query` and `check`, the report, the byte-identical test, on the sample
-  with and without stubs. This is the merge plan's MM4.
+  with and without stubs. This is the merge plan's MM4. *Landed
+  2026-09-16: `crates/graph` — `nodes`, `layout`, `build`, `base`,
+  `check`, `report` — with `memmap2` as the one new dependency and ten
+  tests of its own; `ingest::Store` gained `graph()`. On the sample:
+  4,039,078 nodes (4,039,076 works, 2 retired ids), 5,021,301 arcs, 399
+  self-citations, seven asserter sets, 140 MiB on disk (91.5 bits an arc
+  an orientation, 234 with the permutation), built in 2.5 s at 410 MB
+  resident; `check` verifies the digests and every invariant in 0.4 s
+  and finds the rebuild byte-identical, 2.9 s in all; the held-works
+  build is 68,815 arcs in 1.6 s. The graph's agreement table conditioned
+  on both sources holding the citing work reproduces the merge's §6
+  figures exactly — 39,462 / 3,259 / 24,530, 23,269 / 9,712 / 15,403,
+  36,837 / 14,676 / 1,730 — which is the build's correctness check
+  against an independent count. A query by id answers in 35 ms, by name
+  in 56 ms when the work is in the first shard. What the report showed:
+  the most cited work on the sample is the PRISMA 2020 statement
+  (`#33232`, 607 citers); one chemistry review carries 6,442 references;
+  a held work with any references has 68 at the median and 181 at p90;
+  41,922 works have no arc either way (§11, item 11).*
 - **G3** — the experiment: orderings 2 and 4 against 1 (§4), compressed
   CSR and BVGraph against raw (§6), on the sample's two subgraphs for
   tooling and correctness and on the corpus for bits per edge — total
@@ -402,8 +435,9 @@ every arc returned.
   Decides the format and the ordering.
 - **G4** — the delta: the log, the fold, the composed query, compaction,
   the base-plus-deltas test (§5); fed by the merge plan's incremental
-  merges, published under the serving plan's epoch. Stands while the
-  ten-minute freshness target stands; a daily target would drop it.
+  merges, published under the serving plan's epoch (its §5, SP5). Stands
+  while the ten-minute freshness target stands; a daily target would
+  drop it.
 - Then: slices for other kinds as their registries land (ambitions §4);
   the side table of §4 if the ordering needs it.
 
@@ -459,6 +493,18 @@ every arc returned.
   with the search engine, so the graph plans on a share: compression is
   for the resident set (§2), the transpose builds in one pass (§8), the
   cold-read figure is the upper half of its range (§7).
+- 2026-09-16, G2 landed — the transpose is a stable counting sort and
+  needs no sort of its own, because the edges set arrives in `(from, to)`
+  order; the identity permutation is written all the same so the reader
+  has one path for every ordering; the manifest carries the merged
+  directory's name and shard count rather than the plan's registry line
+  count, since the merged sets are the graph's actual input and the fold
+  costs twenty seconds; the manifest's timestamp is the one byte that
+  differs between two builds, so `check` compares the arrays and the
+  manifest without it. The crate's own tests caught `inv` written as
+  positions rather than ids before any run. The one requirement the
+  agreement table adds: the graph's conditioned figures must equal the
+  merge report's, and they do.
 
 ## 11. Open items
 
@@ -468,10 +514,12 @@ every arc returned.
 2. **`Sources` width.** Merge plan §11, item 19: `u16` before the ninth
    source, a merged-layout version bump; the graph's byte is independent
    of it (§3).
-3. **The delta's framing and place.** JSON lines beside the merged sets,
-   or the layout's binary framing under a kind of its own; and whether
-   one delta feeds every artifact or each has its own. The serving
-   plan's, with the epoch.
+3. ~~**The delta's framing and place.**~~ Decided 2026-09-16 in the
+   serving plan (§3, §4, §8): JSON lines under the merged directory's
+   `delta/`, one file per merged kind, every line stamped with the batch
+   of the merge run that wrote it; the graph reads the edges delta and
+   needs no log of its own; the epoch and the clock are the serving
+   plan's §4.
 4. **The side table** for bounded expansion under a graph-derived
    ordering (§4): the top-*k* citers by year of every work over some
    degree. Only if G3 picks ordering 4.
@@ -491,7 +539,23 @@ every arc returned.
 > ???
 9. **Agreement at scale.** The 28 % figure and its siblings as report
    lines on every build (§3, §8), so that fraction is never a miscount
-   again.
+   again. Landed in G2: both tables, on every build.
+10. **68,815 against 68,813.** The census counted 68,813 edges between
+    held works before MM3's reference rules; the held build counts
+    68,815, with 19 arcs moved from PubMed-and-Crossref to Crossref alone
+    and 13 from all three to Crossref-and-OpenAlex. The rules that moved
+    them are the disagreement rule and the stubs of merge plan §6; the
+    two extra arcs have not been looked at.
+11. **Isolated works.** 41,922 on the sample with no arc either way: the
+    14,267 stubs minted for relation targets, which no citation names,
+    and 27,655 held works with neither a resolved reference nor a citer —
+    a third of the held works, an artifact of the island (part-file works
+    that cite nothing the sample holds). The report counts them so a
+    corpus build can say whether the number is structural.
+12. **Names lookup.** `query` by name scans the names sets shard by shard
+    until it finds the name: milliseconds for a work in the first shard,
+    seconds for one in the last. The serving plan's names artifact
+    replaces the scan (its §3, SP3).
 > this just genuinely doesn't matter. we'll discover as we go. if it bothers you to have counts that are out of date, we should stop recording such estimates in planning docs. napkin math is on a napkin because most of the time *you throw it away afterward* 
 
 ## 12. Sources consulted

@@ -13,6 +13,9 @@ license = "MIT OR Apache-2.0"
 model = { path = "crates/model" }
 ingest = { path = "crates/ingest" }
 merge = { path = "crates/merge" }
+graph = { path = "crates/graph" }
+serve = { path = "crates/serve" }
+search = { path = "crates/search" }
 source-crossref = { path = "crates/source-crossref" }
 source-openalex = { path = "crates/source-openalex" }
 source-pubmed = { path = "crates/source-pubmed" }
@@ -24,6 +27,18 @@ quick-xml = "0.42"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
 zstd = "0.13"
+# The graph's base files are read through a memory map (graph plan §8):
+# a reader is a map and a slice, and at scale the files outsize memory.
+memmap2 = "0.9"
+# The lexical index (serving plan §3, SP2): embedded, so the sink is a
+# library call and the tests run under cargo. The mapping it indexes is
+# the user's to set; the engine is a proof-of-concept choice.
+tantivy = "0.26"
+# The names lookup (serving plan §3): a finite state transducer, mapped
+# into memory, sharing every prefix a million DOIs share.
+fst = "0.4"
+# The public id (serving plan §6): a keyed hash of the WorkId.
+blake3 = "1"
 # Fetching (plan §3.5): rustls, no transparent decompression — raw bytes
 # must land as served — and the two digests the sources publish or imply.
 ureq = { version = "3", default-features = false, features = ["rustls"] }

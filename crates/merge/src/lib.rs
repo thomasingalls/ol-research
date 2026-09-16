@@ -27,10 +27,13 @@
 pub mod arena;
 pub mod build;
 pub mod contributor;
+pub mod document;
 pub mod identity;
+pub mod journal;
 pub mod kind;
 pub mod layout;
 pub mod name;
+pub mod public;
 pub mod record;
 pub mod registry;
 pub mod relation;
@@ -42,6 +45,7 @@ pub mod work;
 
 pub use build::{Builder, Ids, Merged};
 pub use contributor::Contributor;
+pub use document::{Assembler, Document};
 pub use identity::Identity;
 pub use kind::{Form, Genre};
 pub use name::{Assertion, Name, OwnedName};

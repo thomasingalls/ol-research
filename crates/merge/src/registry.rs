@@ -251,6 +251,12 @@ impl Registry {
         }
     }
 
+    /// Every retired id and what it was retired into: an older id for a
+    /// merge, nothing for a split. In no particular order.
+    pub fn retirements(&self) -> impl Iterator<Item = (WorkId, Option<WorkId>)> + '_ {
+        self.retired.iter().map(|(id, into)| (*id, *into))
+    }
+
     /// The live id a name maps to.
     #[must_use]
     pub fn lookup(&self, name: &OwnedName) -> Option<WorkId> {

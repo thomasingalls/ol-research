@@ -413,7 +413,9 @@ Edges: in §6. Stubs: 3,942,065 works from 4,469,772 names — 1,849,092
 DOIs, 613,313 PMIDs, 227,287 PMC ids, 1,780,080 OpenAlex ids — 3,561,850
 of them with one name, 233,430 with two, 146,284 with three, 501 with
 more; many the same work under two namespaces, which only holding them
-would show. Resolved edges between held works: 68,813 distinct —
+would show. Resolved edges between held works, as the census counted
+them before MM3's reference rules (the graph's held build counts 68,815,
+graph plan §11 item 10): 68,813 distinct —
 asserted by all three sources 22,261, by Crossref and OpenAlex 14,576, by
 Crossref and PubMed 17,233, by OpenAlex and PubMed 1,021, by Crossref alone
 10,019, PubMed alone 2,403, OpenAlex alone 1,300.
@@ -464,7 +466,12 @@ and not by records.
     and text it gives instead;
   - `view(&Work)`: the record's values for the promoted fields of §5, in
     one source-agnostic shape, borrowed from the record;
-  - `relations(&Work, out)`: the typed relations of §6.
+  - `relations(&Work, out)`: the typed relations of §6;
+  - `text(&Work, table)`: the record's abstract, author names and venue
+    name as plain text, for the serving layer's documents (serving plan
+    §3; 2026-09-16). `merge::document` joins those texts to the merged
+    record, one document per held work, for the lexical index and the
+    works index.
 - **Two passes** over every normalized set of every source, both streaming
   through `ingest::Reader` with each set's symbol table installed, so
   interned values come back as text:
@@ -573,12 +580,17 @@ stays.
   `add`, `remove` and `retire` lines (§11, item 20; graph plan §5); and
   the agreement figures of §6 kept at scale. The sample's subgraph settles
   tooling and correctness, not bits per edge — that needs the corpus.
+  *Landed 2026-09-16 as the graph plan's G2: `crates/graph` and `ol-rht
+  graph build | query | check`; the graph's agreement table, conditioned
+  the way §6's is, reproduces it figure for figure.*
 - **MM5** — Semantic Scholar and arXiv contributors when their sources land
   (ingestion plan M6, M7); the search sinks over the works set.
 - Then: lineage (§11); the matching stage over the unresolved stream;
-  incremental merges — PubMed's deletions and OpenAlex's `merged_ids` as
-  registry lines, and every change to an edge as a line of the delta log
-  (§11, item 20); the scale shape of §8 on the box.
+  incremental merges — the [serving plan](serving-plan.md)'s SP5: PubMed's
+  deletions and OpenAlex's `merged_ids` as registry lines, every change
+  to an edge as a line of the delta log (§11, item 20), a journal line
+  per run as the clock, and the public id minted with the `WorkId` (item
+  21); the scale shape of §8 on the box.
 
 ## 10. Decision log
 
@@ -699,9 +711,13 @@ stays.
    its 138 disagreements are Crossref's electronic ISSN against PubMed's
    print one for one journal (`2380-6583` / `2380-6591`); the ISSN-L table
    would settle them.
-7. **Abstracts for the search sinks.** PubMed's sections joined, Crossref's
-   JATS stripped, OpenAlex's inverted index rebuilt — the merge's own text
-   functions, after MM3.
+7. ~~**Abstracts for the search sinks.**~~ Done 2026-09-16 (serving plan
+   SP2): `merge::view::strip_markup`, `join_sections` and
+   `inverted_index`, and a `text` method on `Contributor` giving a
+   record's abstract, author names and venue name as plain text. Which
+   abstract is indexed when several sources have one, and whether
+   PubMed's labels go in with the text, is indexing policy (serving plan
+   §11, item 11).
 8. **`access`.** Measured 2026-09-15: 27 disagreements in 31,957
    comparisons, 16 of them between the old and new record of one work at
    OpenAlex; but Crossref and PubMed can only say "open", never "closed",
@@ -761,7 +777,16 @@ stays.
     `merge` and `split` — which the graph folds over its base (graph plan
     §5). Its framing and place, and whether the other merged sets get a
     delta of the same shape, are the serving plan's; designed with the
-    incremental merges, after MM5.
+    incremental merges, after MM5. Designed 2026-09-16 (serving plan §3,
+    §4, §8): one delta file per merged kind under the merged directory,
+    JSON lines stamped with the batch, and `merged/journal.jsonl` with
+    one line per merge run as the clock every artifact is positioned by.
+21. ~~**The public id.**~~ Built 2026-09-16 (serving plan SP3):
+    `merge::public` mints one for every id lacking it when `merge` is
+    given `--public-key <file>` — a keyed BLAKE3 hash of the id, `ol:`
+    and fourteen Crockford characters — into `merged/public.jsonl`; and
+    `merge::journal` writes the batch line every complete run appends.
+    The log fills on the first run with the key.
 
 ## 12. Sources consulted
 

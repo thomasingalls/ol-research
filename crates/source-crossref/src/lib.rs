@@ -103,6 +103,13 @@ impl merge::Contributor for Crossref {
     fn citation<'w>(reference: &'w normalize::Reference<'_>) -> merge::record::Citation<'w> {
         view::citation(reference)
     }
+
+    fn text(
+        work: &normalize::Work<'_>,
+        table: &model::Table,
+    ) -> Result<merge::view::Text, merge::view::Unmapped> {
+        view::text_of(work, table)
+    }
 }
 
 impl ingest::Source for Crossref {

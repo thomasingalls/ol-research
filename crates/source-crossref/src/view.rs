@@ -10,10 +10,10 @@ use model::{Claim, Doi, PmcId, Pmid, Table};
 use merge::kind::{Form, Genre};
 use merge::record::Citation;
 use merge::relation::{Kind, Related, Update};
-use merge::view::{Status, Unmapped, Venue, View, bound, text};
+use merge::view::{Status, Text, Unmapped, Venue, View, bound, strip_markup, text};
 use merge::{Name, OwnedName};
 
-use crate::normalize::{Reference, Work};
+use crate::normalize::{AuthorName, Reference, Work};
 use crate::vocab::{RelationIdKind, UpdateType, WorkType};
 
 /// A work type as the merge's form: the same 30 words.
@@ -346,6 +346,37 @@ pub fn reference_name<'w>(reference: &'w Reference<'_>) -> Option<Name<'w>> {
         .as_ref()
         .and_then(Claim::valid)
         .map(|d| Name::Doi(d.as_str()))
+}
+
+/// The record's text for the serving layer: the JATS abstract as plain
+/// text, `given family` or the organisation per author, the container
+/// title.
+///
+/// # Errors
+///
+/// A symbol beyond the set's table.
+pub fn text_of(work: &Work<'_>, table: &Table) -> Result<Text, Unmapped> {
+    let abstract_text = work.r#abstract.map(strip_markup).filter(|t| !t.is_empty());
+    let authors = work
+        .authors
+        .iter()
+        .map(|a| match a.name {
+            AuthorName::Person { given, family } => match given {
+                Some(given) => format!("{given} {family}"),
+                None => family.to_owned(),
+            },
+            AuthorName::Org(name) => name.to_owned(),
+        })
+        .collect();
+    let venue = match &work.container_title {
+        Some(title) => Some(text(title, table, "container_title")?.to_owned()),
+        None => None,
+    };
+    Ok(Text {
+        abstract_text,
+        authors,
+        venue: venue.filter(|v| !v.is_empty()),
+    })
 }
 
 #[cfg(test)]

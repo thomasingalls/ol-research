@@ -121,6 +121,13 @@ impl merge::Contributor for OpenAlex {
     fn citation(_: &model::OpenAlexId) -> merge::record::Citation<'_> {
         merge::record::Citation::default()
     }
+
+    fn text(
+        work: &normalize::Work<'_>,
+        table: &model::Table,
+    ) -> Result<merge::view::Text, merge::view::Unmapped> {
+        view::text_of(work, table)
+    }
 }
 
 impl ingest::Source for OpenAlex {

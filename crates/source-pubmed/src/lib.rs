@@ -167,6 +167,13 @@ impl merge::Contributor for Pubmed {
             ..merge::record::Citation::default()
         }
     }
+
+    fn text(
+        work: &normalize::Citation<'_>,
+        table: &model::Table,
+    ) -> Result<merge::view::Text, merge::view::Unmapped> {
+        view::text_of(work, table)
+    }
 }
 
 impl ingest::Source for Pubmed {

@@ -81,6 +81,7 @@ use ingest::{
     Binary, Client, Failure, Key, Keys, Kind, Reader, Sink, Source, Stage, Store, Written,
 };
 use merge::identity::Resolution;
+use merge::record::{Edge, NameRow};
 use merge::{Builder, Contributor, Identity, OwnedName, Registry, WorkId};
 use model::{Claim, Doi, OpenAlexId, ParseError, Pmid};
 use source_crossref::Crossref;
@@ -103,8 +104,20 @@ const USAGE: &str = "usage:
   ol-rht <pubmed|crossref|openalex> fetch <listing> [--store <root>] [--workers N] [--limit N] [--mailto <address>]
   ol-rht <pubmed|crossref|openalex> ingest <listing> [--store <root>] [--workers N] [--limit N] [--out <dir>] [--mailto <address>]
   ol-rht merge identity [--store <root>] [--limit N] [--survey]
-  ol-rht merge [--store <root>] [--limit N] [--survey]
-  ol-rht merge dump <set.zst>... [--limit N]";
+  ol-rht merge [--store <root>] [--limit N] [--survey] [--public-key <file>]
+  ol-rht merge dump <set.zst>... [--limit N]
+  ol-rht graph build [--store <root>] [--held]
+  ol-rht graph query <#id|name> [--store <root>] [--held] [--limit N]
+  ol-rht graph check [--store <root>] [--held]
+  ol-rht search build [--store <root>]
+  ol-rht search query <words>... [--store <root>] [--limit N]
+  ol-rht names build [--store <root>]
+  ol-rht works build [--store <root>]
+  ol-rht epoch publish [--store <root>]
+  ol-rht epoch check [--store <root>]
+  ol-rht query work <name|#id|ol:...> [--store <root>] [--limit N]
+  ol-rht query search <words>... [--store <root>] [--limit N]
+  ol-rht query expand <name|#id>... [--store <root>] [--limit N]";
 
 /// Who we say we are; `--mailto` adds an address inside the parenthesis.
 const USER_AGENT: &str = "ol-rht/0.1 (citation-graph ingestion";
@@ -133,13 +146,19 @@ fn main() -> ExitCode {
             None => usage(),
         },
         ["merge", rest @ ..] if rest.first().is_none_or(|a| a.starts_with("--")) => {
-            match Options::parse(rest) {
-                Some(opts) => merge_all(&opts),
+            let Some((public_key, rest)) = strip_value(rest, "--public-key") else {
+                return usage();
+            };
+            match Options::parse(&rest) {
+                Some(opts) => merge_all(&opts, public_key.map(Path::new)),
                 None => usage(),
             }
         }
         [source, action, rest @ ..] => {
-            let Some(opts) = Options::parse(rest) else {
+            let Some((held, rest)) = strip_held(source, rest) else {
+                return usage();
+            };
+            let Some(opts) = Options::parse(&rest) else {
                 return usage();
             };
             match (*source, *action) {
@@ -166,6 +185,18 @@ fn main() -> ExitCode {
                 ("openalex", "ingest") => ingest::<OpenAlex, OpenAlexStats>(&opts),
                 ("merge", "identity") => merge_identity(&opts),
                 ("merge", "dump") => merge_dump(&opts),
+                ("graph", "build") => graph_build(&opts, held),
+                ("graph", "query") => graph_query(&opts, held),
+                ("graph", "check") => graph_check(&opts, held),
+                ("search", "build") => search_build(&opts),
+                ("search", "query") => search_query(&opts),
+                ("names", "build") => names_build(&opts),
+                ("works", "build") => works_build(&opts),
+                ("epoch", "publish") => epoch_publish(&opts),
+                ("epoch", "check") => epoch_check(&opts),
+                ("query", "work") => query_work(&opts),
+                ("query", "search") => query_search(&opts),
+                ("query", "expand") => query_expand(&opts),
                 _ => usage(),
             }
         }
@@ -1137,7 +1168,7 @@ fn merge_identity(opts: &Options) -> ExitCode {
 /// then every record's view and every reference through the names
 /// table, the merged sets written, both reports printed.
 #[allow(clippy::too_many_lines)]
-fn merge_all(opts: &Options) -> ExitCode {
+fn merge_all(opts: &Options, public_key: Option<&Path>) -> ExitCode {
     if !merge_options_ok(opts) {
         return usage();
     }
@@ -1177,7 +1208,15 @@ fn merge_all(opts: &Options) -> ExitCode {
     }
     let pass1_clean = res.components.unresolved.is_empty() && res.stats.unmapped.is_empty();
     let ids = assigned.ids.clone();
-    if let Err(code) = merge_commit(what, &registry_path, &registry, &assigned.lines(), complete) {
+    let counts = Counts {
+        minted: assigned.assignment.minted,
+        merged: assigned.assignment.merged,
+        split: assigned.assignment.split,
+        dropped: assigned.dropped.len() as u64,
+    };
+    let lines = assigned.lines();
+    let appended = lines.len() as u64;
+    if let Err(code) = merge_commit(what, &registry_path, &registry, &lines, complete) {
         return code;
     }
     eprintln!(
@@ -1245,6 +1284,13 @@ fn merge_all(opts: &Options) -> ExitCode {
         eprintln!("{what}: {e}");
         return ExitCode::FAILURE;
     }
+    if complete
+        && let Err(code) = merge_clock(
+            what, &store, &registry, appended, counts, &merged, public_key,
+        )
+    {
+        return code;
+    }
     eprintln!(
         "{what}: {:.1} s, {} allocations",
         started.elapsed().as_secs_f64(),
@@ -1255,6 +1301,76 @@ fn merge_all(opts: &Options) -> ExitCode {
     } else {
         ExitCode::FAILURE
     }
+}
+
+/// What a run did to the registry, for the journal.
+#[derive(Debug, Clone, Copy)]
+struct Counts {
+    minted: u64,
+    merged: u64,
+    split: u64,
+    dropped: u64,
+}
+
+/// After a complete run: a public id for every id lacking one, when a
+/// key was given (serving plan §6), and the journal line that is the
+/// run's batch (§4).
+fn merge_clock(
+    what: &str,
+    store: &Store,
+    registry: &Registry,
+    appended: u64,
+    counts: Counts,
+    merged: &merge::Merged,
+    public_key: Option<&Path>,
+) -> Result<(), ExitCode> {
+    let fail = |e: String| {
+        eprintln!("{what}: {e}");
+        ExitCode::FAILURE
+    };
+    let public_path = store.public();
+    let mut public = merge::public::Public::read(&public_path)
+        .map_err(|e| fail(format!("{}: {e}", public_path.display())))?;
+    let at = ingest::time::now();
+    match public_key {
+        Some(path) => {
+            let key = merge::public::Key::read(path)
+                .map_err(|e| fail(format!("{}: {e}", path.display())))?;
+            let ids = (1..=registry.minted()).filter_map(WorkId::new);
+            let lines = public.mint(ids, &key, &at);
+            merge::public::Public::append(&public_path, &lines)
+                .map_err(|e| fail(format!("{}: {e}", public_path.display())))?;
+            eprintln!(
+                "{what}: {} public ids minted; {} in all",
+                lines.len(),
+                public.len()
+            );
+        }
+        None => eprintln!(
+            "{what}: no --public-key: public ids not minted ({} in all)",
+            public.len()
+        ),
+    }
+    let journal_path = store.journal();
+    let last = merge::journal::last(&journal_path)
+        .map_err(|e| fail(format!("{}: {e}", journal_path.display())))?;
+    let line = merge::journal::Line {
+        batch: last.map_or(1, |l| l.batch + 1),
+        at,
+        kind: merge::journal::Kind::Full,
+        registry: registry.lines() + appended,
+        public: public.lines(),
+        delta: BTreeMap::new(),
+        records: merged.stats.viewed.values().sum(),
+        minted: counts.minted,
+        merged: counts.merged,
+        split: counts.split,
+        dropped: counts.dropped,
+    };
+    merge::journal::append(&journal_path, &line)
+        .map_err(|e| fail(format!("{}: {e}", journal_path.display())))?;
+    eprintln!("{what}: journal batch {} appended", line.batch);
+    Ok(())
 }
 
 /// Prints merged sets as JSON lines.
@@ -1288,8 +1404,8 @@ fn merge_dump_one(path: &Path, limit: Option<u64>, out: &mut impl Write) -> io::
     let limit = records_limit(limit);
     reader.with_table(|| match reader.header().kind {
         Kind::Works => json_lines::<merge::record::Work<'_>>(&reader, limit, out),
-        Kind::Edges => json_lines::<merge::record::Edge>(&reader, limit, out),
-        Kind::Names => json_lines::<merge::record::NameRow<'_>>(&reader, limit, out),
+        Kind::Edges => json_lines::<Edge>(&reader, limit, out),
+        Kind::Names => json_lines::<NameRow<'_>>(&reader, limit, out),
         Kind::Relations => json_lines::<merge::record::Relation>(&reader, limit, out),
         Kind::Unresolved => json_lines::<merge::record::Unresolved<'_>>(&reader, limit, out),
         Kind::Symbols => json_lines::<&str>(&reader, limit, out),
@@ -1298,6 +1414,1233 @@ fn merge_dump_one(path: &Path, limit: Option<u64>, out: &mut impl Write) -> io::
             "a normalized set; use <source> dump",
         )),
     })
+}
+
+/// `--held` belongs to the graph commands alone; anywhere else it stays
+/// an unknown option. `None` when it is repeated.
+fn strip_held<'a>(source: &str, rest: &[&'a str]) -> Option<(bool, Vec<&'a str>)> {
+    if source != "graph" {
+        return Some((false, rest.to_vec()));
+    }
+    let kept: Vec<&str> = rest.iter().copied().filter(|a| *a != "--held").collect();
+    match rest.len() - kept.len() {
+        0 => Some((false, kept)),
+        1 => Some((true, kept)),
+        _ => None,
+    }
+}
+
+/// Takes `flag <value>` out of `rest`; `None` when it is repeated or has
+/// no value.
+fn strip_value<'a>(rest: &[&'a str], flag: &str) -> Option<(Option<&'a str>, Vec<&'a str>)> {
+    let mut value = None;
+    let mut kept = Vec::with_capacity(rest.len());
+    let mut i = 0;
+    while i < rest.len() {
+        if rest[i] == flag {
+            if value.is_some() {
+                return None;
+            }
+            value = Some(*rest.get(i + 1)?);
+            i += 2;
+        } else {
+            kept.push(rest[i]);
+            i += 1;
+        }
+    }
+    Some((value, kept))
+}
+
+/// The options a graph command takes: `--store` and `--held`, and for
+/// `query` one work and `--limit`.
+fn graph_options_ok(opts: &Options, paths: usize, limit: bool) -> bool {
+    opts.paths.len() == paths
+        && (limit || opts.limit.is_none())
+        && opts.out.is_none()
+        && opts.workers.is_none()
+        && opts.mailto.is_none()
+        && opts.seed.is_none()
+        && opts.by.is_none()
+        && !opts.survey
+}
+
+/// The works of the merged directory and its edges shards.
+fn graph_inputs(what: &str, merged: &Path) -> Result<(graph::Nodes, Vec<PathBuf>), ExitCode> {
+    let shards = match merge::sets::find(merged, Kind::Edges) {
+        Ok(shards) => shards,
+        Err(e) => {
+            eprintln!("{what}: {}: {e}", merged.display());
+            return Err(ExitCode::FAILURE);
+        }
+    };
+    if shards.is_empty() {
+        eprintln!(
+            "{what}: no merged sets under {}; run merge first",
+            merged.display()
+        );
+        return Err(ExitCode::FAILURE);
+    }
+    let nodes = graph::Nodes::read(merged).map_err(|e| {
+        eprintln!("{what}: {e}");
+        ExitCode::FAILURE
+    })?;
+    Ok((nodes, shards))
+}
+
+/// Streams every edge of the shards in order, as often as asked.
+fn graph_edges(
+    shards: &[PathBuf],
+) -> impl FnMut(&mut dyn FnMut(Edge) -> Result<(), graph::Error>) -> Result<(), graph::Error> + '_ {
+    move |sink: &mut dyn FnMut(Edge) -> Result<(), graph::Error>| {
+        for path in shards {
+            let reader = merge::layout::open(path).map_err(|e| graph::Error::io(path, e))?;
+            for row in reader.records::<Edge>() {
+                sink(row.map_err(|e| graph::Error::io(path, e))?)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Reads the merged directory and writes the graph into `dir`.
+fn graph_write(
+    what: &str,
+    store: &Store,
+    dir: &Path,
+    held: bool,
+) -> Result<(graph::Nodes, graph::build::Built), ExitCode> {
+    let merged = merge::layout::dir(store);
+    let (nodes, shards) = graph_inputs(what, &merged)?;
+    let input = graph::layout::Input {
+        merged: merge::layout::version(),
+        shards: shards.len(),
+    };
+    let options = graph::build::Options { held };
+    let built =
+        graph::build::build(dir, &nodes, input, options, graph_edges(&shards)).map_err(|e| {
+            eprintln!("{what}: {e}");
+            ExitCode::FAILURE
+        })?;
+    Ok((nodes, built))
+}
+
+/// Builds both orientations from the merged sets and prints the report.
+fn graph_build(opts: &Options, held: bool) -> ExitCode {
+    if !graph_options_ok(opts, 0, false) {
+        return usage();
+    }
+    let what = "graph build";
+    let store = opts.store();
+    let started = std::time::Instant::now();
+    let allocations = ingest::alloc::allocations();
+    let dir = graph::layout::dir(&store, held);
+    let (nodes, built) = match graph_write(what, &store, &dir, held) {
+        Ok(written) => written,
+        Err(code) => return code,
+    };
+    eprintln!(
+        "{what}: {} arcs over {} nodes written in {:.1} s",
+        built.manifest.arcs,
+        built.manifest.nodes,
+        started.elapsed().as_secs_f64()
+    );
+    let base = match graph::Base::open(&built.dir) {
+        Ok(base) => base,
+        Err(e) => {
+            eprintln!("{what}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let mut out = io::stdout().lock();
+    if let Err(e) = graph::report::print(&mut out, &base, &nodes) {
+        eprintln!("{what}: {e}");
+        return ExitCode::FAILURE;
+    }
+    eprintln!(
+        "{what}: {:.1} s, {} allocations",
+        started.elapsed().as_secs_f64(),
+        ingest::alloc::allocations() - allocations
+    );
+    ExitCode::SUCCESS
+}
+
+/// Verifies the digests and the invariants, then rebuilds into scratch
+/// and compares byte for byte.
+fn graph_check(opts: &Options, held: bool) -> ExitCode {
+    if !graph_options_ok(opts, 0, false) {
+        return usage();
+    }
+    let what = "graph check";
+    let store = opts.store();
+    let started = std::time::Instant::now();
+    let dir = graph::layout::dir(&store, held);
+    let base = match graph::Base::open(&dir) {
+        Ok(base) => base,
+        Err(e) => {
+            eprintln!("{what}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let verified = graph::check::digests(&base)
+        .and_then(|files| graph::check::invariants(&base).map(|checked| (files, checked)));
+    let (files, checked) = match verified {
+        Ok(verified) => verified,
+        Err(e) => {
+            eprintln!("{what}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    drop(base);
+    println!("graph check {}", graph::layout::name(held));
+    println!(
+        "  {files} files match their digests; {} arcs in both orientations over {} nodes hold every invariant",
+        checked.arcs, checked.nodes
+    );
+    eprintln!(
+        "{what}: invariants held in {:.1} s; rebuilding",
+        started.elapsed().as_secs_f64()
+    );
+    let scratch = dir.with_file_name(format!("{}.check", graph::layout::name(held)));
+    let (_, built) = match graph_write(what, &store, &scratch, held) {
+        Ok(written) => written,
+        Err(code) => return code,
+    };
+    let differing = graph::check::differing(&dir, &built.dir);
+    if let Err(e) = std::fs::remove_dir_all(&built.dir) {
+        eprintln!("{what}: {}: {e}", built.dir.display());
+    }
+    match differing {
+        Ok(differing) if differing.is_empty() => {
+            println!("  a rebuild is byte-identical");
+            eprintln!("{what}: {:.1} s", started.elapsed().as_secs_f64());
+            ExitCode::SUCCESS
+        }
+        Ok(differing) => {
+            println!("  a rebuild DIFFERS in {}", differing.join(", "));
+            ExitCode::FAILURE
+        }
+        Err(e) => {
+            eprintln!("{what}: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Prints one work's names, references and citers with their asserters.
+fn graph_query(opts: &Options, held: bool) -> ExitCode {
+    if !graph_options_ok(opts, 1, true) {
+        return usage();
+    }
+    let what = "graph query";
+    let Some(text) = opts.paths[0].to_str() else {
+        return usage();
+    };
+    let store = opts.store();
+    let base = match graph::Base::open(&graph::layout::dir(&store, held)) {
+        Ok(base) => base,
+        Err(e) => {
+            eprintln!("{what}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let wanted = if let Some(digits) = text.strip_prefix('#') {
+        let Some(id) = digits.parse::<u32>().ok().and_then(WorkId::new) else {
+            eprintln!("{what}: {text} is not an id");
+            return ExitCode::FAILURE;
+        };
+        Ok(id)
+    } else {
+        match OwnedName::parse(text) {
+            Ok(name) => Err(name),
+            Err(e) => {
+                eprintln!("{what}: {e}");
+                return ExitCode::FAILURE;
+            }
+        }
+    };
+    let (id, names) = match graph_names(&merge::layout::dir(&store), wanted) {
+        Ok(Some(found)) => found,
+        Ok(None) => {
+            eprintln!("{what}: {text}: no such work");
+            return ExitCode::FAILURE;
+        }
+        Err(e) => {
+            eprintln!("{what}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let limit = opts
+        .limit
+        .map_or(50, |n| usize::try_from(n).unwrap_or(usize::MAX));
+    let mut out = io::BufWriter::new(io::stdout().lock());
+    let printed = (|| -> io::Result<()> {
+        let past = if base.position(id).is_none() {
+            " (past the base)"
+        } else {
+            ""
+        };
+        writeln!(out, "{id}: {}{past}", names.join(", "))?;
+        graph_list(
+            &mut out,
+            "references",
+            base.out_degree(id),
+            base.references(id),
+            limit,
+        )?;
+        graph_list(
+            &mut out,
+            "citers",
+            base.in_degree(id),
+            base.citers(id),
+            limit,
+        )?;
+        out.flush()
+    })();
+    match printed {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("{what}: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn graph_list(
+    out: &mut impl Write,
+    what: &str,
+    degree: u64,
+    arcs: graph::Arcs<'_>,
+    limit: usize,
+) -> io::Result<()> {
+    writeln!(out, "  {what}: {degree}")?;
+    let mut shown = 0u64;
+    for arc in arcs.take(limit) {
+        writeln!(out, "    {} by {}", arc.work, arc.by)?;
+        shown += 1;
+    }
+    if shown < degree {
+        writeln!(out, "    … and {} more", degree - shown)?;
+    }
+    Ok(())
+}
+
+/// The work a name belongs to — or the id given — and every name of that
+/// work with its standing, from the names sets: a scan for the name, then
+/// the one shard the work lives in.
+fn graph_names(
+    merged: &Path,
+    wanted: Result<WorkId, OwnedName>,
+) -> io::Result<Option<(WorkId, Vec<String>)>> {
+    let at =
+        |path: &Path, e: io::Error| io::Error::new(e.kind(), format!("{}: {e}", path.display()));
+    let id = match wanted {
+        Ok(id) => id,
+        Err(name) => {
+            let mut found = None;
+            for path in merge::sets::find(merged, Kind::Names)? {
+                let reader = merge::layout::open(&path).map_err(|e| at(&path, e))?;
+                found = reader.with_table(|| -> io::Result<Option<WorkId>> {
+                    for row in reader.records::<NameRow<'_>>() {
+                        let row = row.map_err(|e| at(&path, e))?;
+                        if row.name == name.as_name() {
+                            return Ok(Some(row.work));
+                        }
+                    }
+                    Ok(None)
+                })?;
+                if found.is_some() {
+                    break;
+                }
+            }
+            match found {
+                Some(id) => id,
+                None => return Ok(None),
+            }
+        }
+    };
+    let path = Kind::Names.path(&merge::layout::prefix(merged, merge::layout::shard(id)));
+    if !path.exists() {
+        return Ok(Some((id, Vec::new())));
+    }
+    let reader = merge::layout::open(&path).map_err(|e| at(&path, e))?;
+    let names = reader.with_table(|| -> io::Result<Vec<String>> {
+        let mut names = Vec::new();
+        for row in reader.records::<NameRow<'_>>() {
+            let row = row.map_err(|e| at(&path, e))?;
+            if row.work == id {
+                names.push(format!("{} ({})", row.name.to_owned(), row.standing));
+            }
+        }
+        Ok(names)
+    })?;
+    Ok(Some((id, names)))
+}
+
+/// The options a search command takes: `--store`, and for `query` the
+/// words and `--limit`.
+fn search_options_ok(opts: &Options, query: bool) -> bool {
+    (query != opts.paths.is_empty())
+        && (query || opts.limit.is_none())
+        && opts.out.is_none()
+        && opts.workers.is_none()
+        && opts.mailto.is_none()
+        && opts.seed.is_none()
+        && opts.by.is_none()
+        && !opts.survey
+}
+
+/// Streams one source's normalized works sets into the assembler.
+fn search_add<S: Contributor>(
+    assembler: &mut merge::Assembler,
+    store: &Store,
+) -> Result<u64, merge::document::Error> {
+    let dir = store.normalized(model::VERSION, S::NAME);
+    let paths = merge::sets::find(&dir, Kind::Works).map_err(|e| merge::document::Error::Io {
+        path: dir.clone(),
+        source: e,
+    })?;
+    let mut read = 0;
+    for path in &paths {
+        read += assembler.add::<S>(path)?;
+    }
+    Ok(read)
+}
+
+/// Every held work's document, from the merged and normalized sets.
+fn assemble(
+    what: &str,
+    store: &Store,
+) -> Result<(Vec<merge::Document>, merge::document::Stats), ExitCode> {
+    let merged = merge::layout::dir(store);
+    let assembled = (|| -> Result<_, merge::document::Error> {
+        let mut assembler = merge::Assembler::read(&merged)?;
+        search_add::<Pubmed>(&mut assembler, store)?;
+        search_add::<Crossref>(&mut assembler, store)?;
+        search_add::<OpenAlex>(&mut assembler, store)?;
+        Ok(assembler.finish())
+    })();
+    let (documents, stats) = assembled.map_err(|e| {
+        eprintln!("{what}: {e}");
+        ExitCode::FAILURE
+    })?;
+    if documents.is_empty() {
+        eprintln!(
+            "{what}: no held works under {}; run merge first",
+            merged.display()
+        );
+        return Err(ExitCode::FAILURE);
+    }
+    Ok((documents, stats))
+}
+
+/// The batch the merged sets are at: the journal's last line.
+fn current_batch(what: &str, store: &Store) -> Result<merge::journal::Line, ExitCode> {
+    let path = store.journal();
+    match merge::journal::last(&path) {
+        Ok(Some(line)) => Ok(line),
+        Ok(None) => {
+            eprintln!("{what}: no journal at {}; run merge first", path.display());
+            Err(ExitCode::FAILURE)
+        }
+        Err(e) => {
+            eprintln!("{what}: {}: {e}", path.display());
+            Err(ExitCode::FAILURE)
+        }
+    }
+}
+
+/// Builds the names lookup into `dir` for a batch.
+fn names_write(
+    what: &str,
+    store: &Store,
+    dir: &Path,
+    batch: u64,
+) -> Result<serve::names::Built, ExitCode> {
+    let fail = |e: String| {
+        eprintln!("{what}: {e}");
+        ExitCode::FAILURE
+    };
+    let registry = Registry::read(&store.registry())
+        .map_err(|e| fail(format!("{}: {e}", store.registry().display())))?;
+    let public = merge::public::Public::read(&store.public())
+        .map_err(|e| fail(format!("{}: {e}", store.public().display())))?;
+    serve::names::build(dir, &merge::layout::dir(store), &public, &registry, batch)
+        .map_err(|e| fail(e.to_string()))
+}
+
+/// Builds the works index into `dir` for a batch.
+fn works_write(
+    what: &str,
+    store: &Store,
+    dir: &Path,
+    documents: &[merge::Document],
+    batch: u64,
+) -> Result<serve::works::Built, ExitCode> {
+    let fail = |e: String| {
+        eprintln!("{what}: {e}");
+        ExitCode::FAILURE
+    };
+    let public = merge::public::Public::read(&store.public())
+        .map_err(|e| fail(format!("{}: {e}", store.public().display())))?;
+    serve::works::build(dir, &merge::layout::dir(store), documents, &public, batch)
+        .map_err(|e| fail(e.to_string()))
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn mib(bytes: u64) -> f64 {
+    bytes as f64 / (1024.0 * 1024.0)
+}
+
+/// Builds the names lookup and prints its report.
+fn names_build(opts: &Options) -> ExitCode {
+    if !graph_options_ok(opts, 0, false) {
+        return usage();
+    }
+    let what = "names build";
+    let store = opts.store();
+    let started = std::time::Instant::now();
+    let batch = match current_batch(what, &store) {
+        Ok(line) => line,
+        Err(code) => return code,
+    };
+    let dir = store.names(model::VERSION, merge::VERSION, serve::VERSION);
+    let built = match names_write(what, &store, &dir, batch.batch) {
+        Ok(built) => built,
+        Err(code) => return code,
+    };
+    let m = &built.manifest;
+    println!("names {} for batch {}", serve::version(), m.batch);
+    println!(
+        "  keys: {} ({} shared, {} public ids); retired ids: {}",
+        m.keys, m.shared, m.public, m.retired
+    );
+    println!(
+        "  files: {} {:.1} MiB, {} {:.1} MiB, {} {} bytes",
+        serve::names::FST,
+        mib(m.files[serve::names::FST].bytes),
+        serve::names::SHARED,
+        mib(m.files[serve::names::SHARED].bytes),
+        serve::names::RETIRED,
+        m.files[serve::names::RETIRED].bytes
+    );
+    eprintln!("{what}: {:.1} s", started.elapsed().as_secs_f64());
+    ExitCode::SUCCESS
+}
+
+/// Builds the works index and prints its report.
+fn works_build(opts: &Options) -> ExitCode {
+    if !graph_options_ok(opts, 0, false) {
+        return usage();
+    }
+    let what = "works build";
+    let store = opts.store();
+    let started = std::time::Instant::now();
+    let batch = match current_batch(what, &store) {
+        Ok(line) => line,
+        Err(code) => return code,
+    };
+    let (documents, _) = match assemble(what, &store) {
+        Ok(assembled) => assembled,
+        Err(code) => return code,
+    };
+    eprintln!(
+        "{what}: {} documents assembled in {:.1} s",
+        documents.len(),
+        started.elapsed().as_secs_f64()
+    );
+    let dir = store.works(model::VERSION, merge::VERSION, serve::VERSION);
+    let built = match works_write(what, &store, &dir, &documents, batch.batch) {
+        Ok(built) => built,
+        Err(code) => return code,
+    };
+    let m = &built.manifest;
+    println!("works {} for batch {}", serve::version(), m.batch);
+    println!(
+        "  rows: {} works ({} held, {} stubs) over {} slots; {} with text, {} with a public id",
+        m.works, m.held, m.stubs, m.nodes, m.with_text, m.with_public
+    );
+    println!(
+        "  blocks: {} of {} rows, {:.1} MiB raw, {:.1} MiB compressed, offsets {:.1} MiB",
+        m.blocks,
+        m.block,
+        mib(m.raw_bytes),
+        mib(m.files[serve::works::BLOCKS].bytes),
+        mib(m.files[serve::works::OFFSETS].bytes)
+    );
+    eprintln!("{what}: {:.1} s", started.elapsed().as_secs_f64());
+    ExitCode::SUCCESS
+}
+
+/// Builds what is missing for the current batch and publishes an epoch.
+fn epoch_publish(opts: &Options) -> ExitCode {
+    if !graph_options_ok(opts, 0, false) {
+        return usage();
+    }
+    let what = "epoch publish";
+    let store = opts.store();
+    let started = std::time::Instant::now();
+    let batch = match current_batch(what, &store) {
+        Ok(line) => line,
+        Err(code) => return code,
+    };
+    let fail = |e: String| {
+        eprintln!("{what}: {e}");
+        ExitCode::FAILURE
+    };
+    let published = (|| -> Result<serve::epoch::Manifest, ExitCode> {
+        let names_dir = store.names(model::VERSION, merge::VERSION, serve::VERSION);
+        if !serve::names::Manifest::read(&names_dir).is_ok_and(|m| m.batch == batch.batch) {
+            eprintln!("{what}: building names for batch {}", batch.batch);
+            names_write(what, &store, &names_dir, batch.batch)?;
+        }
+        let works_dir = store.works(model::VERSION, merge::VERSION, serve::VERSION);
+        let mut documents = None;
+        if !serve::works::Manifest::read(&works_dir).is_ok_and(|m| m.batch == batch.batch) {
+            eprintln!("{what}: building works for batch {}", batch.batch);
+            let (docs, _) = assemble(what, &store)?;
+            works_write(what, &store, &works_dir, &docs, batch.batch)?;
+            documents = Some(docs);
+        }
+        let graph_dir = graph::layout::dir(&store, false);
+        if !graph::Manifest::read(&graph_dir).is_ok_and(|m| m.built_at >= batch.at) {
+            eprintln!("{what}: building the graph");
+            graph_write(what, &store, &graph_dir, false)?;
+        }
+        let search_dir = search::dir(&store);
+        if !search::Manifest::read(&search_dir).is_ok_and(|m| m.built_at >= batch.at) {
+            eprintln!("{what}: building the lexical index");
+            let docs = match documents {
+                Some(docs) => docs,
+                None => assemble(what, &store)?.0,
+            };
+            search::index::build(&search_dir, &docs).map_err(|e| fail(e.to_string()))?;
+        }
+        let n = serve::epoch::current(&store)
+            .map_err(|e| fail(e.to_string()))?
+            .map_or(1, |c| c + 1);
+        let artifact = |dir: &Path, manifest: &str| {
+            serve::epoch::artifact(&store, dir, manifest).map_err(|e| fail(e.to_string()))
+        };
+        let manifest = serve::epoch::Manifest {
+            epoch: n,
+            batch: batch.batch,
+            at: ingest::time::now(),
+            merged: merge::layout::version(),
+            artifacts: [
+                ("names", artifact(&names_dir, serve::names::MANIFEST)?),
+                ("works", artifact(&works_dir, serve::works::MANIFEST)?),
+                ("graph", artifact(&graph_dir, graph::layout::MANIFEST)?),
+                ("search", artifact(&search_dir, search::index::MANIFEST)?),
+            ]
+            .into_iter()
+            .map(|(k, v)| (k.to_owned(), v))
+            .collect(),
+        };
+        serve::epoch::publish(&store, &manifest).map_err(|e| fail(e.to_string()))?;
+        Ok(manifest)
+    })();
+    let manifest = match published {
+        Ok(manifest) => manifest,
+        Err(code) => return code,
+    };
+    println!(
+        "epoch {} published: batch {} of {}",
+        manifest.epoch, manifest.batch, manifest.merged
+    );
+    for (name, artifact) in &manifest.artifacts {
+        println!("  {name}: {}", artifact.dir);
+    }
+    eprintln!("{what}: {:.1} s", started.elapsed().as_secs_f64());
+    ExitCode::SUCCESS
+}
+
+/// Verifies the current epoch: every artifact's digests, the names and
+/// works rebuilt byte for byte, and the artifacts against each other.
+fn epoch_check(opts: &Options) -> ExitCode {
+    if !graph_options_ok(opts, 0, false) {
+        return usage();
+    }
+    let what = "epoch check";
+    let store = opts.store();
+    let started = std::time::Instant::now();
+    let fail = |e: String| {
+        eprintln!("{what}: {e}");
+        ExitCode::FAILURE
+    };
+    let serving = match serve::Serving::open(&store) {
+        Ok(serving) => serving,
+        Err(e) => return fail(e.to_string()),
+    };
+    let epoch = serving.epoch().clone();
+    println!("epoch check {}: batch {}", epoch.epoch, epoch.batch);
+    let checked = (|| -> Result<serve::core::Checked, ExitCode> {
+        let files = graph::check::digests(serving.graph()).map_err(|e| fail(e.to_string()))?;
+        println!("  graph: {files} files match their digests");
+        let names_dir = store.root().join(&epoch.artifacts["names"].dir);
+        let scratch = names_dir.with_file_name(format!("{}.check", serve::version()));
+        let rebuilt = names_write(what, &store, &scratch, epoch.batch)?;
+        let same = [
+            serve::names::FST,
+            serve::names::SHARED,
+            serve::names::RETIRED,
+        ]
+        .iter()
+        .all(|f| rebuilt.manifest.files[*f] == serving.names().manifest().files[*f]);
+        let _ = std::fs::remove_dir_all(&scratch);
+        if !same {
+            return Err(fail("the names lookup rebuilt differently".into()));
+        }
+        println!("  names: a rebuild is byte-identical");
+        let works_dir = store.root().join(&epoch.artifacts["works"].dir);
+        let scratch = works_dir.with_file_name(format!("{}.check", serve::version()));
+        let (documents, _) = assemble(what, &store)?;
+        let rebuilt = works_write(what, &store, &scratch, &documents, epoch.batch)?;
+        let same = [serve::works::BLOCKS, serve::works::OFFSETS]
+            .iter()
+            .all(|f| rebuilt.manifest.files[*f] == serving.works().manifest().files[*f]);
+        let _ = std::fs::remove_dir_all(&scratch);
+        if !same {
+            return Err(fail("the works index rebuilt differently".into()));
+        }
+        println!("  works: a rebuild is byte-identical");
+        serving.cross_check().map_err(|e| fail(e.to_string()))
+    })();
+    match checked {
+        Ok(c) => {
+            println!(
+                "  {} rows: {} promoted names and {} public ids resolve to their work; the graph and the works index agree on {} nodes; the lexical index holds the {} held works",
+                c.rows,
+                c.names,
+                c.public,
+                serving.works().nodes(),
+                serving.works().manifest().held
+            );
+            eprintln!("{what}: {:.1} s", started.elapsed().as_secs_f64());
+            ExitCode::SUCCESS
+        }
+        Err(code) => code,
+    }
+}
+
+/// A partial date as text.
+fn bound_text(b: model::date::Bound) -> String {
+    use std::fmt::Write as _;
+    let mut s = format!("{}", b.year.get());
+    if let Some(month) = b.month {
+        let _ = write!(s, "-{:02}", month as u8);
+        if let Some(day) = b.day {
+            let _ = write!(s, "-{:02}", day.get());
+        }
+    }
+    s
+}
+
+/// Which work a query argument means: `#id`, or a name or public id
+/// through the names lookup.
+fn query_resolve(
+    what: &str,
+    serving: &serve::Serving,
+    text: &str,
+) -> Result<Option<WorkId>, ExitCode> {
+    if let Some(digits) = text.strip_prefix('#') {
+        return digits
+            .parse::<u32>()
+            .ok()
+            .and_then(WorkId::new)
+            .map(Some)
+            .ok_or_else(|| {
+                eprintln!("{what}: {text} is not an id");
+                ExitCode::FAILURE
+            });
+    }
+    match serving.resolve(text) {
+        Ok(Some(serve::Resolved::One(id))) => Ok(Some(id)),
+        Ok(Some(serve::Resolved::Shared(ids))) => {
+            println!(
+                "{text}: a shared name, accepted into {}",
+                ids.iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+            Ok(None)
+        }
+        Ok(Some(serve::Resolved::Split(id))) => {
+            println!("{text}: {id}, retired by a split; no survivor answers for it");
+            Ok(None)
+        }
+        Ok(None) => {
+            eprintln!("{what}: {text}: no such work");
+            Err(ExitCode::FAILURE)
+        }
+        Err(e) => {
+            eprintln!("{what}: {e}");
+            Err(ExitCode::FAILURE)
+        }
+    }
+}
+
+fn print_row(
+    out: &mut impl Write,
+    serving: &serve::Serving,
+    row: &serve::Row,
+    limit: usize,
+) -> io::Result<()> {
+    writeln!(
+        out,
+        "{}{}{}",
+        row.id,
+        row.public
+            .as_deref()
+            .map_or(String::new(), |p| format!(" {p}")),
+        if row.stub { " (stub)" } else { "" }
+    )?;
+    writeln!(
+        out,
+        "  names: {}",
+        row.names
+            .iter()
+            .map(|n| format!("{} ({})", n.name, n.standing))
+            .collect::<Vec<_>>()
+            .join(", ")
+    )?;
+    if !row.records.is_empty() {
+        writeln!(
+            out,
+            "  records: {}",
+            row.records
+                .iter()
+                .map(|r| format!(
+                    "{}{}",
+                    r.native,
+                    if r.promoted { "" } else { " (not promoted)" }
+                ))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )?;
+    }
+    if let Some(text) = &row.text {
+        if let Some(title) = &text.title {
+            writeln!(out, "  title: {title}")?;
+        }
+        if !text.authors.is_empty() {
+            writeln!(out, "  authors: {}", text.authors.join(", "))?;
+        }
+        if let Some(venue) = &text.venue {
+            writeln!(out, "  venue: {venue}")?;
+        }
+    }
+    print_facts(out, row)?;
+    if let Some(text) = &row.text
+        && let Some(a) = &text.abstract_text
+    {
+        let short: String = a.chars().take(300).collect();
+        let more = if a.chars().count() > 300 { "…" } else { "" };
+        writeln!(out, "  abstract: {short}{more}")?;
+    }
+    graph_list(
+        out,
+        "references",
+        serving.graph().out_degree(row.id),
+        serving.references(row.id),
+        limit,
+    )?;
+    graph_list(
+        out,
+        "citers",
+        serving.graph().in_degree(row.id),
+        serving.citers(row.id),
+        limit,
+    )
+}
+
+/// The promoted fields on one line, and which are disputed.
+fn print_facts(out: &mut impl Write, row: &serve::Row) -> io::Result<()> {
+    let f = &row.fields;
+    let mut facts = Vec::new();
+    if let Some(p) = &f.published {
+        facts.push(format!(
+            "published {} (from {})",
+            bound_text(p.value),
+            p.from
+        ));
+    }
+    if let Some(l) = &f.language {
+        facts.push(format!("language {}", l.value));
+    }
+    if let Some(x) = &f.form {
+        facts.push(format!("form {}", x.value));
+    }
+    if let Some(x) = &f.genre {
+        facts.push(format!("genre {}", x.value));
+    }
+    for (flag, by) in [
+        ("retracted", f.status.retracted),
+        ("corrected", f.status.corrected),
+        ("concern", f.status.concern),
+    ] {
+        if !by.is_empty() {
+            facts.push(format!("{flag} by {by}"));
+        }
+    }
+    if let Some(a) = &f.access {
+        facts.push(format!(
+            "access {}",
+            if a.value { "open" } else { "closed" }
+        ));
+    }
+    if !facts.is_empty() {
+        writeln!(out, "  {}", facts.join("; "))?;
+    }
+    let mut disputed = Vec::new();
+    if f.title.as_ref().is_some_and(merge::record::Field::disputed) {
+        disputed.push("title");
+    }
+    if f.authors
+        .as_ref()
+        .is_some_and(merge::record::Field::disputed)
+    {
+        disputed.push("authors");
+    }
+    if f.venue.as_ref().is_some_and(merge::record::Field::disputed) {
+        disputed.push("venue");
+    }
+    if f.published
+        .as_ref()
+        .is_some_and(merge::record::Field::disputed)
+    {
+        disputed.push("published");
+    }
+    if f.language
+        .as_ref()
+        .is_some_and(merge::record::Field::disputed)
+    {
+        disputed.push("language");
+    }
+    if f.form.as_ref().is_some_and(merge::record::Field::disputed) {
+        disputed.push("form");
+    }
+    if f.genre.as_ref().is_some_and(merge::record::Field::disputed) {
+        disputed.push("genre");
+    }
+    if f.access
+        .as_ref()
+        .is_some_and(merge::record::Field::disputed)
+    {
+        disputed.push("access");
+    }
+    if !disputed.is_empty() {
+        writeln!(out, "  disputed: {}", disputed.join(", "))?;
+    }
+    Ok(())
+}
+
+/// Prints one work through the query core.
+fn query_work(opts: &Options) -> ExitCode {
+    if !graph_options_ok(opts, 1, true) {
+        return usage();
+    }
+    let what = "query work";
+    let Some(text) = opts.paths[0].to_str() else {
+        return usage();
+    };
+    let store = opts.store();
+    let serving = match serve::Serving::open(&store) {
+        Ok(serving) => serving,
+        Err(e) => {
+            eprintln!("{what}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let id = match query_resolve(what, &serving, text) {
+        Ok(Some(id)) => id,
+        Ok(None) => return ExitCode::SUCCESS,
+        Err(code) => return code,
+    };
+    let row = match serving.work(id) {
+        Ok(Some(row)) => row,
+        Ok(None) => {
+            eprintln!("{what}: {id}: no row; retired, or past the epoch");
+            return ExitCode::FAILURE;
+        }
+        Err(e) => {
+            eprintln!("{what}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let limit = opts
+        .limit
+        .map_or(10, |n| usize::try_from(n).unwrap_or(usize::MAX));
+    let mut out = io::BufWriter::new(io::stdout().lock());
+    match print_row(&mut out, &serving, &row, limit).and_then(|()| out.flush()) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("{what}: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Searches through the query core, printing each hit's public id.
+fn query_search(opts: &Options) -> ExitCode {
+    if !search_options_ok(opts, true) {
+        return usage();
+    }
+    let what = "query search";
+    let store = opts.store();
+    let words: Vec<&str> = opts.paths.iter().filter_map(|p| p.to_str()).collect();
+    let text = words.join(" ");
+    let limit = opts
+        .limit
+        .map_or(10, |n| usize::try_from(n).unwrap_or(usize::MAX));
+    let serving = match serve::Serving::open(&store) {
+        Ok(serving) => serving,
+        Err(e) => {
+            eprintln!("{what}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let started = std::time::Instant::now();
+    let hits = match serving.search(&text, limit) {
+        Ok(hits) => hits,
+        Err(e) => {
+            eprintln!("{what}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let elapsed = started.elapsed();
+    let mut out = io::BufWriter::new(io::stdout().lock());
+    let printed = (|| -> io::Result<()> {
+        writeln!(
+            out,
+            "{text:?}: {} hits in {:.1} ms (epoch {})",
+            hits.total,
+            elapsed.as_secs_f64() * 1000.0,
+            serving.epoch().epoch
+        )?;
+        for hit in &hits.hits {
+            let public = serving
+                .work(hit.id)
+                .ok()
+                .flatten()
+                .and_then(|r| r.public)
+                .unwrap_or_default();
+            writeln!(
+                out,
+                "  {:>6.2}  {}  {public}  {}",
+                hit.score,
+                hit.id,
+                hit.title.as_deref().unwrap_or("(no title)")
+            )?;
+        }
+        for (root, values) in &hits.facets {
+            if values.is_empty() {
+                continue;
+            }
+            writeln!(
+                out,
+                "  {root}: {}",
+                values
+                    .iter()
+                    .map(|(v, n)| format!("{v} {n}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )?;
+        }
+        out.flush()
+    })();
+    match printed {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("{what}: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// One hop out from a seed set, most-touched first.
+fn query_expand(opts: &Options) -> ExitCode {
+    if opts.paths.is_empty() || !graph_options_ok(opts, opts.paths.len(), true) {
+        return usage();
+    }
+    let what = "query expand";
+    let store = opts.store();
+    let serving = match serve::Serving::open(&store) {
+        Ok(serving) => serving,
+        Err(e) => {
+            eprintln!("{what}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let mut seeds = Vec::new();
+    for path in &opts.paths {
+        let Some(text) = path.to_str() else {
+            return usage();
+        };
+        match query_resolve(what, &serving, text) {
+            Ok(Some(id)) => seeds.push(id),
+            Ok(None) => {}
+            Err(code) => return code,
+        }
+    }
+    let budget = opts
+        .limit
+        .map_or(20, |n| usize::try_from(n).unwrap_or(usize::MAX));
+    let started = std::time::Instant::now();
+    let found = serving.expand(&seeds, budget);
+    let elapsed = started.elapsed();
+    let mut out = io::BufWriter::new(io::stdout().lock());
+    let printed = (|| -> io::Result<()> {
+        writeln!(
+            out,
+            "one hop from {} seeds: {} shown in {:.1} ms",
+            seeds.len(),
+            found.len(),
+            elapsed.as_secs_f64() * 1000.0
+        )?;
+        for (id, touches) in &found {
+            let row = serving.work(*id).ok().flatten();
+            let title = row
+                .as_ref()
+                .and_then(|r| r.text.as_ref())
+                .and_then(|t| t.title.as_deref())
+                .unwrap_or_else(|| {
+                    if row.as_ref().is_some_and(|r| r.stub) {
+                        "(stub)"
+                    } else {
+                        "(no title)"
+                    }
+                })
+                .to_owned();
+            writeln!(out, "  {touches:>3}  {id}  {title}")?;
+        }
+        out.flush()
+    })();
+    match printed {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("{what}: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Assembles every held work's document from the merged and normalized
+/// sets, indexes them, and prints the report.
+fn search_build(opts: &Options) -> ExitCode {
+    if !search_options_ok(opts, false) {
+        return usage();
+    }
+    let what = "search build";
+    let store = opts.store();
+    let started = std::time::Instant::now();
+    let allocations = ingest::alloc::allocations();
+    let (documents, stats) = match assemble(what, &store) {
+        Ok(assembled) => assembled,
+        Err(code) => return code,
+    };
+    eprintln!(
+        "{what}: {} documents assembled in {:.1} s",
+        documents.len(),
+        started.elapsed().as_secs_f64()
+    );
+    let dir = search::dir(&store);
+    let built = match search::index::build(&dir, &documents) {
+        Ok(built) => built,
+        Err(e) => {
+            eprintln!("{what}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    eprintln!(
+        "{what}: {} documents indexed in {:.1} s",
+        built.manifest.documents,
+        started.elapsed().as_secs_f64()
+    );
+    let reported = search::Opened::open(&built.dir).and_then(|opened| {
+        let mut out = io::stdout().lock();
+        search::report::print(&mut out, &opened, &stats)
+    });
+    if let Err(e) = reported {
+        eprintln!("{what}: {e}");
+        return ExitCode::FAILURE;
+    }
+    eprintln!(
+        "{what}: {:.1} s, {} allocations",
+        started.elapsed().as_secs_f64(),
+        ingest::alloc::allocations() - allocations
+    );
+    ExitCode::SUCCESS
+}
+
+/// Prints the top hits for a query and the facet counts over its matches.
+fn search_query(opts: &Options) -> ExitCode {
+    if !search_options_ok(opts, true) {
+        return usage();
+    }
+    let what = "search query";
+    let store = opts.store();
+    let words: Vec<&str> = opts.paths.iter().filter_map(|p| p.to_str()).collect();
+    let text = words.join(" ");
+    let limit = opts
+        .limit
+        .map_or(10, |n| usize::try_from(n).unwrap_or(usize::MAX));
+    let opened = match search::Opened::open(&search::dir(&store)) {
+        Ok(opened) => opened,
+        Err(e) => {
+            eprintln!("{what}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let started = std::time::Instant::now();
+    let hits = match opened.search(&text, limit, 5) {
+        Ok(hits) => hits,
+        Err(e) => {
+            eprintln!("{what}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let elapsed = started.elapsed();
+    let mut out = io::BufWriter::new(io::stdout().lock());
+    let printed = (|| -> io::Result<()> {
+        writeln!(
+            out,
+            "{text:?}: {} hits in {:.1} ms",
+            hits.total,
+            elapsed.as_secs_f64() * 1000.0
+        )?;
+        for hit in &hits.hits {
+            writeln!(
+                out,
+                "  {:>6.2}  {}  {}",
+                hit.score,
+                hit.id,
+                hit.title.as_deref().unwrap_or("(no title)")
+            )?;
+        }
+        for (root, values) in &hits.facets {
+            if values.is_empty() {
+                continue;
+            }
+            writeln!(
+                out,
+                "  {root}: {}",
+                values
+                    .iter()
+                    .map(|(v, n)| format!("{v} {n}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )?;
+        }
+        out.flush()
+    })();
+    match printed {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("{what}: {e}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 /// Reads every works set of one source into the identity pass; returns

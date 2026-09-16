@@ -131,6 +131,158 @@ pub fn text<'a>(
     })
 }
 
+/// The text a record carries beyond its promoted fields (serving plan
+/// §3): what the merged record indexes but does not hold, as plain text
+/// for the serving layer's documents.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Text {
+    /// The abstract as plain text: markup stripped, sections joined under
+    /// their labels.
+    pub abstract_text: Option<String>,
+    /// One display name per author, in the record's order.
+    pub authors: Vec<String>,
+    /// The venue's name as the source gives it.
+    pub venue: Option<String>,
+}
+
+/// Plain text from raw markup: tags dropped — a block tag as a space, an
+/// inline one as nothing, so `CO<sub>2</sub>` stays `CO2` and two
+/// paragraphs do not run together — the XML entities decoded, whitespace
+/// runs collapsed. Not a parser: enough for a title or an abstract, whose
+/// markup is inline.
+#[must_use]
+pub fn strip_markup(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut rest = raw;
+    while let Some(c) = rest.chars().next() {
+        if c == '<' {
+            let after = &rest[1..];
+            if let Some(end) = after.find('>') {
+                if is_block(&after[..end]) {
+                    push_space(&mut out);
+                }
+                rest = &after[end + 1..];
+            } else {
+                out.push('<');
+                rest = after;
+            }
+        } else if c == '&' {
+            let after = &rest[1..];
+            if let Some(end) = after.find(';').filter(|&n| n <= 8) {
+                let entity = &after[..end];
+                if let Some(decoded) = decode_entity(entity) {
+                    out.push(decoded);
+                } else {
+                    out.push('&');
+                    out.push_str(entity);
+                    out.push(';');
+                }
+                rest = &after[end + 1..];
+            } else {
+                out.push('&');
+                rest = after;
+            }
+        } else {
+            if c.is_whitespace() {
+                push_space(&mut out);
+            } else {
+                out.push(c);
+            }
+            rest = &rest[c.len_utf8()..];
+        }
+    }
+    while out.ends_with(' ') {
+        out.pop();
+    }
+    out
+}
+
+/// A tag whose contents stand apart from what follows.
+fn is_block(tag: &str) -> bool {
+    let name = tag
+        .trim_start_matches('/')
+        .split(|c: char| c.is_whitespace() || c == '/')
+        .next()
+        .unwrap_or("");
+    let name = name.rsplit(':').next().unwrap_or(name);
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "p" | "title" | "sec" | "abstract" | "list" | "list-item" | "br" | "div" | "li" | "tr"
+    )
+}
+
+fn push_space(out: &mut String) {
+    if !out.is_empty() && !out.ends_with(' ') {
+        out.push(' ');
+    }
+}
+
+fn decode_entity(entity: &str) -> Option<char> {
+    match entity {
+        "lt" => Some('<'),
+        "gt" => Some('>'),
+        "amp" => Some('&'),
+        "quot" => Some('"'),
+        "apos" => Some('\''),
+        _ => {
+            let number = entity.strip_prefix('#')?;
+            let code = match number.strip_prefix(['x', 'X']) {
+                Some(hex) => u32::from_str_radix(hex, 16).ok()?,
+                None => number.parse().ok()?,
+            };
+            char::from_u32(code)
+        }
+    }
+}
+
+/// An abstract's sections as one text: each under its label when it has
+/// one (`RESULTS: …`), markup stripped, one section a line.
+pub fn join_sections<'a>(sections: impl Iterator<Item = (Option<&'a str>, &'a str)>) -> String {
+    let mut out = String::new();
+    for (label, text) in sections {
+        let text = strip_markup(text);
+        if text.is_empty() {
+            continue;
+        }
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        if let Some(label) = label.map(str::trim).filter(|l| !l.is_empty()) {
+            out.push_str(label);
+            out.push_str(": ");
+        }
+        out.push_str(&text);
+    }
+    out
+}
+
+/// OpenAlex's abstract, an inverted index — each word to its positions —
+/// back into text.
+///
+/// # Errors
+///
+/// JSON that is not a map of words to positions.
+pub fn inverted_index(json: &str) -> Result<String, Unmapped> {
+    let index: std::collections::HashMap<String, Vec<u32>> =
+        serde_json::from_str(json).map_err(|e| Unmapped {
+            field: "abstract_inverted_index",
+            value: e.to_string(),
+        })?;
+    let mut words: Vec<(u32, &str)> = index
+        .iter()
+        .flat_map(|(word, positions)| positions.iter().map(move |p| (*p, word.as_str())))
+        .collect();
+    words.sort_unstable();
+    let mut out = String::new();
+    for (_, word) in words {
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(word);
+    }
+    Ok(out)
+}
+
 /// A partial date at the precision the merge compares: a season, a
 /// quarter or a span is its year, or a span's start.
 #[must_use]
@@ -178,7 +330,7 @@ pub fn earlier(a: &Bound, b: &Bound) -> Ordering {
 }
 
 /// A venue that owns its text.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OwnedVenue {
     #[allow(missing_docs)]
     pub openalex: Option<OpenAlexSource>,
@@ -270,6 +422,46 @@ impl Owned {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn markup_becomes_text() {
+        use super::{inverted_index, join_sections, strip_markup};
+        assert_eq!(
+            strip_markup("<i>Drosophila</i> larvae"),
+            "Drosophila larvae"
+        );
+        assert_eq!(strip_markup("CO<sub>2</sub> uptake"), "CO2 uptake");
+        assert_eq!(
+            strip_markup("<jats:p>First.</jats:p><jats:p>Second.</jats:p>"),
+            "First. Second."
+        );
+        assert_eq!(
+            strip_markup("a &lt; b &amp; c &#8211; d &#x2014; e"),
+            "a < b & c \u{2013} d \u{2014} e"
+        );
+        assert_eq!(
+            strip_markup("  many   spaces\n\tand lines  "),
+            "many spaces and lines"
+        );
+        assert_eq!(strip_markup("x < y"), "x < y");
+        assert_eq!(strip_markup("&unknown; &#zz;"), "&unknown; &#zz;");
+        assert_eq!(
+            join_sections(
+                [
+                    (Some("BACKGROUND"), "One <b>thing</b>."),
+                    (None, "Two."),
+                    (Some(""), "")
+                ]
+                .into_iter()
+            ),
+            "BACKGROUND: One thing.\nTwo."
+        );
+        assert_eq!(
+            inverted_index(r#"{"world":[1],"Hello":[0,2]}"#).unwrap(),
+            "Hello world Hello"
+        );
+        assert!(inverted_index("[1,2]").is_err());
+    }
+
     use std::cmp::Ordering;
 
     use model::date::Bound;

@@ -1,0 +1,18 @@
+[package]
+name = "graph"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The citation graph: both orientations over the merged layer's edges, a label beside every arc, memory-mapped."
+
+[dependencies]
+ingest.workspace = true
+memmap2.workspace = true
+merge.workspace = true
+model.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+
+[lints]
+workspace = true
