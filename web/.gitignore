@@ -1,0 +1,13 @@
+node_modules/
+dist/
+dist-ssr/
+
+# local env files
+.env
+.env.local
+.env.*.local
+
+# editor / OS noise
+.DS_Store
+*.log
+.vite/

@@ -66,6 +66,21 @@ impl merge::Contributor for Crossref {
             field: "doi",
             native: true,
         });
+        // `alternative-id` is the publisher's own item id where it is not
+        // the DOI again (merge plan §3.1), scoped by the registrant of
+        // the DOI the record is registered under. The DOI-shaped ones —
+        // 13,659 of the census's — are refused by the scope, whether they
+        // restate this record's DOI or name another (§11, item 9).
+        let scope = view::publisher_scope(work);
+        for value in &work.alternative_ids {
+            if let Ok(name) = scope.name(value) {
+                out(merge::Assertion {
+                    name,
+                    field: "alternative_ids",
+                    native: false,
+                });
+            }
+        }
     }
 
     fn native<'w>(id: &'w model::Doi<'_>) -> merge::Name<'w> {

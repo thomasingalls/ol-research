@@ -33,6 +33,8 @@ pub struct NamesTail {
     /// delta, which the registry does not key.
     shared: HashMap<String, Vec<WorkId>>,
     retired: HashMap<WorkId, Option<WorkId>>,
+    /// The parts of every id a split retired since the epoch.
+    split: HashMap<WorkId, Vec<WorkId>>,
     public_by_id: HashMap<WorkId, String>,
     public_by_text: HashMap<String, WorkId>,
     /// The highest id minted in the tail.
@@ -61,8 +63,9 @@ impl NamesTail {
             registry::Line::Merge { id, into, .. } => {
                 self.retired.insert(*id, Some(*into));
             }
-            registry::Line::Split { id, .. } => {
+            registry::Line::Split { id, into, .. } => {
                 self.retired.insert(*id, None);
+                self.split.insert(*id, into.clone());
             }
         }
     }
@@ -119,6 +122,13 @@ impl NamesTail {
     #[must_use]
     pub fn retired(&self, id: WorkId) -> Option<Option<WorkId>> {
         self.retired.get(&id).copied()
+    }
+
+    /// The parts a split retired `id` into, as the tail has them; empty
+    /// when the tail does not know the split.
+    #[must_use]
+    pub fn split_into(&self, id: WorkId) -> &[WorkId] {
+        self.split.get(&id).map_or(&[], Vec::as_slice)
     }
 
     /// A public id minted since the epoch.

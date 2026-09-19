@@ -52,6 +52,7 @@ pub fn print(out: &mut impl Write, base: &Base, nodes: &Nodes) -> io::Result<()>
     degrees(out, base, nodes, &base.transpose(), "citers")?;
     most_cited(out, base)?;
     isolated(out, base, nodes)?;
+    held_subgraph(out, base, nodes)?;
     asserters(out, base)?;
     agreement(out, base, nodes)?;
     files(out, base)
@@ -151,6 +152,101 @@ fn isolated(out: &mut impl Write, base: &Base, nodes: &Nodes) -> io::Result<()> 
         }
     }
     writeln!(out, "  isolated: {alone} works with no arc either way")
+}
+
+/// The subgraph induced on the **held** works, which is the one a
+/// traversal really moves through: a stub has citers and no references
+/// (plan §11, item 6), so it ends any walk that reaches it and no
+/// directed path has one in its interior ([`crate::path`]). Its arc
+/// count and its components are what say whether a path between two
+/// works can be expected to exist at all, which is why they are a report
+/// line and not a one-off measurement — on the sample of 2026-09-19 a
+/// mean out-degree of 0.63, an order below percolation, and a largest
+/// component holding a quarter of the held works.
+///
+/// Weakly connected components only: the directed ones are all but
+/// trivial in a citation graph, time being a direction — measured on the
+/// same epoch, 148,122 strong components over 148,210 held works, the
+/// largest of size 3.
+#[allow(clippy::cast_precision_loss)]
+fn held_subgraph(out: &mut impl Write, base: &Base, nodes: &Nodes) -> io::Result<()> {
+    /// Union-find with path halving, over the compacted held ids.
+    fn root(parent: &mut [u32], mut at: u32) -> u32 {
+        while parent[at as usize] != at {
+            parent[at as usize] = parent[parent[at as usize] as usize];
+            at = parent[at as usize];
+        }
+        at
+    }
+    let n = base.nodes();
+    // Held ids compacted, so the union-find is over the held works alone.
+    let mut ix = vec![u32::MAX; n as usize + 1];
+    let mut held: Vec<WorkId> = Vec::new();
+    for raw in 1..=n {
+        let Some(id) = WorkId::new(raw) else { continue };
+        if nodes.is_held(id) {
+            ix[raw as usize] = u32::try_from(held.len()).unwrap_or(u32::MAX);
+            held.push(id);
+        }
+    }
+    let mut parent: Vec<u32> = (0..u32::try_from(held.len()).unwrap_or(u32::MAX)).collect();
+    let (mut arcs, mut loops) = (0u64, 0u64);
+    let mut degree: Vec<u32> = vec![0; held.len()];
+    for (from, id) in held.iter().enumerate() {
+        let from = u32::try_from(from).unwrap_or(u32::MAX);
+        for arc in base.references(*id) {
+            let to = ix[arc.work.get() as usize];
+            if to == u32::MAX {
+                continue;
+            }
+            if to == from {
+                loops += 1;
+                continue;
+            }
+            arcs += 1;
+            degree[from as usize] = degree[from as usize].saturating_add(1);
+            degree[to as usize] = degree[to as usize].saturating_add(1);
+            let (a, b) = (root(&mut parent, from), root(&mut parent, to));
+            if a != b {
+                parent[a as usize] = b;
+            }
+        }
+    }
+    let mut sizes: BTreeMap<u32, u64> = BTreeMap::new();
+    for i in 0..u32::try_from(held.len()).unwrap_or(u32::MAX) {
+        *sizes.entry(root(&mut parent, i)).or_default() += 1;
+    }
+    let mut components: Vec<u64> = sizes.into_values().collect();
+    components.sort_unstable_by(|a, b| b.cmp(a));
+    let touched = degree.iter().filter(|d| **d > 0).count() as u64;
+    let works = held.len() as u64;
+    let share = |part: u64, whole: u64| {
+        if whole == 0 {
+            0.0
+        } else {
+            100.0 * part as f64 / whole as f64
+        }
+    };
+    writeln!(
+        out,
+        "  held subgraph: {works} works, {arcs} arcs between them ({loops} self-citations left out), \
+         mean out-degree {:.3}, {touched} works with any arc ({:.2}%)",
+        if works == 0 {
+            0.0
+        } else {
+            arcs as f64 / works as f64
+        },
+        share(touched, works)
+    )?;
+    writeln!(
+        out,
+        "  held components: {} weak, largest {} ({:.2}% of held works, {:.2}% of those with an arc), then {:?}",
+        components.len(),
+        components.first().copied().unwrap_or(0),
+        share(components.first().copied().unwrap_or(0), works),
+        share(components.first().copied().unwrap_or(0), touched),
+        &components[1..components.len().min(6)]
+    )
 }
 
 fn asserters(out: &mut impl Write, base: &Base) -> io::Result<()> {
@@ -300,6 +396,22 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("isolated: 0 works"), "{text}");
+        // Held to held: 1 -> 2, 2 -> 1 and 2 -> 3, with 3 -> 3 left out
+        // and the three arcs to the stubs 4 and 6 outside the subgraph.
+        assert!(
+            text.contains(
+                "held subgraph: 3 works, 3 arcs between them (1 self-citations left out), \
+                 mean out-degree 1.000, 3 works with any arc (100.00%)"
+            ),
+            "{text}"
+        );
+        assert!(
+            text.contains(
+                "held components: 1 weak, largest 3 (100.00% of held works, \
+                 100.00% of those with an arc), then []"
+            ),
+            "{text}"
+        );
         std::fs::remove_dir_all(&root).unwrap();
     }
 }

@@ -211,7 +211,11 @@ degree — which is small and is counted as part of that ordering's cost.
 ## 5. Updates: base, delta, compaction
 
 "Citation data arrives append-only" is false for this pipeline. PubMed
-deletes records; OpenAlex retires ids into others (`merged_ids`); the
+deletes records; OpenAlex retires ids into others (it published
+`merged_ids/` until Walden; since then only `deleted_ids.csv` remains and
+a merged-away id answers 404 with no redirect, so the survivor mapping we
+assumed is no longer available — checked 2026-09-19, and OpenAlex's own
+docs contradict each other on it); the
 registry writes `merge` and `split` lines whose edges follow the
 surviving id (merge plan §4); a Crossref re-deposit replaces a reference
 list, so edges vanish; the merge plan's incremental merges (§9, after MM5)
@@ -339,6 +343,79 @@ degree readable from the offsets without decoding its list; the order
 inside a list decided at build (§4) and documented; and the label on
 every arc returned.
 
+**Paths** are the one traversal that is not a neighbourhood read, built
+2026-09-19 as `graph::path` (§10). A path is **directed**: A → B means "A
+cites something that cites … B", which is a claim about influence
+flowing one way. Undirected paths wander up and down the arcs and mean
+nothing, so the two directions are offered as two questions, asked by
+swapping the ends. The search is bidirectional breadth-first, bounded in
+three ways — the longest path, how many to return, and how many works it
+may expand before it gives up — and it runs over a caller's
+neighbourhoods rather than over a base, since the served graph is a base
+with the edges delta folded over it (serving plan §5).
+
+The bound is exact in both halves: the forward search is grown to
+`⌈depth/2⌉` and the backward to `⌊depth/2⌋`, which between them cover
+every path of at most `depth` arcs, because a path of length *L* has its
+work at index `⌈L/2⌉` within both radii. An empty intersection is
+therefore a **proof** of absence within the bound, and the least sum of
+the two distances over a non-empty one is the exact shortest length. Each
+shortest path holds exactly one work at forward distance `⌈hops/2⌉`, so
+one path is returned per such work and never the same path twice.
+
+**Every interior work of a directed path is held.** A step out of a work
+needs an out-arc, and only a record cites, so a stub ends a forward walk
+wherever it appears (§11, item 6). The subgraph a path really moves
+through is the held-to-held one — which is why its sparsity, measured
+below, is the number that decides whether path-finding answers anything
+at all, and why *no path* is the ordinary answer and is an outcome of its
+own rather than an empty list.
+
+### The held-to-held subgraph
+
+Measured 2026-09-19 over the sample's published epoch 7 (`graph/v2.8.1`,
+`merged/v2.8`), and printed by every build since as two report lines:
+
+| | |
+|---|---:|
+| held works | 148,210 |
+| arcs out of them, all targets | 6,544,183 |
+| of those, landing on a stub | 6,449,141 (98.55 %) |
+| landing on a held work | 95,042 (1.45 %) |
+| held→held self-citations | 2,035 |
+| **distinct held→held arcs** | **93,007** |
+| mean out-degree, over all held works | **0.628** |
+| median out-degree and in-degree | 0 |
+| held works with any held→held out-arc | 32,955 (22.24 %) |
+| held works with any held→held in-arc | 21,157 (14.28 %) |
+| held works with any held→held arc | 42,395 (28.60 %) |
+| weak components | 107,584, of which 105,815 are singletons |
+| largest weak component | 37,984 — 25.63 % of held works, 89.60 % of the non-isolated |
+| second largest | 44 |
+| strong components | 148,122; largest of size 3 |
+
+A mean out-degree of 0.63 is an order below the percolation threshold of
+1, and the component structure says the same thing from the other side:
+there is no giant component, only a quarter-sized one, and the next is
+44 works. Directed reachability, sampled: of 200,000 random held pairs, 4
+had a path within six hops; of 200,000 pairs both of which have a
+held→held arc at all, 72; of 100,000 pairs drawn from inside the largest
+weak component, 42 one way and 85 in either direction. **Path-finding on
+this sample answers "no path" essentially always**, and it is built
+anyway because it comes alive at corpus scale — the sample is a keyword
+slice whose citing works mostly cite outside it, and the ratio that
+matters is the 1.45 % of arcs landing on something we hold, which full
+ingestion is what moves.
+
+The tail, on the same subgraph: in-degree p99 43, p99.9 221, max 882;
+the top 1 % of held works hold 49.83 % of the held→held in-arcs and the
+top 0.1 % hold 22.22 %. Out-degree is flatter — p99 22, max 257, top 1 %
+holding 30.15 %. Corpus-wide, over every work including stubs, the
+reference lists are the skewed side instead: max 8,971 and the top 1 %
+of works holding 92.4 % of all arcs, against a citer max of 882 and 8.4 %.
+That asymmetry is an artifact of the slice, not of citation: we hold the
+whole reference list of every work we hold and almost none of its citers.
+
 ## 8. Machinery
 
 - **`crates/graph`**, source-agnostic: the build, the base's files and
@@ -453,6 +530,41 @@ every arc returned.
 
 ## 10. Decision log
 
+- 2026-09-19, the held-to-held subgraph measured, and paths built on it
+  — the measurement first, because the user's arithmetic said the
+  subgraph was below percolation and asked that it be verified or
+  refuted before any path code was written. **Verified, and it is
+  sparser than the estimate.** The estimate came from the merge report's
+  185,328 reference *assertions* landing on held works; distinct arcs
+  are 93,007, since a held→held arc carries 1.95 asserters on average
+  against 1.11 for one landing on a stub. Mean out-degree is 0.628, not
+  ~1; there is no giant component, the largest weak one holding 25.63 %
+  of held works and the next 44; the graph is all but acyclic, 148,122
+  strong components over 148,210 works with the largest of size 3. Of
+  200,000 random held pairs, 4 have a directed path within six hops.
+  The full table is §7.
+
+  Path was built anyway, as the brief said to: the sample is a keyword
+  slice whose citing works mostly cite outside it — 98.55 % of arcs land
+  on a stub — and the number that moves is the fraction of references we
+  hold the target of, which is what full ingestion is for. G3 is where
+  that gets re-measured. Until then the honest statement is that the
+  feature answers "no path" on this corpus and that the answer is
+  correct.
+
+  What the measurement changed in the design: *no path* is an outcome of
+  its own, carrying the depth searched and how many works each half
+  reached, and is never an empty list; a search that spent its visit
+  budget is a third outcome again, carrying the smaller bound it did
+  prove. Both are in the protocol as a `oneof`, so a client cannot mistake
+  one for the other or for an error.
+
+  The two report lines are permanent, not a one-off: `graph build` now
+  prints the held subgraph's arcs, mean out-degree and weak components on
+  every build, so the number that decides whether traversal is worth
+  anything is never a napkin estimate again (§11, item 9's principle).
+  Strong components are not printed — measured once, they are trivial in
+  a citation graph, time being a direction.
 - 2026-09-15, planning numbers — N = 6 × 10^8, M = 3 × 10^9 (from the
   notes); the summary's 10^9 and 2 × 10^10 retired with it. Raw CSR is
   34 GB for both orientations, so the graph is a locality and freshness
@@ -568,6 +680,33 @@ every arc returned.
     artifact (serving plan SP3); `graph query` keeps its shard scan as a
     diagnostic. The counts kept in these plans are measured ones from
     landed milestones and nothing else, per the note that stood here.
+13. **A path search's cost at corpus scale.** The search grows both balls
+    to their halves and gives up on a visit budget — 250,000 works
+    expanded, the transport's constant, which nothing on the sample comes
+    near: the worst probe ran 3,606 works for a depth of 11. The two
+    halves are fixed, not adaptive, which is what makes the bound
+    provable; the cost is that a hub on one side is expanded in full while
+    the other side is cheap. An adaptive split — grow whichever frontier
+    is smaller, and stop when the two frontier radii exceed the best
+    found — costs a more careful termination proof and buys the hub case.
+    Worth doing when a corpus makes the hub case common; not before, and
+    not without measuring which side actually blows up.
+14. **What a path means once it is common.** At corpus scale, with a
+    dense enough held-to-held subgraph, short paths between arbitrary
+    works will be everywhere and mostly uninteresting — the citation
+    graph's small-world diameter is a handful of hops. Then the question
+    stops being *is there a path* and starts being *which path*, which
+    wants weights: the arc's asserters, the years, the degree of what it
+    passes through. The primitive returns the asserters on every step
+    already, so the evidence is there; the ranking is not, and belongs
+    with candidate management (§7) rather than here.
+15. **The held subgraph's two report lines.** Union-find over the held
+    works on every build: 148,210 nodes and 93,007 arcs on the sample,
+    free. At 6 × 10^8 works the held share is the whole corpus and the
+    pass is an 8-byte array plus a walk of every arc — seconds, and the
+    array is 2.4 GB. If that becomes the build's memory ceiling, the
+    lines move behind a flag; they are worth more than they cost until
+    then.
 
 ## 12. Sources consulted
 

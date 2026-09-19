@@ -91,6 +91,9 @@ the three sources that exist; a new source adds rows through its
 | OpenAlex | `doi`                                    | DOI       | claim  | 71,238 valid, 49 malformed, 4,863 absent                       |
 | OpenAlex | `pmid` (`ids.pmid`)                      | PMID      | valid  | 45,358                                                         |
 | Crossref | `doi`                                    | DOI       | native | every record                                                   |
+| Crossref | `alternative_ids` (`alternative-id`)     | publisher | claim  | the non-DOI ones, scoped by the record's registrant (2026-09-19)|
+| PubMed   | `ids.pii` (`ArticleId IdType="pii"`)     | publisher | claim  | as above; 135,998 records across the two sources carry one     |
+| PubMed   | `ids.elocation_pii` (`ELocationID`)      | publisher | claim  | as above; need not equal `ids.pii`                             |
 
 Not assertions, decided on the census:
 
@@ -98,31 +101,102 @@ Not assertions, decided on the census:
   the work's, and 392 one whose PMID is not the work's: copies of other
   versions — a preprint under the published work — and so lineage evidence
   (§6, §11), not names of this work.
-- **Crossref `alternative-id`.** 13,659 are DOI-shaped, 28 differ from the
-  work's own DOI; publisher-supplied and unranked. Counted, not used, until
-  a case shows they should be.
+- **Crossref `alternative-id` where it is a DOI.** 13,659 are DOI-shaped,
+  28 differ from the work's own DOI; publisher-supplied and unranked. A
+  DOI in that slot is refused by the publisher-id rule below, whether it
+  restates the record's own DOI or names another, so it is still counted
+  and not used (§11, item 9). The rest of the slot is a publisher id and
+  is a name since 2026-09-19.
 - **Crossref `is-same-as` (23) and `is-identical-to` (1).** Crossref's own
   identity assertions. Kept as typed relations (§6); promotable to
   assertions when a case shows they are right more often than not.
 - **A malformed claim** is never a name. It stays on the record, counted,
   as the ingestion plan's §6 decided.
-- **Publisher item ids** — PubMed's `ArticleId IdType="pii"` and
-  `ELocationID EIdType="pii"`, Crossref's non-DOI `alternative-id` — are
-  kept on every record and every reference (model version 2, 2026-09-18)
-  and are not assertions yet. The user's design, 2026-09-18: they belong
-  in a namespace of our own, keyed by a publisher we name
-  (`elsevier:`, `springer:`, `pii:` for one we cannot attribute) with a
-  checked-in mapping to the DOI registrants that publisher uses, rather
-  than a DOI-shaped composite of our making; some publishers will have no
-  registrant at all. What the sample says about making them names: of the
-  20,647 publisher ids that more than one record carries, 18,194 are one
-  work seen from two sources — the id doing its job — and 2,453 are
-  different works. The form tells them apart. Bare digits (an article
-  number: `4275`, `e112`, `320`) are 2,137 of the 2,453; ids carrying
-  letters are 14 in about 71,000, and at least one of those is a work our
-  rules should have merged. So an id with letters may be a name, a bare
-  number is evidence for the matching stage (§6) until a journal
-  qualifies it.
+
+**Publisher ids** (the namespace, decided and built 2026-09-19; `merge::publisher`).
+A publisher id is what a publisher calls an article besides its DOI:
+Elsevier's PII, PubMed's two `pii` slots, Crossref's non-DOI
+`alternative-id`. They are kept on every record and every reference
+(model version 2, 2026-09-18) and are names since merge version 8. The
+rules, each with the measurement behind it:
+
+- **The namespace is the registrant that issued the id**, spelled
+  `reg1016` and never `10.1016`: the merged layer must not grow a second
+  thing shaped like a DOI. `Name::parse` refuses a registrant-shaped
+  namespace outright rather than calling it unknown.
+- **No key without a registrant.** A publisher id on a record with no DOI
+  is scoped by nothing and is no name: 344 records of 102,735 (0.335 %),
+  all PubMed's, and only 22 of their 414 values are even Elsevier-shaped.
+  A record with two DOIs of different registrants tie-breaks by the lower.
+- **The value is stored exactly as written** — no case folding, no
+  punctuation stripped, because punctuation is part of an identifier.
+  The one exception is Elsevier's printed PII, which the world writes
+  punctuated (`S0006-3495(25)00123-4`) and bare (`S0006349525001234`) and
+  which we write bare. Both spellings occur for one article on 8,350
+  DOIs, and the split is by source, not by publisher: PubMed writes the
+  punctuated form (51,120 rows), Crossref the bare one (8,801), 8,345
+  that way round and 5 the other, none writing both for one article.
+  Every one agrees once rewritten; no normalised id is owned by more than
+  one article, no raw id is, and no rewritten value collides with an
+  unrelated one.
+- **The rewrite is gated on the publisher, not on the shape** (the user,
+  2026-09-19, against a measurement that argued for shape): anything that
+  went through Elsevier's machinery matches Elsevier's rules, but a value
+  that merely looks like a PII is not thereby Elsevier's, and another
+  publisher's identifier must not be mangled. `publisher::ELSEVIER` is
+  the checked-in list of registrants, and the normalize surveys count the
+  PII-shaped values whose registrant is off it, by registrant: that count
+  is how the list grows, on evidence rather than on a guess.
+- **A value that is just the DOI again is not a publisher id**, tested
+  *after* the rewrite against the DOI and its suffix with the printed
+  PII's punctuation dropped and the case folded. Order matters: 786 rows
+  restate their own DOI only once rewritten, and the only two apparent
+  cross-source disagreements in the whole sample are this rule failing on
+  a punctuation variant — on `10.1016/s0002-8703(99)70115-8` Crossref's
+  alternative id is the suffix unpunctuated and PubMed's PII is the same
+  suffix punctuated.
+- **A bare article number is not a name.** Of the 20,647 publisher ids
+  that more than one record carries, 18,194 are one work seen from two
+  sources — the id doing its job — and 2,453 are different works; 2,137
+  of those 2,453 are bare digits with or without an `e` (`4275`, `e112`,
+  `320`). A journal's article numbers restart, so such a value names a
+  work only once a journal qualifies it: evidence for the matching stage
+  (§6), never a name. Nor is a value that is not printable ASCII without
+  whitespace, or longer than 64 characters — one PII slot holds a whole
+  citation, `Läkartidningen. 2026;123:25102-`.
+- **A publisher id one source claims for more than one of its own
+  records is no article's identifier** (added 2026-09-19 after the first
+  merge run). A source holds one record per article — one PubMed record
+  per PMID, one Crossref record per DOI — so a second record of that
+  source claiming the same value is the source itself saying the value
+  names more than one of its articles. The values are real: `LiveAll1` on
+  259 Crossref records, `JAMP-14-1`, `IJMS-51-1` and `2025-vol6` on ten
+  PubMed records each — a collection tag, a volume and issue, a year and
+  volume. Joined, they fuse every article of an issue into one work and
+  the components grow past the rules: a component of 762 records and
+  1,018 names on the first run. The census therefore runs in the identity
+  pass before any component exists, because a union cannot be undone
+  (`Identity::settle`); the claim is rejected with its reason (§3.3) and
+  never joins. On the store of 2026-09-19, nine values cost 307 of the
+  48,293 publisher assertions. The test is *one source's* records and not
+  all of them: one work seen from two sources carrying the same publisher
+  id is the id doing its job — 18,194 of the 20,647 the census found on
+  more than one record — and rejecting those would empty the namespace of
+  the use it is for. The price is that a source's duplicate records of one
+  article (§3.3) lose their shared publisher id, which costs a name and
+  never a merge.
+- **References are not in it.** Of 3,532,199 PubMed reference records
+  exactly one carries a publisher id, so `targets` is unchanged.
+- **OpenAlex has no publisher-id slot at all** — its id fields are `doi`,
+  `pmid` and `mag` — so nothing was added there.
+
+Of 135,998 records carrying a publisher id, 102,735 hold one that is not
+their own DOI, 35,833 hold an Elsevier-shaped one, and the values are
+82,423 distinct strings. What the identity pass makes of them on the
+store of 2026-09-19: 48,293 assertions — 36,612 from PubMed's `ids.pii`,
+2,247 from its `ids.elocation_pii`, 9,434 from Crossref's
+`alternative_ids` — leaving 39,484 promoted publisher names, 412 aliases,
+2 shared and 307 rejected.
 
 ### 3.2 Components
 
@@ -133,7 +207,13 @@ verdict. On the sample the 177,166 records and their names fall into
 PMC id, one OpenAlex id and one record per source. Those are works and
 need no judgement. The 85 that do not are the conflict components — 0.1
 % — and every one is of a shape §3.3 names; the census counted 83 because
-it looked for wrong PMIDs only, and the pass found wrong DOIs too.
+it looked for wrong PMIDs only, and the pass found wrong DOIs too. Those
+counts are from before publisher ids were names (§3.1, 2026-09-19): a
+work with two of them is now a conflict component too. No new *shape*
+comes with it — a publisher id is never a record's native id — so the
+rules of §3.3 cover every one. Measured on the whole store the same day,
+242,624 records and 425,617 names fall into 148,178 components, 510 of
+them conflicts, and the pass resolves all 510.
 
 ### 3.3 Verdicts and the conflict vocabulary
 
@@ -170,6 +250,17 @@ The shapes, from the census, each with its rule:
 | **wrong link** — a foreign id names a record whose title disagrees                                               | 8: six OpenAlex records whose W number is a PMID and whose DOI is that PMID's article's while the title is another paper's (`W39406291`, `W31695178`, `W20395417`, …); one OpenAlex PMID on the wrong record; one translation (§11) | the assertion is rejected with the reason; the component splits into the works the remaining assertions support                                                                                 |
 | **shared name** — after splitting, one name is accepted into two works                                           | 4: a bogus DOI, `10.12739/10.12739`, on ten OpenAlex works; a DOI on two different articles, twice; a Chinese journal's DOI on two works with different PMIDs | both works keep the name, neither promotes it; an edge through it is ambiguous (§6)                                                                                                             |
 
+One verdict is reached before any component exists. A publisher id one
+source claims for more than one of its own records identifies no article
+(§3.1), and a name like that has to be refused *before* the union, not
+after, because a union cannot be undone and the component it makes is
+past the rules by the time they see it. `Identity::settle` runs that
+census once every record is in and rejects the claim on every record that
+made it. It is a rejection like a wrong link — the assertion stays on the
+work with its verdict, nothing is deleted (§3.4) — so a rejected
+assertion now carries which rule rejected it, `wrong-link` or
+`not-an-article-id`, and a holder only where a record holds the name.
+
 Order: duplicates and spellings first (they merge nothing across sources),
 then the title test on every bridge, rejecting what fails it, then §3.4's
 promotion on what remains. As built (§8): records sharing a name are one
@@ -191,6 +282,7 @@ registry of a namespace outranks everyone.
 | which DOI is promoted                               | Crossref's record's, then PubMed's `ids.doi`, then OpenAlex's | Crossref mirrors the DOI registry; PubMed's is deposited by the publisher; OpenAlex's is derived |
 | which spelling of a DOI                             | the one Crossref holds, then PubMed's                     | as above; on the two APA cases Crossref was not looked up, so PubMed's stands                  |
 | which record of one source, among duplicates        | the lowest native id                                      | deterministic, and the older record has been cited longer                                      |
+| which publisher id is promoted                      | the lower registrant, then the lower value                 | nobody ranks them and no source mints them; deterministic is all the rule can be (2026-09-19)  |
 
 A rejected or outranked assertion stays on the work with its verdict.
 Nothing is deleted.
@@ -223,9 +315,16 @@ a rebuild each cluster looks up its accepted names:
   new;
 - known names map to several ids: a merge — the oldest id wins and the
   others are retired into it;
-- one id claimed by two clusters: a split — the id is retired and both
-  parts are minted, since neither is the old work. Expected rare; none on
-  the sample; the rule can change when one is seen.
+- one id claimed by several clusters: a split — **the part that holds
+  the records keeps the id**, and the parts that are names only are
+  minted, a name leaving a work not being that work ending. Where no
+  part holds records, or where several do, no part continues the work:
+  the id is retired with no successor and every part is minted. Ruled
+  2026-09-19 on the fourteen splits the corpus holds (§11, item 3).
+
+Which is why the assignment is told how many of the clusters it is given
+hold records: they come first, and the stubs after, which the minting
+order already asked for.
 
 Minting order is deterministic — held works first, sorted by their
 promoted names, then stubs, sorted — so two tests hold: a rebuild on
@@ -675,7 +774,8 @@ stays.
 - **MM5** — Semantic Scholar and arXiv contributors when their sources land
   (ingestion plan M6, M7); the search sinks over the works set.
 - Then: lineage (§11); the matching stage over the unresolved stream;
-  OpenAlex's `merged_ids` as registry lines; the scale shape of §8 on
+  OpenAlex's retirements as registry lines — **but see the note below,
+  `merged_ids` no longer exists**; the scale shape of §8 on
   the box. *Incremental merges landed 2026-09-16 as the [serving
   plan](serving-plan.md)'s SP5: the delta logs (item 20), the journal,
   the public id (item 21), PubMed's deletions in both the full and the
@@ -852,6 +952,33 @@ stays.
   argument is a name *disappearing* — the 2026-09-18 entry's open case
   and one more — and those are refused, not guessed (serving plan §11,
   item 28).
+- 2026-09-19, the split rule (§11, item 3) — decided with the user on
+  the fourteen splits the corpus holds, not on which rule is plainest.
+  **The part that holds the records keeps the id; the part that is names
+  only becomes a stub of its own; retire-and-mint is the fallback, for
+  where no part holds records or several do.** All fourteen have exactly
+  one record-holding part and one bare stub, and the recurring shape is
+  a DOI wrongly associated with a PMID: `#509692` was minted for
+  {`doi:…ijbiomac.2025.146545`, `pmid:41478481`}, the record now says
+  `…150018`, and the old DOI leaves alone, cited by one reference. Under
+  the old rule that live work lost its id and its public id for a name
+  that was never its own. Retiring an id is for a work that ended.
+
+  Three things fell out of it, and they are why the change is small.
+  The registry needs no new line kind: a keeper reuses its id, or merges
+  it into an older id it also claims, both of which the log already
+  says, and only the fallback writes `split`, which already carried its
+  parts — so the merged layer's format and every line written before
+  today are untouched. The full merge and the batch now *agree* where
+  they did not: a held work and a stub contesting an id is the shape the
+  batch has always settled by keeping the id and minting the stub for
+  the leftover names, and the full merge was splitting it; the rule the
+  full merge now follows is the batch's own, which is what makes the
+  assignment ask how many of the clusters it is given hold records. And
+  the fallback is no longer a stop: the batch performs it, the parts'
+  citers settled again by §6 through the row's own evidence (serving
+  plan §11, items 24 and 28).
+
 - 2026-09-18, absence is not an assertion — decided with the user, who
   asked for it as "data that is *there* supersedes data that is missing on
   a per-record basis", and for a sanity check first. Measured over the
@@ -906,6 +1033,121 @@ stays.
   beside the user's condition that paths once true stay findable (serving
   plan §11, item 24).
 
+- 2026-09-19, publisher ids get a namespace of their own — decided with
+  the user and built the same day (`merge::publisher`, `Name::Publisher`,
+  `ingest::Key::Publisher`, merge version 8). §3.1 states the rules; this
+  is the evidence behind each of them.
+
+  *Keyed by the registrant, spelled `reg1016`.* A publisher id means
+  nothing unscoped — `320` is an article number in some journal — and
+  the only scope every record carries is the registrant of its own DOI.
+  It is written `reg1016:S0006349525001234` and never `10.1016:…`,
+  because the user's first priority was that the merged layer must not
+  grow a second thing shaped like a DOI: that would be very confusing.
+  `Name::parse` refuses a registrant-shaped namespace outright rather
+  than calling it unknown, so the confusion cannot arrive from outside
+  either. The consequence taken deliberately: a record with no DOI
+  asserts no publisher name at all — 344 records, 0.335 %, all PubMed's,
+  and only 22 of their 414 values are even Elsevier-shaped.
+
+  *Written exactly as the publisher wrote it, with one exception.* No
+  case folding and no punctuation stripped, because punctuation is part
+  of an identifier. The exception is Elsevier's printed PII, written
+  punctuated (`S0006-3495(25)00123-4`) and bare (`S0006349525001234`) for
+  one article on 8,350 DOIs — a split by source rather than by publisher:
+  PubMed writes the punctuated form (51,120 rows), Crossref the bare one
+  (8,801), 8,345 that way round, 5 the other, none writing both for one
+  article. Every one agrees once rewritten, no id normalised or raw is
+  owned by more than one article, and no rewritten value collides with an
+  unrelated one. The rewrite happens where an id becomes an assertion and
+  not in the normalized layer, so the layer still says what the source
+  said and extending the list below costs a merge and not a re-normalize.
+
+  *Gated on the publisher, not on the shape.* The measurement argued for
+  shape — the rewrite is safe on the whole sample whoever the registrant
+  is — and the user overruled it: anything that goes through Elsevier's
+  machinery will match Elsevier's rules, but a value that merely looks
+  like a PII is not thereby Elsevier's, and another publisher's
+  identifier must not be mangled to make ours tidier. The first survey
+  under the rule is the argument for it. Over PubMed's 126,740 records
+  and 15,101 Crossref works, 2,000 PII-shaped values sit under
+  registrants that are not on the list, spread over 45 of them: 503 and
+  50 under Cambridge's 10.1017, 425 under 10.3168, 192 under 10.31083,
+  81 and 22 under 10.1093, 57 under 10.1074. Had the shape alone decided,
+  every one of those would have been rewritten. `publisher::ELSEVIER`
+  holds 10.1016 and 10.1053 and nothing else; the counter, printed by
+  registrant, is how it grows, and each addition is a full merge because
+  it changes the canonical spelling of names already written.
+
+  *The DOI restated is not a publisher id, tested after the rewrite.*
+  786 rows restate their own DOI only once rewritten, and the only two
+  apparent cross-source disagreements in the whole sample are this rule
+  failing on a punctuation variant: on `10.1016/s0002-8703(99)70115-8`
+  Crossref's alternative id is the suffix unpunctuated and PubMed's PII
+  is the same suffix punctuated, so testing before the rewrite keeps one
+  and drops the other. The test folds case and drops the printed PII's
+  punctuation from both sides, which is the only place case is folded.
+  It is the single largest refusal: 45,802 of PubMed's 135,073 rows and
+  5,520 of Crossref's 11,945.
+
+  *A bare article number is not a name.* Of the 20,647 publisher ids more
+  than one record carries, 18,194 are one work seen from two sources and
+  2,453 are different works; 2,137 of those are bare digits with or
+  without an `e`. A journal's article numbers restart, so such a value
+  would fuse unrelated works: 28,724 of PubMed's rows and 2,782 of
+  Crossref's are refused on it. Nor is a value that is not printable
+  ASCII without whitespace (41 rows) or longer than 64 characters (4) —
+  one PII slot holds a whole citation.
+
+  What it leaves: 60,127 names from PubMed's rows and 3,636 from
+  Crossref's. What it costs the user: merge version 8, so a full merge
+  before the next epoch, and with it a §3.2 count that will move — a work
+  with two publisher ids is now a conflict component. None of them is a
+  new *shape*: a publisher id is never a record's native id, so every one
+  resolves by the rules §3.3 already has, and the run cannot stop on one.
+  References were left out: of 3,532,199 PubMed reference records exactly
+  one carries a publisher id. OpenAlex was left out: it has no
+  publisher-id slot at all.
+
+  Later the same day the first merge run said the rules above were not
+  enough. `merge identity` over the whole store stopped on a hairball of
+  762 records and 1,018 names: some publisher-id slots hold an issue's
+  identifier rather than an article's — `LiveAll1` on 259 Crossref
+  records, `JAMP-14-1`, `IJMS-51-1`, `2025-vol6` on ten PubMed records
+  each — so every article of an issue shared one name and fused into one
+  work, and a handful of such values reached hundreds of records by
+  chaining through the conflict components that already existed. The test
+  suite was green throughout, which is the lesson: a namespace change is
+  verified by a merge run, not by `cargo test`.
+
+  The fix is a rule and not a longer list of shapes, because `JAMP-14-1`
+  is no shape anyone could have predicted. A source holds one record per
+  article, so a source claiming one publisher id for two of its own
+  records is that source saying the value names more than one of its
+  articles: the claim is rejected on every record that made it, with its
+  reason, and never joins. It has to be caught before the components are
+  built — the §3.3 machinery would have resolved these cases correctly,
+  but only if it ever saw them, and by the time it does the component is
+  a hairball, which is what the hairball guard is for. A union cannot be
+  undone, so publisher ids are now held back from it until every record
+  is in and a census can run (`Identity::settle`). Nine values, 307 of
+  48,293 publisher assertions; the pass then resolves all 510 conflict
+  components. The test counts one *source's* records and not all of them,
+  because one work seen from two sources sharing a publisher id is the id
+  doing its job — 18,194 of the 20,647 the census found on more than one
+  record — and the literal rule would have emptied the namespace of its
+  use. Bentham's 10.2174 ids are untouched by it: they are all distinct,
+  and only the one marketing tag they put in the slot is refused.
+
+  Two things the rule does not do. It is not a shape rule, so the bare
+  article numbers §3.1 refuses stay refused in front of it — that kept
+  31,506 publisher-id rows off the normalize surveys of 2026-09-19
+  (28,724 PubMed, 2,782 Crossref) and so out of the name arena, where the
+  merge's memory goes, and keeps their verdict from depending on what
+  else is in the run. And it
+  is itself a fact about a run, which is a divergence between a full merge
+  and an incremental one (§11, item 24).
+
 ## 11. Open items
 
 1. **Lineage.** The grouping id for a work's versions, with the OpenAlex
@@ -917,10 +1159,33 @@ stays.
    unresolved for now; a PubMed reference carrying the PMID beside the
    shared DOI resolves through the PMID and is not affected. Whether the
    five-letters case should be five works or one is a product question.
-3. **The split rule.** Retire-and-mint is the plainest; revisit on the
-   first split observed. An incremental batch that would split stops and
-   leaves it to a full merge (serving plan §5, 2026-09-16), since the
-   citing references would have to be resolved anew to follow the parts.
+3. ~~**The split rule.**~~ Ruled 2026-09-19, on the fourteen splits the
+   corpus holds rather than on the plainness of retire-and-mint. **The
+   part that holds the records keeps the id; the part that is names only
+   is minted as a stub; retire-and-mint is the fallback where no part
+   holds records or several do.** Every one of the fourteen has exactly
+   one record-holding part and one bare stub — the recurring shape is a
+   DOI wrongly associated with a PMID, the record now saying a different
+   DOI and the old DOI leaving alone (`#509692`, whose PubMed record
+   pmid:41478481 moved from `…ijbiomac.2025.146545` to `…150018`) — so
+   under the old rule fourteen live works lost their ids and their public
+   ids for a name that was never theirs. Retiring an id is for a work
+   that ended, and none of these did.
+
+   The fallback stands because the same evidence does not name a keeper:
+   two stubs a reference no longer cites together (item 23) have no
+   records between them, and two record-holding parts have no way to
+   rank each other. It is what `pubmed26n1336` shows, and what the batch
+   now performs rather than stopping on (serving plan §11, item 25).
+
+   The registry needed no new line kind for either half. A keeper simply
+   reuses the id, or merges it into an older one it also claims, which
+   `merge` already says; only the fallback writes `split`, which already
+   carried its parts. So the log's format is unchanged and replay of
+   every line written before today is unchanged with it.
+
+   Still open here: whether a split should ever be *avoided* — the
+   stub-grouping question of item 23 is the one that makes most of them.
 4. **Stubs at scale.** Expected to be DataCite DOIs, mistyped DOIs and
    works no source holds; the count per namespace is in every report.
 5. ~~**`form` and `genre` tables.**~~ Done 2026-09-15, in each source
@@ -950,7 +1215,12 @@ stays.
    OpenAlex; but Crossref and PubMed can only say "open", never "closed",
    so the rule is really OpenAlex's status with two corroborations.
 9. **Crossref's `alternative-id` and `is-same-as`** as name sources, on
-   evidence.
+   evidence. Half of it closed 2026-09-19: an `alternative-id` that is
+   not a DOI is a publisher id and a name (§3.1), 3,636 of 11,945 rows on
+   the lookup batch. What is still open is the DOI-shaped half — 13,659
+   of the census's, 28 of them not the work's own DOI — which the
+   publisher-id rule refuses rather than promoting to a DOI assertion,
+   and `is-same-as` (23) and `is-identical-to` (1), still typed relations.
 10. **The registry at scale.** A binary log and a memory-mapped fold; the
     ingestion plan's M9.
 11. ~~**A key for `keys`.**~~ Done 2026-09-15: `ingest::Key` has `Pmc`; no
@@ -1061,6 +1331,16 @@ stays.
     stubs (serving plan §11, item 27). Whether a stub keeps the names it
     was given until none is cited — stability over precision, for works
     nobody holds — is a rule to decide before daily update files.
+24. **A refusal that depends on the run.** Whether a publisher id
+    identifies an article is decided by how many of one source's records
+    claim it (§3.1, §3.3), which is a fact about the whole run. An
+    incremental merge sees only the batch and the works it touches, so a
+    value a full merge refuses can be accepted in a batch — never the
+    reverse, since a merged row does not carry the assertions that were
+    refused. The next full merge tidies it, as it does the duplicate
+    records of §11 item 18. Whether the refused values should instead be
+    carried forward as a checked-in list, so a batch decides as the full
+    merge did, is a question for the first daily update files.
 21. ~~**The public id.**~~ Built 2026-09-16 (serving plan SP3):
     `merge::public` mints one for every id lacking it when `merge` is
     given `--public-key <file>` — a keyed BLAKE3 hash of the id, `ol:`

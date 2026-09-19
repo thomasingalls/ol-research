@@ -121,7 +121,7 @@ impl Lister for OpenAlex {
             Key::Doi => "doi",
             Key::Pmid => "pmid",
             Key::OpenAlex => "ids.openalex",
-            Key::Pmc => return Err(Error::Unsupported(key)),
+            Key::Pmc | Key::Publisher => return Err(Error::Unsupported(key)),
         };
         let values: Vec<String> = ids.iter().map(|id| encode(id)).collect();
         Ok(Lookup {

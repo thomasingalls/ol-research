@@ -24,9 +24,13 @@ mod incremental_tests;
 pub mod mapped;
 pub mod names;
 pub mod row;
+#[cfg(test)]
+mod rows_tests;
+#[cfg(test)]
+mod traversal_tests;
 pub mod works;
 
-pub use core::{Resolved, Serving, Watermark};
+pub use core::{By, Expansion, Neighbour, Resolved, Serving, Walk, Watermark};
 pub use error::Error;
 pub use fold::Arcs;
 pub use row::Row;
@@ -36,8 +40,11 @@ pub use row::Row;
 /// base under another version is rebuilt, never patched. Version 3
 /// (2026-09-16): a row's records carry their evidence, as the merged
 /// record's do. Version 4 (2026-09-17): a row's records name their set and
-/// version, and a stub name's sources are its citers'.
-pub const VERSION: u32 = 4;
+/// version, and a stub name's sources are its citers'. Version 5
+/// (2026-09-19): the names base keeps the parts of every id a split
+/// retired, so an id with no survivor answers with them rather than not
+/// at all (serving plan §11, item 24).
+pub const VERSION: u32 = 5;
 
 /// The directory name for this binary's versions.
 #[must_use]

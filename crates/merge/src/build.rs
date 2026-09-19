@@ -23,7 +23,7 @@ use smallvec::SmallVec;
 use crate::arena::NameIx;
 use crate::contributor::Contributor;
 use crate::copies::{self, Copies, Fate};
-use crate::identity::{RecordIx, Resolution, Standing, Work as Identified};
+use crate::identity::{Reason, RecordIx, Resolution, Standing, Work as Identified};
 use crate::kind::{Form, Genre};
 use crate::name::{Name, OwnedName};
 use crate::record::{
@@ -194,8 +194,11 @@ pub struct OwnedRejected {
     pub name: OwnedName,
     #[allow(missing_docs)]
     pub by: SourceId,
+    /// None when no record holds the name: the value identifies no
+    /// article at all (merge plan §3.1, [`Reason::NotAnArticleId`]).
+    pub holder: Option<OwnedName>,
     #[allow(missing_docs)]
-    pub holder: OwnedName,
+    pub why: Reason,
 }
 
 /// The promoted fields, owned.
@@ -291,7 +294,8 @@ impl OwnedWork {
                 .map(|r| Rejected {
                     name: r.name.as_name(),
                     by: r.by,
-                    holder: r.holder.as_name(),
+                    holder: r.holder.as_ref().map(OwnedName::as_name),
+                    why: r.why,
                 })
                 .collect(),
             fields: Fields {
@@ -356,7 +360,8 @@ impl OwnedWork {
                 .map(|r| OwnedRejected {
                     name: r.name.to_owned(),
                     by: r.by,
-                    holder: r.holder.to_owned(),
+                    holder: r.holder.map(|h| h.to_owned()),
+                    why: r.why,
                 })
                 .collect(),
             fields: OwnedFields {
@@ -815,6 +820,9 @@ pub const fn rank(key: Key) -> u8 {
         Key::Pmc => 1,
         Key::OpenAlex => 2,
         Key::Doi => 3,
+        // Last: a publisher id is scoped by a registrant we derived, and
+        // is the weakest thing a reference could have agreed on.
+        Key::Publisher => 4,
     }
 }
 
@@ -1827,10 +1835,14 @@ pub fn held(
         .map(|r| OwnedRejected {
             name: arena.get(r.name).clone(),
             by: res.records[r.record as usize].source,
-            holder: arena.get(res.records[r.holder as usize].native).clone(),
+            holder: r
+                .holder
+                .map(|h| arena.get(res.records[h as usize].native).clone()),
+            why: r.why,
         })
         .collect();
-    rejected.sort_by(|a, b| (&a.name, a.by, &a.holder).cmp(&(&b.name, b.by, &b.holder)));
+    rejected
+        .sort_by(|a, b| (&a.name, a.by, &a.holder, a.why).cmp(&(&b.name, b.by, &b.holder, b.why)));
     OwnedWork {
         id,
         stub: false,
@@ -2029,7 +2041,7 @@ mod tests {
             .map(|(_, n)| n.clone())
             .chain(res.stub_works())
             .collect();
-        let assignment = registry.assign(&all, "t", false);
+        let assignment = registry.assign(&all, order.len(), "t", false);
         let (held_ids, stub_ids) = assignment.ids.split_at(order.len());
         let mut ids = Ids {
             held: vec![WorkId::FIRST; res.works.len()],

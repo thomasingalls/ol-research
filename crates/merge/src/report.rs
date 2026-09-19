@@ -54,6 +54,16 @@ pub fn identity(
         writeln!(out, "    {source:<9} {field:<20} {n:>10}")?;
     }
     writeln!(out, "  names: {} distinct", res.arena.len())?;
+    if s.collided > 0 {
+        writeln!(
+            out,
+            "  publisher ids one source claimed for more than one of its records, and so no article's id: {} values, {} assertions rejected",
+            s.collided, s.collided_assertions
+        )?;
+        for example in &s.collided_examples {
+            writeln!(out, "              {example}")?;
+        }
+    }
     let c = &res.components;
     writeln!(
         out,
@@ -136,7 +146,7 @@ pub fn identity(
             }
         }
     }
-    let mut by_key = [0u64; 4];
+    let mut by_key = [0u64; Key::ALL.len()];
     for name in res.stubs.iter() {
         by_key[Key::ALL.iter().position(|k| *k == name.key()).unwrap_or(0)] += 1;
     }

@@ -1,5 +1,5 @@
-// The serving layer's protocol (serving plan §7): the five questions and
-// which epoch answered. Every work on the wire is its public id; a request
+// The serving layer's protocol (serving plan §7): the questions the core
+// answers and which epoch answered. Every work on the wire is its public id; a request
 // may name a work by its public id or by any name in the text form the
 // merge uses (`doi:…`, `pmid:…`, `pmc:PMC…`, `openalex:W…`).
 syntax = "proto3";
@@ -19,8 +19,13 @@ service Serving {
   rpc Citers(ListRequest) returns (stream WorkPage);
   // Works matching a query, with facet counts over the matches.
   rpc Search(SearchRequest) returns (SearchResponse);
-  // One hop out from a seed set, most-touched first.
+  // One hop out from a seed set, best-scored first.
   rpc Expand(ExpandRequest) returns (ExpandResponse);
+  // What else cites what a work cites, or what else is cited by what
+  // cites it: one hop out from a seed set the server gathers itself.
+  rpc Related(RelatedRequest) returns (RelatedResponse);
+  // The shortest directed paths from one work to another, bounded.
+  rpc Path(PathRequest) returns (PathResponse);
 }
 
 // On every response: which epoch answered, the batch the answer is as
@@ -61,7 +66,8 @@ message ResolveResponse {
     string public_id = 2;
     // A shared name: every work it was accepted into.
     Shared shared = 3;
-    // An id retired by a split: no survivor answers for it.
+    // An id retired by a split: no survivor answers for it, and the
+    // works its names went to answer in its place.
     Split split = 4;
   }
 }
@@ -71,7 +77,11 @@ message Shared {
 }
 
 message Split {
+  // The retired id itself, as it was asked for.
   string public_id = 1;
+  // The live works its names went to: what was once one work, now
+  // several. Empty only where the parts are themselves gone.
+  repeated string into = 2;
 }
 
 message GetWorkRequest {
@@ -147,19 +157,46 @@ message ListRequest {
   uint32 page = 2;
   // From a previous page, to resume; empty to start.
   string cursor = 3;
-  // Carry each arc's title and promoted names.
+  // Carry each arc's Summary.
   bool hydrate = 4;
   // Stop after this many arcs; zero for all.
   uint64 limit = 5;
+}
+
+// One work as a list shows it: the one shape every hydrated list sends,
+// whether a work arrives as an arc, as a neighbour of an expansion or as
+// a step on a path. Enough to render a row without a second call, and
+// enough for a stub, which is most of what a citation list holds: 98.55%
+// of reference targets on the epoch of 2026-09-19 are works nothing we
+// hold is a record of. A stub has no title and no authors, and its names
+// are what there is to show — so `stub` travels beside them and a client
+// renders the name rather than an empty line.
+message Summary {
+  // The work's own, repeated here so a summary is self-contained: one
+  // client function renders one of these wherever it came from.
+  string public_id = 1;
+  // Names and no records: nothing we hold describes it, and everything
+  // below but `names` is empty.
+  bool stub = 2;
+  // The promoted title, markup stripped; empty for a stub.
+  string title = 3;
+  // The promoted names, which is what identifies a stub.
+  repeated Name names = 4;
+  repeated string authors = 5;
+  string venue = 6;
+  Date published = 7;
 }
 
 message Arc {
   string public_id = 1;
   // Who asserted the arc.
   repeated string by = 2;
-  // When hydrated.
-  string title = 3;
-  repeated Name names = 4;
+  // Present when the request asked to hydrate and the work has a row;
+  // absent otherwise, and then `public_id` is all there is.
+  Summary summary = 5;
+
+  reserved 3, 4;
+  reserved "title", "names";
 }
 
 message WorkPage {
@@ -201,21 +238,159 @@ message SearchResponse {
   repeated Facet facets = 4;
 }
 
+// Which arcs one hop follows. Co-citation seeds with a work's citers and
+// walks WALK_REFERENCES; bibliographic coupling seeds with its references
+// and walks WALK_CITERS. Both is the default and what Expand did before
+// the directions were split.
+enum Walk {
+  WALK_BOTH = 0;
+  WALK_REFERENCES = 1;
+  WALK_CITERS = 2;
+}
+
 message ExpandRequest {
   // Public ids or names; at most 100.
   repeated string seeds = 1;
   // At most 1000; 20 when zero.
   uint32 budget = 2;
   bool hydrate = 3;
+  Walk walk = 4;
 }
 
 message Neighbour {
   string public_id = 1;
+  // The raw overlap: how many of the seeds reach it, a seed that reaches
+  // it both ways under WALK_BOTH counted once.
   uint32 touches = 2;
-  string title = 3;
+  // How many works stand where the seeds did — the opposite orientation
+  // to the one walked, so citers for WALK_REFERENCES — which is what
+  // `touches` is out of: "7 of its 9 citers also cite this".
+  uint64 degree = 4;
+  // Salton's cosine, touches / sqrt(seeds * degree), in 0..=1. The
+  // neighbours are ordered by it, not by `touches`.
+  double score = 5;
+  // As on Arc: present when hydrated and the work has a row.
+  Summary summary = 6;
+
+  reserved 3;
+  reserved "title";
 }
 
 message ExpandResponse {
   Answered answered = 1;
   repeated Neighbour neighbours = 2;
+  // Works the hop reached before the budget truncated, of which
+  // `neighbours` is the best: the whole, against the part that came
+  // back.
+  uint64 total = 3;
+}
+
+// The two questions a reader asks of a work's neighbourhood, each in one
+// call. Expand is the primitive under both and stays as it is; this is
+// the shorthand, and the difference that matters is that the seeds are
+// the server's and not a page the client happened to be holding.
+message RelatedRequest {
+  // A public id, or a name in text form.
+  string work = 1;
+  By by = 2;
+  // Works to return, at most 1000; 20 when zero.
+  uint32 limit = 3;
+  bool hydrate = 4;
+}
+
+// Which neighbourhood. Both are one hop out from a list the work owns,
+// and they are mirrors of each other on both axes: the seeds of one are
+// the walk of the other.
+enum By {
+  // Bibliographic coupling: seeds are the work's references, and the
+  // walk is citers — "what else cites what this cites".
+  BY_CITES_SAME = 0;
+  // Co-citation: seeds are the work's citers, and the walk is
+  // references — "what else is cited by what cites this".
+  BY_CITED_ALONGSIDE = 1;
+}
+
+message RelatedResponse {
+  Answered answered = 1;
+  // Best-scored first, the subject work itself left out: its own citers
+  // all cite it, so it would otherwise head its own co-citation list at
+  // a score nothing else reaches.
+  repeated Neighbour related = 2;
+  // Seeds actually walked, which is the `|S|` every score divides by.
+  uint64 seeds_used = 3;
+  // Works the hop reached before `limit` truncated.
+  uint64 total = 4;
+  // Seeds the work had before the bound: equal to `seeds_used` unless
+  // walking them all would have read more arcs than the server will,
+  // and then the answer is bounded and this is what says so. The seeds
+  // kept are those with the fewest arcs in the orientation walked, so
+  // what is dropped is the longest lists — the review citing three
+  // hundred works, which puts the subject in the least company, and
+  // which at equal cost is also the worse answer (measured: 8 of the
+  // true top 20 against 1, at a budget of 10,000 arcs). Nothing in the
+  // corpus of 2026-09-19 reaches the bound.
+  uint64 seeds_total = 5;
+}
+
+// "Does `from` cite something that cites ... `to`". Directed: the other
+// direction is the other question, asked by swapping the ends.
+message PathRequest {
+  // A public id, or a name in text form.
+  string from = 1;
+  string to = 2;
+  // The longest path to look for, in arcs; at most 10, 6 when zero.
+  uint32 depth = 3;
+  // How many paths to return, each through a different middle; at most
+  // 10, 3 when zero.
+  uint32 paths = 4;
+  // Carry each work's Summary.
+  bool hydrate = 5;
+}
+
+// One path: `works` from `from` to `to`, the first reached by no arc and
+// every later one carrying the asserters of the arc that reached it.
+message Path {
+  repeated Arc works = 1;
+}
+
+message Paths {
+  // The length of every path here, in arcs. Zero means the two ends are
+  // one work, which is the answer when two names resolve to one id.
+  uint32 hops = 1;
+  repeated Path paths = 2;
+  // Distinct shortest paths there are, of which `paths` holds at most
+  // what was asked for — `total` as a list's `total` is: the whole,
+  // against the part that came back.
+  uint64 total = 3;
+}
+
+// No path, and the search was exhaustive to `depth`: an answer, not a
+// failure. It is the ordinary one — most works we hold are cited only by
+// works we do not, so most pairs are not connected at all.
+message NoPath {
+  uint32 depth = 1;
+  // Works each half of the search reached, so that a thin neighbourhood
+  // is distinguishable from a wide one that held no path.
+  uint64 forward = 2;
+  uint64 backward = 3;
+}
+
+// The search's budget ran out first. There is no path within `proved`
+// arcs, and whether there is one within `depth` is not known: ask again
+// with a smaller depth, or from the other end.
+message PathStopped {
+  uint32 depth = 1;
+  uint32 proved = 2;
+  uint64 visits = 3;
+  uint64 forward = 4;
+  uint64 backward = 5;
+}
+
+message PathResponse {
+  Answered answered = 1;
+  oneof outcome {
+    Paths found = 2;
+    NoPath none = 3;
+    PathStopped stopped = 4;
+  }
 }

@@ -1,0 +1,5 @@
+# Supply-chain guard: only resolve package versions that have been published
+# for at least 14 days (20160 minutes). Fresh npm publishes are the usual
+# vector for compromised packages, so we let them age before we install them.
+# Verified against pnpm 12.4.2 (`pnpm config get minimumReleaseAge`).
+minimumReleaseAge: 20160

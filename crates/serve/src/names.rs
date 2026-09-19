@@ -27,6 +27,10 @@ pub const FST: &str = "names.fst";
 pub const SHARED: &str = "shared.u32";
 #[allow(missing_docs)]
 pub const RETIRED: &str = "retired.u32";
+/// The parts of every id a split retired, as `(id, part)` pairs sorted
+/// by id: an id with no survivor still answers with them, as what was
+/// once so (serving plan §11, item 24).
+pub const SPLIT: &str = "split.u32";
 /// `WorkId` to the 64 bits of its public id, zero for none: the reverse
 /// of the transducer for the one namespace the transport speaks.
 pub const PUBLIC: &str = "public.u64";
@@ -63,6 +67,14 @@ pub struct Manifest {
     pub public: u64,
     #[allow(missing_docs)]
     pub retired: u64,
+    /// Ids a split retired, of the `retired` above. Defaulted, and
+    /// [`SPLIT`] is not required below, so that a base written before
+    /// the file existed still reads and simply answers with no parts —
+    /// what the layer answered anyway until 2026-09-19. A manifest is
+    /// read before its version is checked, and a parse error there says
+    /// nothing useful about which version it is.
+    #[serde(default)]
+    pub split: u64,
     #[allow(missing_docs)]
     pub files: BTreeMap<String, FileInfo>,
 }
@@ -134,6 +146,7 @@ pub(crate) fn part_of(dir: &Path) -> PathBuf {
 /// # Errors
 ///
 /// I/O, a set that is not a merge's, or the transducer refusing a key.
+#[allow(clippy::too_many_lines)]
 pub fn build(
     dir: &Path,
     merged: &Path,
@@ -208,6 +221,14 @@ pub fn build(
         .map(|(id, into)| (id.get(), into.map_or(0, WorkId::get)))
         .collect();
     retirements.sort_unstable();
+    // One pair per part, sorted, so a rebuild is byte-identical as the
+    // retirements beside it are; the open folds them into a map.
+    let mut split: Vec<(u32, u32)> = registry
+        .splits()
+        .flat_map(|(id, into)| into.iter().map(move |part| (id.get(), part.get())))
+        .collect();
+    split.sort_unstable();
+    let split_ids = registry.splits().count() as u64;
 
     let part = part_of(dir);
     let files = write_files(
@@ -215,6 +236,7 @@ pub fn build(
         &fst_bytes,
         &shared,
         &retirements,
+        &split,
         public,
         nodes,
         &stubs,
@@ -230,6 +252,7 @@ pub fn build(
         shared: shared_keys,
         public: public_keys,
         retired: retirements.len() as u64,
+        split: split_ids,
         files,
     };
     manifest.write(&part)?;
@@ -243,12 +266,14 @@ pub fn build(
     })
 }
 
-/// Writes the five files into a fresh part directory.
+/// Writes the six files into a fresh part directory.
+#[allow(clippy::too_many_arguments)] // one per file, and the sizes
 fn write_files(
     part: &Path,
     fst_bytes: &[u8],
     shared: &[u32],
     retirements: &[(u32, u32)],
+    split: &[(u32, u32)],
     public: &Public,
     nodes: u32,
     stubs: &[u8],
@@ -272,6 +297,12 @@ fn write_files(
         sink.put(&into.to_le_bytes())?;
     }
     files.insert(RETIRED.to_owned(), sink.finish()?);
+    let mut sink = Sink::create(&part.join(SPLIT))?;
+    for (id, into) in split {
+        sink.put(&id.to_le_bytes())?;
+        sink.put(&into.to_le_bytes())?;
+    }
+    files.insert(SPLIT.to_owned(), sink.finish()?);
     let mut bits = vec![0u64; usize::try_from(nodes).unwrap_or(usize::MAX)];
     for (id, text) in public.iter() {
         if let (Some(slot), Ok(value)) = (
@@ -309,6 +340,7 @@ pub struct Names {
     public: Mapped,
     stubs: Mapped,
     retired: HashMap<WorkId, Option<WorkId>>,
+    split: HashMap<WorkId, Vec<WorkId>>,
 }
 
 impl std::fmt::Debug for Names {
@@ -363,6 +395,18 @@ impl Names {
                 retired.insert(id, WorkId::new(into));
             }
         }
+        let mut split: HashMap<WorkId, Vec<WorkId>> = HashMap::new();
+        if manifest.files.contains_key(SPLIT) {
+            let split_bytes = open(SPLIT)?;
+            let bytes = split_bytes.bytes();
+            for i in 0..bytes.len() / 8 {
+                let id = u32_at(bytes, 2 * i);
+                let part = u32_at(bytes, 2 * i + 1);
+                if let (Some(id), Some(part)) = (WorkId::new(id), WorkId::new(part)) {
+                    split.entry(id).or_default().push(part);
+                }
+            }
+        }
         Ok(Self {
             manifest,
             map,
@@ -370,6 +414,7 @@ impl Names {
             public,
             stubs,
             retired,
+            split,
         })
     }
 
@@ -449,5 +494,20 @@ impl Names {
     #[must_use]
     pub fn is_retired(&self, id: WorkId) -> bool {
         self.retired.contains_key(&id)
+    }
+
+    /// One hop: what `id` was retired into — an older id for a merge,
+    /// nothing for a split — or `None` when it is live.
+    #[must_use]
+    pub fn retired_into(&self, id: WorkId) -> Option<Option<WorkId>> {
+        self.retired.get(&id).copied()
+    }
+
+    /// The parts a split retired `id` into, in the registry's order;
+    /// empty for every other id, and for every id when the base was
+    /// written before [`SPLIT`] existed.
+    #[must_use]
+    pub fn split_into(&self, id: WorkId) -> &[WorkId] {
+        self.split.get(&id).map_or(&[], Vec::as_slice)
     }
 }

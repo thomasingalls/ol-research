@@ -290,6 +290,10 @@ fn parse(key: Key, s: &str) -> Result<String, String> {
         Key::OpenAlex => OpenAlexId::from_bare(s)
             .map(|w| w.to_string())
             .map_err(|e| e.to_string()),
+        // No source looks up by a publisher id (merge plan §3.1), and its
+        // namespace is a registrant rather than a fixed word, so it is
+        // never a seed and never a listing path.
+        Key::Publisher => Err("no source looks up by a publisher id".to_owned()),
     }
 }
 

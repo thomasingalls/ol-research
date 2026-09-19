@@ -14,6 +14,7 @@
 //! [`Identity::resolve`] then applies the rules. Memory is names, not
 //! records: a record is a source, a native name and a few name indices.
 
+use std::cmp::Reverse;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::io;
@@ -195,6 +196,15 @@ pub struct Stats {
     /// Under `--survey`: values outside the merge's tables, by source
     /// and `field: value`, that stopped nothing.
     pub unmapped: BTreeMap<(SourceId, String), u64>,
+    /// Publisher ids one source claimed for more than one of its own
+    /// records, and so no article's identifier (merge plan §3.1): how
+    /// many distinct values, how many assertions they cost, and a few of
+    /// them written out.
+    pub collided: u64,
+    #[allow(missing_docs)]
+    pub collided_assertions: u64,
+    #[allow(missing_docs)]
+    pub collided_examples: Vec<String>,
 }
 
 /// The identity pass, accumulating over every set of every source.
@@ -214,6 +224,16 @@ pub struct Identity {
     stubs: Arena,
     stub_parent: Vec<NameIx>,
     pending: Vec<(SourceId, OwnedName)>,
+    /// Publisher-id claims, held back from the union until every record
+    /// is in: see [`Identity::settle`].
+    deferred: Vec<(RecordIx, NameIx, &'static str)>,
+    /// The claims `settle` rejected, each on the record that made it.
+    collisions: Vec<(RecordIx, NameIx)>,
+    /// The names those rejections leave in no component.
+    refused: HashSet<NameIx>,
+    /// Refused values written out, largest first, for the report.
+    refusals: Vec<(usize, String)>,
+    settled: bool,
     survey: bool,
     /// Counts so far.
     pub stats: Stats,
@@ -363,6 +383,8 @@ impl Identity {
             (self.sets.len() - 1) as u32
         });
         let mut asserts: SmallVec<[Assert; 3]> = SmallVec::new();
+        // As in `record`: a publisher id waits for `settle`.
+        let mut claims: SmallVec<[Assert; 2]> = SmallVec::new();
         let mut native = None;
         for a in assertions {
             let ix = self.arena.intern(a.name);
@@ -372,12 +394,17 @@ impl Identity {
             if a.native && native.is_none() {
                 native = Some(ix);
             }
-            if !asserts.iter().any(|x| x.name == ix) {
-                asserts.push(Assert {
-                    name: ix,
-                    field: a.field,
-                    native: a.native,
-                });
+            let assert = Assert {
+                name: ix,
+                field: a.field,
+                native: a.native,
+            };
+            if a.name.key() == Key::Publisher {
+                if !claims.iter().any(|x| x.name == ix) {
+                    claims.push(assert);
+                }
+            } else if !asserts.iter().any(|x| x.name == ix) {
+                asserts.push(assert);
             }
         }
         let Some(native) = native else {
@@ -388,6 +415,7 @@ impl Identity {
         };
         if let Some(&rix) = self.natives.get(&native) {
             *self.stats.repeated.entry(source).or_default() += 1;
+            self.defer(rix, &claims);
             return Ok(rix);
         }
         for a in &asserts {
@@ -403,6 +431,7 @@ impl Identity {
         });
         self.set_of.push(set);
         self.titles.insert(rix, OwnedTitles::of(titles));
+        self.defer(rix, &claims);
         *self.stats.records.entry(source).or_default() += 1;
         Ok(rix)
     }
@@ -441,6 +470,11 @@ impl Identity {
             }
         };
         let mut asserts: SmallVec<[Assert; 3]> = SmallVec::new();
+        // Publisher ids are held back from the union until every record
+        // is in. Whether one identifies an article at all is a fact about
+        // the whole run and not about this record (§3.3, 2026-09-19), and
+        // a union cannot be undone once made.
+        let mut claims: SmallVec<[Assert; 2]> = SmallVec::new();
         let mut native = None;
         let (arena, parent) = (&mut self.arena, &mut self.parent);
         for a in &assertions {
@@ -451,12 +485,17 @@ impl Identity {
             if a.native && native.is_none() {
                 native = Some(ix);
             }
-            if !asserts.iter().any(|x| x.name == ix) {
-                asserts.push(Assert {
-                    name: ix,
-                    field: a.field,
-                    native: a.native,
-                });
+            let assert = Assert {
+                name: ix,
+                field: a.field,
+                native: a.native,
+            };
+            if a.name.key() == Key::Publisher {
+                if !claims.iter().any(|x| x.name == ix) {
+                    claims.push(assert);
+                }
+            } else if !asserts.iter().any(|x| x.name == ix) {
+                asserts.push(assert);
             }
         }
         let Some(native) = native else {
@@ -476,6 +515,7 @@ impl Identity {
                 *self.stats.asserted.entry((S::SOURCE, a.field)).or_default() += 1;
                 *self.stats.joined.entry(S::SOURCE).or_default() += 1;
             }
+            self.defer(rix, &claims);
             // The title pass reads the set the speaking copy is in.
             if speaks {
                 self.set_of[rix as usize] = set_ix;
@@ -495,8 +535,137 @@ impl Identity {
             asserts,
         });
         self.set_of.push(set_ix);
+        self.defer(rix, &claims);
         *self.stats.records.entry(S::SOURCE).or_default() += 1;
         if speaks { Kept::Record } else { Kept::Joined }
+    }
+
+    /// Keeps a record's publisher-id claims for [`Identity::settle`]. The
+    /// same claim from two copies of one record is one claim, which
+    /// `settle` sees when it groups them, so nothing is counted here.
+    fn defer(&mut self, rix: RecordIx, claims: &[Assert]) {
+        for a in claims {
+            self.deferred.push((rix, a.name, a.field));
+        }
+    }
+
+    /// The refusals of [`Identity::settle`], put on the work each
+    /// claiming record landed in: an assertion with a verdict, like a
+    /// wrong link, and counted with them.
+    fn refusals_onto(&self, works: &mut [Work]) {
+        if self.collisions.is_empty() {
+            return;
+        }
+        let mut by_record: HashMap<RecordIx, SmallVec<[NameIx; 1]>> = HashMap::new();
+        for &(rix, ix) in &self.collisions {
+            by_record.entry(rix).or_default().push(ix);
+        }
+        for work in works {
+            let refused: SmallVec<[Rejection; 1]> = work
+                .records
+                .iter()
+                .filter_map(|rix| by_record.get(rix).map(|names| (*rix, names)))
+                .flat_map(|(rix, names)| {
+                    names.iter().map(move |&name| Rejection {
+                        name,
+                        record: rix,
+                        holder: None,
+                        why: Reason::NotAnArticleId,
+                    })
+                })
+                .collect();
+            work.rejected.extend(refused);
+        }
+    }
+
+    /// Settles the publisher ids `add` held back (merge plan §3.1, §3.3;
+    /// the user, 2026-09-19), before any component exists.
+    ///
+    /// A source holds one record per article — one PubMed record per
+    /// PMID, one Crossref record per DOI — so a source claiming one
+    /// publisher id for two of its own records is that source saying the
+    /// value names more than one of its articles. Those values are real:
+    /// a journal's title in the PII slot (`Afr J Reprod Health` on 15
+    /// records), a volume and issue (`JAMP-14-1` on 10), a year and
+    /// volume (`2025-vol6` on 10). Joined, they fuse every article of an
+    /// issue into one work and the components grow past the rules — a
+    /// hairball of 762 records on the sample. So the claim is rejected
+    /// with its reason ([`Reason::NotAnArticleId`]) and never joins, and
+    /// the census has to run here because a union cannot be undone.
+    ///
+    /// The test is *one source's* records and not all of them: one work
+    /// seen from two sources carrying the same publisher id is the id
+    /// doing its job, 18,194 of the 20,647 the census found on more than
+    /// one record, and rejecting those would empty the namespace of the
+    /// use it is for. The price is a source's duplicate records of one
+    /// article (§3.3): their shared publisher id is refused too, which
+    /// costs a name and never a merge.
+    fn settle(&mut self) {
+        if self.settled {
+            return;
+        }
+        self.settled = true;
+        let deferred = std::mem::take(&mut self.deferred);
+        // By name index, so that the order records gain names — and so
+        // the merged rows — does not depend on a hash map's iteration.
+        let mut claims: BTreeMap<NameIx, SmallVec<[(RecordIx, &'static str); 2]>> = BTreeMap::new();
+        for (rix, ix, field) in deferred {
+            let by = claims.entry(ix).or_default();
+            if !by.iter().any(|(r, _)| *r == rix) {
+                by.push((rix, field));
+            }
+        }
+        for (ix, mut by) in claims {
+            by.sort_unstable_by_key(|(rix, _)| *rix);
+            let mut per_source = [0u32; SourceId::ALL.len()];
+            for &(rix, field) in &by {
+                let source = self.records[rix as usize].source;
+                per_source[source as usize] += 1;
+                *self.stats.asserted.entry((source, field)).or_default() += 1;
+            }
+            if per_source.iter().any(|&n| n > 1) {
+                self.refused.insert(ix);
+                self.stats.collided += 1;
+                self.stats.collided_assertions += by.len() as u64;
+                let per: Vec<String> = SourceId::ALL
+                    .iter()
+                    .zip(per_source)
+                    .filter(|(_, n)| *n > 0)
+                    .map(|(s, n)| format!("{s} {n}"))
+                    .collect();
+                self.refusals.push((
+                    by.len(),
+                    format!(
+                        "{} on {} records ({})",
+                        self.arena.get(ix),
+                        by.len(),
+                        per.join(", ")
+                    ),
+                ));
+                // The worst are the ones worth printing, and holding
+                // every refusal of a corpus is not worth the bytes.
+                if self.refusals.len() > EXAMPLES * 4 {
+                    self.refusals.sort_by_key(|(n, _)| Reverse(*n));
+                    self.refusals.truncate(EXAMPLES);
+                }
+                for &(rix, _) in &by {
+                    self.collisions.push((rix, ix));
+                }
+                continue;
+            }
+            for (rix, field) in by {
+                let native = self.records[rix as usize].native;
+                self.records[rix as usize].asserts.push(Assert {
+                    name: ix,
+                    field,
+                    native: false,
+                });
+                self.union(native, ix);
+            }
+        }
+        self.refusals.sort_by_key(|(n, _)| Reverse(*n));
+        self.refusals.truncate(EXAMPLES);
+        self.stats.collided_examples = self.refusals.iter().map(|(_, e)| e.clone()).collect();
     }
 
     /// Finds the conflict components (merge plan §3.2): more than one name
@@ -504,10 +673,17 @@ impl Identity {
     /// the last [`Identity::add`].
     #[allow(clippy::cast_possible_truncation)] // fewer than 2^32 names in a run
     pub fn mark(&mut self) {
+        self.settle();
         let n = self.arena.len();
         self.roots = (0..n as NameIx).map(|i| self.find(i)).collect();
         let mut tallies: HashMap<NameIx, Tally> = HashMap::new();
         for (i, name) in self.arena.iter().enumerate() {
+            // A refused publisher id is in no component: `settle` took it
+            // off every record, and a name no record asserts would
+            // otherwise read as a stub.
+            if self.refused.contains(&(i as NameIx)) {
+                continue;
+            }
             let t = tallies.entry(self.roots[i]).or_default();
             let k = &mut t.keys[key_ix(name.key())];
             *k = k.saturating_add(1);
@@ -738,6 +914,9 @@ impl Identity {
         }
         let mut names_by_root: HashMap<NameIx, Vec<NameIx>> = HashMap::new();
         for (i, &root) in self.roots.iter().enumerate() {
+            if self.refused.contains(&(i as NameIx)) {
+                continue;
+            }
             names_by_root.entry(root).or_default().push(i as NameIx);
         }
         let mut recs_by_root: HashMap<NameIx, Vec<RecordIx>> = HashMap::new();
@@ -789,6 +968,7 @@ impl Identity {
             }
             works.extend(resolved);
         }
+        self.refusals_onto(&mut works);
         for work in &works {
             components.accepted += work.names.len() as u64;
             components.rejected += work.rejected.len() as u64;
@@ -950,7 +1130,8 @@ impl Identity {
                             works[g].rejected.push(Rejection {
                                 name,
                                 record: recs[pos],
-                                holder: holder_rec,
+                                holder: Some(holder_rec),
+                                why: Reason::WrongLink,
                             });
                             labels.wrong_link = true;
                         }
@@ -1045,7 +1226,9 @@ impl Identity {
                             2
                         }
                     }
-                    Key::Pmc | Key::OpenAlex => 0,
+                    // A publisher id has one asserter kind: the
+                    // publisher, through whichever record carries it.
+                    Key::Pmc | Key::OpenAlex | Key::Publisher => 0,
                 };
                 (rank, self.arena.get(n.name).clone())
             }) else {
@@ -1082,12 +1265,15 @@ impl Identity {
                 let _ = write!(out, " {}({})", self.arena.get(n.name), n.standing);
             }
             for r in &w.rejected {
-                let _ = write!(
-                    out,
-                    " {}(rejected: {} holds it)",
-                    self.arena.get(r.name),
-                    self.arena.get(self.records[r.holder as usize].native)
-                );
+                let _ = match r.holder {
+                    Some(holder) => write!(
+                        out,
+                        " {}(rejected: {} holds it)",
+                        self.arena.get(r.name),
+                        self.arena.get(self.records[holder as usize].native)
+                    ),
+                    None => write!(out, " {}(rejected: {})", self.arena.get(r.name), r.why),
+                };
             }
             out.push('}');
         }
@@ -1111,7 +1297,7 @@ enum Kept {
 /// Names per namespace and records per source in one component.
 #[derive(Default)]
 struct Tally {
-    keys: [u8; 4],
+    keys: [u8; Key::ALL.len()],
     sources: [u8; 3],
 }
 
@@ -1190,8 +1376,34 @@ pub struct Rejection {
     pub name: NameIx,
     #[allow(missing_docs)]
     pub record: RecordIx,
+    /// The record that holds the name; none when no record does, because
+    /// the value identifies no article at all.
+    pub holder: Option<RecordIx>,
     #[allow(missing_docs)]
-    pub holder: RecordIx,
+    pub why: Reason,
+}
+
+/// Why an assertion was rejected (merge plan §3.3). A rejected assertion
+/// stays on the work with its reason; nothing is deleted (§3.4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Reason {
+    /// A foreign id naming a record whose title disagrees: the record
+    /// that holds the name keeps it, the one that claimed it loses it.
+    WrongLink,
+    /// A publisher id one source claimed for more than one of its own
+    /// records, and so no article's identifier (§3.1, 2026-09-19): an
+    /// issue's id, a volume's, a journal's title in the slot.
+    NotAnArticleId,
+}
+
+impl fmt::Display for Reason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::WrongLink => "wrong link",
+            Self::NotAnArticleId => "not an article's id",
+        })
+    }
 }
 
 /// A work as identity leaves it: records, names with verdicts, flags.
@@ -1381,7 +1593,7 @@ impl Resolution {
 mod tests {
     use model::{OpenAlexId, PmcId, Pmid};
 
-    use super::{Error, Identity, Resolution, Standing};
+    use super::{Error, Identity, Reason, Resolution, Standing};
     use crate::name::{Assertion, Name, OwnedName};
     use crate::title::Titles;
     use crate::work::{SourceId, Sources};
@@ -1770,10 +1982,153 @@ mod tests {
         assert_eq!(res.components.rejected, 1);
         assert_eq!(shapes(&res), [("wrong link".to_owned(), 1)]);
         let rejected = res.works.iter().find(|w| !w.rejected.is_empty()).unwrap();
-        let holder = &res.records[rejected.rejected[0].holder as usize];
+        let holder = &res.records[rejected.rejected[0].holder.unwrap() as usize];
         assert_eq!(holder.source, SourceId::Pubmed);
         assert_eq!(res.components.total, 1, "one component, two works");
         assert_eq!(res.works.len(), 2);
+    }
+
+    #[test]
+    fn a_publisher_id_one_source_gives_two_records_is_no_article_id() {
+        // `JAMP-14-1` is a journal, volume and issue, and PubMed gave it
+        // on ten records of one issue; two is enough to prove the rule.
+        let mut id = Identity::new();
+        let registrant = model::Registrant::parse("10.30476").unwrap();
+        for (p, doi, title) in [
+            (
+                1u32,
+                "10.30476/jamp.2025.01",
+                "Simulation in nursing education",
+            ),
+            (2, "10.30476/jamp.2025.02", "A flipped classroom trial"),
+        ] {
+            let a = [
+                Assertion {
+                    name: Name::Pmid(pmid(p)),
+                    field: "pmid",
+                    native: true,
+                },
+                Assertion {
+                    name: Name::Doi(doi),
+                    field: "ids.doi",
+                    native: false,
+                },
+                Assertion {
+                    name: Name::Publisher(registrant, "JAMP-14-1"),
+                    field: "ids.pii",
+                    native: false,
+                },
+            ];
+            id.push(
+                SourceId::Pubmed,
+                &a,
+                Titles {
+                    title: Some(title),
+                    vernacular: None,
+                },
+            )
+            .unwrap();
+        }
+        id.mark();
+        assert_eq!(id.conflicts(), 0, "the issue's id never joined them");
+        let res = id.resolve(false).unwrap();
+        assert_eq!(
+            works(&res),
+            [
+                vec![
+                    "doi:10.30476/jamp.2025.01=promoted",
+                    "pmid:1=promoted",
+                    "reg30476:JAMP-14-1=rejected",
+                ],
+                vec![
+                    "doi:10.30476/jamp.2025.02=promoted",
+                    "pmid:2=promoted",
+                    "reg30476:JAMP-14-1=rejected",
+                ],
+            ],
+            "two works, and the claim on each with its verdict"
+        );
+        assert_eq!(res.stats.collided, 1);
+        assert_eq!(res.stats.collided_assertions, 2);
+        assert_eq!(res.components.rejected, 2);
+        for work in &res.works {
+            let r = &work.rejected[0];
+            assert_eq!(r.why, Reason::NotAnArticleId);
+            assert_eq!(r.holder, None, "no record holds what names no article");
+        }
+        assert_eq!(
+            res.stats.collided_examples,
+            ["reg30476:JAMP-14-1 on 2 records (pubmed 2)"]
+        );
+    }
+
+    #[test]
+    fn one_article_from_two_sources_keeps_its_publisher_id() {
+        // The id doing its job, and in the two spellings the two sources
+        // write: one name, kept, and no refusal.
+        let mut id = Identity::new();
+        let registrant = model::Registrant::parse("10.1016").unwrap();
+        let doi = "10.1016/j.bpj.2025.01.001";
+        let title = "Lipid bilayer mechanics";
+        let a = [
+            Assertion {
+                name: Name::Pmid(pmid(7)),
+                field: "pmid",
+                native: true,
+            },
+            Assertion {
+                name: Name::Doi(doi),
+                field: "ids.doi",
+                native: false,
+            },
+            Assertion {
+                name: Name::Publisher(registrant, "S0006-3495(25)00123-4"),
+                field: "ids.pii",
+                native: false,
+            },
+        ];
+        id.push(
+            SourceId::Pubmed,
+            &a,
+            Titles {
+                title: Some(title),
+                vernacular: None,
+            },
+        )
+        .unwrap();
+        let b = [
+            Assertion {
+                name: Name::Doi(doi),
+                field: "doi",
+                native: true,
+            },
+            Assertion {
+                name: Name::Publisher(registrant, "S0006349525001234"),
+                field: "alternative_ids",
+                native: false,
+            },
+        ];
+        id.push(
+            SourceId::Crossref,
+            &b,
+            Titles {
+                title: Some(title),
+                vernacular: None,
+            },
+        )
+        .unwrap();
+        id.mark();
+        let res = id.resolve(false).unwrap();
+        assert_eq!(
+            works(&res),
+            [vec![
+                "doi:10.1016/j.bpj.2025.01.001=promoted",
+                "pmid:7=promoted",
+                "reg1016:S0006349525001234=promoted",
+            ]]
+        );
+        assert_eq!(res.stats.collided, 0);
+        assert_eq!(res.components.rejected, 0);
     }
 
     #[test]

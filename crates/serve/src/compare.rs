@@ -100,6 +100,15 @@ pub fn differences(a: &Serving, b: &Serving, limit: usize) -> Result<Vec<String>
                 b.live(id)
             ));
         }
+        // What a retired id with no successor answers with (serving plan
+        // §11, item 24): the tail's parts against the base's.
+        if a.split_into(id) != b.split_into(id) {
+            note(format!(
+                "{id}: split into {:?} against {:?}",
+                a.split_into(id),
+                b.split_into(id)
+            ));
+        }
         let refs = |s: &Serving| -> Vec<(WorkId, String)> {
             s.references(id)
                 .map(|x| (x.work, x.by.to_string()))

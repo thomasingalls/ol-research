@@ -9,7 +9,7 @@ use model::{Date, Lang};
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 
-use crate::identity::Standing;
+use crate::identity::{Reason, Standing};
 use crate::kind::{Form, Genre};
 use crate::name::Name;
 use crate::relation;
@@ -149,9 +149,12 @@ pub struct Rejected<'a> {
     pub name: Name<'a>,
     #[allow(missing_docs)]
     pub by: SourceId,
-    /// The native name of the record that holds it.
+    /// The native name of the record that holds it; none when no record
+    /// does, because the value identifies no article at all.
     #[serde(borrow)]
-    pub holder: Name<'a>,
+    pub holder: Option<Name<'a>>,
+    /// Which rule rejected it (merge plan §3.3).
+    pub why: Reason,
 }
 
 /// The flags of §5.

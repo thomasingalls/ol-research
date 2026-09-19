@@ -634,9 +634,13 @@ fn the_cases_a_full_merge_owns_stop_the_batch_before_it_writes() {
         None,
     )
     .unwrap_err();
-    assert!(err.to_string().contains("named a held work too"), "{err}");
+    assert!(
+        err.to_string().contains("every name it gave there dropped"),
+        "{err}"
+    );
     drop(serving);
     std::fs::remove_dir_all(store.root()).unwrap();
+
     let store = fixture::store("refuse");
     fixture::full_merge(&store, &base(), &[]);
     let serving = Serving::open(&store).unwrap();
@@ -747,6 +751,176 @@ fn base_and(extra: Vec<Incoming>) -> Vec<Incoming> {
     let mut all = base();
     all.extend(extra);
     all
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn a_split_gives_the_id_to_the_part_that_holds_the_records() {
+    use SourceId::Pubmed;
+    // Merge plan §11, item 3, decided 2026-09-19 over the corpus's
+    // fourteen splits, every one of them one record-holding part and one
+    // bare stub: the part that holds the records keeps the id, and the
+    // part that is names only is minted as a stub.
+    let store = fixture::store("split-keeps-the-id");
+    let held = record(
+        Pubmed,
+        &["pmid:100", "doi:10.1000/q"],
+        "Qoppa",
+        view(false, 1, None),
+        text(None, &["Qo"], None),
+    );
+    let mut reader = record(
+        Pubmed,
+        &["pmid:101"],
+        "Qoppa reader",
+        view(false, 1, None),
+        text(None, &["Qr"], None),
+    );
+    cites(&mut reader, &["doi:10.1000/q"]);
+    fixture::full_merge(&store, &base_and(vec![held, reader.clone()]), &[]);
+    let before = {
+        let serving = Serving::open(&store).unwrap();
+        let id = resolve(&serving, "pmid:100").unwrap();
+        assert_eq!(resolve(&serving, "doi:10.1000/q"), Some(id), "one work");
+        id
+    };
+    // The record is delivered again without the DOI, and nothing else
+    // holds it: the work keeps its id and the DOI, which one reader
+    // cites alone, becomes a stub of its own.
+    let narrowed = record(
+        Pubmed,
+        &["pmid:100"],
+        "Qoppa",
+        view(false, 1, None),
+        text(None, &["Qo"], None),
+    );
+    fixture::full_merge(&store, &base_and(vec![narrowed, reader]), &[]);
+    let line = journal::last(&store.journal()).unwrap().unwrap();
+    assert_eq!(
+        (line.minted, line.merged, line.split, line.dropped),
+        (1, 0, 0, 0),
+        "the stub alone is minted, and nothing is retired"
+    );
+    let serving = Serving::open(&store).unwrap();
+    assert_eq!(resolve(&serving, "pmid:100"), Some(before), "kept its id");
+    assert_eq!(serving.live(before), Some(before));
+    let stub = resolve(&serving, "doi:10.1000/q").unwrap();
+    assert_ne!(stub, before);
+    assert!(serving.is_stub(stub));
+    assert!(
+        serving.split_into(before).is_empty(),
+        "no split was written"
+    );
+    drop(serving);
+    std::fs::remove_dir_all(store.root()).unwrap();
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn a_split_no_part_continues_is_retired_and_its_citers_resolve_again() {
+    use SourceId::Pubmed;
+    // The fallback of merge plan §11, item 3, which the corpus's
+    // fourteen splits do not show and `pubmed26n1336` does: a stub whose
+    // names two arriving records divide between them. Neither part is
+    // the old work — both hold records — so the id is retired with no
+    // successor and both parts are minted. The names no part took go to
+    // a stub of their own where a reference cites them alone, and every
+    // reference that landed on the stub is settled again by §6.
+    let mut both = record(
+        Pubmed,
+        &["pmid:201"],
+        "Sigma reader",
+        view(false, 1, None),
+        text(None, &["Sr"], None),
+    );
+    cites(&mut both, &["pmid:200", "pmc:PMC200", "doi:10.1000/s200"]);
+    let mut alone = record(
+        Pubmed,
+        &["pmid:202"],
+        "Sigma reader two",
+        view(false, 1, None),
+        text(None, &["Sr2"], None),
+    );
+    cites(&mut alone, &["doi:10.1000/s200"]);
+    let one = delivered(record(
+        Pubmed,
+        &["pmid:200", "doi:10.1000/a200"],
+        "Sigma",
+        view(false, 1, None),
+        text(None, &["Si"], None),
+    ));
+    let two = delivered(record(
+        Pubmed,
+        &["pmid:203", "pmc:PMC200", "doi:10.1000/b200"],
+        "Tau two",
+        view(false, 1, None),
+        text(None, &["Ta"], None),
+    ));
+    let base = base_and(vec![delivered(both.clone()), delivered(alone.clone())]);
+    // What the names are before the batch: one stub, the three of them
+    // cited together.
+    let before = fixture::store("split-before");
+    fixture::full_merge(&before, &base, &[]);
+    let stub = {
+        let serving = Serving::open(&before).unwrap();
+        let id = resolve(&serving, "pmid:200").unwrap();
+        assert!(serving.is_stub(id));
+        assert_eq!(resolve(&serving, "pmc:PMC200"), Some(id), "one stub");
+        assert_eq!(resolve(&serving, "doi:10.1000/s200"), Some(id));
+        id
+    };
+    std::fs::remove_dir_all(before.root()).unwrap();
+    let (store, serving) = batches_equal_the_full_merge(
+        "split-retires",
+        base,
+        &[],
+        vec![Batch {
+            records: vec![one, two],
+            ..Batch::default()
+        }],
+    );
+    assert_eq!(serving.live(stub), None, "retired with no successor");
+    let w1 = resolve(&serving, "pmid:200").unwrap();
+    let w2 = resolve(&serving, "pmc:PMC200").unwrap();
+    let left = resolve(&serving, "doi:10.1000/s200").unwrap();
+    assert!(!serving.is_stub(w1) && !serving.is_stub(w2) && w1 != w2);
+    assert!(serving.is_stub(left));
+    let mut into = serving.split_into(stub);
+    into.sort_unstable();
+    let mut parts = vec![w1, w2];
+    parts.sort_unstable();
+    assert_eq!(into, parts, "the retired id answers with its parts");
+    // Serving plan §11, item 24: the public id that was out in the world
+    // answers as what was once so.
+    let public = serving.public_of(stub).unwrap();
+    assert!(
+        matches!(serving.resolve(&public).unwrap(), Some(Resolved::Split { id, into }) if id == stub && into == serving.split_into(stub))
+    );
+    // §6 over the names the reference gave: the PMID ranks before the
+    // PMC id and the DOI, so the arc is the PMID's part's.
+    let x = resolve(&serving, "pmid:201").unwrap();
+    let y = resolve(&serving, "pmid:202").unwrap();
+    let arcs = refs(&serving, x);
+    assert!(
+        arcs.iter().any(|(w, _)| *w == w1.get()),
+        "the lowest namespace decides: {arcs:?}"
+    );
+    assert!(
+        arcs.iter().all(|(w, _)| *w != w2.get() && *w != stub.get()),
+        "and nothing is left pointing at the other part or the retired id: {arcs:?}"
+    );
+    assert_eq!(
+        citers(&serving, left),
+        vec![(y.get(), "pubmed".to_owned())],
+        "the leftover name keeps the reader that cites it alone"
+    );
+    // The base answers as the tail does, which is the new names file.
+    let rebuilt = Serving::open(&store).unwrap();
+    assert_eq!(rebuilt.split_into(stub), serving.split_into(stub));
+    assert_eq!(rebuilt.live(stub), None);
+    drop(serving);
+    drop(rebuilt);
+    std::fs::remove_dir_all(store.root()).unwrap();
 }
 
 #[test]

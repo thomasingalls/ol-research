@@ -12,8 +12,10 @@
 //! [`nodes`] reads what the works set says about every id. [`build`] makes
 //! the base in two passes — degrees, then placement — through [`layout`],
 //! which is the files and the manifest. [`base`] is the reader: a map and a
-//! slice per file. [`check`] is the invariants, and [`report`] the numbers
-//! every build prints.
+//! slice per file. [`path`] is the one traversal that is not a
+//! neighbourhood read — a bounded, directed search between two works.
+//! [`check`] is the invariants, and [`report`] the numbers every build
+//! prints.
 
 pub mod base;
 pub mod build;
@@ -21,6 +23,7 @@ pub mod check;
 pub mod error;
 pub mod layout;
 pub mod nodes;
+pub mod path;
 pub mod report;
 
 pub use base::{Arc, Arcs, Base};
@@ -28,6 +31,7 @@ pub use error::Error;
 pub use layout::Manifest;
 pub use merge::{Sources, WorkId};
 pub use nodes::Nodes;
+pub use path::{Bounds, Found, Step};
 
 /// The graph's own version, beside the model's and the merge's: any change
 /// to the files under `graph/` or to their meaning bumps it, and a base

@@ -2,16 +2,19 @@
 //! assertions of them (§3.1).
 
 use std::fmt;
+use std::hash::{Hash, Hasher};
 
 use ingest::Key;
-use model::{Doi, OpenAlexId, PmcId, Pmid};
+use model::{Doi, OpenAlexId, PmcId, Pmid, Registrant};
 use serde::de::Error as _;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+use crate::publisher;
 
 /// A name borrowed from a record: a namespace and a value. A DOI is
 /// canonical text, lowercase and bare, as `model::Doi` holds it; the rest
 /// are the model's packed ids.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy)]
 pub enum Name<'a> {
     #[allow(missing_docs)]
     Doi(&'a str),
@@ -21,6 +24,56 @@ pub enum Name<'a> {
     Pmc(PmcId),
     #[allow(missing_docs)]
     OpenAlex(OpenAlexId),
+    /// A publisher's own identifier for the article, scoped by the DOI
+    /// registrant that issued it (merge plan §3.1). The text is the value
+    /// as the record wrote it; the *name* is its canonical spelling,
+    /// which is that same text unless it is Elsevier's punctuated printed
+    /// PII, whose canonical spelling is bare ([`crate::publisher`]).
+    /// Equality, hash and display all run over the canonical spelling, so
+    /// the two spellings of one article's PII are one name without the
+    /// normalized layer having to be rewritten to make them so.
+    Publisher(Registrant, &'a str),
+}
+
+/// Over the canonical spelling, never the written one: two records that
+/// spelled one publisher id differently assert one name.
+impl PartialEq for Name<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Doi(a), Self::Doi(b)) => a == b,
+            (Self::Pmid(a), Self::Pmid(b)) => a == b,
+            (Self::Pmc(a), Self::Pmc(b)) => a == b,
+            (Self::OpenAlex(a), Self::OpenAlex(b)) => a == b,
+            (Self::Publisher(ra, a), Self::Publisher(rb, b)) => {
+                ra == rb
+                    && publisher::canonical_bytes(*ra, a).eq(publisher::canonical_bytes(*rb, b))
+            }
+            _ => false,
+        }
+    }
+}
+
+impl Eq for Name<'_> {}
+
+/// As [`PartialEq`]: the canonical spelling's bytes, terminated the way
+/// `str`'s own hash terminates them so that no two values run together.
+impl Hash for Name<'_> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        std::mem::discriminant(self).hash(state);
+        match self {
+            Self::Doi(d) => d.hash(state),
+            Self::Pmid(p) => p.hash(state),
+            Self::Pmc(p) => p.hash(state),
+            Self::OpenAlex(w) => w.hash(state),
+            Self::Publisher(registrant, value) => {
+                registrant.hash(state);
+                for byte in publisher::canonical_bytes(*registrant, value) {
+                    state.write_u8(byte);
+                }
+                state.write_u8(0xff);
+            }
+        }
+    }
 }
 
 impl<'a> Name<'a> {
@@ -32,27 +85,36 @@ impl<'a> Name<'a> {
             Self::Pmid(_) => Key::Pmid,
             Self::Pmc(_) => Key::Pmc,
             Self::OpenAlex(_) => Key::OpenAlex,
+            Self::Publisher(..) => Key::Publisher,
         }
     }
 
-    /// The number of a numeric name; `None` for a DOI.
+    /// The number of a numeric name; `None` for a DOI or a publisher id.
     #[must_use]
     pub const fn number(&self) -> Option<u64> {
         match self {
-            Self::Doi(_) => None,
+            Self::Doi(_) | Self::Publisher(..) => None,
             Self::Pmid(p) => Some(p.get() as u64),
             Self::Pmc(p) => Some(p.get() as u64),
             Self::OpenAlex(w) => Some(w.get()),
         }
     }
 
-    /// Parses the text form this type displays, the DOI's text borrowed
-    /// from `text`, through the model's own parsers, so only a canonical
-    /// name reads back.
+    /// Parses the text form this type displays, the text of a DOI or a
+    /// publisher id borrowed from `text`, through the model's own parsers,
+    /// so only a canonical name reads back.
+    ///
+    /// A publisher id's namespace is `reg1016` — the registrant, spelled
+    /// so that it cannot be mistaken for one. A registrant-shaped
+    /// namespace (`10.1016:`, or its bare digits) is refused here rather
+    /// than merely unknown, because the one thing the merged layer must
+    /// not grow is a second identifier shaped like a DOI (decision log,
+    /// 2026-09-19).
     ///
     /// # Errors
     ///
-    /// No namespace, an unknown one, or a value its parser refuses.
+    /// No namespace, an unknown one, a registrant-shaped one, or a value
+    /// its parser refuses.
     pub fn parse(text: &'a str) -> Result<Self, ParseNameError> {
         let err = |reason: String| ParseNameError {
             text: text.to_owned(),
@@ -61,6 +123,22 @@ impl<'a> Name<'a> {
         let (key, value) = text
             .split_once(':')
             .ok_or_else(|| err("no namespace".to_owned()))?;
+        if Registrant::parse(key).is_ok()
+            || (!key.is_empty() && key.bytes().all(|b| b.is_ascii_digit()))
+        {
+            return Err(err(
+                "a publisher id's namespace is reg1016, never a registrant".to_owned(),
+            ));
+        }
+        if let Some(digits) = key.strip_prefix("reg") {
+            let registrant = publisher::registrant_of(digits)
+                .ok_or_else(|| err(format!("{key:?} names no registrant")))?;
+            publisher::check(value).map_err(|why| err(why.to_string()))?;
+            if publisher::canonical(registrant, value) != value {
+                return Err(err("not canonical".to_owned()));
+            }
+            return Ok(Self::Publisher(registrant, value));
+        }
         let key = Key::parse(key).ok_or_else(|| err(format!("unknown namespace {key:?}")))?;
         Ok(match key {
             Key::Doi => {
@@ -75,6 +153,13 @@ impl<'a> Name<'a> {
             Key::OpenAlex => {
                 Self::OpenAlex(OpenAlexId::from_bare(value).map_err(|e| err(e.to_string()))?)
             }
+            // The key names the family, not a namespace: a publisher id
+            // without the registrant that issued it is scoped by nothing.
+            Key::Publisher => {
+                return Err(err(
+                    "a publisher id's namespace is its registrant, `reg1016`".to_owned(),
+                ));
+            }
         })
     }
 
@@ -86,20 +171,32 @@ impl<'a> Name<'a> {
             Self::Pmid(p) => OwnedName::Pmid(p),
             Self::Pmc(p) => OwnedName::Pmc(p),
             Self::OpenAlex(w) => OwnedName::OpenAlex(w),
+            // Owned means canonical: the rewrite happens once, here, and
+            // every reader of the merged layer sees the one spelling.
+            Self::Publisher(registrant, value) => {
+                OwnedName::Publisher(registrant, publisher::canonical(registrant, value).into())
+            }
         }
     }
 }
 
 /// `doi:10.1000/x`, `pmid:123`, `pmc:PMC123`, `openalex:W123`: the
-/// namespace's [`Key`] name, a colon, the model's canonical text.
+/// namespace's [`Key`] name, a colon, the model's canonical text. A
+/// publisher id names its registrant instead — `reg1016:S0006349525001234`
+/// — and writes the canonical spelling of its value.
 impl fmt::Display for Name<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}:", self.key())?;
         match self {
-            Self::Doi(d) => f.write_str(d),
-            Self::Pmid(p) => write!(f, "{p}"),
-            Self::Pmc(p) => write!(f, "{p}"),
-            Self::OpenAlex(w) => write!(f, "{w}"),
+            Self::Publisher(registrant, value) => write!(
+                f,
+                "reg{}:{}",
+                registrant.get(),
+                publisher::canonical(*registrant, value)
+            ),
+            Self::Doi(d) => write!(f, "{}:{d}", self.key()),
+            Self::Pmid(p) => write!(f, "{}:{p}", self.key()),
+            Self::Pmc(p) => write!(f, "{}:{p}", self.key()),
+            Self::OpenAlex(w) => write!(f, "{}:{w}", self.key()),
         }
     }
 }
@@ -117,6 +214,10 @@ pub enum OwnedName {
     Pmc(PmcId),
     #[allow(missing_docs)]
     OpenAlex(OpenAlexId),
+    /// A publisher id and the registrant that issued it, the value in the
+    /// canonical spelling [`Name::to_owned`] gave it, so that the derived
+    /// equality and order are the canonical ones.
+    Publisher(Registrant, Box<str>),
 }
 
 impl OwnedName {
@@ -128,6 +229,7 @@ impl OwnedName {
             Self::Pmid(p) => Name::Pmid(*p),
             Self::Pmc(p) => Name::Pmc(*p),
             Self::OpenAlex(w) => Name::OpenAlex(*w),
+            Self::Publisher(registrant, value) => Name::Publisher(*registrant, value),
         }
     }
 
@@ -242,9 +344,13 @@ pub struct Assertion<'a> {
 
 #[cfg(test)]
 mod tests {
-    use model::{OpenAlexId, PmcId, Pmid};
+    use model::{Doi, OpenAlexId, PmcId, Pmid};
 
     use super::{Name, OwnedName};
+
+    fn registrant(prefix: &str) -> model::Registrant {
+        model::Registrant::parse(prefix).unwrap()
+    }
 
     #[test]
     fn names_display_and_parse_canonically() {
@@ -288,6 +394,100 @@ mod tests {
             Some(7)
         );
         assert_eq!(Name::Doi("10.1/a").number(), None);
+    }
+
+    #[test]
+    fn a_publisher_id_is_named_by_its_registrant() {
+        let elsevier = registrant("10.1016");
+        let name = Name::Publisher(elsevier, "S0006-3495(25)00123-4");
+        let owned = OwnedName::Publisher(elsevier, "S0006349525001234".into());
+        assert_eq!(name.to_string(), "reg1016:S0006349525001234");
+        assert_eq!(name.to_owned(), owned, "owned means canonical");
+        assert_eq!(owned.as_name(), name, "either spelling is the one name");
+        assert_eq!(
+            OwnedName::parse("reg1016:S0006349525001234").unwrap(),
+            owned
+        );
+        assert_eq!(owned.key(), ingest::Key::Publisher);
+        assert_eq!(name.number(), None);
+        assert_eq!(
+            serde_json::to_string(&name).unwrap(),
+            "\"reg1016:S0006349525001234\""
+        );
+        let bytes = postcard::to_allocvec(&name).unwrap();
+        assert_eq!(
+            postcard::from_bytes::<Name<'_>>(&bytes).unwrap().to_owned(),
+            owned,
+            "borrowed through postcard"
+        );
+        // The namespace scopes the value: one string, two publishers,
+        // two names, and the order is by registrant then value.
+        let elsewhere = OwnedName::Publisher(registrant("10.5555"), "S0006349525001234".into());
+        assert_ne!(owned, elsewhere);
+        assert!(owned < elsewhere);
+        assert!(
+            OwnedName::Doi("10.1000/x".into()) < owned,
+            "namespace order"
+        );
+    }
+
+    #[test]
+    fn parse_refuses_a_namespace_shaped_like_a_registrant() {
+        // The whole point of `reg1016`: nothing in the merged layer may
+        // read as a DOI (decision log, 2026-09-19).
+        for text in [
+            "10.1016:S0006349525001234",
+            "1016:S0006349525001234",
+            "10.1053:S0006349525001234",
+        ] {
+            let err = OwnedName::parse(text).unwrap_err();
+            assert!(err.reason.contains("never a registrant"), "{text}: {err}");
+        }
+        // And a namespace that is not a registrant at all.
+        for text in [
+            "reg:x",           // no digits
+            "reg123:x",        // three digits
+            "reg0123:x",       // a leading zero
+            "reg1234567890:x", // ten digits
+            "regabc:x",        // not digits
+            "publisher:x",     // the key names the family, not a scope
+        ] {
+            assert!(OwnedName::parse(text).is_err(), "{text}");
+        }
+        // A value the namespace would have rewritten is not canonical,
+        // exactly as an uppercase DOI is not.
+        assert_eq!(
+            OwnedName::parse("reg1016:S0006-3495(25)00123-4")
+                .unwrap_err()
+                .reason,
+            "not canonical"
+        );
+        // Under a registrant that is not Elsevier's, that same text is
+        // canonical, because nothing rewrites it.
+        assert!(OwnedName::parse("reg5555:S0006-3495(25)00123-4").is_ok());
+        // And what is not an identifier does not become one by being
+        // written as a name.
+        for text in [
+            "reg1016:",
+            "reg1016:320",
+            "reg1016:e112",
+            "reg1016:10.1016/x",
+        ] {
+            assert!(OwnedName::parse(text).is_err(), "{text}");
+        }
+    }
+
+    #[test]
+    fn publisher_names_hash_by_their_canonical_spelling() {
+        use std::collections::HashSet;
+        let elsevier = Doi::parse("10.1016/x").unwrap().registrant();
+        let mut set = HashSet::new();
+        set.insert(Name::Publisher(elsevier, "S0006-3495(25)00123-4"));
+        assert!(set.contains(&Name::Publisher(elsevier, "S0006349525001234")));
+        assert!(!set.contains(&Name::Publisher(
+            Doi::parse("10.5555/x").unwrap().registrant(),
+            "S0006349525001234"
+        )));
     }
 
     #[test]

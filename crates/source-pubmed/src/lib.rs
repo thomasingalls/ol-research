@@ -51,7 +51,7 @@ impl ingest::Keys for Pubmed {
                     out(pmc.to_string());
                 }
             }
-            ingest::Key::OpenAlex => {}
+            ingest::Key::OpenAlex | ingest::Key::Publisher => {}
         }
     }
 
@@ -76,7 +76,7 @@ impl ingest::Keys for Pubmed {
                     out(pmc.to_string());
                 }
             }
-            ingest::Key::OpenAlex => {}
+            ingest::Key::OpenAlex | ingest::Key::Publisher => {}
         }
     }
 }
@@ -115,6 +115,21 @@ impl merge::Contributor for Pubmed {
                 field: "ids.pmc",
                 native: false,
             });
+        }
+        // The publisher's own item ids (merge plan §3.1), scoped by the
+        // registrant of the record's DOI. A value the scope refuses — a
+        // record with no DOI, an article number, the DOI restated — is no
+        // name, as a malformed claim is no name; the normalize survey
+        // counts them by reason.
+        let scope = view::publisher_scope(work);
+        for (field, value) in view::publisher_ids(work) {
+            if let Ok(name) = scope.name(value) {
+                out(merge::Assertion {
+                    name,
+                    field,
+                    native: false,
+                });
+            }
         }
     }
 

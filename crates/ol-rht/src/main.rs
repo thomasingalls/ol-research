@@ -75,7 +75,7 @@
 //! one record" command the failure report promises (plan §6). A failed run
 //! leaves no output: partial files are removed.
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt::Display;
 use std::io::{self, BufRead, Write};
 use std::num::NonZeroUsize;
@@ -125,7 +125,9 @@ const USAGE: &str = "usage:
   ol-rht epoch check [--store <root>]
   ol-rht query work <name|#id|ol:...> [--store <root>] [--limit N]
   ol-rht query search <words>... [--store <root>] [--limit N]
-  ol-rht query expand <name|#id>... [--store <root>] [--limit N]";
+  ol-rht query expand <name|#id>... [--store <root>] [--limit N] [--walk <references|citers|both>]
+  ol-rht query related <name|#id> --by <cites-same|cited-alongside> [--store <root>] [--limit N]
+  ol-rht query path <name|#id> <name|#id> [--store <root>] [--depth N] [--limit N]";
 
 /// Who we say we are; `--mailto` adds an address inside the parenthesis.
 const USER_AGENT: &str = "ol-rht/0.1 (citation-graph ingestion";
@@ -208,6 +210,8 @@ fn main() -> ExitCode {
                 ("query", "work") => query_work(&opts),
                 ("query", "search") => query_search(&opts),
                 ("query", "expand") => query_expand(&opts),
+                ("query", "related") => query_related(&opts),
+                ("query", "path") => query_path(&opts),
                 _ => usage(),
             }
         }
@@ -226,15 +230,25 @@ struct Options {
     survey: bool,
     seed: Option<PathBuf>,
     by: Option<Key>,
+    /// The other `--by`: which neighbourhood `query related` asks for,
+    /// spelled as the JSON surface spells it. The two values no key is
+    /// named after, so one option reads for both commands and neither
+    /// takes the other's.
+    related: Option<serve::By>,
+    walk: Option<serve::Walk>,
+    depth: Option<u32>,
 }
 
 impl Options {
     /// `None` when an option is malformed or repeated, or an unknown one
     /// appears. Paths may be absent (`list` takes none).
+    // One arm an option, and they are only long together.
+    #[allow(clippy::too_many_lines)]
     fn parse(args: &[&str]) -> Option<Self> {
         let mut rest = args;
         let (mut limit, mut workers, mut out, mut store, mut mailto, mut seed, mut by) =
             (None, None, None, None, None, None, None);
+        let (mut walk, mut depth, mut related) = (None, None, None);
         let mut survey = false;
         loop {
             match rest {
@@ -285,7 +299,39 @@ impl Options {
                     rest = before;
                 }
                 [before @ .., "--by", k] => {
-                    if by.replace(Key::parse(k)?).is_some() {
+                    match *k {
+                        "cites-same" | "cited-alongside" => {
+                            let which = if *k == "cites-same" {
+                                serve::By::CitesSame
+                            } else {
+                                serve::By::CitedAlongside
+                            };
+                            if related.replace(which).is_some() {
+                                return None;
+                            }
+                        }
+                        _ => {
+                            if by.replace(Key::parse(k)?).is_some() {
+                                return None;
+                            }
+                        }
+                    }
+                    rest = before;
+                }
+                [before @ .., "--walk", w] => {
+                    let direction = match *w {
+                        "references" => serve::Walk::References,
+                        "citers" => serve::Walk::Citers,
+                        "both" => serve::Walk::Both,
+                        _ => return None,
+                    };
+                    if walk.replace(direction).is_some() {
+                        return None;
+                    }
+                    rest = before;
+                }
+                [before @ .., "--depth", n] => {
+                    if depth.replace(n.parse::<u32>().ok()?).is_some() {
                         return None;
                     }
                     rest = before;
@@ -306,6 +352,9 @@ impl Options {
             survey,
             seed,
             by,
+            related,
+            walk,
+            depth,
         })
     }
 
@@ -1116,8 +1165,11 @@ impl Assigned {
 /// Gives every work its id through the registry (merge plan §4): held
 /// works in the registry's order, then stubs, in one assignment, so an
 /// id that a held work and a stub both claim — a name a vanished record
-/// held that a reference still cites — is split rather than given
-/// twice; on a complete run, names no longer seen are dropped.
+/// held that a reference still cites — is settled by the split rule
+/// rather than given twice: the held work keeps it and the stub is
+/// minted anew (merge plan §11, item 3, 2026-09-19), which is why the
+/// held count is what [`merge::registry::assign`] is told. On a
+/// complete run, names no longer seen are dropped.
 fn merge_assign(registry: &mut Registry, res: &Resolution, complete: bool) -> Assigned {
     let order = res.held_order();
     let stub_works = res.stub_works();
@@ -1127,7 +1179,7 @@ fn merge_assign(registry: &mut Registry, res: &Resolution, complete: bool) -> As
         .chain(stub_works.iter().cloned())
         .collect();
     let at = ingest::time::now();
-    let assignment = registry.assign(&all, &at, false);
+    let assignment = registry.assign(&all, order.len(), &at, false);
     let dropped = if complete {
         let seen: HashSet<&OwnedName> = all.iter().flatten().collect();
         registry.drop_unseen(|n| seen.contains(n), &at)
@@ -1909,11 +1961,12 @@ fn merge_batch(opts: &Options, public_key: Option<&Path>) -> ExitCode {
         a.deletions_not_applying
     );
     println!(
-        "  identity: {} components; {} ids minted ({} stubs), {} merged into an older id, {} dropped; {} names attached, {} dropped",
+        "  identity: {} components; {} ids minted ({} stubs), {} merged into an older id, {} split with no successor, {} dropped; {} names attached, {} dropped",
         a.components,
         a.minted,
         a.stubs_minted,
         a.merged,
+        a.split,
         a.dropped,
         a.names_attached,
         a.names_dropped
@@ -2035,10 +2088,32 @@ fn strip_value<'a>(rest: &[&'a str], flag: &str) -> Option<(Option<&'a str>, Vec
 }
 
 /// The options a graph command takes: `--store` and `--held`, and for
-/// `query` one work and `--limit`.
+/// `query` one work and `--limit`. `--walk` and `--depth` belong to
+/// `query expand` and `query path` alone, which check them themselves.
 fn graph_options_ok(opts: &Options, paths: usize, limit: bool) -> bool {
     opts.paths.len() == paths
         && (limit || opts.limit.is_none())
+        && opts.out.is_none()
+        && opts.workers.is_none()
+        && opts.mailto.is_none()
+        && opts.seed.is_none()
+        && opts.by.is_none()
+        && opts.related.is_none()
+        && opts.walk.is_none()
+        && opts.depth.is_none()
+        && !opts.survey
+}
+
+/// What `query expand`, `query related` and `query path` take beyond a
+/// graph command's options: `--limit` always, `--walk` for the first,
+/// `--by` for the second and `--depth` for the third, each refused where
+/// it means nothing. `--by` is *required* for `related`, the two
+/// neighbourhoods being opposite questions.
+fn query_options_ok(opts: &Options, paths: usize, walk: bool, depth: bool, related: bool) -> bool {
+    (walk || opts.walk.is_none())
+        && (depth || opts.depth.is_none())
+        && (related == opts.related.is_some())
+        && opts.paths.len() == paths
         && opts.out.is_none()
         && opts.workers.is_none()
         && opts.mailto.is_none()
@@ -2499,17 +2574,19 @@ fn names_build(opts: &Options) -> ExitCode {
     let m = &built.manifest;
     println!("names {} for batch {}", serve::version(), m.batch);
     println!(
-        "  keys: {} ({} shared, {} public ids); retired ids: {}",
-        m.keys, m.shared, m.public, m.retired
+        "  keys: {} ({} shared, {} public ids); retired ids: {} ({} split, answering with their parts)",
+        m.keys, m.shared, m.public, m.retired, m.split
     );
     println!(
-        "  files: {} {:.1} MiB, {} {:.1} MiB, {} {} bytes",
+        "  files: {} {:.1} MiB, {} {:.1} MiB, {} {} bytes, {} {} bytes",
         serve::names::FST,
         mib(m.files[serve::names::FST].bytes),
         serve::names::SHARED,
         mib(m.files[serve::names::SHARED].bytes),
         serve::names::RETIRED,
-        m.files[serve::names::RETIRED].bytes
+        m.files[serve::names::RETIRED].bytes,
+        serve::names::SPLIT,
+        m.files.get(serve::names::SPLIT).map_or(0, |f| f.bytes)
     );
     eprintln!("{what}: {:.1} s", started.elapsed().as_secs_f64());
     ExitCode::SUCCESS
@@ -2688,9 +2765,10 @@ fn epoch_check(opts: &Options) -> ExitCode {
             serve::names::FST,
             serve::names::SHARED,
             serve::names::RETIRED,
+            serve::names::SPLIT,
         ]
         .iter()
-        .all(|f| rebuilt.manifest.files[*f] == serving.names().manifest().files[*f]);
+        .all(|f| rebuilt.manifest.files.get(*f) == serving.names().manifest().files.get(*f));
         let _ = std::fs::remove_dir_all(&scratch);
         if !same {
             return Err(fail("the names lookup rebuilt differently".into()));
@@ -2770,8 +2848,14 @@ fn query_resolve(
             );
             Ok(None)
         }
-        Ok(Some(serve::Resolved::Split(id))) => {
-            println!("{text}: {id}, retired by a split; no survivor answers for it");
+        Ok(Some(serve::Resolved::Split { id, into })) => {
+            println!(
+                "{text}: {id}, retired by a split; no one work answers for it. Split into {}",
+                into.iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
             Ok(None)
         }
         Ok(None) => {
@@ -3063,9 +3147,47 @@ fn query_search(opts: &Options) -> ExitCode {
     }
 }
 
-/// One hop out from a seed set, most-touched first.
+/// The titles of a whole listing, read in one walk of the works index
+/// rather than one lookup a row (serving plan §11, item 31) — the same
+/// call the transport hydrates a page with.
+fn query_titles(serving: &serve::Serving, ids: &[WorkId]) -> HashMap<WorkId, String> {
+    let rows = serving.rows(ids).unwrap_or_default();
+    ids.iter()
+        .map(|id| {
+            let text = match rows.get(id) {
+                None => "(no row)",
+                Some(row) => row
+                    .text
+                    .as_ref()
+                    .and_then(|t| t.title.as_deref())
+                    .unwrap_or(if row.stub { "(stub)" } else { "(no title)" }),
+            };
+            (*id, text.to_owned())
+        })
+        .collect()
+}
+
+/// A work's title for a listing, or what it is instead.
+fn query_title(serving: &serve::Serving, id: WorkId) -> String {
+    let row = serving.work(id).ok().flatten();
+    row.as_ref()
+        .and_then(|r| r.text.as_ref())
+        .and_then(|t| t.title.as_deref())
+        .unwrap_or_else(|| {
+            if row.as_ref().is_some_and(|r| r.stub) {
+                "(stub)"
+            } else {
+                "(no title)"
+            }
+        })
+        .to_owned()
+}
+
+/// One hop out from a seed set along `--walk`, best-scored first. The
+/// raw overlap and the degree it is out of are printed beside the score,
+/// since those are the numbers a reader can weigh.
 fn query_expand(opts: &Options) -> ExitCode {
-    if opts.paths.is_empty() || !graph_options_ok(opts, opts.paths.len(), true) {
+    if opts.paths.is_empty() || !query_options_ok(opts, opts.paths.len(), true, false, false) {
         return usage();
     }
     let what = "query expand";
@@ -3091,33 +3213,202 @@ fn query_expand(opts: &Options) -> ExitCode {
     let budget = opts
         .limit
         .map_or(20, |n| usize::try_from(n).unwrap_or(usize::MAX));
+    let walk = opts.walk.unwrap_or_default();
     let started = std::time::Instant::now();
-    let found = serving.expand(&seeds, budget);
+    let found = serving.expand(&seeds, walk, budget, None);
     let elapsed = started.elapsed();
     let mut out = io::BufWriter::new(io::stdout().lock());
     let printed = (|| -> io::Result<()> {
         writeln!(
             out,
-            "one hop from {} seeds: {} shown in {:.1} ms",
-            seeds.len(),
-            found.len(),
+            "one hop from {} seeds along {walk:?}: {} of {} reached, in {:.1} ms",
+            found.seeds_used,
+            found.neighbours.len(),
+            found.total,
             elapsed.as_secs_f64() * 1000.0
         )?;
-        for (id, touches) in &found {
-            let row = serving.work(*id).ok().flatten();
-            let title = row
-                .as_ref()
-                .and_then(|r| r.text.as_ref())
-                .and_then(|t| t.title.as_deref())
-                .unwrap_or_else(|| {
-                    if row.as_ref().is_some_and(|r| r.stub) {
-                        "(stub)"
-                    } else {
-                        "(no title)"
+        print_neighbours(&mut out, &serving, &found.neighbours)?;
+        out.flush()
+    })();
+    match printed {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("{what}: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// One neighbour a line: the score, the raw overlap it is out of, and
+/// the title, the whole listing's rows read in one call.
+fn print_neighbours(
+    out: &mut impl Write,
+    serving: &serve::Serving,
+    found: &[serve::Neighbour],
+) -> io::Result<()> {
+    let ids: Vec<WorkId> = found.iter().map(|n| n.work).collect();
+    let titles = query_titles(serving, &ids);
+    for n in found {
+        writeln!(
+            out,
+            "  {:.4}  {:>3} of {:<6} {}  {}",
+            n.score,
+            n.touches,
+            n.degree,
+            n.work,
+            titles.get(&n.work).map_or("(no row)", String::as_str)
+        )?;
+    }
+    Ok(())
+}
+
+/// The two questions a reader asks of one work's neighbourhood, each in
+/// one call, with the seeds gathered here and not handed in: what else
+/// cites what this cites, and what else is cited by what cites this. The
+/// seeding is capped, and the line says what it used of what there was.
+fn query_related(opts: &Options) -> ExitCode {
+    if !query_options_ok(opts, 1, false, false, true) {
+        return usage();
+    }
+    let what = "query related";
+    let store = opts.store();
+    let serving = match serve::Serving::open(&store) {
+        Ok(serving) => serving,
+        Err(e) => {
+            eprintln!("{what}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let Some(text) = opts.paths[0].to_str() else {
+        return usage();
+    };
+    let id = match query_resolve(what, &serving, text) {
+        Ok(Some(id)) => id,
+        Ok(None) => return ExitCode::FAILURE,
+        Err(code) => return code,
+    };
+    let Some(by) = opts.related else {
+        return usage();
+    };
+    let budget = opts
+        .limit
+        .map_or(20, |n| usize::try_from(n).unwrap_or(usize::MAX));
+    let started = std::time::Instant::now();
+    let found = serving.related(id, by, budget);
+    let elapsed = started.elapsed();
+    let mut out = io::BufWriter::new(io::stdout().lock());
+    let printed = (|| -> io::Result<()> {
+        writeln!(
+            out,
+            "{id} {by:?}: {} of {} reached, from {} seeds of {}, in {:.1} ms",
+            found.neighbours.len(),
+            found.total,
+            found.seeds_used,
+            found.seeds_total,
+            elapsed.as_secs_f64() * 1000.0
+        )?;
+        print_neighbours(&mut out, &serving, &found.neighbours)?;
+        out.flush()
+    })();
+    match printed {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("{what}: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// The shortest directed paths between two works: "does the first cite
+/// something that cites … the second". No path within the bound is the
+/// ordinary answer on a corpus this sparse (graph plan §7), and it is
+/// printed as one.
+fn query_path(opts: &Options) -> ExitCode {
+    if !query_options_ok(opts, 2, false, true, false) {
+        return usage();
+    }
+    let what = "query path";
+    let store = opts.store();
+    let serving = match serve::Serving::open(&store) {
+        Ok(serving) => serving,
+        Err(e) => {
+            eprintln!("{what}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let mut ends = Vec::new();
+    for path in &opts.paths {
+        let Some(text) = path.to_str() else {
+            return usage();
+        };
+        match query_resolve(what, &serving, text) {
+            Ok(Some(id)) => ends.push(id),
+            Ok(None) => return ExitCode::FAILURE,
+            Err(code) => return code,
+        }
+    }
+    let bounds = graph::Bounds {
+        depth: opts.depth.unwrap_or(graph::Bounds::DEFAULT.depth),
+        paths: opts.limit.map_or(graph::Bounds::DEFAULT.paths, |n| {
+            usize::try_from(n).unwrap_or(usize::MAX)
+        }),
+        visits: graph::Bounds::DEFAULT.visits,
+    };
+    let started = std::time::Instant::now();
+    let found = serving.path(ends[0], ends[1], bounds);
+    let elapsed = started.elapsed();
+    let mut out = io::BufWriter::new(io::stdout().lock());
+    let printed = (|| -> io::Result<()> {
+        let ms = elapsed.as_secs_f64() * 1000.0;
+        match &found {
+            graph::Found::Paths {
+                hops,
+                paths,
+                meetings,
+                reached,
+            } => {
+                writeln!(
+                    out,
+                    "{} -> {}: {hops} hops, {meetings} shortest, {} shown; {} works forward, {} backward, {} expanded, in {ms:.1} ms",
+                    ends[0],
+                    ends[1],
+                    paths.len(),
+                    reached.forward,
+                    reached.backward,
+                    reached.expanded
+                )?;
+                for path in paths {
+                    writeln!(out, "  --")?;
+                    for step in path {
+                        writeln!(
+                            out,
+                            "  {}  {}  {}",
+                            step.work,
+                            if step.by.is_empty() {
+                                "(the start)".to_owned()
+                            } else {
+                                step.by.to_string()
+                            },
+                            query_title(&serving, step.work)
+                        )?;
                     }
-                })
-                .to_owned();
-            writeln!(out, "  {touches:>3}  {id}  {title}")?;
+                }
+            }
+            graph::Found::None { depth, reached } => writeln!(
+                out,
+                "{} -> {}: no path within {depth} hops, searched to that bound; {} works forward, {} backward, {} expanded, in {ms:.1} ms",
+                ends[0], ends[1], reached.forward, reached.backward, reached.expanded
+            )?,
+            graph::Found::Stopped {
+                depth,
+                proved,
+                visits,
+                reached,
+            } => writeln!(
+                out,
+                "{} -> {}: no path within {proved} hops; {depth} was asked and the budget of {visits} works ran out after {} forward and {} backward, in {ms:.1} ms",
+                ends[0], ends[1], reached.forward, reached.backward
+            )?,
         }
         out.flush()
     })();
@@ -3376,6 +3667,59 @@ macro_rules! absorb_all {
     };
 }
 
+/// What became of a record's publisher ids (merge plan §3.1), for the
+/// normalize surveys: each value counted by the name it became or by the
+/// reason it became none, and — separately — the values written in
+/// Elsevier's printed PII whose registrant is not on the checked-in list,
+/// by registrant.
+///
+/// The second count is the one to watch. A non-zero entry says a
+/// publisher we do not know to be Elsevier is printing Elsevier's
+/// identifier, so either that registrant belongs in
+/// `merge::publisher::ELSEVIER` or the shape is less Elsevier's than it
+/// looks; the registrant in the report is the evidence to decide on,
+/// which is why the list is never guessed at (the user, 2026-09-19).
+#[derive(Debug, Default)]
+struct PublisherIds {
+    outcomes: BTreeMap<&'static str, u64>,
+    off_list: BTreeMap<u32, u64>,
+}
+
+impl PublisherIds {
+    fn see(&mut self, scope: &merge::publisher::Scope<'_>, value: &str) {
+        let outcome = match scope.name(value) {
+            Ok(_) => "a name",
+            Err(why) => why.reason(),
+        };
+        *self.outcomes.entry(outcome).or_default() += 1;
+        if merge::publisher::pii_shaped(value)
+            && let Some(registrant) = scope.registrant()
+            && !merge::publisher::is_elsevier(registrant)
+        {
+            *self.off_list.entry(registrant.get()).or_default() += 1;
+        }
+    }
+
+    fn report(&self) {
+        if self.outcomes.is_empty() {
+            return;
+        }
+        eprintln!("  publisher ids {:?}", self.outcomes);
+        let off: u64 = self.off_list.values().sum();
+        eprintln!(
+            "    pii shaped, registrant not on the Elsevier list: {off} {:?}",
+            self.off_list
+        );
+    }
+}
+
+impl Absorb for PublisherIds {
+    fn absorb(&mut self, other: Self) {
+        self.outcomes.absorb(other.outcomes);
+        self.off_list.absorb(other.off_list);
+    }
+}
+
 /// Counts `key` in a map of the data's own strings, allocating only the
 /// first time a key is seen.
 fn bump(map: &mut BTreeMap<String, u64>, key: &str) {
@@ -3408,6 +3752,8 @@ struct PubmedStats {
     pii: u64,
     /// Publisher item ids past the first on one record.
     pii_extra: u64,
+    /// What those ids became as names (merge plan §3.1).
+    publisher: PublisherIds,
     pmc: u64,
     /// `ArticleId[pmc]` values that are not PMC ids, kept as written.
     pmc_malformed: u64,
@@ -3496,6 +3842,7 @@ impl StatsReport for PubmedStats {
             "  pii {} (extra on one record {})  pmc {} (not a PMC id, kept {})  two valid dois {}",
             self.pii, self.pii_extra, self.pmc, self.pmc_malformed, self.doi_disagree
         );
+        self.publisher.report();
         eprintln!("  published {:?}", self.published);
         eprintln!(
             "  electronic {}  revised {}  completed {}",
@@ -3575,6 +3922,10 @@ impl<'n> Sink<'n, Pubmed> for PubmedStats {
         }
         self.pii += u64::from(!c.ids.pii.is_empty());
         self.pii_extra += c.ids.pii.len().saturating_sub(1) as u64;
+        let scope = source_pubmed::view::publisher_scope(c);
+        for (_, value) in source_pubmed::view::publisher_ids(c) {
+            self.publisher.see(&scope, value);
+        }
         match c.ids.pmc.as_ref() {
             Some(Claim::Valid(_)) => self.pmc += 1,
             Some(Claim::Malformed { .. }) => self.pmc_malformed += 1,
@@ -3724,6 +4075,8 @@ struct CrossrefStats {
     types: BTreeMap<source_crossref::vocab::WorkType, u64>,
     doi_lowercased: u64,
     owner_differs: u64,
+    /// What `alternative-id` became as a name (merge plan §3.1).
+    publisher: PublisherIds,
     issued: BTreeMap<&'static str, u64>,
     title: [u64; 3],
     alternate_titles: u64,
@@ -3751,6 +4104,10 @@ impl<'n> Sink<'n, Crossref> for CrossrefStats {
         *self.types.entry(w.kind).or_default() += 1;
         self.doi_lowercased += u64::from(!w.doi.is_borrowed());
         self.owner_differs += u64::from(w.owner != w.doi.registrant());
+        let scope = source_crossref::view::publisher_scope(w);
+        for value in &w.alternative_ids {
+            self.publisher.see(&scope, value);
+        }
         *self
             .issued
             .entry(w.issued.map_or("none", |d| d.precision()))
@@ -3826,6 +4183,7 @@ impl StatsReport for CrossrefStats {
             "  doi lowercased (allocations) {}  owner prefix != registrant {}",
             self.doi_lowercased, self.owner_differs
         );
+        self.publisher.report();
         eprintln!("  issued {:?}", self.issued);
         eprintln!(
             "  title plain {} markup {} none {}  alternate titles {}  empty subtitles {}",
@@ -4124,13 +4482,13 @@ impl<'n> Sink<'n, OpenAlex> for OpenAlexStats {
 
 impl Merge for PubmedStats {
     fn merge(&mut self, other: Self) {
-        absorb_all!(self, other: PubmedStats { citations, deletions, excluded, doi, elocation_doi, doi_lowercased, doi_disagree, pii, pii_extra, pmc, pmc_malformed, published, electronic, revised, completed, status, languages, publication_types, title, abstracts, sections, sections_markup, sections_math, other_abstracts, journal_issn, journal_issn_linking, journal_issn_malformed, persons, collectives, orcid, affiliations, affiliation_ids, investigators, mesh_headings, mesh_major, chemicals, keywords, grants, grants_with_country, data_banks, history, publication_status, relations, references, reference_ids, reference_loose, reference_doi_malformed, reference_pmid_malformed, reference_pmc_malformed, malformed_samples });
+        absorb_all!(self, other: PubmedStats { citations, deletions, excluded, doi, elocation_doi, doi_lowercased, doi_disagree, pii, pii_extra, publisher, pmc, pmc_malformed, published, electronic, revised, completed, status, languages, publication_types, title, abstracts, sections, sections_markup, sections_math, other_abstracts, journal_issn, journal_issn_linking, journal_issn_malformed, persons, collectives, orcid, affiliations, affiliation_ids, investigators, mesh_headings, mesh_major, chemicals, keywords, grants, grants_with_country, data_banks, history, publication_status, relations, references, reference_ids, reference_loose, reference_doi_malformed, reference_pmid_malformed, reference_pmc_malformed, malformed_samples });
     }
 }
 
 impl Merge for CrossrefStats {
     fn merge(&mut self, other: Self) {
-        absorb_all!(self, other: CrossrefStats { works, deletions, types, doi_lowercased, owner_differs, issued, title, alternate_titles, subtitle_empty, abstracts, persons, orgs, with_orcid, affiliations_with_ror, issns, isbns, languages, references, reference_doi, reference_empty, updates, relations, licenses, malformed_samples });
+        absorb_all!(self, other: CrossrefStats { works, deletions, types, doi_lowercased, owner_differs, publisher, issued, title, alternate_titles, subtitle_empty, abstracts, persons, orgs, with_orcid, affiliations_with_ror, issns, isbns, languages, references, reference_doi, reference_empty, updates, relations, licenses, malformed_samples });
     }
 }
 

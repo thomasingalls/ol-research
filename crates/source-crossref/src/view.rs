@@ -16,6 +16,18 @@ use merge::{Name, OwnedName};
 use crate::normalize::{AuthorName, Reference, Work};
 use crate::vocab::{RelationIdKind, UpdateType, WorkType};
 
+/// What scopes the record's publisher ids (merge plan §3.1): its DOI,
+/// which every Crossref record has by construction. Not `prefix`, which
+/// names the DOI's current owner and differs from its registrant on 7 %
+/// of works — a publisher id was issued by whoever registered the DOI,
+/// not by whoever holds it now.
+#[must_use]
+pub fn publisher_scope<'w>(work: &'w Work<'_>) -> merge::publisher::Scope<'w> {
+    let mut scope = merge::publisher::Scope::new();
+    scope.doi(&work.doi);
+    scope
+}
+
 /// A work type as the merge's form: the same 30 words.
 #[must_use]
 pub const fn form(kind: WorkType) -> Form {

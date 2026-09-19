@@ -3,7 +3,7 @@ name = "ol-rht-serve"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "The transport: the serving layer's query core over gRPC, public ids on the wire and nothing else."
+description = "The transport: the serving layer's query core over gRPC and JSON, public ids on the wire and nothing else."
 
 [lib]
 name = "ol_rht_serve"
@@ -14,12 +14,15 @@ name = "ol-rht-serve"
 path = "src/main.rs"
 
 [dependencies]
+axum.workspace = true
 graph.workspace = true
 ingest.workspace = true
 merge.workspace = true
 model.workspace = true
 prost.workspace = true
 search.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 serve.workspace = true
 tokio.workspace = true
 tokio-stream.workspace = true
@@ -30,6 +33,9 @@ tonic-reflection.workspace = true
 
 [dev-dependencies]
 smallvec.workspace = true
+# The JSON surface is tested over a real socket, with the blocking client
+# the ingestion side already uses; nothing new enters the tree for it.
+ureq.workspace = true
 
 [build-dependencies]
 prost.workspace = true

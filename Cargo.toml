@@ -50,6 +50,10 @@ tonic-health = "0.14"
 prost = "0.14"
 prost-types = "0.14"
 protox = "0.9"
+# The JSON facade over the same core (serving plan §7), for a browser,
+# which cannot speak gRPC: axum 0.8 over the hyper 1 and tower tonic
+# already brings, so the second surface is a router and no new stack.
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "time", "sync"] }
 tokio-stream = { version = "0.1", features = ["net"] }
 # Fetching (plan §3.5): rustls, no transparent decompression — raw bytes

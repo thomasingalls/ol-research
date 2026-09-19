@@ -38,6 +38,7 @@ pub mod kind;
 pub mod layout;
 pub mod name;
 pub mod public;
+pub mod publisher;
 pub mod record;
 pub mod registry;
 pub mod relation;
@@ -83,4 +84,17 @@ pub use work::{SourceId, Sources, WorkId};
 /// whether that reference's own citation text repeats the name — what
 /// lets a reader settle the reference again, by §6 and not by an
 /// imitation of it, when a record takes over part of the stub.
-pub const VERSION: u32 = 7;
+/// Version 8 (2026-09-19): publisher ids are names. A publisher's own
+/// identifier for an article — PubMed's two `pii` slots, Crossref's
+/// non-DOI `alternative-id` — is a name in a namespace of its own,
+/// `reg1016:S0006349525001234`, keyed by the registrant of the record's
+/// DOI and written exactly as the publisher wrote it but for Elsevier's
+/// printed PII, which is written bare ([`publisher`]). Every merged row,
+/// the registry and the delta logs gain names of that namespace, and
+/// extending `publisher::ELSEVIER` changes the canonical spelling of
+/// names already written, so that too is a full merge. With them, a
+/// rejected assertion carries which rule rejected it
+/// ([`identity::Reason`]) and a holder only where a record holds the
+/// name, because a publisher id one source claims for more than one of
+/// its own records is no article's identifier and no record holds it.
+pub const VERSION: u32 = 8;

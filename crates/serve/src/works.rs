@@ -10,7 +10,8 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use ingest::Kind;
 use merge::public::Public;
@@ -321,14 +322,35 @@ pub fn build(
     })
 }
 
+/// One slot of a decompressed block: the row it holds, or nothing where
+/// the id is retired or was never minted.
+fn decode(raw: &[u8], slot: usize) -> Result<Option<Row>, Error> {
+    let header = at(u64::from(BLOCK) + 1) * 4;
+    let s0 = at(u64::from(u32_at(raw, slot)));
+    let s1 = at(u64::from(u32_at(raw, slot + 1)));
+    let body = &raw[header..];
+    Ok(postcard::from_bytes::<Option<Row>>(&body[s0..s1])?)
+}
+
 /// An open index.
 #[derive(Debug)]
 pub struct Works {
     manifest: Manifest,
     blocks: Mapped,
     offsets: Mapped,
-    /// The last block decoded, so a scan by id decodes each block once.
-    last: Mutex<Option<(usize, Vec<u8>)>>,
+    /// The last block decompressed, so that ids running through one
+    /// block decompress it once. Shared and not copied: a block of held
+    /// works is two thirds of a megabyte raw on the epoch of
+    /// 2026-09-19, and handing a lookup its own copy of that to read one
+    /// row out of cost more than the rest of the lookup put together.
+    last: Mutex<Option<(usize, Arc<Vec<u8>>)>>,
+    /// Blocks actually decompressed since the index was opened, and the
+    /// bytes they came to: what a lookup costs (serving plan §11, items
+    /// 5 and 13), counted because it is the number the bulk read is
+    /// measured by and two relaxed adds are nothing beside a zstd frame.
+    decompressed: AtomicU64,
+    #[allow(missing_docs)]
+    decompressed_bytes: AtomicU64,
 }
 
 impl Works {
@@ -356,11 +378,14 @@ impl Works {
             blocks,
             offsets,
             last: Mutex::new(None),
+            decompressed: AtomicU64::new(0),
+            decompressed_bytes: AtomicU64::new(0),
         })
     }
 
-    /// One block, decompressed: the one decoded last, or decoded now.
-    fn block(&self, block: usize) -> Result<Vec<u8>, Error> {
+    /// One block, decompressed: the one decompressed last, or one
+    /// decompressed now.
+    fn block(&self, block: usize) -> Result<Arc<Vec<u8>>, Error> {
         let mut last = self
             .last
             .lock()
@@ -372,10 +397,32 @@ impl Works {
         }
         let start = at(u64_at(self.offsets.bytes(), block));
         let end = at(u64_at(self.offsets.bytes(), block + 1));
-        let raw = zstd::stream::decode_all(&self.blocks.bytes()[start..end])
-            .map_err(|e| Error::io(Path::new(BLOCKS), e))?;
+        let raw = Arc::new(
+            zstd::stream::decode_all(&self.blocks.bytes()[start..end])
+                .map_err(|e| Error::io(Path::new(BLOCKS), e))?,
+        );
+        self.decompressed.fetch_add(1, Ordering::Relaxed);
+        self.decompressed_bytes
+            .fetch_add(raw.len() as u64, Ordering::Relaxed);
         *last = Some((block, raw.clone()));
         Ok(raw)
+    }
+
+    /// Blocks this index has decompressed for lookups since it was
+    /// opened — [`get`](Self::get) and [`get_many`](Self::get_many),
+    /// each counted only where the one-block cache missed. The whole
+    /// scan of [`rows`](Self::rows) decompresses every block and is not
+    /// counted: it reads past the cache by design.
+    #[must_use]
+    pub fn decompressed(&self) -> u64 {
+        self.decompressed.load(Ordering::Relaxed)
+    }
+
+    /// What those blocks came to, decompressed: the bytes a lookup
+    /// actually pays for, against the row it keeps.
+    #[must_use]
+    pub fn decompressed_bytes(&self) -> u64 {
+        self.decompressed_bytes.load(Ordering::Relaxed)
     }
 
     #[allow(missing_docs)]
@@ -400,14 +447,50 @@ impl Works {
         if ix >= self.manifest.nodes {
             return Ok(None);
         }
-        let block = at(u64::from(ix / BLOCK));
-        let slot = at(u64::from(ix % BLOCK));
-        let raw = self.block(block)?;
-        let header = at(u64::from(BLOCK) + 1) * 4;
-        let s0 = at(u64::from(u32_at(&raw, slot)));
-        let s1 = at(u64::from(u32_at(&raw, slot + 1)));
-        let body = &raw[header..];
-        Ok(postcard::from_bytes::<Option<Row>>(&body[s0..s1])?)
+        let raw = self.block(at(u64::from(ix / BLOCK)))?;
+        decode(&raw, at(u64::from(ix % BLOCK)))
+    }
+
+    /// The rows of many works in one walk of the index: each block the
+    /// ids fall in decompressed once, however many of them it holds,
+    /// against one decompression per id through [`get`](Self::get)
+    /// (serving plan §11, item 13). Ids past the index and slots no
+    /// live work holds are absent from the answer, so the result is
+    /// shorter than `ids` whenever some id has no row.
+    ///
+    /// `ids` should be **sorted and distinct** — that is what makes a
+    /// block's ids adjacent and so decompressed together. Any other
+    /// order answers the same rows and only costs more: the ids of one
+    /// block are gathered while they run consecutively and the next
+    /// spelling of that block decompresses it again.
+    ///
+    /// # Errors
+    ///
+    /// A block that does not decompress, or a row that does not decode.
+    pub fn get_many(&self, ids: &[WorkId]) -> Result<Vec<(WorkId, Row)>, Error> {
+        let mut out = Vec::with_capacity(ids.len());
+        let mut i = 0usize;
+        while i < ids.len() {
+            let ix = ids[i].get() - 1;
+            if ix >= self.manifest.nodes {
+                i += 1;
+                continue;
+            }
+            let block = ix / BLOCK;
+            let raw = self.block(at(u64::from(block)))?;
+            // Every id of this block, while they run consecutively.
+            while let Some(id) = ids.get(i) {
+                let ix = id.get() - 1;
+                if ix >= self.manifest.nodes || ix / BLOCK != block {
+                    break;
+                }
+                if let Some(row) = decode(&raw, at(u64::from(ix % BLOCK)))? {
+                    out.push((*id, row));
+                }
+                i += 1;
+            }
+        }
+        Ok(out)
     }
 
     /// Every row in id order, block by block.

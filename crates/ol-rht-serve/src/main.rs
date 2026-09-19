@@ -1,8 +1,9 @@
-//! `ol-rht-serve --store <root> [--listen <addr>] [--poll <seconds>]`: the
-//! query core over gRPC (serving plan §7). Opens the epoch `current`
-//! names, serves it, folds every batch the journal gains (§5) on each
-//! poll, and switches to a new epoch when `current` changes, requests in
-//! flight finishing on the old.
+//! `ol-rht-serve --store <root> [--listen <addr>] [--http <addr>|off]
+//! [--allow-origin <origin>]… [--poll <seconds>]`: the query core over
+//! gRPC and, on a second listener, over JSON (serving plan §7). Opens
+//! the epoch `current` names, serves it, folds every batch the journal
+//! gains (§5) on each poll, and switches to a new epoch when `current`
+//! changes, requests in flight finishing on the old.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -11,15 +12,17 @@ use std::time::Duration;
 
 use ingest::Store;
 use ol_rht_serve::proto::v1::serving_server::ServingServer;
-use ol_rht_serve::{Service, Terms};
+use ol_rht_serve::{Origins, Service, Terms};
 use serve::Serving;
 use tonic::transport::Server;
 
-const USAGE: &str = "usage: ol-rht-serve [--store <root>] [--listen <addr>] [--poll <seconds>]";
+const USAGE: &str = "usage: ol-rht-serve [--store <root>] [--listen <addr>] [--http <addr>|off] [--allow-origin <origin>]... [--poll <seconds>]";
 
 struct Args {
     store: PathBuf,
     listen: String,
+    http: String,
+    origins: Vec<String>,
     poll: u64,
 }
 
@@ -27,6 +30,13 @@ fn parse(args: &[String]) -> Option<Args> {
     let mut out = Args {
         store: PathBuf::from("data"),
         listen: "127.0.0.1:50051".to_owned(),
+        // The JSON surface on the next port along. A browser speaks
+        // HTTP/1.1 and gRPC wants HTTP/2 with prior knowledge, so a
+        // listener each keeps both protocols at their own defaults and
+        // lets either be bound alone; `off` leaves the port unbound.
+        // Loopback, since nothing here authenticates anyone yet.
+        http: "127.0.0.1:50052".to_owned(),
+        origins: Vec::new(),
         poll: 1,
     };
     let mut i = 0;
@@ -35,10 +45,17 @@ fn parse(args: &[String]) -> Option<Args> {
         match args[i].as_str() {
             "--store" => out.store = PathBuf::from(value),
             "--listen" => out.listen.clone_from(value),
+            "--http" => out.http.clone_from(value),
+            "--allow-origin" => out.origins.push(value.clone()),
             "--poll" => out.poll = value.parse().ok()?,
             _ => return None,
         }
         i += 2;
+    }
+    // Naming one origin replaces the dev server's, rather than adding to
+    // it: what a deployment allows is the deployment's to say in full.
+    if out.origins.is_empty() {
+        out.origins = Origins::DEV.iter().map(|o| (*o).to_owned()).collect();
     }
     Some(out)
 }
@@ -50,6 +67,13 @@ async fn main() -> ExitCode {
     let Some(args) = parse(&args) else {
         eprintln!("{USAGE}");
         return ExitCode::from(2);
+    };
+    let origins = match Origins::new(&args.origins) {
+        Ok(origins) => origins,
+        Err(e) => {
+            eprintln!("ol-rht-serve: {e}");
+            return ExitCode::from(2);
+        }
     };
     let store = Store::new(args.store.clone());
     let serving = match Serving::open(&store) {
@@ -73,7 +97,35 @@ async fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    // Bound before anything else starts, so a port already taken stops
+    // the server rather than leaving half of it up.
+    let json = if args.http == "off" {
+        None
+    } else {
+        match tokio::net::TcpListener::bind(&args.http).await {
+            Ok(listener) => {
+                eprintln!(
+                    "ol-rht-serve: JSON on {}, readable from {}",
+                    args.http,
+                    origins.listed().join(", ")
+                );
+                Some(listener)
+            }
+            Err(e) => {
+                eprintln!("ol-rht-serve: {}: {e}", args.http);
+                return ExitCode::from(2);
+            }
+        }
+    };
     let service = Arc::new(Service::new(serving, Terms::stub()));
+    let json = json.map(|listener| {
+        let service = service.clone();
+        tokio::spawn(async move {
+            if let Err(e) = ol_rht_serve::http::serve(listener, service, origins).await {
+                eprintln!("ol-rht-serve: JSON: {e}");
+            }
+        })
+    });
     let poller = {
         let service = service.clone();
         let root = args.store.clone();
@@ -160,6 +212,9 @@ async fn main() -> ExitCode {
         })
         .await;
     poller.abort();
+    if let Some(json) = json {
+        json.abort();
+    }
     match served {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {

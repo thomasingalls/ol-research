@@ -225,7 +225,7 @@ pub(crate) fn full_merge(
         .chain(stub_works.iter().cloned())
         .collect();
     let at = ingest::time::now();
-    let assignment = registry.assign(&all, &at, true);
+    let assignment = registry.assign(&all, order.len(), &at, true);
     Registry::append(&registry_path, &assignment.lines).unwrap();
     let (held_ids, stub_ids) = assignment.ids.split_at(order.len());
     let mut ids = Ids {

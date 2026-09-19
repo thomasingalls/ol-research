@@ -279,6 +279,9 @@ pub struct Applied {
     pub stubs_minted: u64,
     /// Ids retired into an older one.
     pub merged: u64,
+    /// Ids retired with no successor: their names split between works
+    /// and no part holds the records (merge plan §11, item 3).
+    pub split: u64,
     /// Rows dropped: no records and nothing citing them.
     pub dropped: u64,
     #[allow(missing_docs)]
@@ -324,6 +327,10 @@ struct Live<'s> {
     serving: &'s Serving,
     names: HashMap<OwnedName, Option<WorkId>>,
     retired: HashMap<WorkId, Option<WorkId>>,
+    /// The parts of every id this batch's splits retired, so that a name
+    /// still pointing at one answers as the layer does (serving plan
+    /// §11, item 24).
+    split: HashMap<WorkId, Vec<WorkId>>,
     minted: u32,
     lines: Vec<registry::Line>,
 }
@@ -352,8 +359,24 @@ impl<'s> Live<'s> {
             serving,
             names: HashMap::new(),
             retired: HashMap::new(),
+            split: HashMap::new(),
             minted: serving.minted(),
             lines: Vec::new(),
+        }
+    }
+
+    /// The parts a split retired the end of `id`'s merge chain into,
+    /// this batch's lines over the layer's.
+    fn split_into(&self, mut id: WorkId) -> Vec<WorkId> {
+        loop {
+            if let Some(into) = self.retired.get(&id) {
+                match into {
+                    Some(next) => id = *next,
+                    None => return self.split.get(&id).cloned().unwrap_or_default(),
+                }
+                continue;
+            }
+            return self.serving.split_into(id);
         }
     }
 
@@ -374,7 +397,10 @@ impl<'s> Live<'s> {
     fn resolved(&self, name: &OwnedName) -> Option<Resolved> {
         let follow = |id: WorkId| match self.live(id) {
             Some(l) => Resolved::One(l),
-            None => Resolved::Split(id),
+            None => Resolved::Split {
+                id,
+                into: self.split_into(id),
+            },
         };
         if let Some(over) = self.names.get(name) {
             return over.map(follow);
@@ -421,8 +447,9 @@ impl Table for Live<'_> {
                 }
                 self.retired.insert(*id, Some(*into));
             }
-            registry::Line::Split { id, .. } => {
+            registry::Line::Split { id, into, .. } => {
                 self.retired.insert(*id, None);
+                self.split.insert(*id, into.clone());
             }
         }
         self.lines.push(line.clone());
@@ -615,6 +642,9 @@ struct ResolvedComponent {
     puts: Vec<(OwnedWork, Text)>,
     /// Ids retired into another by this component.
     retirements: Vec<(WorkId, WorkId)>,
+    /// Ids retired with no successor, with the parts their names went to
+    /// (merge plan §11, item 3).
+    splits: Vec<(WorkId, Vec<WorkId>)>,
     /// Ids dropped: no records, nothing citing them.
     dropped: Vec<WorkId>,
 }
@@ -644,6 +674,9 @@ struct Engine<'s> {
     batch_sources: HashMap<WorkId, Sources>,
     puts: Vec<(OwnedWork, Option<Text>)>,
     retirements: Vec<(WorkId, WorkId)>,
+    /// Ids a split retired, each with its parts: a retirement with no
+    /// successor, which is why it is not in `retirements`.
+    splits: Vec<(WorkId, Vec<WorkId>)>,
     dropped: Vec<WorkId>,
     /// Ids no longer live after this batch.
     gone: HashSet<WorkId>,
@@ -776,7 +809,7 @@ impl Engine<'_> {
         match self.live.resolved(name) {
             Some(Resolved::One(id)) => vec![id],
             Some(Resolved::Shared(ids)) => ids,
-            Some(Resolved::Split(_)) | None => Vec::new(),
+            Some(Resolved::Split { .. }) | None => Vec::new(),
         }
     }
 
@@ -918,29 +951,17 @@ impl Engine<'_> {
         let res = identity.resolve(false)?;
         let order = res.held_order();
         let all: Vec<Vec<OwnedName>> = order.iter().map(|(_, n)| n.clone()).collect();
-        let assignment = registry::assign(&mut self.live, &all, &self.at);
-        if assignment.split > 0 {
-            return Err(Error::FullMerge(format!(
-                "a work's names split between works ({})",
-                assignment
-                    .lines
-                    .iter()
-                    .filter_map(|l| match l {
-                        registry::Line::Split { id, into, .. } => Some(format!(
-                            "{id} into {}",
-                            into.iter()
-                                .map(ToString::to_string)
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        )),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>()
-                    .join("; ")
-            )));
-        }
+        // Every work here holds records, so a contested id has no one
+        // part to continue it and is retired: the incremental half of
+        // the split rule (merge plan §11, item 3). Where a held work and
+        // a stub contest an id — the shape all fourteen of the corpus's
+        // splits have — the stub is not in this assignment at all, and
+        // the leftover names below give it its own id, which is the same
+        // answer the full merge reaches by the rule's first clause.
+        let assignment = registry::assign(&mut self.live, &all, all.len(), &self.at);
         self.applied.minted += assignment.minted;
         self.applied.merged += assignment.merged;
+        self.applied.split += assignment.split;
         self.applied.names_attached += assignment.attached;
         let mut held_ids = vec![WorkId::FIRST; res.works.len()];
         for ((w, _), id) in order.iter().zip(&assignment.ids) {
@@ -956,10 +977,41 @@ impl Engine<'_> {
             })
             .collect();
         let merged: HashSet<WorkId> = retirements.iter().map(|(id, _)| *id).collect();
+        let splits: Vec<(WorkId, Vec<WorkId>)> = assignment
+            .lines
+            .iter()
+            .filter_map(|l| match l {
+                registry::Line::Split { id, into, .. } => Some((*id, into.clone())),
+                _ => None,
+            })
+            .collect();
+        let split_ids: HashSet<WorkId> = splits.iter().map(|(id, _)| *id).collect();
+        // A split id keeps every record it had only if the batch carries
+        // them all: what its parts give is then computed from the batch,
+        // and the pairs it leaves are restated empty, as a moved record's
+        // are. A record of its that stays behind would have to be divided
+        // between the parts with its arcs, relations and unresolved rows,
+        // and only the normalized layer says which part it goes to.
+        for (id, _) in &splits {
+            let Some(row) = self.rows.get(*id)? else {
+                continue;
+            };
+            for record in &row.records {
+                let key = (record.source, record.native.clone());
+                if !self.index.contains(record.source, &record.native)
+                    && !self.deleted_in.contains_key(&key)
+                {
+                    return Err(Error::FullMerge(format!(
+                        "{id} splits between works while keeping {}={}, whose arcs and relations only the normalized layer can divide",
+                        record.source, record.native
+                    )));
+                }
+            }
+        }
         let mut dropped = Vec::new();
         let mut handled: HashSet<OwnedName> = HashSet::new();
         for (id, row) in &existing {
-            if assigned.contains(id) || merged.contains(id) {
+            if assigned.contains(id) || merged.contains(id) || split_ids.contains(id) {
                 continue;
             }
             if self.serving.citers(*id).next().is_none() {
@@ -1007,27 +1059,46 @@ impl Engine<'_> {
                 },
             );
         }
-        // A stub a held work took over, by reusing its id or by taking it
-        // in a merge: the names the work does not hold leave it — to a
-        // stub of their own where references cite them without a kept
-        // name, which the row's evidence says — and the arcs of those
-        // references follow.
+        // A row divided: a stub a held work took over by reusing its id
+        // or taking it in a merge, or a work whose names split between
+        // several with no part to continue it (merge plan §11, item 3).
+        // The names no part holds leave it — to a stub of their own
+        // where references cite them without a name a part took, which
+        // the row's evidence says — and the arcs of every reference that
+        // landed here are settled again by §6, name by name.
         for (id, row) in &existing {
-            let survivor = if assigned.contains(id) {
-                *id
+            // Where the row's names went. `stays` is the part that keeps
+            // this id, if any: its arcs are already here and do not move.
+            let (parts, stays): (Vec<WorkId>, Option<usize>) = if assigned.contains(id) {
+                (vec![*id], Some(0))
             } else if let Some((_, into)) = retirements.iter().find(|(r, _)| r == id) {
-                *into
+                (vec![*into], Some(0))
+            } else if let Some((_, into)) = splits.iter().find(|(r, _)| r == id) {
+                (into.clone(), None)
             } else {
                 continue;
             };
-            let Some(w) = held_ids.iter().position(|x| *x == survivor) else {
+            let mut taken: HashMap<OwnedName, usize> = HashMap::new();
+            for (p, part) in parts.iter().enumerate() {
+                let Some(w) = held_ids.iter().position(|x| x == part) else {
+                    continue;
+                };
+                for n in &res.works[w].names {
+                    taken.insert(res.arena.get(n.name).clone(), p);
+                }
+            }
+            if taken.is_empty() {
                 continue;
+            }
+            // Whether the live table still points a name here: one a part
+            // took has a line of its own by now.
+            let still_here = |this: &Self, name: &OwnedName| -> bool {
+                match this.live.resolved(name) {
+                    Some(Resolved::One(x)) => stays.is_some_and(|k| parts[k] == x),
+                    Some(Resolved::Split { id: x, .. }) => x == *id,
+                    _ => false,
+                }
             };
-            let kept: HashSet<OwnedName> = res.works[w]
-                .names
-                .iter()
-                .map(|n| res.arena.get(n.name).clone())
-                .collect();
             // A stub's row says who cited each of its names; a held
             // work's names are answered by the cited-as evidence, which
             // says the same for every name a reference gave (serving plan
@@ -1040,47 +1111,45 @@ impl Engine<'_> {
                 }
             };
             // Each citing record's own reference, as the names of this
-            // row divide: what the record kept, and what it left. A
-            // split is that reference resolving again, so it is settled
-            // the way §6 settles one — the text first (serving plan §11,
-            // item 28, 2026-09-19).
-            let mut gave: BTreeMap<(WorkId, SourceId), Split> = BTreeMap::new();
+            // row divide it, with the mark its text carries. Dividing a
+            // row is that reference resolving again, so it is settled the
+            // way §6 settles one — the text first (serving plan §11, item
+            // 28, 2026-09-19).
+            let mut gave: BTreeMap<(WorkId, SourceId), Vec<(OwnedName, bool)>> = BTreeMap::new();
             for n in &row.names {
-                let side = kept.contains(&n.name);
                 for c in cited_by(self, n) {
-                    let split = gave.entry(c.pair()).or_default();
-                    let side = if side {
-                        &mut split.kept
-                    } else {
-                        &mut split.left
-                    };
-                    side.push((n.name.clone(), c.in_text));
+                    gave.entry(c.pair())
+                        .or_default()
+                        .push((n.name.clone(), c.in_text));
                 }
             }
+            let took_a_part = |names: &[(OwnedName, bool)]| -> bool {
+                names.iter().any(|(name, _)| taken.contains_key(name))
+            };
             let mut leftovers: Vec<(OwnedName, Vec<Citer>)> = Vec::new();
             for n in &row.names {
-                if kept.contains(&n.name) || handled.contains(&n.name) {
+                if taken.contains_key(&n.name) || handled.contains(&n.name) {
                     continue;
                 }
                 handled.insert(n.name.clone());
                 // A leftover name is a name of its own only where some
-                // reference gave it with no name the record kept: a
-                // reference naming a held work makes no stub, its other
-                // names being assertions about that work (merge plan §11,
-                // item 14) — the rule `Classified::names_a_stub` states
-                // for the batch's own references. Where the arc goes is
-                // a second question, and §6's; it is asked below, once
-                // the names that survive are known.
+                // reference gave it with no name a part took: a reference
+                // naming a held work makes no stub, its other names being
+                // assertions about that work (merge plan §11, item 14) —
+                // the rule `Classified::names_a_stub` states for the
+                // batch's own references. Where the arc goes is a second
+                // question, and §6's; it is asked below, once the names
+                // that survive are known.
                 let mut movers: Vec<Citer> = Vec::new();
                 for c in cited_by(self, n) {
                     let pair = c.pair();
                     if self.replaced.contains(&pair) {
                         continue;
                     }
-                    let split = gave.get(&pair).ok_or_else(|| {
+                    let names = gave.get(&pair).ok_or_else(|| {
                         Error::Mismatch(format!("{pair:?} cited {} of no row", n.name))
                     })?;
-                    if split.kept.is_empty() && !c.held_beside {
+                    if !took_a_part(names) && !c.held_beside {
                         movers.push(c);
                     }
                 }
@@ -1090,7 +1159,7 @@ impl Engine<'_> {
                     // the full merge leaves one (§11, item 28).
                     leftovers.push((n.name.clone(), Vec::new()));
                 } else if movers.is_empty() {
-                    if self.live.lookup(&n.name) == Some(survivor) {
+                    if still_here(self, &n.name) {
                         let line = registry::Line::Drop {
                             name: n.name.clone(),
                             at: self.at.clone(),
@@ -1124,29 +1193,37 @@ impl Engine<'_> {
                 by_root.entry(r).or_default().push(i);
             }
             let groups: Vec<Vec<usize>> = by_root.into_values().collect();
-            let mut group_of: HashMap<&OwnedName, usize> = HashMap::new();
+            // One destination space over the parts and the stubs the
+            // leftover names become, which is what §6 chooses between.
+            let mut dest = taken;
             for (g, members) in groups.iter().enumerate() {
                 for i in members {
-                    group_of.insert(&leftovers[*i].0, g);
+                    dest.insert(leftovers[*i].0.clone(), parts.len() + g);
                 }
             }
-            // A reference that also named a name the record kept makes no
+            // A reference that also named a name a part took makes no
             // stub name, but it still resolves again, and §6 may give it
-            // one of the names the record left — then its arc follows
-            // that name to the stub the name became. This is the whole of
-            // the divergence item 26 fixes for a held landing (serving
-            // plan §11, item 28, 2026-09-19).
+            // one of the names no part took — then its arc follows that
+            // name to the stub the name became. Where no part continues
+            // the row, every such reference moves, to a part or to a
+            // stub. This is the whole of the divergence item 26 fixes for
+            // a held landing (serving plan §11, item 28, 2026-09-19).
             let made: HashSet<(WorkId, SourceId)> = leftovers
                 .iter()
                 .flat_map(|(_, movers)| movers.iter().map(|c| c.pair()))
                 .collect();
             let mut joined: Vec<Vec<(WorkId, SourceId)>> = vec![Vec::new(); groups.len()];
-            for (pair, split) in &gave {
+            for (pair, names) in &gave {
                 if made.contains(pair) || self.replaced.contains(pair) {
                     continue;
                 }
-                if let Some(g) = split_arc(split, *id, &group_of)? {
+                let d = split_arc(names, *id, &dest)?;
+                if let Some(g) = d.checked_sub(parts.len()) {
                     joined[g].push(*pair);
+                } else if stays != Some(d) {
+                    // §6 sends it to a part that is not this row's
+                    // continuation: the arc follows the name it chose.
+                    self.moves.push((pair.0, pair.1, *id, parts[d]));
                 }
             }
             for (g, members) in groups.iter().enumerate() {
@@ -1158,14 +1235,14 @@ impl Engine<'_> {
                 // A reference §6 sends here cites every name of this stub
                 // it gave, as the full merge's own reference pass has it.
                 for pair in &joined[g] {
-                    for (name, in_text) in &gave[pair].left {
+                    for (name, in_text) in &gave[pair] {
                         if let Some(citers) = names.get_mut(name) {
                             citers.push(Citer {
                                 from: pair.0,
                                 by: pair.1,
                                 in_text: *in_text,
                                 // It made no name of this stub, and will
-                                // not of the next split either.
+                                // not of the next division either.
                                 held_beside: true,
                             });
                         }
@@ -1249,6 +1326,7 @@ impl Engine<'_> {
         Ok(ResolvedComponent {
             puts,
             retirements,
+            splits,
             dropped,
         })
     }
@@ -1361,6 +1439,10 @@ impl Engine<'_> {
                 self.gone.insert(id);
                 self.retirements.push((id, into));
             }
+            for (id, parts) in resolved.splits {
+                self.gone.insert(id);
+                self.splits.push((id, parts));
+            }
             for id in resolved.dropped {
                 self.gone.insert(id);
                 self.dropped.push(id);
@@ -1424,101 +1506,75 @@ impl Engine<'_> {
     }
 }
 
-/// One citing record's reference as a split divides it: the names it
-/// gave that the record kept, and those it left, each with whether the
-/// reference's own citation text repeats that name.
-#[derive(Default)]
-struct Split {
-    kept: Vec<(OwnedName, bool)>,
-    left: Vec<(OwnedName, bool)>,
-}
-
-/// Where §6 sends a reference that named both what a record kept and
-/// what it left: the group of leftover names its arc moves to, or `None`
-/// where a name the record kept wins and the arc stays.
+/// Where §6 sends a reference whose names a divided row scatters: the
+/// destination — a part of the division, or the stub a group of leftover
+/// names became — that the reference's own evidence chooses.
 ///
-/// Only a leftover name that became some group's is a candidate — a name
-/// no reference gave without a kept name beside it is dropped (merge plan
-/// §11, item 14), and a dropped name names nothing to resolve to. Among
-/// the candidates the rule is [`merge::build::resolve_reference`]'s: a
-/// DOI the citation text repeats beats the order, and the order decides
-/// where nothing corroborates.
+/// `gave` is every name of the row this citer's reference gave, each
+/// with whether the reference's own citation text repeats it; `dest`
+/// says where each surviving name went, the caller's own index space. A
+/// name `dest` does not hold is one the division dropped, and a dropped
+/// name names nothing to resolve to (merge plan §11, item 14).
+///
+/// Among the candidates the rule is [`merge::build::resolve_reference`]'s:
+/// a DOI the citation text repeats beats the order, and the order — the
+/// lowest namespace — decides where nothing corroborates.
 ///
 /// The row's own names are the whole contest, which is what lets the
 /// batch settle this at all. §6 picks a *name* and then follows it to a
-/// work; a split changes no name's namespace and no name's text mark,
-/// only which work a name names, so the name §6 picked before the split
-/// is the name it picks after — and that name was this row's, since the
-/// reference landed here. The two shapes where §6 would have to reach
-/// past the row are refused rather than guessed (serving plan §5).
+/// work; dividing a row changes no name's namespace and no name's text
+/// mark, only which work a name names, so the name §6 picked before the
+/// division is the name it picks after — and that name was this row's,
+/// since the reference landed here. The shapes where §6 would have to
+/// reach past the row are refused rather than guessed (serving plan §5).
 fn split_arc(
-    split: &Split,
+    gave: &[(OwnedName, bool)],
     id: WorkId,
-    group_of: &HashMap<&OwnedName, usize>,
-) -> Result<Option<usize>, Error> {
-    let left: Vec<(&OwnedName, bool, usize)> = split
-        .left
+    dest: &HashMap<OwnedName, usize>,
+) -> Result<usize, Error> {
+    let live: Vec<(&OwnedName, bool, usize)> = gave
         .iter()
-        .filter_map(|(n, t)| group_of.get(n).map(|g| (n, *t, *g)))
+        .filter_map(|(n, t)| dest.get(n).map(|d| (n, *t, *d)))
         .collect();
-    if left.is_empty() {
-        if split.kept.is_empty() {
-            // The reference named a held work and §6 landed it here on
-            // its text instead; now the names it gave here are dropped,
-            // so §6 falls back to an order over names the row never
-            // held, and the arc leaves for a work the row cannot name.
+    let Some(first) = live.first() else {
+        // Either the reference named a held work and §6 landed it here
+        // on its text, or it named this row alone; either way every name
+        // it gave here is dropped now, so §6 falls back to an order over
+        // names the row never held, and the arc leaves for a work the row
+        // cannot name.
+        return Err(Error::FullMerge(format!(
+            "a reference to {id} has every name it gave there dropped: where its arc goes is an order over names the row does not hold"
+        )));
+    };
+    let one = |of: &[&(&OwnedName, bool, usize)], why: &str| -> Result<usize, Error> {
+        let d = of[0].2;
+        if of.iter().any(|c| c.2 != d) {
             return Err(Error::FullMerge(format!(
-                "a reference to {id} named a held work too, and every name it gave here is dropped: where its arc goes is an order over names the row does not hold"
+                "a reference to {id} {why}, which the division puts in different works"
             )));
         }
-        return Ok(None);
-    }
+        Ok(d)
+    };
     // Only a DOI is ever repeated in a citation text (§6), so a marked
     // name is one `corroborated` would have found.
-    let marked: Vec<&(&OwnedName, bool, usize)> = left.iter().filter(|(_, t, _)| *t).collect();
-    let one = |of: &[&(&OwnedName, bool, usize)], why: &str| -> Result<Option<usize>, Error> {
-        let g = of[0].2;
-        if of.iter().any(|c| c.2 != g) {
-            return Err(Error::FullMerge(format!(
-                "a reference to {id} {why}, which the split puts in different works"
-            )));
-        }
-        Ok(Some(g))
-    };
+    let marked: Vec<&(&OwnedName, bool, usize)> = live.iter().filter(|(_, t, _)| *t).collect();
     if !marked.is_empty() {
-        if split.kept.iter().any(|(_, t)| *t) {
-            // §6 gives the text up when two DOIs it repeats name two
-            // works, and falls back to an order over every name of the
-            // reference — names this row does not hold included.
-            return Err(Error::FullMerge(format!(
-                "the text of a reference to {id} repeats a DOI of each side of the split, which leaves §6 to the order over names the row does not hold"
-            )));
-        }
-        return one(&marked, "repeats two of the DOIs it left in its own text");
-    }
-    if split.kept.iter().any(|(_, t)| *t) {
-        return Ok(None);
+        return one(
+            &marked,
+            "repeats more than one of the DOIs it gave there in its own text",
+        );
     }
     // Nothing corroborates: the lowest namespace decides.
     let rank = |n: &OwnedName| build::rank(n.key());
-    let best = left
+    let best = live
         .iter()
-        .map(|(n, _, _)| rank(n))
-        .min()
-        .unwrap_or(u8::MAX);
-    match split.kept.iter().map(|(n, _)| rank(n)).min() {
-        Some(k) if k < best => Ok(None),
-        // One namespace on each side: §6 takes the first such name the
-        // reference gave, and no row keeps a reference's order.
-        Some(k) if k == best => Err(Error::FullMerge(format!(
-            "a reference to {id} gave one namespace on each side of the split, which the order alone does not settle"
-        ))),
-        _ => {
-            let lowest: Vec<&(&OwnedName, bool, usize)> =
-                left.iter().filter(|(n, _, _)| rank(n) == best).collect();
-            one(&lowest, "gave one namespace twice among the names it left")
-        }
-    }
+        .fold(rank(first.0), |b, (n, _, _)| b.min(rank(n)));
+    let lowest: Vec<&(&OwnedName, bool, usize)> =
+        live.iter().filter(|(n, _, _)| rank(n) == best).collect();
+    one(
+        &lowest,
+        "gave one namespace more than once among the names it gave there",
+    )
 }
 
 /// A stub's row while the batch makes it: each name with its citers, the
@@ -2437,11 +2493,47 @@ impl Engine<'_> {
             .iter()
             .map(|(x, s, from, _)| (*x, *s, *from))
             .collect();
-        let retired: HashSet<WorkId> = self.retirements.iter().map(|(id, _)| *id).collect();
+        let retired: HashSet<WorkId> = self
+            .retirements
+            .iter()
+            .map(|(id, _)| *id)
+            .chain(self.splits.iter().map(|(id, _)| *id))
+            .collect();
         if let Some((x, _, from, _)) = self.moves.iter().find(|(x, ..)| retired.contains(x)) {
             return Err(Error::FullMerge(format!(
-                "{x} cites stub {from} through a name its new work leaves, and is itself retired in this batch"
+                "{x} cites {from} through a name its new work leaves, and is itself retired in this batch"
             )));
+        }
+        // A split id has no survivor to inherit what is left of its
+        // lists, so every arc into it must have been settled by §6 in
+        // `resolve_component`, and it may keep no arc out (the guard
+        // there refuses a split that keeps a record).
+        for (id, _) in &self.splits.clone() {
+            for arc in self.serving.citers(*id) {
+                if arc.work == *id {
+                    continue;
+                }
+                if retired.contains(&arc.work) {
+                    return Err(Error::FullMerge(format!(
+                        "{} cites {id}, whose names split between works, and is itself retired in this batch",
+                        arc.work
+                    )));
+                }
+                let unsettled: Sources = arc
+                    .by
+                    .iter()
+                    .filter(|s| {
+                        !moved_pairs.contains(&(arc.work, *s, *id))
+                            && !self.replaced.contains(&(arc.work, *s))
+                    })
+                    .collect();
+                if !unsettled.is_empty() {
+                    return Err(Error::FullMerge(format!(
+                        "{} cites {id} by {unsettled}, and the row's evidence does not say which part of the split that arc follows",
+                        arc.work
+                    )));
+                }
+            }
         }
         // A retired work's citations of stubs, restated under its survivor
         // for the sources that stay with it.
@@ -2597,7 +2689,7 @@ fn target_of(
     match live.resolved(name) {
         Some(Resolved::One(id)) => Target::Work(id, serving.is_stub(id)),
         Some(Resolved::Shared(_)) => Target::Shared,
-        Some(Resolved::Split(_)) | None => Target::Unknown,
+        Some(Resolved::Split { .. }) | None => Target::Unknown,
     }
 }
 
@@ -2957,6 +3049,7 @@ pub fn apply_with(
         batch_sources: HashMap::new(),
         puts: Vec::new(),
         retirements: Vec::new(),
+        splits: Vec::new(),
         dropped: Vec::new(),
         gone: HashSet::new(),
         moves: Vec::new(),
@@ -2971,6 +3064,7 @@ pub fn apply_with(
         live,
         puts,
         retirements,
+        splits,
         dropped,
         names_dropped,
         mut applied,
@@ -3009,6 +3103,26 @@ pub fn apply_with(
                 batch: batch_number,
                 id: *id,
                 into: Some(*into),
+            })
+            .map_err(|e| io(edges.path(), e))?;
+        removes.push(*id);
+    }
+    for (id, _) in &splits {
+        // Retired with no successor: the row goes, and a reader holding
+        // the id is answered by the registry's parts (serving plan §11,
+        // item 24).
+        works
+            .put(&WorkLine::Retire {
+                batch: batch_number,
+                id: *id,
+                into: None,
+            })
+            .map_err(|e| io(works.path(), e))?;
+        edges
+            .put(&EdgeLine::Retire {
+                batch: batch_number,
+                id: *id,
+                into: None,
             })
             .map_err(|e| io(edges.path(), e))?;
         removes.push(*id);
@@ -3112,7 +3226,7 @@ pub fn apply_with(
         records: applied.records,
         minted: applied.minted,
         merged: applied.merged,
-        split: 0,
+        split: applied.split,
         dropped: applied.names_dropped,
     };
     journal::append(&journal_path, &line).map_err(|e| io(&journal_path, e))?;

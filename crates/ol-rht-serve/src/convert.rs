@@ -1,6 +1,8 @@
 //! The boundary: the core's types to the wire's, `WorkId`s becoming
 //! public ids on the way.
 
+use std::collections::HashMap;
+
 use merge::identity::Standing;
 use merge::view::OwnedVenue;
 use merge::{SourceId, Sources, WorkId};
@@ -248,73 +250,126 @@ pub fn work<A: Answers>(a: &A, row: &Row, terms: &Terms) -> Result<pb::Work, Sta
     })
 }
 
-/// A row's promoted names and title, for a hydrated arc or neighbour.
-fn promoted(row: &Row) -> (String, Vec<pb::Name>) {
-    let title = row
-        .text
-        .as_ref()
-        .and_then(|t| t.title.clone())
-        .unwrap_or_default();
-    let names = row
-        .names
-        .iter()
-        .filter(|n| n.standing == Standing::Promoted)
-        .map(name)
-        .collect();
-    (title, names)
+/// The rows a hydrated answer needs, in one call (serving plan §11,
+/// item 31): the ids of the whole page at once, deduplicated and walked
+/// in the index's order, rather than a lookup per row. Empty where the
+/// request did not ask to hydrate, and then every summary below is
+/// absent.
+///
+/// # Errors
+///
+/// A row that does not decode.
+fn hydrated<A: Answers>(
+    a: &A,
+    ids: impl Iterator<Item = WorkId>,
+    hydrate: bool,
+) -> Result<HashMap<WorkId, Row>, Status> {
+    if !hydrate {
+        return Ok(HashMap::new());
+    }
+    let ids: Vec<WorkId> = ids.collect();
+    a.rows(&ids).map_err(|e| Status::internal(e.to_string()))
 }
 
-/// Arcs as wire arcs, hydrated with each work's title and promoted names
-/// when asked.
+/// One work as a list shows it: **the one summary** an arc, a neighbour
+/// and a path's step all carry, so that the three cannot drift and a
+/// client renders any of them with one function.
+///
+/// A stub is the case it is shaped for. It has no title and no text at
+/// all — nothing we hold is a record of it — and its promoted names are
+/// what there is to show, so they travel here beside the flag that says
+/// to show them. They are most of what a citation list holds: 98.55% of
+/// reference targets on the epoch of 2026-09-19 are stubs, so a hydrated
+/// list that carried titles alone would be mostly blank rows.
+///
+/// The fields are the ones [`work`] promotes, read the same way, so a
+/// summary never disagrees with the work it summarises.
+fn summary(public_id: String, row: &Row) -> pb::Summary {
+    let text = row.text.as_ref();
+    pb::Summary {
+        public_id,
+        stub: row.stub,
+        title: text.and_then(|t| t.title.clone()).unwrap_or_default(),
+        names: row
+            .names
+            .iter()
+            .filter(|n| n.standing == Standing::Promoted)
+            .map(name)
+            .collect(),
+        authors: text.map(|t| t.authors.clone()).unwrap_or_default(),
+        venue: text.and_then(|t| t.venue.clone()).unwrap_or_default(),
+        published: row.fields.published.as_ref().map(|p| date(p.value)),
+    }
+}
+
+/// A work as a wire arc: its public id, and its summary when the request
+/// asked to hydrate and the work has a row. An id with no row — retired,
+/// or past the epoch — carries no summary, since a summary saying
+/// nothing would be indistinguishable from a work we know nothing about.
+fn arc(public_id: String, id: WorkId, rows: &HashMap<WorkId, Row>, by: Sources) -> pb::Arc {
+    pb::Arc {
+        by: by.iter().map(|s| s.name().to_owned()).collect(),
+        summary: rows.get(&id).map(|row| summary(public_id.clone(), row)),
+        public_id,
+    }
+}
+
+/// Arcs as wire arcs, hydrated when asked.
+///
+/// # Errors
+///
+/// No public id for a work, a row that does not decode.
+pub fn arcs<A: Answers>(a: &A, arcs: &[graph::Arc], hydrate: bool) -> Result<Vec<pb::Arc>, Status> {
+    let rows = hydrated(a, arcs.iter().map(|x| x.work), hydrate)?;
+    arcs.iter()
+        .map(|x| Ok(arc(public(a, x.work)?, x.work, &rows, x.by)))
+        .collect()
+}
+
+/// The neighbours of an expansion, hydrated when asked. The raw overlap
+/// and the degree it is out of travel beside the score, since "7 of its
+/// 9 citers also cite this" is what a reader can weigh and a cosine is
+/// not.
 ///
 /// # Errors
 ///
 /// No public id for a work, or a row that does not decode.
-pub fn arcs<A: Answers>(a: &A, arcs: &[graph::Arc], hydrate: bool) -> Result<Vec<pb::Arc>, Status> {
-    arcs.iter()
-        .map(|arc| {
-            let (title, names) = if hydrate {
-                match a.work(arc.work) {
-                    Ok(Some(row)) => promoted(&row),
-                    Ok(None) => (String::new(), Vec::new()),
-                    Err(e) => return Err(Status::internal(e.to_string())),
-                }
-            } else {
-                (String::new(), Vec::new())
-            };
-            Ok(pb::Arc {
-                public_id: public(a, arc.work)?,
-                by: arc.by.iter().map(|s| s.name().to_owned()).collect(),
-                title,
-                names,
+pub fn neighbours<A: Answers>(
+    a: &A,
+    found: &[serve::Neighbour],
+    hydrate: bool,
+) -> Result<Vec<pb::Neighbour>, Status> {
+    let rows = hydrated(a, found.iter().map(|n| n.work), hydrate)?;
+    found
+        .iter()
+        .map(|n| {
+            let public_id = public(a, n.work)?;
+            Ok(pb::Neighbour {
+                touches: n.touches,
+                degree: n.degree,
+                score: n.score,
+                summary: rows.get(&n.work).map(|row| summary(public_id.clone(), row)),
+                public_id,
             })
         })
         .collect()
 }
 
-/// A neighbour of an expansion, hydrated with its title when asked.
+/// One path as wire works: the first reached by no arc, every later one
+/// carrying the asserters of the arc that reached it. The same [`pb::Arc`]
+/// a list sends, so a client reads a path the way it reads a page.
 ///
 /// # Errors
 ///
-/// No public id for the work.
-pub fn neighbour<A: Answers>(
+/// No public id for a work on the path, or a row that does not decode.
+pub fn steps<A: Answers>(
     a: &A,
-    id: WorkId,
-    touches: u32,
+    steps: &[graph::Step],
     hydrate: bool,
-) -> Result<pb::Neighbour, Status> {
-    let title = if hydrate {
-        a.work(id)
-            .ok()
-            .flatten()
-            .and_then(|r| r.text.and_then(|t| t.title))
-            .unwrap_or_default()
-    } else {
-        String::new()
-    };
-    Ok(pb::Neighbour {
-        public_id: public(a, id)?,
-        touches,
-        title,
-    })
+) -> Result<Vec<pb::Arc>, Status> {
+    let rows = hydrated(a, steps.iter().map(|s| s.work), hydrate)?;
+    steps
+        .iter()
+        .map(|step| Ok(arc(public(a, step.work)?, step.work, &rows, step.by)))
+        .collect()
 }

@@ -1,13 +1,16 @@
-//! The transport (serving plan §7): the query core over gRPC. Public ids
+//! The transport (serving plan §7): the query core over gRPC and, for a
+//! browser, the same answers over JSON on `axum`. Public ids
 //! on the wire and nothing else — a request names a work by its public
 //! id or by any name, and every answer speaks public ids, the boundary
 //! where `WorkId`s are mapped both ways. Every answer says which epoch
 //! it came from and under whose terms. [`service`] is the server over
 //! anything that [`answers::Answers`], which the serving layer's core
-//! does and a test fake can; [`terms`] is the stub of the terms module.
+//! does and a test fake can; [`http`] is the same service over JSON, for
+//! a browser; [`terms`] is the stub of the terms module.
 
 pub mod answers;
 pub mod convert;
+pub mod http;
 pub mod service;
 pub mod terms;
 
@@ -31,5 +34,6 @@ pub mod proto {
 }
 
 pub use answers::Answers;
+pub use http::{Origins, router};
 pub use service::Service;
 pub use terms::Terms;

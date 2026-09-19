@@ -22,13 +22,25 @@ pub enum Key {
     Pmc,
     /// An OpenAlex work id, bare (`W123`).
     OpenAlex,
+    /// A publisher's own identifier for an article, scoped by the DOI
+    /// registrant that issued it (merge plan §3.1). One key here, a
+    /// namespace per registrant in the name's text form (`reg1016:`).
+    Publisher,
 }
 
 impl Key {
     /// Every key, in a fixed order.
-    pub const ALL: [Self; 4] = [Self::Doi, Self::Pmid, Self::Pmc, Self::OpenAlex];
+    pub const ALL: [Self; 5] = [
+        Self::Doi,
+        Self::Pmid,
+        Self::Pmc,
+        Self::OpenAlex,
+        Self::Publisher,
+    ];
 
-    /// `doi`, `pmid`, `pmc` or `openalex`.
+    /// `doi`, `pmid`, `pmc`, `openalex` or `publisher`. The last names
+    /// the family of publisher-id namespaces for the reports; no source
+    /// lists or looks up by it, and a seed list of them is refused.
     #[must_use]
     pub fn parse(s: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|k| k.name() == s)
@@ -42,6 +54,7 @@ impl Key {
             Self::Pmid => "pmid",
             Self::Pmc => "pmc",
             Self::OpenAlex => "openalex",
+            Self::Publisher => "publisher",
         }
     }
 }
@@ -73,5 +86,9 @@ mod tests {
             assert_eq!(key.to_string(), key.name());
         }
         assert_eq!(Key::parse("DOI"), None);
+        // A publisher id's own namespace is a registrant, `reg1016`,
+        // which is a name's text form and never a key (merge plan §3.1).
+        assert_eq!(Key::parse("reg1016"), None);
+        assert_eq!(Key::parse("10.1016"), None);
     }
 }

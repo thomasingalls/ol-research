@@ -47,7 +47,7 @@ impl ingest::Keys for OpenAlex {
                     out(pmid.to_string());
                 }
             }
-            ingest::Key::Pmc => {}
+            ingest::Key::Pmc | ingest::Key::Publisher => {}
         }
     }
 

@@ -1,11 +1,13 @@
 //! What the transport asks of whatever it serves: the serving layer's
 //! core, or a fake in the tests.
 
+use std::collections::HashMap;
+
 use graph::Arc;
 use merge::{Sources, WorkId};
 use search::Hits;
 use serve::epoch::Manifest;
-use serve::{Resolved, Row, Serving, Watermark};
+use serve::{By, Expansion, Resolved, Row, Serving, Walk, Watermark};
 
 /// Which list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,6 +63,15 @@ pub trait Answers: Send + Sync + 'static {
     ///
     /// A row that does not decode.
     fn work(&self, id: WorkId) -> Result<Option<Row>, serve::Error>;
+    /// The rows of many works in one call, which is how a hydrated page
+    /// is hydrated: one walk of the index rather than a lookup per row
+    /// (serving plan §11, item 31). An id with no row is absent from
+    /// the map, as [`work`](Self::work) answers `None` for it.
+    ///
+    /// # Errors
+    ///
+    /// A row that does not decode.
+    fn rows(&self, ids: &[WorkId]) -> Result<HashMap<WorkId, Row>, serve::Error>;
     /// A work's public id.
     fn public_of(&self, id: WorkId) -> Option<String>;
     /// `n` arcs of a list from `offset`, and the list's length.
@@ -71,8 +82,21 @@ pub trait Answers: Send + Sync + 'static {
     ///
     /// A query the engine refuses.
     fn search(&self, text: &str, limit: usize, facets: usize) -> Result<Hits, serve::Error>;
-    /// One hop out from a seed set.
-    fn expand(&self, seeds: &[WorkId], budget: usize) -> Vec<(WorkId, u32)>;
+    /// One hop out from a seed set along `walk`, scored and ranked;
+    /// `about` is the work the question is about, left out of its own
+    /// answer.
+    fn expand(
+        &self,
+        seeds: &[WorkId],
+        walk: Walk,
+        budget: usize,
+        about: Option<WorkId>,
+    ) -> Expansion;
+    /// One hop out from a seed set the server gathers itself: the
+    /// work's references or its citers, bounded and reported.
+    fn related(&self, work: WorkId, by: By, budget: usize) -> Expansion;
+    /// The shortest directed paths from one work to another, bounded.
+    fn path(&self, from: WorkId, to: WorkId, bounds: graph::Bounds) -> graph::Found;
 }
 
 impl Answers for Serving {
@@ -99,6 +123,10 @@ impl Answers for Serving {
 
     fn work(&self, id: WorkId) -> Result<Option<Row>, serve::Error> {
         Self::work(self, id)
+    }
+
+    fn rows(&self, ids: &[WorkId]) -> Result<HashMap<WorkId, Row>, serve::Error> {
+        Self::rows(self, ids)
     }
 
     fn public_of(&self, id: WorkId) -> Option<String> {
@@ -128,7 +156,21 @@ impl Answers for Serving {
         self.search_facets(text, limit, facets)
     }
 
-    fn expand(&self, seeds: &[WorkId], budget: usize) -> Vec<(WorkId, u32)> {
-        Self::expand(self, seeds, budget)
+    fn expand(
+        &self,
+        seeds: &[WorkId],
+        walk: Walk,
+        budget: usize,
+        about: Option<WorkId>,
+    ) -> Expansion {
+        Self::expand(self, seeds, walk, budget, about)
+    }
+
+    fn related(&self, work: WorkId, by: By, budget: usize) -> Expansion {
+        Self::related(self, work, by, budget)
+    }
+
+    fn path(&self, from: WorkId, to: WorkId, bounds: graph::Bounds) -> graph::Found {
+        Self::path(self, from, to, bounds)
     }
 }

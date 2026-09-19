@@ -56,8 +56,11 @@ pub enum Line {
         #[allow(missing_docs)]
         at: String,
     },
-    /// An id retired because its names split between works, each minted
-    /// anew; the id has no successor.
+    /// An id retired because its names split between works and no part
+    /// continues it, each part minted anew; the id has no successor.
+    /// Since 2026-09-19 (merge plan §11, item 3) this is the fallback:
+    /// where exactly one part holds the records, that part reuses the id
+    /// and no line of this kind is written.
     Split {
         #[allow(missing_docs)]
         id: WorkId,
@@ -90,6 +93,10 @@ pub struct Registry {
     minted: u32,
     names: HashMap<OwnedName, WorkId>,
     retired: HashMap<WorkId, Option<WorkId>>,
+    /// The parts of every id a split retired, in the order the line
+    /// gives them: what an id with no successor can still answer with
+    /// (serving plan §11, item 24).
+    split: HashMap<WorkId, Vec<WorkId>>,
     lines: u64,
 }
 
@@ -194,6 +201,7 @@ impl Registry {
                     self.check_live(*part)?;
                 }
                 self.retired.insert(*id, None);
+                self.split.insert(*id, into.clone());
             }
         }
         self.lines += 1;
@@ -273,18 +281,38 @@ impl Registry {
         self.retired.iter().map(|(id, into)| (*id, *into))
     }
 
+    /// The parts a split retired `id` into, in the line's order; empty
+    /// for an id no split retired. An id with no successor still answers
+    /// with these (serving plan §11, item 24).
+    #[must_use]
+    pub fn split_into(&self, id: WorkId) -> &[WorkId] {
+        self.split.get(&id).map_or(&[], Vec::as_slice)
+    }
+
+    /// Every split id with its parts. In no particular order.
+    pub fn splits(&self) -> impl Iterator<Item = (WorkId, &[WorkId])> + '_ {
+        self.split.iter().map(|(id, into)| (*id, into.as_slice()))
+    }
+
     /// The live id a name maps to.
     #[must_use]
     pub fn lookup(&self, name: &OwnedName) -> Option<WorkId> {
         self.names.get(name).and_then(|id| self.live(*id))
     }
 
-    /// Gives every work an id (merge plan §4); see [`assign`]. With
-    /// `complete`, a name the registry maps that no work here has is
-    /// dropped, so `complete` is only for a run over the whole store.
+    /// Gives every work an id (merge plan §4); see [`assign`], whose
+    /// `held` this passes on. With `complete`, a name the registry maps
+    /// that no work here has is dropped, so `complete` is only for a run
+    /// over the whole store.
     #[must_use]
-    pub fn assign(&mut self, works: &[Vec<OwnedName>], at: &str, complete: bool) -> Assignment {
-        let mut out = assign(self, works, at);
+    pub fn assign(
+        &mut self,
+        works: &[Vec<OwnedName>],
+        held: usize,
+        at: &str,
+        complete: bool,
+    ) -> Assignment {
+        let mut out = assign(self, works, held, at);
         if complete {
             let seen: HashSet<&OwnedName> = works.iter().flatten().collect();
             let dropped = self.drop_unseen(|n| seen.contains(n), at);
@@ -311,16 +339,35 @@ impl Table for Registry {
 
 /// Gives every work an id (merge plan §4): each work's names, given in
 /// the deterministic order the plan asks for, are looked up; none known
-/// mints, one id reuses, several merge into the oldest, an id two works
-/// claim is split and both are minted. Every line is applied to `table`
-/// as it is made, and returned to be appended.
+/// mints, one id reuses, several merge into the oldest, an id several
+/// works claim is a split (merge plan §11, item 3).
+///
+/// `works[..held]` hold records and `works[held..]` are stubs, which is
+/// the order the plan's minting asks for anyway and the one fact a
+/// split needs: **the part that holds the records keeps the id**, since
+/// a name leaving a work is not that work ending, and the part that is
+/// names only becomes a stub of its own. Where no part holds records —
+/// two stubs a reference no longer cites together — or where several
+/// do, no part continues the work: the id is retired with no successor
+/// and every part is minted, which is what [`Line::Split`] says. Decided
+/// 2026-09-19 on the fourteen splits the corpus holds, every one of them
+/// one record-holding part and one bare stub.
+///
+/// Every line is applied to `table` as it is made, and returned to be
+/// appended.
 ///
 /// # Panics
 ///
 /// Never: every line it applies is one the fold accepts by
 /// construction.
 #[must_use]
-pub fn assign<T: Table>(table: &mut T, works: &[Vec<OwnedName>], at: &str) -> Assignment {
+#[allow(clippy::too_many_lines)]
+pub fn assign<T: Table>(
+    table: &mut T,
+    works: &[Vec<OwnedName>],
+    held: usize,
+    at: &str,
+) -> Assignment {
     {
         let mut out = Assignment::default();
         let claims: Vec<Vec<WorkId>> = works
@@ -332,18 +379,33 @@ pub fn assign<T: Table>(table: &mut T, works: &[Vec<OwnedName>], at: &str) -> As
                 ids
             })
             .collect();
-        let mut claimants: HashMap<WorkId, usize> = HashMap::new();
-        for ids in &claims {
+        let mut claimants: HashMap<WorkId, Vec<usize>> = HashMap::new();
+        for (w, ids) in claims.iter().enumerate() {
             for id in ids {
-                *claimants.entry(*id).or_default() += 1;
+                claimants.entry(*id).or_default().push(w);
             }
         }
+        // The one part of a contested id that holds records keeps it.
+        // The answer depends only on which works claim the id, never on
+        // the order this map is walked in.
+        let keeper: HashMap<WorkId, usize> = claimants
+            .iter()
+            .filter(|(_, ws)| ws.len() > 1)
+            .filter_map(|(id, ws)| {
+                let mut holders = ws.iter().copied().filter(|w| *w < held);
+                let first = holders.next()?;
+                holders.next().is_none().then_some((*id, first))
+            })
+            .collect();
+        let contested = |id: &WorkId, w: usize| -> bool {
+            claimants[id].len() > 1 && keeper.get(id) != Some(&w)
+        };
         let mut split_into: HashMap<WorkId, Vec<WorkId>> = HashMap::new();
         for (w, names) in works.iter().enumerate() {
             let unique: Vec<WorkId> = claims[w]
                 .iter()
                 .copied()
-                .filter(|id| claimants[id] == 1)
+                .filter(|id| !contested(id, w))
                 .collect();
             let id = match unique.as_slice() {
                 [] => {
@@ -390,7 +452,7 @@ pub fn assign<T: Table>(table: &mut T, works: &[Vec<OwnedName>], at: &str) -> As
                 }
             }
             for claimed in &claims[w] {
-                if claimants[claimed] > 1 {
+                if claimants[claimed].len() > 1 && !keeper.contains_key(claimed) {
                     split_into.entry(*claimed).or_default().push(id);
                 }
             }
@@ -462,19 +524,19 @@ mod tests {
             vec![n("openalex:W3")],
         ];
         let mut r = Registry::default();
-        let first = r.assign(&works, "t0", true);
+        let first = r.assign(&works, works.len(), "t0", true);
         assert_eq!(first.ids, [id(1), id(2), id(3)]);
         assert_eq!(
             (first.minted, first.reused, first.attached, first.dropped),
             (3, 0, 0, 0)
         );
         assert_eq!(first.lines.len(), 3);
-        let again = r.assign(&works, "t1", true);
+        let again = r.assign(&works, works.len(), "t1", true);
         assert_eq!(again.ids, first.ids);
         assert!(again.lines.is_empty(), "{:?}", again.lines);
         assert_eq!(again.reused, 3);
         let mut fresh = Registry::default();
-        let other = fresh.assign(&works, "t0", true);
+        let other = fresh.assign(&works, works.len(), "t0", true);
         assert_eq!(other.lines, first.lines, "byte-identical from scratch");
     }
 
@@ -487,6 +549,7 @@ mod tests {
                 vec![n("pmid:2")],
                 vec![n("pmid:3"), n("pmc:PMC3")],
             ],
+            3,
             "t0",
             true,
         );
@@ -496,7 +559,7 @@ mod tests {
             vec![n("pmid:3")],
             vec![n("pmc:PMC3")],
         ];
-        let a = r.assign(&works, "t1", true);
+        let a = r.assign(&works, works.len(), "t1", true);
         assert_eq!(a.ids, [id(1), id(4), id(5)]);
         assert_eq!(
             (a.minted, a.reused, a.merged, a.split, a.attached),
@@ -510,16 +573,50 @@ mod tests {
             matches!(a.lines.last(), Some(Line::Split { id: split, into, .. }) if *split == id(3) && *into == [id(4), id(5)])
         );
         // A run without the DOI drops it; the id stays.
-        let b = r.assign(&[vec![n("pmid:2")]], "t2", true);
+        let b = r.assign(&[vec![n("pmid:2")]], 1, "t2", true);
         assert_eq!(b.ids, [id(1)]);
         assert_eq!(b.dropped, 4, "the doi, W9 and the split parts' names");
         assert_eq!(r.lookup(&n("doi:10.1000/a")), None);
         // An incomplete run drops nothing.
         let mut r2 = Registry::default();
-        let _ = r2.assign(&[vec![n("pmid:1")], vec![n("pmid:2")]], "t0", true);
-        let c = r2.assign(&[vec![n("pmid:1")]], "t1", false);
+        let _ = r2.assign(&[vec![n("pmid:1")], vec![n("pmid:2")]], 2, "t0", true);
+        let c = r2.assign(&[vec![n("pmid:1")]], 1, "t1", false);
         assert_eq!(c.dropped, 0);
         assert_eq!(r2.names(), 2);
+    }
+
+    #[test]
+    fn the_part_holding_the_records_keeps_a_contested_id() {
+        // Merge plan §11, item 3, 2026-09-19. One work holds the PMID
+        // and a new DOI, a reference still cites the old DOI: the held
+        // work keeps the id, the stub is minted, and no split is
+        // written. The same contest between two works that both hold
+        // records has no part to continue it, and is retired instead.
+        let mut r = Registry::default();
+        let _ = r.assign(&[vec![n("doi:10.1000/old"), n("pmid:1")]], 1, "t0", true);
+        let held = vec![n("doi:10.1000/new"), n("pmid:1")];
+        let stub = vec![n("doi:10.1000/old")];
+        let a = r.assign(&[held, stub], 1, "t1", true);
+        assert_eq!(a.ids, [id(1), id(2)], "the held work kept its id");
+        assert_eq!((a.minted, a.reused, a.merged, a.split), (1, 1, 0, 0));
+        assert_eq!(r.live(id(1)), Some(id(1)));
+        assert_eq!(r.lookup(&n("doi:10.1000/old")), Some(id(2)));
+        assert_eq!(r.lookup(&n("doi:10.1000/new")), Some(id(1)));
+        assert!(r.split_into(id(1)).is_empty());
+        // Two holders: neither continues it.
+        let mut r = Registry::default();
+        let _ = r.assign(&[vec![n("pmid:1"), n("pmc:PMC1")]], 1, "t0", true);
+        let b = r.assign(&[vec![n("pmid:1")], vec![n("pmc:PMC1")]], 2, "t1", true);
+        assert_eq!(b.ids, [id(2), id(3)]);
+        assert_eq!((b.minted, b.reused, b.merged, b.split), (2, 0, 0, 1));
+        assert_eq!(r.live(id(1)), None);
+        assert_eq!(r.split_into(id(1)), [id(2), id(3)]);
+        // And two stubs: no part holds records either, as before.
+        let mut r = Registry::default();
+        let _ = r.assign(&[vec![n("pmid:1"), n("pmc:PMC1")]], 0, "t0", true);
+        let c = r.assign(&[vec![n("pmid:1")], vec![n("pmc:PMC1")]], 0, "t1", true);
+        assert_eq!((c.minted, c.split), (2, 1));
+        assert_eq!(r.split_into(id(1)), [id(2), id(3)]);
     }
 
     #[test]
@@ -535,12 +632,14 @@ mod tests {
         let mut r = Registry::default();
         let a = r.assign(
             &[vec![n("doi:10.1000/a")], vec![n("pmid:2")]],
+            2,
             "2026-09-15T00:00:00Z",
             true,
         );
         Registry::append(&path, &a.lines).unwrap();
         let b = r.assign(
             &[vec![n("doi:10.1000/a"), n("pmid:2")]],
+            1,
             "2026-09-15T00:00:01Z",
             true,
         );

@@ -1,222 +1,19 @@
-//! The transport over a fake: the id boundary, paging and cursors, the
-//! caps, the errors, the terms, and an epoch switch under a live cursor.
+//! The gRPC transport over a fake: the id boundary, paging and cursors,
+//! the caps, the errors, the terms, and an epoch switch under a live
+//! cursor. The fake itself is [`common`], which the JSON tests share.
 
-use std::collections::BTreeMap;
+mod common;
+
 use std::sync::Arc;
 
-use merge::identity::Standing;
-use merge::record::{Field, Flags, StatusBy};
-use merge::{OwnedName, SourceId, Sources, WorkId};
-use ol_rht_serve::answers::{Answers, Counts, Direction, Page};
+use common::{Fake, public_text};
 use ol_rht_serve::proto::v1::serving_client::ServingClient;
 use ol_rht_serve::proto::v1::serving_server::ServingServer;
 use ol_rht_serve::proto::v1::{self as pb, resolve_response::Outcome};
 use ol_rht_serve::{Service, Terms};
-use search::Hits;
-use serve::epoch::Manifest;
-use serve::row::{Fields, Named, Record, Text};
-use serve::{Resolved, Row};
 use tokio_stream::wrappers::TcpListenerStream;
 use tonic::Code;
 use tonic::transport::Server;
-
-fn id(n: u32) -> WorkId {
-    WorkId::new(n).unwrap()
-}
-
-fn public_text(n: u32) -> String {
-    merge::public::encode(u64::from(n))
-}
-
-/// Works 1 (held, cites 2 and 3, cited by 3) and 2 and 3 (stubs); a
-/// shared DOI on 2 and 3; id 9 retired by a split.
-struct Fake {
-    epoch: Manifest,
-    rows: BTreeMap<WorkId, Row>,
-    names: BTreeMap<String, Resolved>,
-}
-
-fn row(n: u32, names: &[&str], stub: bool) -> Row {
-    Row {
-        id: id(n),
-        stub,
-        public: Some(public_text(n)),
-        names: names
-            .iter()
-            .map(|t| Named {
-                name: OwnedName::parse(t).unwrap(),
-                standing: Standing::Promoted,
-                by: [SourceId::Pubmed].into_iter().collect(),
-                native: !stub,
-                cited_by: smallvec::SmallVec::new(),
-            })
-            .collect(),
-        records: if stub {
-            Vec::new()
-        } else {
-            vec![Record {
-                source: SourceId::Pubmed,
-                native: OwnedName::parse(names[0]).unwrap(),
-                promoted: true,
-                asserts: smallvec::smallvec![serve::row::Assert {
-                    name: OwnedName::parse(names[0]).unwrap(),
-                    field: "pmid".into(),
-                    native: true,
-                }],
-                view: merge::view::Owned::default(),
-            }]
-        },
-        rejected: Vec::new(),
-        fields: Fields {
-            title: (!stub).then(|| Field {
-                value: "A <i>titled</i> work".into(),
-                from: SourceId::Pubmed,
-                others: smallvec::smallvec![merge::record::Other {
-                    source: SourceId::Crossref,
-                    value: "A titled work: with subtitle".into()
-                }],
-            }),
-            abstract_in: if stub {
-                Sources::NONE
-            } else {
-                [SourceId::Pubmed].into_iter().collect()
-            },
-            status: StatusBy::default(),
-            ..Fields::default()
-        },
-        flags: Flags::default(),
-        text: (!stub).then(|| Text {
-            title: Some("A titled work".to_owned()),
-            abstract_text: Some("The abstract.".to_owned()),
-            authors: vec!["Ada Lovelace".to_owned()],
-            venue: Some("Journal of Tests".to_owned()),
-        }),
-    }
-}
-
-impl Fake {
-    fn new(epoch: u64) -> Self {
-        let mut names = BTreeMap::new();
-        names.insert("pmid:1".to_owned(), Resolved::One(id(1)));
-        names.insert("doi:10.1000/one".to_owned(), Resolved::One(id(1)));
-        names.insert("pmid:2".to_owned(), Resolved::One(id(2)));
-        names.insert("pmid:3".to_owned(), Resolved::One(id(3)));
-        names.insert(
-            "doi:10.1000/shared".to_owned(),
-            Resolved::Shared(vec![id(2), id(3)]),
-        );
-        names.insert("pmid:9".to_owned(), Resolved::Split(id(9)));
-        for n in [1, 2, 3, 9] {
-            names.insert(public_text(n), Resolved::One(id(n)));
-        }
-        let mut rows = BTreeMap::new();
-        rows.insert(id(1), row(1, &["pmid:1", "doi:10.1000/one"], false));
-        rows.insert(id(2), row(2, &["pmid:2", "doi:10.1000/shared"], true));
-        rows.insert(id(3), row(3, &["pmid:3", "doi:10.1000/shared"], true));
-        Self {
-            epoch: Manifest {
-                epoch,
-                batch: epoch,
-                at: format!("2026-09-16T00:00:0{epoch}Z"),
-                merged: "v1.1".into(),
-                artifacts: BTreeMap::new(),
-            },
-            rows,
-            names,
-        }
-    }
-}
-
-impl Answers for Fake {
-    fn epoch(&self) -> &Manifest {
-        &self.epoch
-    }
-
-    fn watermark(&self) -> serve::Watermark {
-        serve::Watermark {
-            batch: self.epoch.batch,
-            at: self.epoch.at.clone(),
-        }
-    }
-
-    fn counts(&self) -> Counts {
-        Counts {
-            merged: "v1.1".into(),
-            nodes: 9,
-            works: 3,
-            arcs: 3,
-        }
-    }
-
-    fn resolve(&self, text: &str) -> Result<Option<Resolved>, serve::Error> {
-        if text.starts_with("ol:") {
-            let canonical = merge::public::canonical(text)
-                .map_err(|e| serve::Error::NotAName(e.to_string()))?;
-            return Ok(self.names.get(&canonical).cloned());
-        }
-        merge::Name::parse(text).map_err(|e| serve::Error::NotAName(e.to_string()))?;
-        Ok(self.names.get(text).cloned())
-    }
-
-    fn work(&self, id: WorkId) -> Result<Option<Row>, serve::Error> {
-        Ok(self.rows.get(&id).cloned())
-    }
-
-    fn public_of(&self, id: WorkId) -> Option<String> {
-        (id.get() <= 9).then(|| public_text(id.get()))
-    }
-
-    fn page(&self, work: WorkId, direction: Direction, offset: u64, n: usize) -> Page {
-        let by: Sources = [SourceId::Pubmed, SourceId::Crossref].into_iter().collect();
-        let all: Vec<graph::Arc> = match (work.get(), direction) {
-            (1, Direction::References) => vec![
-                graph::Arc { work: id(2), by },
-                graph::Arc { work: id(3), by },
-            ],
-            (1, Direction::Citers) => vec![graph::Arc { work: id(3), by }],
-            (2 | 3, Direction::Citers) => vec![graph::Arc { work: id(1), by }],
-            _ => Vec::new(),
-        };
-        let total = all.len() as u64;
-        let arcs: Vec<graph::Arc> = all
-            .into_iter()
-            .skip(usize::try_from(offset).unwrap())
-            .take(n)
-            .collect();
-        Page {
-            by: if arcs.is_empty() { Sources::NONE } else { by },
-            arcs,
-            total,
-        }
-    }
-
-    fn search(&self, text: &str, limit: usize, _facets: usize) -> Result<Hits, serve::Error> {
-        let hits = if text.contains("titled") {
-            vec![search::Hit {
-                score: 1.5,
-                id: id(1),
-                title: Some("A titled work".into()),
-            }]
-        } else {
-            Vec::new()
-        };
-        Ok(Hits {
-            total: hits.len(),
-            hits: hits.into_iter().take(limit).collect(),
-            facets: vec![("/year".into(), vec![("2026".into(), 1)])],
-        })
-    }
-
-    fn expand(&self, seeds: &[WorkId], budget: usize) -> Vec<(WorkId, u32)> {
-        let mut out = Vec::new();
-        if seeds.contains(&id(1)) {
-            out.push((id(3), 1));
-            out.push((id(2), 1));
-        }
-        out.truncate(budget);
-        out
-    }
-}
 
 async fn start(service: Arc<Service<Fake>>) -> ServingClient<tonic::transport::Channel> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -289,7 +86,8 @@ async fn the_boundary_speaks_public_ids_only() {
     assert_eq!(
         split.outcome,
         Some(Outcome::Split(pb::Split {
-            public_id: public_text(9)
+            public_id: public_text(9),
+            into: vec![public_text(2), public_text(3)],
         }))
     );
     let unknown = client
@@ -371,7 +169,11 @@ async fn lists_page_and_cursors_survive_only_their_epoch() {
         first.arcs[0].by,
         vec!["pubmed".to_owned(), "crossref".to_owned()]
     );
-    assert_eq!(first.arcs[0].names.len(), 2, "hydrated with promoted names");
+    let summary = first.arcs[0].summary.as_ref().expect("hydrated");
+    assert_eq!(summary.public_id, first.arcs[0].public_id);
+    assert_eq!(summary.names.len(), 2, "hydrated with promoted names");
+    // Work 2 is a stub: no title, and its names are what identifies it.
+    assert!(summary.stub && summary.title.is_empty());
     assert_eq!(first.cursor, "1:1");
     let second = stream.message().await.unwrap().unwrap();
     assert_eq!(second.arcs[0].public_id, public_text(3));
@@ -392,6 +194,7 @@ async fn lists_page_and_cursors_survive_only_their_epoch() {
     let page = resumed.message().await.unwrap().unwrap();
     assert_eq!(page.arcs.len(), 1);
     assert_eq!(page.arcs[0].public_id, public_text(3));
+    assert!(page.arcs[0].summary.is_none(), "hydrate was not asked for");
     assert_eq!(page.cursor, "");
     // An empty list answers one empty page with its total.
     let mut none = client
@@ -465,24 +268,257 @@ async fn search_and_expand_are_bounded() {
         .await
         .unwrap_err();
     assert_eq!(over.code(), Code::InvalidArgument);
+    // Two spellings of one work are one seed, so the cosine divides by
+    // one and not two. Work 1 cites 2 and 3 and 3 cites it back, so
+    // walking both ways reaches 2 (degree 1, score 1) and 3 (degree 2,
+    // score 0.707); the budget of one keeps 2, where the raw overlap
+    // alone would have tied them and kept whichever came first.
     let expanded = client
         .expand(pb::ExpandRequest {
             seeds: vec!["pmid:1".into(), public_text(1)],
             budget: 1,
             hydrate: true,
+            walk: pb::Walk::Both.into(),
         })
         .await
         .unwrap()
         .into_inner();
     assert_eq!(expanded.neighbours.len(), 1);
-    assert_eq!(expanded.neighbours[0].public_id, public_text(3));
+    assert_eq!(expanded.total, 2, "one of the two the hop reached");
+    let first = &expanded.neighbours[0];
+    assert_eq!(first.public_id, public_text(2));
+    assert_eq!((first.touches, first.degree), (1, 1));
+    assert!((first.score - 1.0).abs() < 1e-9, "{}", first.score);
+    // The same summary an arc carries, and a stub is renderable from it.
+    let summary = first.summary.as_ref().expect("hydrated");
+    assert!(summary.stub && !summary.names.is_empty());
+    // The directions are separate questions: what work 1 cites is 2 and
+    // 3, what cites it is 3 alone.
+    let cited = client
+        .expand(pb::ExpandRequest {
+            seeds: vec!["pmid:1".into()],
+            budget: 0,
+            hydrate: false,
+            walk: pb::Walk::References.into(),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(
+        cited
+            .neighbours
+            .iter()
+            .map(|n| n.public_id.clone())
+            .collect::<Vec<_>>(),
+        [public_text(2), public_text(3)]
+    );
+    let citing = client
+        .expand(pb::ExpandRequest {
+            seeds: vec!["pmid:1".into()],
+            budget: 0,
+            hydrate: false,
+            walk: pb::Walk::Citers.into(),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(
+        citing
+            .neighbours
+            .iter()
+            .map(|n| n.public_id.clone())
+            .collect::<Vec<_>>(),
+        [public_text(3)]
+    );
     let no_seeds = client
         .expand(pb::ExpandRequest {
             seeds: vec![],
             budget: 0,
             hydrate: false,
+            walk: pb::Walk::Both.into(),
         })
         .await
         .unwrap_err();
     assert_eq!(no_seeds.code(), Code::InvalidArgument);
+    // A direction the protocol does not have is refused, not defaulted.
+    let unknown = client
+        .expand(pb::ExpandRequest {
+            seeds: vec!["pmid:1".into()],
+            budget: 0,
+            hydrate: false,
+            walk: 7,
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(unknown.code(), Code::InvalidArgument);
+}
+
+/// The shorthand for the two questions: the seeds are the server's, and
+/// the subject is not in its own answer.
+#[tokio::test]
+async fn related_gathers_its_own_seeds_and_leaves_the_subject_out() {
+    let service = Arc::new(Service::new(Fake::new(1), Terms::stub()));
+    let mut client = start(service).await;
+    let ask = |work: String, by: pb::By| {
+        let mut client = client.clone();
+        async move {
+            client
+                .related(pb::RelatedRequest {
+                    work,
+                    by: by.into(),
+                    limit: 0,
+                    hydrate: true,
+                })
+                .await
+        }
+    };
+    // Work 3 cites work 1 and is cited by it. Co-citation seeds with its
+    // citers — work 1 — and walks their references, which are 2 and 3:
+    // 3 is the subject and is left out, so the answer is 2 alone.
+    let alongside = ask(public_text(3), pb::By::CitedAlongside)
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(
+        alongside
+            .related
+            .iter()
+            .map(|n| n.public_id.clone())
+            .collect::<Vec<_>>(),
+        [public_text(2)],
+        "the subject heads its own list unless it is dropped"
+    );
+    assert_eq!((alongside.seeds_used, alongside.seeds_total), (1, 1));
+    assert_eq!(alongside.total, 1);
+    assert!(alongside.related[0].summary.is_some(), "hydrated");
+    // Bibliographic coupling seeds with what work 1 cites — 2 and 3 —
+    // and walks their citers, which are work 1 itself: the subject
+    // again, and so an empty answer rather than a list headed by it.
+    let same = ask("pmid:1".into(), pb::By::CitesSame)
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(same.related.is_empty(), "{:?}", same.related);
+    assert_eq!((same.seeds_used, same.seeds_total, same.total), (2, 2, 0));
+    // A stub cites nothing we know of, so its coupling has no seeds at
+    // all: an empty answer saying `0 of 0`, which is a work with nothing
+    // to couple on and not a failure.
+    let nothing = ask(public_text(2), pb::By::CitesSame)
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(
+        (
+            nothing.related.len(),
+            nothing.seeds_used,
+            nothing.seeds_total,
+            nothing.total
+        ),
+        (0, 0, 0, 0)
+    );
+    // A neighbourhood the protocol does not have is refused, never
+    // defaulted to the other question.
+    let unknown = ask("pmid:1".into(), pb::By::CitesSame).await;
+    assert!(unknown.is_ok());
+    let refused = client
+        .related(pb::RelatedRequest {
+            work: "pmid:1".into(),
+            by: 7,
+            limit: 0,
+            hydrate: false,
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(refused.code(), Code::InvalidArgument);
+    // And a limit over the cap is refused, never clamped.
+    let over = client
+        .related(pb::RelatedRequest {
+            work: "pmid:1".into(),
+            by: pb::By::CitesSame.into(),
+            limit: 1001,
+            hydrate: false,
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(over.code(), Code::InvalidArgument);
+}
+
+#[tokio::test]
+async fn a_path_is_directed_bounded_and_says_so_when_there_is_none() {
+    let service = Arc::new(Service::new(Fake::new(1), Terms::stub()));
+    let mut client = start(service).await;
+    let ask = |from: String, to: String, depth: u32| {
+        let mut client = client.clone();
+        async move {
+            client
+                .path(pb::PathRequest {
+                    from,
+                    to,
+                    depth,
+                    paths: 0,
+                    hydrate: true,
+                })
+                .await
+                .unwrap()
+                .into_inner()
+                .outcome
+                .unwrap()
+        }
+    };
+    // 3 -> 1 -> 2, and the arc that reached each work beside it.
+    let pb::path_response::Outcome::Found(found) = ask("pmid:3".into(), "pmid:2".into(), 0).await
+    else {
+        panic!("no path 3 -> 2")
+    };
+    assert_eq!((found.hops, found.total, found.paths.len()), (2, 1, 1));
+    assert_eq!(
+        found.paths[0]
+            .works
+            .iter()
+            .map(|w| w.public_id.clone())
+            .collect::<Vec<_>>(),
+        [public_text(3), public_text(1), public_text(2)]
+    );
+    assert!(found.paths[0].works[0].by.is_empty());
+    assert_eq!(found.paths[0].works[1].by, ["pubmed", "crossref"]);
+    // Hydrated with the same summary a page carries: work 1 is held and
+    // titled, work 2 is a stub with names and no title.
+    let held = found.paths[0].works[1].summary.as_ref().unwrap();
+    assert_eq!((held.title.as_str(), held.stub), ("A titled work", false));
+    assert_eq!(held.authors, ["Ada Lovelace"]);
+    let stub = found.paths[0].works[2].summary.as_ref().unwrap();
+    assert!(stub.stub && stub.title.is_empty() && !stub.names.is_empty());
+    // The other direction is the other question: 2 cites nothing.
+    let pb::path_response::Outcome::None(none) = ask("pmid:2".into(), "pmid:3".into(), 0).await
+    else {
+        panic!("2 -> 3 should have no path")
+    };
+    assert_eq!((none.depth, none.forward), (6, 1));
+    assert!(none.backward >= 1);
+    // A bound too short is no path and never a wrong one.
+    let pb::path_response::Outcome::None(none) = ask("pmid:3".into(), "pmid:2".into(), 1).await
+    else {
+        panic!("3 -> 2 is two hops, not one")
+    };
+    assert_eq!(none.depth, 1);
+    // A work to itself.
+    let pb::path_response::Outcome::Found(found) = ask("pmid:1".into(), public_text(1), 0).await
+    else {
+        panic!("a work is not itself")
+    };
+    assert_eq!((found.hops, found.paths[0].works.len()), (0, 1));
+    // Both caps refused, not clamped.
+    for (depth, paths) in [(11, 0), (0, 11)] {
+        let over = client
+            .path(pb::PathRequest {
+                from: "pmid:3".into(),
+                to: "pmid:2".into(),
+                depth,
+                paths,
+                hydrate: false,
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(over.code(), Code::InvalidArgument);
+    }
 }

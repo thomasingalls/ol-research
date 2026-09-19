@@ -232,25 +232,41 @@ One new record, from a source to an answer:
    two — and the record answers. Every answer carries the watermark and
    its timestamp.
 
-Three cases the incremental rules leave to a full merge, each stopping
-the batch before it writes anything and saying why: a work's names
-splitting between works — rarer since 2026-09-18, a record that drops a
-name no longer parting its work; two ids retired in one batch with an arc
-between them; and, since 2026-09-17, a stub the batch made of a record's
-leftover names cited together with another stub, and a work whose
-citation moves to such a stub retired in the same batch. A fourth is gone
-since 2026-09-18: a work losing its last record while something cites it
-keeps its id and becomes the stub its citers name, name by name, which
-the cited-as evidence says (item 28). Three more are gone the same day,
-all to one reader: a text — an abstract, author names, a venue name —
-that a record outside the batch and not promoted before would have to
-supply is read from that record's own normalized set, and so is the
-record a work keeps of a source whose twin the batch withdrew or moved,
-whose arcs, relations, unresolved rows and cited-as evidence it restates
-in place of the pair's. Two things a batch does that a full
-merge then tidies, both reported: a work with a duplicate record outside
-the batch has arcs added and none removed, and a stub left with no citing
-arc keeps its names until a compaction drops them.
+Two cases the incremental rules leave to a full merge, each stopping the
+batch before it writes anything and saying why: two ids retired in one
+batch with an arc between them; and, since 2026-09-17, a stub the batch
+made of a record's leftover names cited together with another stub, and
+a work whose citation moves to such a stub retired in the same batch.
+
+A third is gone since 2026-09-19: **a work's names splitting between
+works**, which the batch now performs (merge plan §11, item 3). Dividing
+a row is one problem whether one part keeps its id or none does, so it
+is one path: the names each part took, the names no part took going to a
+stub of their own where a reference cites them without a name a part
+took, and every reference that landed on the row settled again by §6 —
+the citation text before the order — over the row's own evidence. Where
+no part continues the row, the id is retired with no successor, its row
+and its arcs go, and its parts answer for it (§11, item 24). Three
+refusals hold the path to what the row can say (item 28): a reference
+whose text repeats a DOI on more than one side, one that gave a single
+namespace on more than one side, and one whose every name here is
+dropped. A fourth is the split's own, and a guard rather than a shape
+seen: a row that splits while keeping a record the batch does not carry,
+whose arcs, relations and unresolved rows only the normalized layer
+could divide between the parts.
+
+A fourth is gone since 2026-09-18: a work losing its last record while
+something cites it keeps its id and becomes the stub its citers name,
+name by name, which the cited-as evidence says (item 28). Three more are
+gone the same day, all to one reader: a text — an abstract, author
+names, a venue name — that a record outside the batch and not promoted
+before would have to supply is read from that record's own normalized
+set, and so is the record a work keeps of a source whose twin the batch
+withdrew or moved, whose arcs, relations, unresolved rows and cited-as
+evidence it restates in place of the pair's. Two things a batch does
+that a full merge then tidies, both reported: a work with a duplicate
+record outside the batch has arcs added and none removed, and a stub
+left with no citing arc keeps its names until a compaction drops them.
 
 Two tests, both the merge's own tests extended a layer: after *n*
 incremental batches, a full merge appends nothing to the registry and its
@@ -301,7 +317,9 @@ proposes what the id is:
   public id is a name like any other to `resolve`. Decided 2026-09-16.
 - **Redirects.** A merged work's public id resolves to its survivor
   through the registry, forever; a split work's public id answers with
-  both parts, an ambiguity the API says out loud rather than guessing.
+  every part, an ambiguity the API says out loud rather than guessing.
+  Built 2026-09-19 (§11, item 24): the `split` outcome carries the
+  parts, followed to live works.
 
 ## 7. The query core and its transports
 
@@ -310,15 +328,62 @@ deltas, speaking `WorkId` inside and nothing else (landed 2026-09-16 as
 `serve::Serving`, with `query work | search | expand` in the binary): `resolve(name) →
 Option<WorkId>` for names and public ids alike; `work(id) → Record`, the
 merged record with its names and standings, promoted fields with their
-disagreements, and its source records; `references(id, limit)` and
+disagreements, and its source records, with `rows(ids) → map` beside it,
+which is the same answer for a whole page in one walk of the index
+(2026-09-19, §10; §11 items 13 and 31); `references(id, limit)` and
 `citers(id, limit)` as the graph gives them, lazy, each arc with its
 asserters; `search(query, filters, facets, limit) → hits and facet
 counts` over the promoted fields — year, form, genre, language, status,
 venue, the sources holding the work, and later MeSH, topics and entity
-ids as the ambitions ask (§8 there); and `expand(seeds, budget)`, one
-hop out from a seed set, deduplicated and bounded, the primitive the
-funnel starts from and no more. Every answer carries the epoch and the
+ids as the ambitions ask (§8 there); `expand(seeds, walk, budget)`, one
+hop out from a seed set, deduplicated, scored and bounded, the primitive
+the funnel starts from; and `path(from, to, bounds)`, the bounded
+directed search of the graph plan's §7; and `related(work, by, budget)`,
+which is `expand` over a seed set the work itself owns — the two
+questions a reader actually asks, gathered here rather than by the
+client (2026-09-19, §10). Every answer carries the epoch and the
 watermark it was answered at.
+
+**The two traversal primitives**, since they are where the funnel starts
+(both 2026-09-19, §10). `expand` takes the direction as an argument —
+`references`, `citers` or both — because the two features that use it go
+opposite ways on both axes: co-citation seeds with a work's *citers* and
+walks *references*, bibliographic coupling seeds with its *references*
+and walks *citers*. It returns, per neighbour, the raw overlap, the
+degree that overlap is out of, and **Salton's cosine** over the two,
+`|S ∩ N(v)| / sqrt(|S| · |N(v)|)`, which is what it ranks and truncates
+by. `N(v)` is the orientation *opposite* the one walked — the arc that
+reached `v` from a seed is an in-arc of `v` — and its size is two
+offsets, so the normalisation costs no second walk. `path` answers with
+the shortest paths there are, or with *no path within this bound and
+this is how far I looked*, or with *my budget ran out and here is the
+smaller bound I did prove*: three outcomes, never an empty list, since on
+this corpus the second is the ordinary one (graph plan §7).
+
+**The two questions over them** (2026-09-19, §10). `related(work, by,
+budget)` is one call where a client otherwise made two — a page of a
+list, then that page handed back as seeds — and the second call is not
+merely chatty but a different question, since the seeds are then
+whichever page the client was holding. `by` is `cites-same`
+(bibliographic coupling: seeds the work's references, walks citers) or
+`cited-alongside` (co-citation: seeds its citers, walks references), and
+neither is a default. The subject is left out of its own answer, which it
+must be: every seed reaches it, so its `touches` is the whole seed set
+and the seed set is the orientation its degree counts — it scores exactly
+one against itself and heads every list it is not dropped from. The
+seeding is bounded by the **arcs** walking it would read and not by a
+count of seeds, since a seed's own list may be any length, and both
+numbers come back so a bounded answer reads as one.
+
+**One hydrated row shape** across the three lists that carry works —
+an arc of a page, a neighbour of an expansion, a step on a path — since
+they had drifted into three (2026-09-19, §10): `public_id`, `stub`,
+`title`, `names`, `authors`, `venue`, `published`, present when the
+request asked to hydrate and the work has a row, absent when it did not
+or has none. A stub is what it is shaped for: 98.55 % of reference
+targets are stubs, which have no title and never will until something
+holds a record of them, and their promoted names are what a reader can
+be shown instead.
 
 **The transport** is a second binary: gRPC first, decided 2026-09-15 on
 `tonic` 0.14 over `hyper` 1, with server streaming for a hub's citers
@@ -511,6 +576,205 @@ state kept outside the store, and a limit per principal on calls and on
 
 ## 10. Decision log
 
+- 2026-09-19, one read for a page, one row shape for every list, and
+  `related` — three changes with one reason between them: a browser
+  asking one question should make one request and get back rows it can
+  render (§7; §11 items 7, 13, 31 and 32). Written against the frontend
+  as it was being written, so the shapes here are a contract.
+
+  **The bulk read.** `Serving::rows(&[WorkId]) → HashMap<WorkId, Row>`
+  beside `work(id)`: the ids deduplicated and sorted, the works delta's
+  overrides applied exactly as `work` applies them — the same row either
+  way, tested over a store with a batch folded over it — and the base
+  walked once per block rather than once per id. A map and not the
+  caller's order, because every caller already holds that order (its
+  page, its neighbours, its path) and wants the row *of* a work while
+  walking it; an id with no row is not a key, which is `work` answering
+  `None`.
+
+  Measured on epoch 7, the index now counting the blocks and the bytes
+  it decompresses:
+
+  | a page of | one row at a time | in one call |
+  |---|---|---|
+  | 100 citers (arcs, id order) | 39 blocks, 25.6 MiB, 19.5 ms | 39 blocks, 25.6 MiB, 19.4 ms |
+  | 20 neighbours (ranked) | 20 blocks, 3.3 MiB, 2.6 ms | 17 blocks, 2.3 MiB, 1.9 ms |
+  | 100 neighbours (ranked) | 100 blocks, 7.7 MiB, 6.4 ms | 85 blocks, 5.6 MiB, 4.8 ms |
+  | 100 search hits (ranked) | 93 blocks, 54.9 MiB, 41.3 ms | 59 blocks, 34.5 MiB, 26.1 ms |
+
+  The honest reading: the win is small, and the cost it made visible is
+  not. A page of arcs comes out of the graph in id order and the index
+  already keeps the last block decompressed, so the run through a block
+  was already collapsing — nothing to win there, which is the premise the
+  work started from and it was wrong. The win is where the ids arrive
+  *ranked*, which is every list a score orders: 1.2× to 1.6× fewer blocks
+  and the same in time, and it cannot lose.
+
+  What the byte counter says is the thing to act on, and it is item 31:
+  hydrating a hundred held rows decompresses **25.6 MiB to keep 349 KB**.
+  A block of held works is 687 KB raw where the average block is 38 KB,
+  because stubs are 97 % of the index and nearly free while held rows are
+  large and cluster together. End to end, `/v1/citers?page=100` is
+  **0.5 ms** and the same page with `hydrate=true` is **20 ms** — forty
+  times, all of it block decompression for rows thrown away.
+
+  **One row shape.** The three converters had drifted into three: an arc
+  and a path's step carried a title and promoted names, a neighbour
+  carried a title alone and had no names field at all. A stub has no
+  title, so an expansion landing on one — 98.55 % of reference targets
+  are stubs — had neither a title nor an identifier and could not be
+  shown. Now all three carry one `Summary` message, in its own field, so
+  the drift cannot recur and a client renders any of them with one
+  function: `public_id`, `stub`, `title`, `names`, `authors`, `venue`,
+  `published`. Present when the request asked to hydrate and the work has
+  a row; absent (null) when it did not or has none, rather than an empty
+  summary, which would read as a work we know nothing about. `Arc.title`
+  and `Arc.names` and `Neighbour.title` are gone and their field numbers
+  reserved. Every field is read exactly where `Work` reads it, so a
+  summary cannot disagree with the work it summarises.
+
+  **`related`.** `GET /v1/related?work=&by=&limit=&hydrate=` and the
+  `Related` RPC, both through the same function in `service.rs`;
+  `/v1/expand` stays as it is, the general primitive under it. `by` is
+  `cites-same` or `cited-alongside`, named and required, because the two
+  are opposite questions and a default would answer one to a client that
+  meant the other. The server gathers the seeds, which is the point: two
+  calls meant the seeds were whichever page the client happened to be
+  holding, so a work with 882 citers was answered about the fifty the
+  client had fetched, and a client that paged twice got a different
+  answer from one that paged once.
+
+  The subject is dropped from its own answer, inside `expand` and before
+  the truncate. It has to be, and the reason is arithmetic rather than
+  taste: every seed reaches the subject, so its `touches` is the whole
+  seed set, and the seed set *is* the orientation its degree counts —
+  `|S| / sqrt(|S| · |S|)` is exactly one. It heads every list it is not
+  dropped from, and nothing else can reach it: on epoch 7 the PRISMA
+  statement's best real co-citation neighbour scores 0.259 and its best
+  coupling neighbour 0.983.
+
+  **The seeding is bounded by arcs, not by seeds**, which is the one
+  decision here that a measurement reversed. A cap on the seed count
+  bounds no work at all, since one seed's list may be any length; the
+  cap is therefore 250,000 arcs — about a tenth of a second at the 2,444
+  arcs a millisecond measured here, and the same order as the path
+  search's 250,000-work visit guard. Over it, the seeds kept are those of
+  **smallest degree in the orientation about to be walked**. That was
+  first argued from cost and specificity alone; measured against the
+  unbounded answer — PRISMA's co-citation over all 882 of its citers —
+  it is also simply the better answer at equal cost:
+
+  | budget | seeds, smallest first | top-20 kept | seeds, list order | top-20 kept |
+  |---|---|---|---|---|
+  | 10,000 arcs | 256 | 8 of 20 | 87 | 1 of 20 |
+  | 25,000 arcs | 463 | 13 of 20 | 234 | 7 of 20 |
+  | 50,000 arcs | 680 | 17 of 20 | 409 | 10 of 20 |
+
+  A budget buys three times the seeds when it spends them on short lists,
+  and a work citing three hundred others puts the subject in almost no
+  company — the same reason the cosine discounts a hub, applied a step
+  earlier. The earlier reading of this, at a fixed *count* of 100 seeds,
+  said the opposite; it was measuring four times the arcs for the list
+  order and calling it fidelity.
+
+  Nothing in this corpus reaches the bound — the most-cited work walks
+  94,098 arcs for its co-citation, 3,147 for its coupling — so every
+  answer today uses every seed there is and says so. `seeds_used` against
+  `seeds_total` is what says it; `total` is what the hop reached before
+  `limit` truncated, as a list's `total` is to its page.
+
+  End to end on epoch 7, warm: `related?by=cited-alongside&limit=20`
+  hydrated on the most-cited work we hold is **26 ms** and 11.7 KB,
+  `by=cites-same` **9.4 ms** and 19.3 KB. The answers are what they
+  should be — the co-citation of the PRISMA statement is RoB 2, ROBINS-I
+  and Rayyan, and its coupling is its own two sibling republications
+  ahead of everything else.
+
+  `ol-rht query related <work> --by <cites-same|cited-alongside>`
+  follows, and `query expand` reads its titles through the bulk read.
+  No version bump: nothing on disk changed, so the user's epoch 7 serves
+  all of this as it stands.
+- 2026-09-19, the traversal primitives — `expand` gains a direction and
+  a degree normalisation, and `path` is built (§7, §11 items 7 and 29;
+  graph plan §7, §10). Two decisions taken with the user, and one
+  measurement taken before either.
+
+  **The measurement first**, because it decides whether path is worth
+  anything on this corpus: the subgraph induced on held works alone —
+  which is the only subgraph a directed path moves through, a stub
+  having no references and so ending any forward walk — holds **93,007
+  distinct arcs over 148,210 works**, a mean out-degree of **0.628**.
+  That is an order below percolation, and the components agree: 107,584
+  weak ones, the largest holding a quarter of the held works and the
+  next 44; 148,122 strong ones, the largest of size 3. Of 200,000 random
+  held pairs, 4 have a directed path within six hops. The user's estimate
+  was mean out-degree ~1 from the merge report's 185,328 assertions
+  landing on held works; distinct arcs are half that, since a held→held
+  arc carries 1.95 asserters on average. So the claim is verified, and
+  understated. The full table is the graph plan's §7, and two report
+  lines print it on every `graph build` from now on.
+
+  **Direction.** The walk is `references`, `citers` or both, and both is
+  only the default because it is what `expand` was. The reason is not
+  symmetry but that the two features that want it are mirrors of each
+  other on both axes at once: co-citation seeds with a work's citers and
+  walks their references; bibliographic coupling seeds with its
+  references and walks their citers. Neither is served by a walk that
+  does both.
+
+  **Normalisation, inside `expand` and before the truncate** — which is
+  the whole of the point, since normalising a page already chosen by raw
+  overlap would normalise a set the hubs had picked. **Salton's cosine**,
+  `|S ∩ N(v)| / sqrt(|S| · |N(v)|)`, over Jaccard: it is the co-citation
+  literature's own measure, and its square-root denominator *discounts* a
+  hub where Jaccard's linear `|S ∪ N(v)|` all but deletes any work with a
+  long citer list whatever it shares with the seeds. The two agree on
+  15.5 of the top 20 in any case; the choice that matters is normalising
+  at all. Measured over 500 co-citation expansions on epoch 7: the top
+  twenty by raw overlap and by cosine share **8.5 works of 20**, and the
+  median citer count of the top hit falls from **14 to 4**. The deeper
+  reason is that the raw count is nearly no signal at this scale — those
+  runs threw up 911,071 candidates touched by exactly one seed against
+  39,951 touched by two, so an unnormalised ranking is a tie over almost
+  the whole answer, broken by id order.
+
+  The raw overlap and the degree travel beside the score, because "7 of
+  its 9 citers also cite this" is a sentence a reader can weigh and a
+  cosine is not. `N(v)` is the orientation opposite the one walked, and
+  its size is two offsets on the base — no second walk — with the folded
+  list counted instead for the few works a recent batch touched.
+
+  **`path` is directed.** A → B means "A cites something that cites … B";
+  an undirected walk wanders up and down the arcs and means nothing, so
+  the other direction is the other question, asked by swapping the ends.
+  Bidirectional breadth-first, bounded by depth, by how many paths to
+  return and by a visit budget; the two half-searches cover the bound
+  exactly, so an empty meeting is a *proof* of absence rather than a
+  failure to find. Hence three outcomes in the protocol as a `oneof` —
+  paths, none within the bound with how far it looked, or stopped with
+  the smaller bound it did prove — and never an empty list, which on this
+  corpus would be the answer to almost every question and would read as
+  an error.
+
+  Both are on both transports through the same free functions in
+  `service.rs`, so neither surface can drift: `Expand` gains a `Walk`
+  enum and `Neighbour` gains `degree` and `score`; `Path` is a new RPC
+  and `/v1/path` a new route, where the direction is named
+  (`walk=references`) and not numbered. Every cap is refused and never
+  clamped, in that layer's existing style, and a `walk` value the
+  protocol does not have is refused rather than taken for the default.
+  `ol-rht query expand --walk` and `ol-rht query path` follow.
+
+  No version bump: nothing on disk changed. `graph::path` is a reader
+  over neighbourhoods a caller supplies, so the served path folds the
+  edges delta like every other answer — tested by applying a batch and
+  walking over the arc it added.
+
+  One wart the sample turned up, left to the caller: co-citation seeds
+  with a work's citers, and every one of them cites that work, so the
+  work heads its own co-citation list at a score nothing else reaches.
+  `expand` is given seeds and never the subject, so it cannot know to
+  drop it.
 - 2026-09-15, the serving shape (the user's decisions, logged here for
   want of this document) — a public id, minted as a second append-only
   log beside the registry; incremental from the start rather than an
@@ -625,6 +889,60 @@ state kept outside the store, and a limit per principal on calls and on
   as possible as it can be (§11, item 24). Settled the same evening, on
   the user's word for both recommendations: a stub name's sources are its
   citers', and a withdrawn record's references make no stubs.
+- 2026-09-19, the batch performs a split, and a split id answers — the
+  split rule of merge plan §11, item 3 reaching this layer, taken with
+  the user after measuring the corpus's fourteen splits. The batch had
+  stopped on any split since 2026-09-16, "since the citing references
+  would have to be resolved anew to follow the parts". They are — by the
+  path built that morning for a record taking over part of a stub (§11,
+  item 28), which is the same problem: a row's names divided, each
+  citing reference settled again by §6 over the row's own evidence. So
+  the two became one path rather than two, and dividing a row now asks
+  the same questions whether one part keeps the id or none does.
+
+  What the split added to it: destinations that are *held works* and not
+  only the stubs leftover names become; a retirement with no successor,
+  which the batch's retirement machinery did not model — it walked a
+  single chain of `(id, into)` — and now carries parts beside it; and
+  one refusal of its own, a row that splits while keeping a record the
+  batch does not carry, whose arcs, relations and unresolved rows only
+  the normalized layer could divide — a guard, since every row the
+  sample splits is a stub or a work whose records the batch carries. The
+  three refusals of item 28 carry over unchanged, and the proof they
+  rest on holds unchanged with them: it never named one side as the
+  row's continuation.
+
+  Measured on PubMed's five update files, held out of the sample and
+  merged one batch each in path order (`update_files`): all five now
+  apply, `1339` included, where the run stopped at the third (`1336`)
+  before. `1336` performs the only two splits in the files, both the
+  fallback — a stub of three names two of its own records divide between
+  them (§11, item 25) — and the fourteen the corpus holds are all the
+  first clause's shape, one held part and one bare stub. Both halves
+  were needed. One line of churn is left over the whole run, and it is
+  the leftover stub's grouping rather than the split (item 25).
+
+  The three hold-outs that guard against regression, each a full merge
+  without one file and then that file as a batch, are unchanged at **0
+  differences**: `pubmed26n1334` 0 of 5,228,675 ids, `pubmed26n1335` 0
+  of 5,237,827 and `pubmed26n1337` 0 of 5,227,709. Of the four refusals
+  none fires on the sample. The fourth is a guard rather than a
+  measured shape: no row the sample splits holds a record at all — all
+  fourteen of the corpus's and both of `1336`'s are stubs or works whose
+  records the batch carries — so it stands against a shape no fixture
+  could be made to produce either, the identity pass joining a record to
+  the work whose name it claims wherever the sample was pushed to part
+  them.
+
+  And a split id now **answers** (§11, item 24). The registry has always
+  written the parts in its `split` line and the fold has always thrown
+  them away; it keeps them now, the names base gains a `split.u32`
+  beside `retired.u32`, and `resolve`'s `split` outcome — which carried
+  back only the id the reader had just sent — carries the works its
+  names went to. `serve` version 5; the merged layer is untouched, and
+  so is the registry's format, since a keeper reuses its id or merges it
+  into an older one it also claims, both of which the log already says.
+
 - 2026-09-19, the batch runs §6 on a split instead of imitating it —
   asked for by the user, who saw that the affected names are a finite,
   knowable set and asked whether the data on disk was already enough.
@@ -844,12 +1162,39 @@ state kept outside the store, and a limit per principal on calls and on
    grows in a day at scale decides whether a day's compaction is enough
    for it.
 7. **`expand`'s budget** and what it dedupes on; the product's, once
-   candidate management is a plan.
+   candidate management is a plan. Two thirds of this were settled
+   2026-09-19 (§7, §10): the **direction** is the caller's —
+   `references`, `citers` or both — and the ranking is **Salton's
+   cosine** over the neighbour's degree in the orientation opposite the
+   walk, computed before the truncate, with the raw overlap and the
+   degree returned beside it. It dedupes on the work: a seed that
+   reaches a neighbour along both orientations is one seed, and two
+   spellings of one seed are one seed, so the score cannot exceed one.
+
+   A third was settled 2026-09-19 with `related` (§10, item 32): `expand`
+   takes the work the question is *about*, and leaves it out of its own
+   answer, because the truncate happens inside — a caller dropping it
+   afterwards would be one short of the budget it asked for and could
+   not take it out of the count of what the hop reached. It also returns
+   that count now, so a page of neighbours says what it is a page of.
+
+   What is still open is the budget itself — 20 by default and 1,000 at
+   the cap, both guesses — and everything past one hop. A second hop
+   wants a different shape: seeds weighted by the first hop's scores,
+   and a stopping rule, which is candidate management and not this.
+   Also open: whether the score should carry the year or the arc's
+   asserters, which the measurement above cannot answer because the
+   sample has no ground truth to score against — the retrieval
+   benchmarks of the inbox are what would.
 8. ~~**Incremental identity's edge cases.**~~ Spelled out 2026-09-16
    with fixtures (`serve`'s tests over a store built in memory): a
    record bridging two held works merges the younger into the older,
    its arcs and citers moving; a name moving between works is a split,
-   which stops the batch for a full merge; a deleted record leaves its
+   which the batch performs since 2026-09-19 (merge plan §11, item 3),
+   with a fixture for each half: the part that holds the records keeps
+   the id, and a stub two arriving records divide between them is
+   retired with no successor, both parts minted and every citer settled
+   again by §6; a deleted record leaves its
    work's other records to re-promote, drops the work when it was the
    last and nothing cites it, and stops the batch when it was the last
    and something does. Two more the sample taught: a record arriving for
@@ -859,11 +1204,18 @@ state kept outside the store, and a limit per principal on calls and on
    has, which the batch reads from there since 2026-09-18 (item 25).
    Three refusals were added 2026-09-19 with the split rule of item 28,
    each one §6 reaching past the row it is settling: a reference whose
-   citation text repeats a DOI on each side of the split; one that gave a
-   single namespace on each side, which §6 settles by the order the
-   reference wrote its names in and no row keeps; and one that named a
-   held work whose names here are all dropped, whose arc then leaves for
-   a work the row cannot name. None fires on the sample.
+   citation text repeats a DOI on more than one side of the division;
+   one that gave a single namespace on more than one side, which §6
+   settles by the order the reference wrote its names in and no row
+   keeps; and one whose every name here is dropped, whose arc then
+   leaves for a work the row cannot name. They carried over unchanged
+   when the same path took the split of merge plan §11, item 3, later
+   the same day — one division, whether a part keeps the id or none
+   does — and a fourth joined them, the split's own: a row that splits
+   while keeping a record the batch does not carry, whose arcs,
+   relations and unresolved rows only the normalized layer could divide
+   between the parts — a guard, no row the sample splits holding a record
+   at all. None fires on the sample.
 9. **Consistency across artifacts** is by watermark: a batch is folded
    only once the lexical index has absorbed it, so the older watermark
    is shown and never a mix (built 2026-09-16). Open: how long a lag is
@@ -895,6 +1247,16 @@ state kept outside the store, and a limit per principal on calls and on
     of kilobytes; `rows()` for the cross-check decodes every block in
     turn. Both fine on the sample; the corpus wants the check sampled or
     parallel.
+
+    Measured 2026-09-19 and the "tens of kilobytes" is wrong in the
+    direction that matters: 38 KB is the *average* block raw, and a block
+    of held works is 687 KB, because stubs are 97 % of the index and cost
+    almost nothing while held rows are large and land together. A block
+    is now decompressed into an `Arc` and shared rather than copied per
+    lookup — no measurable change in wall time at this block size, and
+    it removes 68 MB of copying from a hydrated page of a hundred — and
+    the index counts the blocks and bytes it decompresses, which is what
+    the measurements of item 31 are made with.
 14. **Request logging and metrics.** The binary logs its start, its
     switches and its internal errors to stderr and nothing per request;
     a tower layer for method, status, latency and epoch is the shape,
@@ -977,6 +1339,38 @@ state kept outside the store, and a limit per principal on calls and on
     as it can, answering by them as what was once so rather than not at
     all. The registry already keeps every dropped name and when; stale
     citers and superseded copies keep nothing yet.
+
+    One such path was answering nothing and now answers, 2026-09-19:
+    **an id a split retired**. Rarer since the split rule (merge plan
+    §11, item 3) gives the id to the part that holds the records, but
+    not gone — the corpus's fourteen are retired for good, and the
+    fallback keeps making more — and each has a public id that was out
+    in the world. It resolves to `split`, which now carries the works
+    its names went to: *this was one work; it is these now*. It builds
+    no work and no arc, as the condition asks; it is a redirect to
+    several. Before today the `split` outcome carried only the retired
+    id back, which told a reader nothing it had not just sent.
+
+    The parts come from the registry, which has always written them in
+    the `split` line and never kept them past the fold; the names base
+    gains a `split.u32` beside `retired.u32`, one `(id, part)` pair
+    each, and the batch's tail folds the line as the base does — a
+    `serve` version bump (5) and no merged-layer change, so `names
+    build` and `epoch publish` are what it asks for and not a merge. A
+    part merged since is followed to its survivor, and a part a later
+    split retired answers with its own parts, so the answer is always
+    live works.
+
+    The file and its manifest count are **optional to a reader**: a base
+    written before they existed opens and answers with no parts, which
+    is what the layer answered anyway. The version tuple is then the one
+    thing that refuses such a base, and it refuses it by saying which
+    version it is — which is the point. A manifest is parsed before its
+    version is read, so a required field there turns a version mismatch
+    into a parse error, and a reader learns nothing from it (found
+    2026-09-19, when the field was added without a default and the
+    published epoch stopped opening with a serde error instead of the
+    version message it should have given).
 25. **Update files the batch cannot take.** PubMed's first five update
     files, tried as one batch each against the rest of the sample and
     compacted whenever one stopped (2026-09-17): `pubmed26n1335` stopped on
@@ -995,16 +1389,35 @@ state kept outside the store, and a limit per principal on calls and on
     same reader answers: the twin is read from its own set and restates
     the pair. The leftover stub's merge still wants a rule of its own.
 
-    Where the files stand at the end of 2026-09-18: `1335` **applies**,
-    and `1336` stops on a split — the one rule left (merge plan §11, item
-    3), which the user has scoped for later. What `1335` does not yet do
-    is agree with a full merge: held out on its own and merged as a batch,
-    it appends nothing to the registry (it appended three lines before the
-    day's work) but leaves **9 differences** among 5,237,827 ids, all arcs
-    and citers of a handful of works — two citing works whose PubMed
-    records the file re-delivers, one stub, and two works the file itself
-    delivers. Not yet traced; the baseline and `1337` hold-outs, which
-    have no deletion of a duplicate record in them, are both at 0.
+    Where the files stood at the end of 2026-09-18: `1335` **applies**,
+    and `1336` stopped on a split — the one rule left (merge plan §11,
+    item 3). It has one, and only one: a **stub** of three names,
+    `{doi:10.1038/s41420-025-02366-3, pmid:41469416, pmc:PMC12848308}`,
+    which two of the file's own records divide between them —
+    `pmid:41390757`, which claims the PMC id, and `pmid:41469416`. The
+    old work is a stub and both parts hold records, so it is the
+    fallback: no part continues it, the id is retired with no successor
+    and both parts are minted. Worth noting for what it says about the
+    shapes: the fourteen splits the corpus holds are all a held work and
+    a bare stub, which the rule's first clause settles by keeping the id,
+    and the only splits the update files make are the fallback. The rule
+    needed both halves to get past `1336`.
+
+    Where the files stand at the end of 2026-09-19, with the split rule
+    built: **all five apply**, in path order against the rest of the
+    sample, `1339` included — `1336` performs two splits (both the
+    fallback) and no other batch performs any. What the run does not yet
+    do is agree entirely with a full merge: over the five batches the
+    following full merge appends **one** registry line of 5,327,963,
+    `merge #4967125 into #4967124` — two stubs `1339` minted separately
+    for `doi:10.1007/s40519-019-00640-9` and `pmid:30715680`, names one
+    work held together until `1339` re-delivered the PubMed record whose
+    wrong link they were, and which the full merge makes one stub. That
+    is the leftover stub's own grouping (merge plan §11, item 23) and
+    not the split: the row that lost them keeps its id, so it is the
+    division's first clause, whose code path is unchanged. It was not
+    measurable before, `1336` having stopped the run three batches
+    earlier. Not yet traced.
 26. ~~**A reference whose names another work takes.**~~ Built 2026-09-18.
     A reference names a held work's DOI beside a PMID and a PMC id nothing
     holds, and lands on the held work; a batch then gives the PMID to a
@@ -1091,9 +1504,94 @@ state kept outside the store, and a limit per principal on calls and on
     gave the same namespace on each side, which §6 settles by the order
     the reference wrote its names in, and no row keeps that.
 
-    What is still open: a stub minted for leftover names cited together
-    with another stub, and the split rule (merge plan §11, item 3).
+    One thing the path does not do, noted 2026-09-19 rather than
+    measured: when a reference's arc moves — item 26's move, a leftover
+    name's, or a split part's — and it lands on a *held* work, no
+    cited-as row is restated for it. The rows are written whole per
+    citing work and source from that record's own references, and the
+    batch does not hold a record it is not carrying. So the arc is
+    right and the evidence behind it goes stale: the old row still names
+    the work the reference landed on before, and `citers_of` will not
+    find it under the new one. It costs nothing today — the arcs and the
+    rows are what a reader answers from — and it costs a later batch the
+    evidence to divide that work again. `serve::compare` does not walk
+    the cited-as set, so no hold-out would show it. The record index of
+    item 18 is one answer; restating the rows from the store is another.
 
+    What is still open: a stub minted for leftover names cited together
+    with another stub. The split rule (merge plan §11, item 3) was ruled
+    later the same day, and this path took it whole: dividing a row is
+    one problem whether a part keeps the id or none does, and the proof
+    above holds either way, since it never rested on one side being the
+    row's continuation. What the split added is a destination that is a
+    held work rather than a stub, and one refusal of its own (item 8).
+
+29. **A path's bounds are the transport's guesses.** Six hops by default
+    and ten at the cap; three paths and ten; 250,000 works expanded,
+    which is not the caller's at all — a resource guard rather than a
+    question. Nothing on the sample comes near any of them: the widest
+    probe expanded 3,606 works at a depth of eleven, and the deepest
+    real answer was one hop. They are placeholders for numbers a corpus
+    and some traffic will set, and the shape they are placeholders for is
+    right: a cap refused, never clamped, and a search that hits the guard
+    saying what smaller bound it did prove instead of pretending to have
+    finished.
+
+30. **A path over a sample that has almost none.** Built 2026-09-19 and
+    correct, and on this corpus it answers "no path" to nearly every
+    question that is not a work citing another directly — 4 of 200,000
+    random held pairs have one within six hops (graph plan §7). The
+    ratio that moves is the 1.45 % of arcs landing on a work we hold,
+    and full ingestion is what moves it. Two things to do when it does:
+    re-measure the table of the graph plan's §7 on the corpus, and
+    revisit the fixed half-and-half search, which is what makes the
+    bound provable but expands a hub in full on whichever side holds one
+    (graph plan §11, item 13).
+
+31. **A hydrated page decompresses 75 times what it keeps.** Built and
+    measured 2026-09-19 (§10). `Serving::rows(ids)` answers a whole
+    page's rows in one walk of the works index, deduplicated, sorted, the
+    works delta's overrides applied exactly as `work(id)` applies them,
+    and the three hydrating converters call it once a page instead of
+    once a row. What that saves is real but small — nothing at all on a
+    page of arcs, which arrive in id order and so were already running
+    through the index's one-block cache; 1.2× on an expansion's
+    neighbours and 1.6× on a hundred search hits, both of which arrive
+    ranked and so scattered.
+
+    The number to act on is the one it made visible. Hydrating a hundred
+    held rows decompresses **25.6 MiB to keep 349 KB**, and end to end a
+    hydrated page of 100 citers is **20 ms** against **0.5 ms** for the
+    same page unhydrated. Three levers, in the order they are worth
+    trying, none taken yet because each costs an artifact rebuild and an
+    epoch the user publishes: a **smaller block** for the same dictionary
+    (item 5's open question, now with a number behind it); **stopping the
+    decompression early**, since a block's slot offsets are at its head
+    and the rows wanted are usually in its first half — zstd cannot seek
+    but it can stop; and a **summary sidecar**, the seven fields of §7's
+    hydrated row in their own array, which is what every list actually
+    reads and is perhaps a fiftieth of a row. The third is the real
+    answer if lists stay the product's spine.
+
+32. **`related`'s seeding, and what it drops.** Built 2026-09-19 (§7,
+    §10). The bound is on the **arcs** the walk will read — 250,000,
+    about a tenth of a second at the 2,444 arcs a millisecond measured on
+    epoch 7 — and not on a count of seeds, which bounds nothing when one
+    seed's list may be any length. Over the bound, the seeds kept are
+    those of smallest degree in the orientation about to be walked; one
+    seed is always walked however long its list; and `seeds_used` against
+    `seeds_total` on every answer says whether the bound bit.
+
+    Nothing in this corpus reaches it: the most-cited work we hold walks
+    94,098 arcs for its co-citation and 3,147 for its coupling, so every
+    answer today is the whole question. What is open is the number
+    itself, for the corpus where it will bite, and whether smallest-first
+    stays the drop rule there — it is the right one at equal cost by a
+    wide margin on this corpus (the measurements are in §10), but that
+    was measured against an unbounded answer this corpus is small enough
+    to compute, which is exactly what a corpus that needs the bound will
+    not be. The retrieval benchmarks of the inbox are what would settle
+    it.
 
 ## 12. Sources consulted
 

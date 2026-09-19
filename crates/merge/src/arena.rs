@@ -5,8 +5,10 @@
 use std::collections::HashMap;
 
 use ingest::Key;
+use model::Registrant;
 
 use crate::name::{Name, OwnedName};
+use crate::publisher;
 
 /// An index into an [`Arena`].
 pub type NameIx = u32;
@@ -17,6 +19,10 @@ pub struct Arena {
     names: Vec<OwnedName>,
     dois: HashMap<Box<str>, NameIx>,
     numbers: HashMap<(Key, u64), NameIx>,
+    /// Publisher ids by the registrant that scopes them, then by the
+    /// canonical spelling of the value: a namespace per registrant
+    /// (merge plan §3.1), which is what the nesting is.
+    publishers: HashMap<Registrant, HashMap<Box<str>, NameIx>>,
 }
 
 impl Arena {
@@ -50,6 +56,12 @@ impl Arena {
             Name::Doi(d) => {
                 self.dois.insert(d.into(), ix);
             }
+            Name::Publisher(registrant, value) => {
+                self.publishers
+                    .entry(registrant)
+                    .or_default()
+                    .insert(publisher::canonical(registrant, value).into(), ix);
+            }
             other => {
                 self.numbers
                     .insert((other.key(), other.number().unwrap_or(0)), ix);
@@ -64,6 +76,13 @@ impl Arena {
     pub fn find(&self, name: Name<'_>) -> Option<NameIx> {
         match name {
             Name::Doi(d) => self.dois.get(d).copied(),
+            // The one lookup that may allocate, and only for a value
+            // written in Elsevier's punctuated PII.
+            Name::Publisher(registrant, value) => self
+                .publishers
+                .get(&registrant)?
+                .get(&*publisher::canonical(registrant, value))
+                .copied(),
             other => self.numbers.get(&(other.key(), other.number()?)).copied(),
         }
     }
@@ -87,7 +106,7 @@ impl Arena {
 
 #[cfg(test)]
 mod tests {
-    use model::Pmid;
+    use model::{Doi, Pmid};
 
     use super::Arena;
     use crate::name::{Name, OwnedName};
@@ -104,5 +123,26 @@ mod tests {
         assert_eq!(arena.find(Name::Doi("10.1000/b")), None);
         assert_eq!(*arena.get(a), OwnedName::Doi("10.1000/a".into()));
         assert_eq!(arena.iter().count(), 2);
+    }
+
+    #[test]
+    fn a_publisher_id_interns_under_its_registrant_and_spelling() {
+        let mut arena = Arena::new();
+        let elsevier = Doi::parse("10.1016/x").unwrap().registrant();
+        let other = Doi::parse("10.5555/x").unwrap().registrant();
+        let punctuated = arena.intern(Name::Publisher(elsevier, "S0006-3495(25)00123-4"));
+        assert_eq!(
+            arena.intern(Name::Publisher(elsevier, "S0006349525001234")),
+            punctuated,
+            "one article, one name, either spelling"
+        );
+        let elsewhere = arena.intern(Name::Publisher(other, "S0006349525001234"));
+        assert_ne!(elsewhere, punctuated, "another publisher's namespace");
+        assert_eq!(arena.len(), 2);
+        assert_eq!(
+            *arena.get(punctuated),
+            OwnedName::Publisher(elsevier, "S0006349525001234".into())
+        );
+        assert_eq!(arena.find(Name::Publisher(other, "cvj_12_1266")), None);
     }
 }

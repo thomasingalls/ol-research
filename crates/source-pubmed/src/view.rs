@@ -20,6 +20,35 @@ use merge::view::{Status, Text, Unmapped, Venue, View, bound, join_sections, str
 use crate::attr::RefType;
 use crate::normalize::{AuthorName, Citation, PersonName};
 
+/// What scopes the record's publisher ids (merge plan §3.1): every DOI it
+/// holds, because either DOI slot may carry the registered one and a
+/// record whose slots disagree still keys its publisher ids by one
+/// registrant, the lower.
+#[must_use]
+pub fn publisher_scope<'w>(work: &'w Citation<'_>) -> merge::publisher::Scope<'w> {
+    let mut scope = merge::publisher::Scope::new();
+    if let Some(doi) = work.ids.doi.as_ref().and_then(Claim::valid) {
+        scope.doi(doi);
+    }
+    for doi in work.ids.elocation_doi.iter().filter_map(Claim::valid) {
+        scope.doi(doi);
+    }
+    scope
+}
+
+/// The publisher ids the record carries, each with the normalized field
+/// it came from: `ArticleId IdType="pii"` and `ELocationID EIdType="pii"`,
+/// which need not agree and are both kept (model version 2).
+pub fn publisher_ids<'w>(work: &'w Citation<'_>) -> impl Iterator<Item = (&'static str, &'w str)> {
+    let pii = work.ids.pii.iter().map(|v| ("ids.pii", *v));
+    let elocation = work
+        .ids
+        .elocation_pii
+        .iter()
+        .map(|v| ("ids.elocation_pii", *v));
+    pii.chain(elocation)
+}
+
 /// A PubMed publication type's place in the genre table: a genre with a
 /// priority (higher wins among a record's types), or a qualifier that
 /// says nothing about the genre — a study design, a funding note.
