@@ -106,6 +106,23 @@ Not assertions, decided on the census:
   assertions when a case shows they are right more often than not.
 - **A malformed claim** is never a name. It stays on the record, counted,
   as the ingestion plan's §6 decided.
+- **Publisher item ids** — PubMed's `ArticleId IdType="pii"` and
+  `ELocationID EIdType="pii"`, Crossref's non-DOI `alternative-id` — are
+  kept on every record and every reference (model version 2, 2026-09-18)
+  and are not assertions yet. The user's design, 2026-09-18: they belong
+  in a namespace of our own, keyed by a publisher we name
+  (`elsevier:`, `springer:`, `pii:` for one we cannot attribute) with a
+  checked-in mapping to the DOI registrants that publisher uses, rather
+  than a DOI-shaped composite of our making; some publishers will have no
+  registrant at all. What the sample says about making them names: of the
+  20,647 publisher ids that more than one record carries, 18,194 are one
+  work seen from two sources — the id doing its job — and 2,453 are
+  different works. The form tells them apart. Bare digits (an article
+  number: `4275`, `e112`, `320`) are 2,137 of the 2,453; ids carrying
+  letters are 14 in about 71,000, and at least one of those is a work our
+  rules should have merged. So an id with letters may be a name, a bare
+  number is evidence for the matching stage (§6) until a journal
+  qualifies it.
 
 ### 3.2 Components
 
@@ -252,7 +269,8 @@ of the merged layout, 2026-09-16 — its evidence: every assertion it made
 (§3.1, the field it came from and whether native) and its view, which is
 its values for the promoted fields below with its titles and its
 revision stamp (Crossref `indexed`, PubMed `DateRevised`, OpenAlex
-`updated_date`). The verdicts — the names' standings, the promoted
+`updated_date`) — and, since version 3, 2026-09-17, its version and the
+set its speaking copy came from (§8). The verdicts — the names' standings, the promoted
 fields — are a function of the records' evidence, and carrying the
 evidence is what lets an incremental merge (serving plan §5) re-run the
 rules on one work with the rows alone. Everything else a record holds —
@@ -264,8 +282,12 @@ not depend on the order its records arrived in.
 
 **Names.** Every accepted name with its namespace, value, standing
 (promoted, alias, shared) and who asserted it (source and field); every
-rejected assertion with its reason. Also written as the names set, one row
-per name, for lookups and the graph build.
+rejected assertion with its reason. A stub's names have no asserter: each
+carries its citers instead, the works whose arcs landed on the stub
+through that name with the source of each citing record (2026-09-16), and
+its sources are its citers' (2026-09-17), so that an incremental merge can
+take a citation back when the record that made it goes. Also written as the
+names set, one row per name, for lookups and the graph build.
 
 **Promoted fields, and the disagreements.** The fields the funnel and the
 search sinks consume, each chosen by a precedence rule with a comparison
@@ -339,9 +361,11 @@ its target through the names table:
 
 A target that resolves is an edge. A target whose name no held work has is
 a stub (§4), and an edge to it. A reference whose names resolve to
-different works follows the registry id — PMID, then PMC id, then
-OpenAlex id, before a DOI — and keeps every name in the unresolved
-stream as a `disagree` row. The 338 on the sample are a name beside a
+different works is settled by **its own citation text where that text
+repeats one of its DOIs** (2026-09-18, §10), and otherwise follows the
+registry id — PMID, then PMC id, then OpenAlex id, before a DOI — and
+keeps every name in the unresolved stream as a `disagree` row either
+way. The 338 on the sample are a name beside a
 held one (§11, item 14) that is also a stub of its own, and the examples
 are Cochrane reviews: the PMID names one version, the bare DOI
 (`10.1002/14651858.cd010508`) names the review across versions — lineage
@@ -484,19 +508,60 @@ and not by records.
 - **Two passes** over every normalized set of every source, both streaming
   through `ingest::Reader` with each set's symbol table installed, so
   interned values come back as text:
+  0. **copies** — before either pass, every deletions set and every
+     copy's revision stamp and version are read (`merge::copies`,
+     2026-09-17). A record delivered more than once — a baseline file and
+     the update files after it, a snapshot and a later lookup, two
+     versions of a versioned citation — has one copy that speaks for all
+     of it: the latest revision stamp, then the higher version, then the
+     later set in path order, then the later place in its set. A
+     deletions set withdraws the copies in the sets before it in path
+     order (PubMed's `DeleteCitation`, 2026-09-16). The newest deletion
+     counts: of the deletions sets naming a record, the latest in path
+     order withdraws every copy before it, whatever the copy's stamp,
+     since a deletion carries no stamp of its own, and a copy in a later
+     set speaks again. That may lose information, an accepted loss
+     (§10, 2026-09-17).
+
+     What the speaking copy gives, and what a superseded copy still
+     gives, is **absence is not an assertion** (2026-09-18, §10): a copy
+     that has no value for something says nothing about it, and only a
+     deletion takes anything back.
+     - Set-valued — the record's **names** and its **references** — is the
+       union over every copy a deletion has not withdrawn. References
+       because PubMed replaces a publisher's reference list with PMC's
+       when an article lands there — PMIDs only, and fewer entries — and
+       the identifiers the publisher gave are evidence already in hand;
+       names because a copy that stops giving an id (a version's own DOI
+       at F1000Research, twice in the sample) has not said the id is
+       wrong, and the references that cite it should keep landing on this
+       work.
+     - Single-valued — the **promoted fields** of §5 and the **text** of
+       §3 — is the newest copy's value, or where the newest has none, the
+       value of the newest copy that has one. The stamp, the version and
+       the set stay the speaking copy's: they name the delivery, not the
+       work. The venue fills as one id and not field by field, since its
+       three ids name one journal. A value that is merely *shorter* is not
+       an absence and does not fill: a truncated author list or a title
+       the source revised still speaks, because it is there.
+     - **Relations** are the speaking copy's alone, the one exception,
+       because the serving layer does not read a work's relations back and
+       so an incremental merge cannot take their union. Measured cost on
+       the sample: 15 of 23,482 re-delivered records have an erratum link
+       in an older copy that the newest dropped; the `corrected` flag those
+       links set survives anyway, being single-valued and sticky.
+     - A **withdrawn** copy gives nothing at all, references included. Two copies in one set are one delivery for
+     references, since a references set names the record and not the
+     copy: the one versioned citation of the sample's update files;
   1. **identity** — assertions to components to verdicts, then the registry:
      look up, mint, attach, merge; the output is the names table, name to
-     `WorkId`, and the registry's new lines. A record a later deletions
-     set withdrew (PubMed's `DeleteCitation`, in path order) is skipped
-     and counted (2026-09-16); a record delivered twice contributes its
-     first copy's names;
+     `WorkId`, and the registry's new lines;
   2. **records and edges** — every work's view joins its `WorkId`'s
      candidates, every reference resolves through the names table; the
-     merged sets are written. A record delivered twice contributes the
-     view of the copy with the latest revision stamp (2026-09-16), so an
-     update file re-delivering a record is not undone by the baseline
-     file before it; the references of every copy are still read, in
-     both passes (serving plan §11, item 22).
+     merged sets are written. Each record's view names its set and
+     version, so that a merged row says which copy spoke — what the
+     incremental merge ranks a batch's copy against, and what the search
+     documents take their text from (2026-09-17).
   The names table is in memory: a few million names on the sample, well
   under a gigabyte. Pass 2 accumulates each record's view, every edge,
   every relation and every unresolved row in memory as well and writes
@@ -521,7 +586,10 @@ and not by records.
   set — through `ingest::binary::Writer`, the framing factored out of the
   normalized sink with the record kinds this layer has appended to
   `ingest::Kind`: `works` (held and stubs), `edges`, `names`,
-  `relations`, `unresolved`, `symbols`. A work's shard is its id's; an
+  `relations`, `unresolved`, `cited_as` (2026-09-18: one row per name a
+  reference gave beside the work it landed on, with the citing work, the
+  source, the work it landed on and the namespace that landed it — item
+  14's evidence, kept at last), `symbols`. A work's shard is its id's; an
   edge's, a relation's or an unresolved row's is its citing work's. A
   set's header names the merge as its source and the model version; the
   directory names the merge version, which `merge dump` checks. Rows
@@ -705,11 +773,138 @@ stays.
 - 2026-09-17, copies — decided with the user: the newest copy of a
   record, by the revision-stamp rule its fields already follow, speaks
   for its names and its references too, since the latest version is the
-  likeliest to be right. Today the first copy's names count and a name
-  only a later copy carries is minted as a work of its own, which a
-  probe showed splitting the work's id once a batch had attached the
-  name (serving plan §11, item 22). Not built; it bumps the merge's
-  version.
+  likeliest to be right. Until then the first copy's names counted and a
+  name only a later copy carried was minted as a work of its own, which a
+  probe showed splitting the work's id once a batch had attached the name
+  (serving plan §11, item 22). Built the same day as §8's step 0, with a
+  withdrawn copy's references no longer making stubs and a stub name's
+  sources taken from its citers; the merge's version is 3. On the sample
+  with PubMed's first five update files, 26,305 PubMed copies are
+  superseded and 5 withdrawn.
+- 2026-09-18, a record's citations are the union over its copies —
+  decided with the user after the churn of §11 item 23 was traced. The
+  cause was not a rule about stubs but the copy rule meeting PubMed's
+  data: when an article lands in PMC, PubMed swaps the publisher's
+  reference list for PMC's, which carries a PMID on every entry, no DOIs,
+  and fewer entries. Of the 1,972 records in `pubmed26n1337` that the
+  store already held, 976 have fewer references in the newer copy and 769
+  fewer DOI or PMC ids; over those records the newer copies hold 88,236
+  references against 103,982, 5,779 DOIs against 39,036 and 2,168 PMC ids
+  against 14,233, while PMIDs rise from 60,614 to 73,084. Of the 769 that
+  lost identifiers, 546 gained a PMC id of their own in that same copy and
+  210 already had one. Cross-checked on one article (PMID 41547727): PMC's
+  full text holds all 24 references with 25 DOIs, Crossref holds all 24
+  with DOIs, OpenAlex counts 24, and only PubMed's later copy holds 12.
+  NLM's own instruction is to replace ("Revised or deleted citations
+  should replace existing citations in your local database"), and the
+  annual baseline is a snapshot, so nothing at PubMed gives those
+  identifiers back. So the newest copy still speaks for names, fields,
+  relations and text, and references are cumulative: both merges read
+  every standing copy's list, and the incremental merge adds arcs and
+  removes none for a re-delivered record (it still takes back a withdrawn
+  record's). The cost accepted: a citation a later copy genuinely removes
+  stays until something withdraws the record. Merge version 4.
+- 2026-09-18, the citation text settles a disagreement — decided with the
+  user, narrow scope. When a reference's names resolve to different works
+  and the reference's own citation text repeats one of its DOIs, that DOI
+  wins over the order of §6; where no DOI of its own is repeated, the
+  order decides as before, and the `disagree` row is written either way.
+  Measured over the store's 3,521,743 PubMed references: 774,466 carry a
+  DOI and 512,911 of those have a citation text repeating it; 618,825
+  carry both a DOI and a PMID, of which 24,847 name a PubMed record we
+  hold and can check; **492 of those 24,847 disagree** — the PMID's own
+  record carries a different DOI — and of the 492, **449 have a text
+  repeating the reference's DOI and not one repeats the PMID's**. The
+  asymmetry has a cause: the DOI and the citation string are the
+  publisher's deposit travelling together, while the PMID beside them is
+  PubMed's own later match, so a disagreement is usually PubMed's match
+  being wrong. Two caveats kept in mind: the 2% is measured only where we
+  hold the cited record, and our slice is recent PubMed, where matching
+  is freshest and most error-prone; and Crossref's unstructured
+  references are not measured yet. The 43 that corroborate nothing stay
+  on the order (the user's call). One case the rule leaves open: two DOIs
+  of one reference, both repeated in its text, naming different works —
+  nothing corroborates over the other, so the order decides, and an
+  incremental merge that attaches one of them may move the arc where a
+  full merge would not. None seen; noted rather than ruled on. Found by tracing a divergence between
+  the two merges on the `pubmed26n1335` hold-out, where a reference
+  carrying `10.1126/science.aay9097`, its matching citation text, and a
+  PMID and PMC id belonging to another paper landed on the other paper.
+  Merge version 6.
+- 2026-09-19, a stub's name says who wrote it out — decided with the
+  user, who asked whether the batch could be made exactly right from the
+  data already on disk, without an index and without re-reading records.
+  It can, and the missing fact was small: each citer of a stub's name is
+  now a record with two marks — whether that reference's own citation
+  text repeats the name, and whether the reference named a held work too.
+  One record's several references to the stub are one citer, their marks
+  joined: the text mark by *or*, since one reference writing the name out
+  corroborates it, and the held-beside mark by *and*, since one reference
+  naming nothing held makes the name its own. Merge version 7.
+
+  The reason a stub's own row is enough is worth keeping. §6 picks a
+  *name* — a DOI the text repeats, else the lowest namespace — and then
+  follows it to a work. Dividing a stub changes no name's namespace and
+  no name's text mark; it changes only which work a name names. So the
+  name §6 picked before the division is the name it picks after, and
+  that name was this row's, since the reference landed here. A name of
+  some other work lost before and cannot win now. What escapes the
+  argument is a name *disappearing* — the 2026-09-18 entry's open case
+  and one more — and those are refused, not guessed (serving plan §11,
+  item 28).
+- 2026-09-18, absence is not an assertion — decided with the user, who
+  asked for it as "data that is *there* supersedes data that is missing on
+  a per-record basis", and for a sanity check first. Measured over the
+  sample store's 242,624 records, of which 23,482 were delivered more than
+  once (49,812 copies; 23,457 of them PubMed's), comparing each record's
+  newest copy against its older ones:
+  - **Fields the newest copy has none of, an older copy having one: 5.**
+    All five are the derived `corrected` flag, from an erratum link the
+    newer copy dropped. Not one title, abstract, date, venue, language,
+    form, genre or author count is ever lost between copies. What does
+    change between copies is 257 titles, 154 dates, 281 abstracts, 37
+    genres, 2 forms and 1 language — revisions, where the newest copy
+    wins, and the rule does not touch them.
+  - **Names the newest copy drops: 2 records.** Both are F1000Research
+    versioned articles whose PubMed record moved from the version-1 DOI to
+    the version-2 DOI (`…/f1000research.52613.1` to `.2`, and
+    `…/173028.1` to `.2`). PubMed keeps one PMID with `Version` 2, so the
+    two DOIs name two versions of one record. Keeping both means citations
+    to either version land on the same work, and the name does not fall
+    out of the registry into a stub.
+  - **Relations the newest copy drops: 15 records**, every one an
+    `ErratumIn` / `ErratumFor` link. These are the exception (§8): the
+    serving layer does not read relations back, so the incremental merge
+    cannot take their union, and the flag the link sets survives anyway.
+
+  So the rule is nearly a no-op on today's data, which is the point of
+  the check: it cannot be doing anything surprising, while the loud case
+  it generalizes — the reference lists PMC replaces — cost 24,081 dropped
+  registry names before it was found. The surprises it *could* hold, and
+  where the line is drawn: a value that is merely shorter still wins,
+  because it is there, so a truncated author list is a revision and not an
+  absence; the status flags are sticky, since a source says "retracted"
+  and never "not retracted", which keeps a mistaken flag until a record is
+  withdrawn; and the venue fills as one id, never field by field, so a
+  later copy that moved the article cannot leave a journal that does not
+  exist. Two copies that both have a field the newest lacks and disagree
+  would be settled by the order the sets are read rather than by stamp;
+  no such case exists in the sample, where the only filled field is a
+  boolean. Merge version 5, and one stop is gone with it: a record that
+  drops a name no longer parts its work between two, so that batch no
+  longer asks for a full merge.
+- 2026-09-17, the newest deletion — accepted with the user: when several
+  deletions sets name one record, the latest in path order is the one
+  that counts, in both merges. It may lose information when datasets are
+  merged as batches of deliveries. A deletion names a record and not a
+  revision, so the order of the sets is all the rule has to go on. A copy
+  newer by its stamp but delivered before the deletion is withdrawn with
+  the rest, and an incremental merge of a set older than a deletions set
+  the store already holds cannot bring the record back. A withdrawn
+  record's names, fields and references leave the merged layer, and so
+  every answer, though raw and normalized keep them. Accepted for now,
+  beside the user's condition that paths once true stay findable (serving
+  plan §11, item 24).
 
 ## 11. Open items
 
@@ -771,13 +966,43 @@ stays.
     minimum length for the equality clause, or a second signal (year,
     venue) once the views of MM3 exist.
 14. **Reference-level assertions.** A reference carrying a held name and
-    an unheld one asserts that the unheld name is that work's: 514 on the
-    sample, all PubMed's. Counted, not used, until a case shows their
-    error rate. The merge found 338 of them are also stubs of their own
-    (§6), so an edge and a stub stand for one work; and the examples are
-    Cochrane reviews whose PMID is one version and whose DOI is the
-    review, so using the assertion would be wrong for them — item 1's
-    lineage is the answer, not a merge.
+    an unheld one asserts that the unheld name is that work's: 849 of
+    188,027 references landing on held works, all PubMed's, on the sample
+    with the update files (2026-09-18). Whether the assertion is *true* is
+    still open — the merge found 338 of them are stubs of their own (§6),
+    and the examples are Cochrane reviews whose PMID is one version and
+    whose DOI is the review, so believing them would be wrong there;
+    item 1's lineage is the answer, not a merge. What changed on
+    2026-09-18 is that they are now **kept**, in the `cited_as` set (§8):
+    the name, the citing work, the source, the work the reference landed
+    on, the namespace that landed it, and five flags: whether the pair had
+    another reference landing there, whether the name named nothing at the
+    time, whether the citation text repeats a DOI of the work it landed on
+    and whether it repeats this name (§6), and whether a relation rather
+    than a reference named it. That is what an incremental merge
+    needs to resolve such a reference again when a batch gives one of its
+    names to another work — the divergence of serving plan §11, item 26,
+    which the union of a record's copies made more visible (4 rows in the
+    baseline harness, 19 when `pubmed26n1337` is held out). Using them for
+    identity remains an open question; using them to re-resolve is not.
+
+    Later the same day the set was widened from those 849 rows to **every
+    name a reference gave** beside the work it landed on, held names
+    included (serving plan §11, item 28): who cited each name, which is
+    what a batch needs when a name leaves a work — a deleted record's
+    PMID that references still cite — and when a work loses its last
+    record and must become the stub its citers name. Stub names keep
+    their citers in the stub's own row, as before.
+
+    On 2026-09-19 the stub's own row was given the same fact the
+    cited-as rows carry: each citer of a stub name is now a *record*
+    with a mark — whether that reference's own citation text repeats the
+    name (merge version 7). One record's several references to the stub
+    are one citer, marked where any of them wrote the name out. That is
+    the whole of what §6 asks the text, so a reader holding a stub's row
+    can settle its references again by §6 itself rather than by an
+    imitation of it, which is what serving plan §11, item 28 now does
+    when a record arrives for part of a stub.
 15. **The registry's size.** 94 bytes a line as JSON, 379 MB for the
     sample's four million ids; the binary form of item 10 before the
     corpus.
@@ -796,8 +1021,8 @@ stays.
     whose native id is the promoted name (the lower W number, §3.4), which
     is the older one; the revision stamp the merged record keeps is the
     evidence for a rule that prefers the newer. Two *copies* of one record
-    are settled since 2026-09-16 (§8: the latest revision's fields, the
-    first copy's names); two *records* are not. An incremental batch that
+    are settled since 2026-09-17 (§8: the newest copy speaks for all of
+    it); two *records* are not. An incremental batch that
     holds one of a work's duplicates adds that record's arcs and removes
     none, because the twin's list is only in the normalized layer; a
     full merge tidies it (serving plan §5).
@@ -827,6 +1052,15 @@ stays.
     sets, being streams, cannot do; a per-source index from native id to
     set and block is the answer, with the registry's binary form (item
     10).
+23. **A stub's grouping, once the registry holds it.** A stub's names
+    are the names references cited together, so a copy delivered again
+    with a different list can leave a stub whose names no reference cites
+    together any more, and the next full merge splits it: two new ids,
+    and the stub's public id retired. After one PubMed update file held
+    out of the sample and merged as a batch, the full merge split 7,234
+    stubs (serving plan §11, item 27). Whether a stub keeps the names it
+    was given until none is cited — stability over precision, for works
+    nobody holds — is a rule to decide before daily update files.
 21. ~~**The public id.**~~ Built 2026-09-16 (serving plan SP3):
     `merge::public` mints one for every id lacking it when `merge` is
     given `--public-key <file>` — a keyed BLAKE3 hash of the id, `ol:`

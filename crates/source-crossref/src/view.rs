@@ -231,6 +231,8 @@ pub fn view<'w>(work: &'w Work<'_>, table: &'w Table) -> Result<View<'w>, Unmapp
     let by = |kinds: &[UpdateType]| work.updated_by.iter().any(|u| kinds.contains(&u.kind));
     let genre = genre(work);
     Ok(View {
+        version: 1,
+        set: "",
         revised: Some(work.indexed.date()),
         titles: <crate::Crossref as merge::Contributor>::titles(work),
         has_abstract: work.r#abstract.is_some(),

@@ -170,15 +170,19 @@ pub struct Stats {
     pub supplied: BTreeMap<SourceId, u64>,
 }
 
+/// The delivery of a record's speaking copy, as the merged row keeps it.
+type Speaking = (Option<model::Date>, u32, Box<str>);
+
 /// The join, held in memory: the sample's 82,744 held works and their
 /// text; the corpus wants the merge's range shape.
 #[derive(Debug)]
 pub struct Assembler {
     documents: Vec<Document>,
     wanted: Vec<Wanted>,
-    /// A record's native name, in text form, to its document and whether
-    /// it is its source's promoted record.
-    by_native: HashMap<String, (usize, bool)>,
+    /// A record's native name, in text form, to its document, whether it
+    /// is its source's promoted record, and the delivery of the copy that
+    /// speaks for it (merge plan §8): its stamp, its version and its set.
+    by_native: HashMap<String, (usize, bool, Speaking)>,
     stats: Stats,
 }
 
@@ -225,8 +229,13 @@ impl Assembler {
         let document = Document::of(work, None);
         let ix = self.documents.len();
         for record in &work.records {
+            let speaking = (
+                record.view.revised,
+                record.view.version,
+                Box::from(record.view.set),
+            );
             self.by_native
-                .insert(record.native.to_string(), (ix, record.promoted));
+                .insert(record.native.to_string(), (ix, record.promoted, speaking));
         }
         self.stats.documents += 1;
         if document.title.is_some() {
@@ -240,14 +249,15 @@ impl Assembler {
         });
     }
 
-    /// Streams one normalized works set of `S`, taking text from the
-    /// records the documents want.
+    /// Streams one normalized works set of `S`, named `set` as the copy
+    /// rule names sets, taking text from the records the documents want —
+    /// from the copy that speaks for each record, and no other.
     ///
     /// # Errors
     ///
     /// I/O, a set without its table, or a record whose text cannot be
     /// read.
-    pub fn add<S: Contributor>(&mut self, path: &Path) -> Result<u64, Error> {
+    pub fn add<S: Contributor>(&mut self, path: &Path, set: &str) -> Result<u64, Error> {
         let io = |source| Error::Io {
             path: path.to_path_buf(),
             source,
@@ -267,11 +277,18 @@ impl Assembler {
                         native = Some(a.name.to_string());
                     }
                 });
-                let Some((ix, promoted)) = native.and_then(|n| self.by_native.get(&n).copied())
+                let Some((ix, promoted, speaking)) = native.and_then(|n| self.by_native.get(&n))
                 else {
                     continue;
                 };
-                if !promoted {
+                let (ix, promoted) = (*ix, *promoted);
+                let (revised, version) = S::revision(&work);
+                let delivery = (revised, version, Box::from(set));
+                // The speaking copy's text, and where it has none, an
+                // older copy's: absence is not an assertion (merge plan
+                // §8, 2026-09-18), the rule the record's fields follow.
+                let speaks = *speaking == delivery;
+                if !promoted || !(speaks || delivery < *speaking) {
                     continue;
                 }
                 let wanted = self.wanted[ix];
@@ -284,7 +301,7 @@ impl Assembler {
                     ordinal: i as u64 + 1,
                     source,
                 })?;
-                self.fill(ix, S::SOURCE, wanted, text);
+                self.fill(ix, S::SOURCE, wanted, text, speaks);
             }
             Ok(())
         })?;
@@ -292,32 +309,45 @@ impl Assembler {
         Ok(read)
     }
 
-    fn fill(&mut self, ix: usize, source: SourceId, wanted: Wanted, text: Text) {
+    /// One copy's text into a document: the speaking copy's replaces what
+    /// an older copy filled, an older copy's only fills what is still
+    /// empty. Two older copies with different text: the earlier set's,
+    /// since the sets are read in path order.
+    fn fill(&mut self, ix: usize, source: SourceId, wanted: Wanted, text: Text, speaks: bool) {
         let document = &mut self.documents[ix];
         let mut supplied = false;
         if wanted.abstract_text == Some(source)
             && let Some(abstract_text) = text.abstract_text
-            && document.abstract_text.is_none()
+            && (speaks || document.abstract_text.is_none())
         {
-            document.abstract_text = Some(abstract_text);
-            *self.stats.abstract_from.entry(source).or_default() += 1;
-            supplied = true;
-        }
-        if wanted.authors == Some(source) && document.authors.is_empty() {
-            self.stats.author_names += text.authors.len() as u64;
-            if !text.authors.is_empty() {
-                self.stats.with_authors += 1;
+            if document.abstract_text.is_none() {
+                *self.stats.abstract_from.entry(source).or_default() += 1;
                 supplied = true;
+            }
+            document.abstract_text = Some(abstract_text);
+        }
+        if wanted.authors == Some(source)
+            && (speaks || document.authors.is_empty())
+            && !(speaks && text.authors.is_empty())
+        {
+            if document.authors.is_empty() {
+                self.stats.author_names += text.authors.len() as u64;
+                if !text.authors.is_empty() {
+                    self.stats.with_authors += 1;
+                    supplied = true;
+                }
             }
             document.authors = text.authors;
         }
         if wanted.venue == Some(source)
             && let Some(venue) = text.venue
-            && document.venue.is_none()
+            && (speaks || document.venue.is_none())
         {
+            if document.venue.is_none() {
+                self.stats.with_venue += 1;
+                supplied = true;
+            }
             document.venue = Some(venue);
-            self.stats.with_venue += 1;
-            supplied = true;
         }
         if supplied {
             *self.stats.supplied.entry(source).or_default() += 1;

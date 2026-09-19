@@ -26,6 +26,11 @@ pub trait Contributor: Source {
     /// The native id a references set carries with each edge, as a name.
     fn native<'w>(id: &'w Self::Id<'_>) -> Name<'w>;
 
+    /// The record's revision stamp and version, as its view gives them
+    /// (see [`View::revised`] and [`View::version`]), without building the
+    /// view: what ranks two copies of one record (merge plan §8).
+    fn revision(work: &Self::Work<'_>) -> (Option<model::Date>, u32);
+
     /// The record's titles, raw markup and all, for the corroboration of
     /// merge plan §3.3.
     fn titles<'w>(work: &'w Self::Work<'_>) -> Titles<'w>;

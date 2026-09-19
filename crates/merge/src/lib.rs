@@ -29,6 +29,7 @@
 pub mod arena;
 pub mod build;
 pub mod contributor;
+pub mod copies;
 pub mod delta;
 pub mod document;
 pub mod identity;
@@ -62,5 +63,24 @@ pub use work::{SourceId, Sources, WorkId};
 /// it, and merged sets under another version are rebuilt, never patched.
 /// Version 2 (2026-09-16): every record in a merged row carries its
 /// assertions and its view, the evidence the incremental merge re-runs
-/// the rules on, and a row's lists are in canonical order.
-pub const VERSION: u32 = 2;
+/// the rules on, and a row's lists are in canonical order. Version 3
+/// (2026-09-17): the newest copy of a record speaks for all of it, its
+/// view names its set and version, and a stub name's sources are its
+/// citers'. Version 4 (2026-09-18): the newest copy still speaks for
+/// names, fields, relations and text, but a record's citations are the
+/// union over every copy a deletion has not withdrawn — PubMed replaces a
+/// publisher's reference list with PMC's when an article lands there, and
+/// the identifiers the publisher gave are evidence we already hold.
+/// Version 5 (2026-09-18): absence is not an assertion. A record's names
+/// are the union over its standing copies, and each promoted field is
+/// the newest copy's value or, where the newest has none, the newest
+/// copy that has one; its text follows the same rule. Deletions,
+/// relations and a value that is merely shorter are unchanged.
+/// Version 6 (2026-09-18): a reference whose names name different works
+/// is settled by its own citation text where that text repeats one of
+/// its DOIs, the order of §6 deciding only where nothing corroborates.
+/// Version 7 (2026-09-19): a stub's name carries, with each citer,
+/// whether that reference's own citation text repeats the name — what
+/// lets a reader settle the reference again, by §6 and not by an
+/// imitation of it, when a record takes over part of the stub.
+pub const VERSION: u32 = 7;

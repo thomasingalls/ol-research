@@ -226,6 +226,12 @@ ways that work:
 - **Between the two:** per trace, a capable model labels a couple of
   hundred candidates and a tiny classifier (SetFit-style, trained in
   seconds) learns that one concept and labels the rest.
+- **Evidence for the recipe, 2026-09-17.** BRANE (arXiv 2605.27361) routes
+  retrieval queries the same way — a frontier model proposes about ten
+  yes/no characteristics, a cheaper one labels each query, a classical
+  classifier per configuration decides — and its classical predictors
+  beat fine-tuned 4B models at small budgets ([configuration per
+  query](future-ambitions-configuration.md) §1, §4.2).
 
 ## 6. What would decide it
 

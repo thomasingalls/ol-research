@@ -1523,6 +1523,45 @@ cross-IDs and a second edge namespace early.
   merge honours PubMed's deletions sets and takes the latest revision of
   a record delivered twice, which update files will do daily. A lock
   under `merged/` keeps merges from overlapping. No new dependency.
+- 2026-09-17, PubMed's first update files — the user fetched
+  `pubmed26n1335` to `pubmed26n1339` for a second sample harness (serving
+  plan §5), and they normalized after one pass of §6's loop: 91,744
+  citations, 2,300,205 references and 53 deletions, 195 MiB, beside the
+  baseline under `normalized/v1/pubmed/updatefiles/`. The loop's findings,
+  each with a test: `MedlineDate` gained four spellings of a range — ` - `,
+  `/`, ` & ` and a full month name — plus a day range across years, a year
+  alone and a month with a full stop (`model::date`); a versioned
+  citation's PMC id carries its version (`PMC8459621.2`), which must agree
+  with `PMID@Version` and is not kept; and seven records went on a
+  checked-in exclusion list, the fix loop's third way, now built
+  (`source_pubmed::exclusions`, counted by the stats report through the
+  sink's `excluded`), each keyed to the revision it names so that a later
+  one normalizes or stops on its own: four whose `ELocationID` and
+  `ArticleId` DOIs disagree, one with two PIIs, one whose PMC slot holds
+  `wst_2021_260`, and one reference identified by a PII. Each waits on a
+  decision or a model change, not a parser. The merge's genre table gained
+  seven publication types the files showed. No model version change: the
+  layout is unchanged and every form that normalized before normalizes
+  the same.
+- 2026-09-18, the seven decided, and every id kept — model version 2. The
+  user's call on all four shapes, after each was looked at in the data and,
+  for the DOIs, at Crossref: a record may give two valid DOIs, and both are
+  names (of the four, one has two registered DOIs — an early-online one and
+  the issue's — two have a right `ArticleId` and a wrong `ELocationID`, and
+  one the reverse, so no rule that trusts a slot works); a record may give
+  more than one publisher item id, so `ids.pii` is a list; an `ArticleId
+  IdType="pmc"` that is not a PMC id is a malformed claim, kept as written
+  and never matched on, like a malformed DOI; and a reference may carry an
+  id of any other kind the DTD allows, kept as written in
+  `Reference::loose`. The user's rule for all of them: "keep as many ids as
+  possible, resolve at matching". The exclusion list is empty again and its
+  machinery stays for the next shape that needs a decision. How rare these
+  are, over the 126,740 records and 2,811,661 references of the 2026
+  baseline's last two files and the first five update files: 4 records with
+  two valid DOIs, 1 with two publisher ids, 1 with a `pmc` slot holding a
+  publisher's id, 1 reference carrying an id of another kind. The sample
+  was normalized again under `normalized/v2/`, set for set the same 2,012
+  sets as v1 at 727 MiB, and the seven records are in.
 
 ## 11. Dependencies
 

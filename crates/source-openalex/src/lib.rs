@@ -91,6 +91,10 @@ impl merge::Contributor for OpenAlex {
         merge::Name::OpenAlex(*id)
     }
 
+    fn revision(work: &Self::Work<'_>) -> (Option<model::Date>, u32) {
+        (Some(work.updated.date()), 1)
+    }
+
     fn titles<'w>(work: &'w normalize::Work<'_>) -> merge::Titles<'w> {
         merge::Titles {
             title: work.title.filter(|t| !t.trim().is_empty()),

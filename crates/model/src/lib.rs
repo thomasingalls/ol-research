@@ -8,7 +8,13 @@
 /// source's normalized types: normalized output carries it (plan §6), and
 /// output written under another version is invalid — rebuilt, never
 /// patched.
-pub const VERSION: u32 = 1;
+///
+/// Version 2, 2026-09-18: a PubMed record keeps every publisher item id it
+/// gives rather than one, its `pmc` slot is a claim so a value that is not
+/// a PMC id is kept as written, and a reference keeps every other id kind
+/// it carries. Ids the model cannot place are kept and never matched on
+/// (ingestion plan §6).
+pub const VERSION: u32 = 2;
 
 pub mod claim;
 pub mod code;

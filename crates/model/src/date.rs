@@ -677,8 +677,32 @@ fn take_year(s: &str) -> Result<(Year, &str), MedlineError> {
     Ok((year, &s[4..]))
 }
 
-/// `Mon` at the front of `s`.
+/// The months' full English names, which `MedlineDate` spells now and
+/// then (`2019 May/June`, pubmed26n1339).
+const FULL_MONTHS: [&str; 12] = [
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+];
+
+/// `Mon`, or the month's full name, at the front of `s`.
 fn take_month(s: &str) -> Result<(Month, &str), MedlineError> {
+    for (number, name) in (1u8..).zip(FULL_MONTHS) {
+        if let Some(rest) = s.strip_prefix(name)
+            && let Some(month) = Month::from_number(number)
+        {
+            return Ok((month, rest));
+        }
+    }
     if s.len() < 3 || !s.is_char_boundary(3) {
         return Err(MedlineError::Unrecognized);
     }
@@ -711,25 +735,49 @@ fn done(rest: &str) -> Result<(), MedlineError> {
     }
 }
 
+/// The separator of a range that starts with a month: `-`, and the
+/// spellings the update files pubmed26n1335 to 1339 showed beside it, ` - `
+/// (`2020 May - Jun`), `/` (`2021 Mar/Apr`) and ` & ` (`2020 Feb & Mar`,
+/// an issue for both months).
+fn month_range(rest: &str) -> Option<&str> {
+    rest.strip_prefix('-')
+        .or_else(|| rest.strip_prefix(" - "))
+        .or_else(|| rest.strip_prefix('/'))
+        .or_else(|| rest.strip_prefix(" & "))
+}
+
 impl PartialDate {
     /// Parses PubMed's `MedlineDate` free text. The forms recognized, each
     /// observed in real data:
     ///
-    /// | form                | example              |
-    /// |---------------------|----------------------|
-    /// | `YYYY Mon-Mon`      | `2026 Jan-Feb`       |
-    /// | `YYYY Mon-YYYY Mon` | `1998 Dec-1999 Jan`  |
-    /// | `YYYY Mon DD-DD`    | `1999 Dec 20-27`     |
-    /// | `YYYY Mon DD-Mon DD`| `2001 Mar 30-Apr 1`  |
-    /// | `YYYY-YYYY`         | `1976-1977`          |
-    /// | `YYYY Season`       | `2000 Spring`        |
-    /// | `YYYY Nth Quarter`  | `2025 1st Quarter`   |
+    /// | form                     | example                  |
+    /// |--------------------------|--------------------------|
+    /// | `YYYY`                   | `2022`                   |
+    /// | `YYYY Mon.`              | `2017 Feb.`              |
+    /// | `YYYY Mon-Mon`           | `2026 Jan-Feb`           |
+    /// | `YYYY Mon - Mon`         | `2020 May - Jun`         |
+    /// | `YYYY Mon/Mon`           | `2021 Mar/Apr`           |
+    /// | `YYYY Mon & Mon`         | `2020 Feb & Mar`         |
+    /// | `YYYY Mon-YYYY Mon`      | `1998 Dec-1999 Jan`      |
+    /// | `YYYY Mon DD-DD`         | `1999 Dec 20-27`         |
+    /// | `YYYY Mon DD-Mon DD`     | `2001 Mar 30-Apr 1`      |
+    /// | `YYYY Mon DD-YYYY Mon DD`| `2000 Dec 8-2001 Jan 10` |
+    /// | `YYYY-YYYY`              | `1976-1977`              |
+    /// | `YYYY Season`            | `2000 Spring`            |
+    /// | `YYYY Nth Quarter`       | `2025 1st Quarter`       |
+    ///
+    /// A range that starts with a month takes any of its four separators
+    /// wherever the plain `-` is allowed, and a month may be spelled out in
+    /// full (`2019 May/June`).
     ///
     /// # Errors
     ///
     /// [`MedlineError::Unrecognized`] for any other shape, or a bad part.
     pub fn parse_medline(s: &str) -> Result<Self, MedlineError> {
         let (year, rest) = take_year(s)?;
+        if rest.is_empty() {
+            return Ok(Self::Year(year));
+        }
         if let Some(rest) = rest.strip_prefix('-') {
             let (end, rest) = take_year(rest)?;
             done(rest)?;
@@ -746,7 +794,10 @@ impl PartialDate {
             return Ok(Self::YearSeason(year, season));
         }
         let (month, rest) = take_month(rest)?;
-        if let Some(rest) = rest.strip_prefix('-') {
+        if rest == "." {
+            return Ok(Self::YearMonth(year, month));
+        }
+        if let Some(rest) = month_range(rest) {
             // `-Mon` or `-YYYY Mon`, either with an optional ` DD` on the
             // end month: `2026 Jan-Feb 01`, 56 records of one journal in
             // pubmed26n1333.
@@ -774,19 +825,26 @@ impl PartialDate {
         let rest = rest.strip_prefix(' ').ok_or(MedlineError::Unrecognized)?;
         let (day, rest) = take_day(rest)?;
         let rest = rest.strip_prefix('-').ok_or(MedlineError::Unrecognized)?;
-        // `-DD` or `-Mon DD`
-        let (end_month, end_day, rest) = if let Ok((end_month, rest)) = take_month(rest) {
+        // `-DD`, `-Mon DD`, or `-YYYY Mon DD` (`2000 Dec 8-2001 Jan 10`,
+        // pubmed26n1339): a year is four digits and a day at most two.
+        let (end_year, end_month, end_day, rest) = if let Ok((end_year, rest)) = take_year(rest) {
+            let rest = rest.strip_prefix(' ').ok_or(MedlineError::Unrecognized)?;
+            let (end_month, rest) = take_month(rest)?;
             let rest = rest.strip_prefix(' ').ok_or(MedlineError::Unrecognized)?;
             let (end_day, rest) = take_day(rest)?;
-            (end_month, end_day, rest)
+            (end_year, end_month, end_day, rest)
+        } else if let Ok((end_month, rest)) = take_month(rest) {
+            let rest = rest.strip_prefix(' ').ok_or(MedlineError::Unrecognized)?;
+            let (end_day, rest) = take_day(rest)?;
+            (year, end_month, end_day, rest)
         } else {
             let (end_day, rest) = take_day(rest)?;
-            (month, end_day, rest)
+            (year, month, end_day, rest)
         };
         done(rest)?;
         Ok(Self::Span(Span {
             start: bound(year, Some(month), Some(day))?,
-            end: bound(year, Some(end_month), Some(end_day))?,
+            end: bound(end_year, Some(end_month), Some(end_day))?,
         }))
     }
 
@@ -1046,6 +1104,49 @@ mod tests {
             ))
         );
         assert_eq!(
+            PartialDate::parse_medline("2022"),
+            Ok(PartialDate::Year(y(2022)))
+        );
+        assert_eq!(
+            PartialDate::parse_medline("2017 Feb."),
+            Ok(PartialDate::YearMonth(y(2017), Month::February))
+        );
+        assert_eq!(
+            PartialDate::parse_medline("2020 Feb & Mar"),
+            Ok(span(
+                b(2020, Some(Month::February), None),
+                b(2020, Some(Month::March), None)
+            ))
+        );
+        assert_eq!(
+            PartialDate::parse_medline("2019 May/June"),
+            Ok(span(
+                b(2019, Some(Month::May), None),
+                b(2019, Some(Month::June), None)
+            ))
+        );
+        assert_eq!(
+            PartialDate::parse_medline("2020 May - Jun"),
+            Ok(span(
+                b(2020, Some(Month::May), None),
+                b(2020, Some(Month::June), None)
+            ))
+        );
+        assert_eq!(
+            PartialDate::parse_medline("2021 Mar/Apr"),
+            Ok(span(
+                b(2021, Some(Month::March), None),
+                b(2021, Some(Month::April), None)
+            ))
+        );
+        assert_eq!(
+            PartialDate::parse_medline("2000 Dec 8-2001 Jan 10"),
+            Ok(span(
+                b(2000, Some(Month::December), Some(8)),
+                b(2001, Some(Month::January), Some(10))
+            ))
+        );
+        assert_eq!(
             PartialDate::parse_medline("1976-1977"),
             Ok(span(b(1976, None, None), b(1977, None, None)))
         );
@@ -1062,10 +1163,15 @@ mod tests {
     #[test]
     fn medline_forms_not_yet_observed_fail() {
         for s in [
-            "2026",
             "2026 Jan",
+            "2026 Jan..",
+            "2026 Febr",
             "2026 Spring-Summer",
             "2026 Jan-",
+            "2026 Jan -Dec",
+            "2026 Jan- Dec",
+            "2026 Jan / Dec",
+            "2026 Jan 1 - 5",
             "2026 Jan-Dec ",
             "2026 jan-dec",
             "Jan-Dec 2026",

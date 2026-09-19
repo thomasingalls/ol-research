@@ -292,8 +292,8 @@ mod normalized {
         assert_eq!(doi.as_str(), "10.1001/jama.2025.15703");
         assert!(doi.is_borrowed());
         assert_eq!(c.ids.elocation_doi[0].valid(), Some(doi));
-        assert_eq!(c.ids.pii, Some("2844550"));
-        assert_eq!(c.ids.pmc, None);
+        assert_eq!(c.ids.pii.as_slice(), ["2844550"]);
+        assert!(c.ids.pmc.is_none());
         assert!(
             matches!(c.dates.published, PartialDate::Day(d) if d.month() == Month::January && d.day().get() == 29)
         );
@@ -447,15 +447,59 @@ mod normalized {
     }
 
     #[test]
-    fn two_valid_but_different_dois_fail_fast() {
+    fn two_valid_but_different_dois_are_both_kept() {
+        // Both slots are names of the work (merge plan §3.3): at Crossref
+        // either may be the registered DOI, and 19257808 has both, an
+        // early-online one and the issue's (2026-09-18).
         let input = fixture("shortest").replace(
             "<ArticleId IdType=\"doi\">10.1001/jama.2025.15703</ArticleId>",
             "<ArticleId IdType=\"doi\">10.1001/jama.2025.99999</ArticleId>",
         );
         let article = only_article(&input);
-        let err = normalize(&article, &mut Collect::default()).unwrap_err();
-        assert_eq!(err.pmid, Some(Pmid::new(41_609_757).unwrap()));
-        assert_eq!(err.field, "ELocationID[doi]");
+        let mut out = Collect::default();
+        normalize(&article, &mut out).unwrap();
+        let ids = &out.citations[0].ids;
+        assert_eq!(
+            ids.doi.as_ref().unwrap().valid().unwrap().as_str(),
+            "10.1001/jama.2025.99999"
+        );
+        assert_eq!(
+            ids.elocation_doi[0].valid().unwrap().as_str(),
+            "10.1001/jama.2025.15703"
+        );
+    }
+
+    #[test]
+    fn a_pmc_slot_that_is_not_a_pmc_id_is_kept_as_written() {
+        // PMID 34850701 in pubmed26n1339: the publisher's own item id,
+        // which its other records give as their `pii` (2026-09-18).
+        let input = fixture("shortest").replace(
+            "<ArticleId IdType=\"doi\">10.1001/jama.2025.15703</ArticleId>",
+            "<ArticleId IdType=\"doi\">10.1001/jama.2025.15703</ArticleId><ArticleId IdType=\"pmc\">wst_2021_260</ArticleId>",
+        );
+        let article = only_article(&input);
+        let mut out = Collect::default();
+        normalize(&article, &mut out).unwrap();
+        let pmc = out.citations[0].ids.pmc.as_ref().unwrap();
+        assert!(pmc.valid().is_none());
+        assert!(matches!(pmc, Claim::Malformed { raw, .. } if *raw == "wst_2021_260"));
+    }
+
+    #[test]
+    fn a_record_may_give_more_than_one_publisher_item_id() {
+        // PMID 32839689 in pubmed26n1336: Elsevier's item id and the
+        // article number (2026-09-18).
+        let input = fixture("shortest").replace(
+            "<ArticleId IdType=\"pii\">2844550</ArticleId>",
+            "<ArticleId IdType=\"pii\">2844550</ArticleId><ArticleId IdType=\"pii\">S2213-5766(20)30238-4</ArticleId>",
+        );
+        let article = only_article(&input);
+        let mut out = Collect::default();
+        normalize(&article, &mut out).unwrap();
+        assert_eq!(
+            out.citations[0].ids.pii.as_slice(),
+            ["2844550", "S2213-5766(20)30238-4"]
+        );
     }
 
     #[test]
@@ -509,16 +553,20 @@ mod normalized {
             assert_eq!(a.dates.published, b.dates.published);
         }
         let refs = Reader::open(&Kind::References.path(&prefix)).unwrap();
-        let back: Vec<(Pmid, Reference<'_>)> = refs.records().map(Result::unwrap).collect();
-        assert_eq!(
-            back.iter().map(|(from, _)| *from).collect::<Vec<_>>(),
-            collect.froms
-        );
-        assert!(
-            back.iter()
-                .zip(&collect.references)
-                .all(|((_, a), b)| a == b)
-        );
+        {
+            let back: Vec<(Pmid, Reference<'_>)> = refs.records().map(Result::unwrap).collect();
+            assert_eq!(
+                back.iter().map(|(from, _)| *from).collect::<Vec<_>>(),
+                collect.froms
+            );
+            // Compared through Debug: `==` would tie the lifetime of the
+            // rows read back to the sink's, which outlives the reader.
+            assert!(
+                back.iter()
+                    .zip(&collect.references)
+                    .all(|((_, a), b)| format!("{a:?}") == format!("{b:?}"))
+            );
+        }
         for kind in Kind::NORMALIZED {
             std::fs::remove_file(kind.path(&prefix)).unwrap();
         }

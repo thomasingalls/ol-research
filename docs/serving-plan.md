@@ -73,6 +73,15 @@ SP5) — and until it lands the layer serves from a nightly epoch, which
 is a day's freshness and already what the sources give for two of
 three.
 
+The cited-as lookup, measured on the sample 2026-09-18 (§11, item 28):
+59,079 names and 228,938 rows — 3.5 MB, of which 0.9 MB is the transducer
+and 2.7 MB the rows at 12 bytes each — against a 241 MB works index and a
+227 MB merged layer, because only 188,027 of the sample's references land
+on a work it holds. At the corpus nearly every reference lands on one, so
+the rows are one per name a reference gives: the artifact grows with the
+edge count rather than the work count, and is measured again when the
+corpus is merged.
+
 The resident set on the box — 128 GB, shared with the search engine, so
 the layer plans on a share — at N = 6 × 10^8 works and 10^9 names, order
 of magnitude, to be measured on the sample and extrapolated at SP2 and
@@ -97,6 +106,7 @@ is only what the base is and what its delta reads.
 | **works**  | `WorkId`                       | the works set re-laid for random access: an offsets array over blocks of records, zstd with one dictionary     | the works delta: whole merged records, latest wins                                            | work                           |
 | **graph**  | `WorkId`                       | the graph plan's base: both orientations, labels, the permutation                                             | the edges delta: `add`, `remove`, `retire` (graph plan §5)                                    | references, citers, expand     |
 | **lexical**| `WorkId`                       | the search engine's index over the works set: title, abstract, authors, venue, year, kinds, language, status  | the engine's own incremental updates per batch, committed with the batch number               | search, facets                 |
+| **cited-as**| a name's text form              | a transducer over the `cited_as` set: every name a reference gave, with the work it landed on, the citing work and its source (2026-09-18) | the `cited_as` delta, whole per citing work and source | nothing the world asks: who cited a name, and what an incremental merge reads to resolve a reference again |
 
 Two artifacts have no delta file because their deltas already exist: the
 names lookup tails the registry, whose `mint`, `name`, `drop`, `merge`
@@ -171,10 +181,16 @@ One new record, from a source to an answer:
    and the merge plan's rules are re-run on the *component* the batch
    cuts out of the live state: every record of every work a batch
    record's names touch, closed over shared names, the batch's copies
-   replacing the rows' and its deletions removing them. That is possible
+   replacing the rows' and its deletions removing them. Which copy speaks
+   is the full merge's rule (merge plan §8, 2026-09-17): of a record's
+   copies in the batch and the one its row holds, the newest by stamp,
+   version and set — a row's record names its set and version for this —
+   and a deletion, the batch's own or one of the store's deletions sets,
+   withdraws the copies in the sets before it, the newest deletion
+   counting, which is an accepted loss (merge plan §10). That is possible
    without the normalized layer because every record in a merged row
    carries its evidence — its assertions and its view (merge plan §5,
-   version 2). The registry's answer — reuse, mint, merge — is a line
+   version 2 and 3). The registry's answer — reuse, mint, merge — is a line
    each, and a mint a public-id line (§6). References resolve through the
    batch's own resolution first and the live table second; a reference
    naming no held work joins the stubs it names with the names it does
@@ -184,7 +200,21 @@ One new record, from a source to an answer:
    record's source, read from the graph's own forward list, is diffed
    against the new: `add` and `remove` lines; a retired id's remaining
    arcs and its citers move to the survivor; relations and unresolved
-   rows are put whole per work and source, and moved on a retirement.
+   rows are put whole per work and source, and moved on a retirement. A
+   stub's citers follow the arcs: a withdrawn record's citations come off
+   every stub it cited before, a retired citing work's are restated under
+   its survivor, and then the new landings go on, a stub's row written
+   once they are known and only if it changed. A re-delivered record's
+   citations stand, its earlier copies' included (2026-09-18), and so do
+   its names: absence is not an assertion (merge plan §8, 2026-09-18), so
+   a batch's copy joins the names the row's copy gave and fills its own
+   empty fields from the row's, and a copy older than the row's — a
+   baseline file merged after the update files — joins its names and
+   values to the row rather than only its citations. A text the batch
+   needs and no row kept is read from the normalized layer: the record's
+   view names the set its speaking copy came from, so one set is opened
+   and scanned (`serve::incremental::Texts`, answered by the binary, which
+   knows which crate reads a source's sets).
    What it appends, in this order: the registry lines and the public
    lines (of record), the four delta logs, the journal line, and then
    the batch into the lexical index with the batch number as the
@@ -202,15 +232,22 @@ One new record, from a source to an answer:
    two — and the record answers. Every answer carries the watermark and
    its timestamp.
 
-Five cases the incremental rules leave to a full merge, each stopping the
-batch before it writes anything and saying why: a work's names splitting
-between works; a work losing its last record while something cites it,
-because the stub it would become takes its names from the citing
-references; a duplicate record of one source deleted or moved while its
-twin stays; two ids retired in one batch with an arc between them; and a
-text — an abstract, author names, a venue name — that a record not in the
-batch and not promoted before would have to supply, because rows keep the
-text of their promoted records only. Two things a batch does that a full
+Three cases the incremental rules leave to a full merge, each stopping
+the batch before it writes anything and saying why: a work's names
+splitting between works — rarer since 2026-09-18, a record that drops a
+name no longer parting its work; two ids retired in one batch with an arc
+between them; and, since 2026-09-17, a stub the batch made of a record's
+leftover names cited together with another stub, and a work whose
+citation moves to such a stub retired in the same batch. A fourth is gone
+since 2026-09-18: a work losing its last record while something cites it
+keeps its id and becomes the stub its citers name, name by name, which
+the cited-as evidence says (item 28). Three more are gone the same day,
+all to one reader: a text — an abstract, author names, a venue name —
+that a record outside the batch and not promoted before would have to
+supply is read from that record's own normalized set, and so is the
+record a work keeps of a source whose twin the batch withdrew or moved,
+whose arcs, relations, unresolved rows and cited-as evidence it restates
+in place of the pair's. Two things a batch does that a full
 merge then tidies, both reported: a work with a duplicate record outside
 the batch has arcs added and none removed, and a stub left with no citing
 arc keeps its names until a compaction drops them.
@@ -222,10 +259,13 @@ core over an epoch plus *n* deltas answers every question identically to
 one over the epoch built after them, and the compacted bases are
 byte-identical. Both run on a store built in memory (`serve`'s tests: new
 records, a re-deposit, a bridging merge, stubs cited again, deletions, the
-refusals) and on the sample with one PubMed file held out
-(`crates/ol-rht/tests/incremental.rs`, when `OL_RHT_STORE` names the
-store), where `serve::compare` walks every id, every key of either base
-and the fixed queries.
+refusals, and since 2026-09-17 records delivered again with other names
+and shorter lists, withdrawn citers, and a batch older than a deletions
+set the store holds) and on the sample: one PubMed baseline file held out
+(`crates/ol-rht/tests/incremental.rs`), and PubMed's update files held out
+and merged one batch each (`crates/ol-rht/tests/update_files.rs`), both
+when `OL_RHT_STORE` names the store, where `serve::compare` walks every
+id, every key of either base and the fixed queries.
 
 Compaction is the nightly full merge, then `epoch publish`, which
 refuses at an incremental batch: an epoch is a set of bases at a full
@@ -461,9 +501,10 @@ state kept outside the store, and a limit per principal on calls and on
   difference, in the evidence and not in any answer: one stub name's
   list of citing works lacked a work whose reference named the stub
   beside a held work, the registry's order having chosen the stub for
-  the arc (§11, item 21). Fixed the same night, the harness passes on
+  the arc (§11, item 21). Fixed the same night, the harness passed on
   the sample: nothing appended to the registry, and no difference in
-  4,040,017 ids.*
+  4,040,017 ids — until the store held PubMed's update files, the next
+  day (§10, §11 items 25 to 27).*
 - **SP6** — origins: the `watch` kind with the ingestion plan's M9, the
   cursor per source, the first-seen measurement, and then, if the
   measurement earns it, publisher feeds.
@@ -581,10 +622,171 @@ state kept outside the store, and a limit per principal on calls and on
   synthetic cases, and a second sample harness holds out PubMed update
   files. The user's condition on dropping stale citers: a path that was
   once true is not authoritative, but finding things by it should stay
-  as possible as it can be (§11, item 24). Not settled: whether a stub
-  name's sources are derived from its citers, and whether a withdrawn
-  record's references still make stubs in the full merge's first pass.
-  Nothing built yet.
+  as possible as it can be (§11, item 24). Settled the same evening, on
+  the user's word for both recommendations: a stub name's sources are its
+  citers', and a withdrawn record's references make no stubs.
+- 2026-09-19, the batch runs §6 on a split instead of imitating it —
+  asked for by the user, who saw that the affected names are a finite,
+  knowable set and asked whether the data on disk was already enough.
+  It was, once a stub's row carried two marks per citer (merge plan's
+  entry the same day). Where a record arrives for part of a stub, the
+  batch no longer asks *did this citer also give a name the record
+  kept?* — a guess that agreed with §6 only while the order alone
+  decided — but rebuilds each citer's reference as the row's names
+  divide it and settles it the way `resolve_reference` does.
+
+  Two questions had been answered by that one test, and separating them
+  was most of the work. **Membership** — is a leftover name a name of its
+  own? — is the merge plan's §11 item 14: a reference naming a held work
+  makes no stub, its other names being assertions about that work. **The
+  arc** is §6's. They run in that order, since §6 can only weigh names
+  that still exist. Both halves were caught by the harness rather than by
+  reading: the baseline hold-out's full merge appended two registry lines
+  the batch had not (`drop pmid:41560844`, `drop pmid:41567733`) because
+  the batch minted stubs for names given only beside a held one; and a
+  fixture then showed a reference can name a held work *and* land on the
+  stub by its text, which the row had no way to know — hence the second
+  mark.
+
+  Three shapes are refused rather than guessed, and all three are §6
+  reaching past the row: a reference whose text repeats a DOI on each
+  side of the division; one that gave a single namespace on each side,
+  which §6 settles by the order the reference wrote its names in; and one
+  that named a held work and has every name it gave here dropped, whose
+  arc then leaves for a work the row cannot name. None fires on the
+  sample.
+
+  Measured over the three hold-outs, each a full merge without the file
+  and then the file as a batch: **`pubmed26n1334` 0 differences of
+  5,228,675 ids** (6 before, all of them this path), **`pubmed26n1335` 0
+  of 5,237,827** (16 before) and **`pubmed26n1337` 0 of 5,227,709**. Two
+  bugs on the way were worth their own note: the batch had been keeping
+  the first citer of a record and skipping its other references, where
+  the full merge joins them — which loses a later text mark and a later
+  held-beside mark, the two directions the diff showed; and the arcs were
+  right in every hold-out before either fix, the differences being only
+  the new marks. What this does not touch: `pubmed26n1336` still stops on
+  a work's names splitting between works (§11, item 3), as before.
+- 2026-09-18, absence is not an assertion, on the batch — the merge
+  plan's §8 rule (its §10, decided with the user the same day) reaches
+  the incremental path in three places: a batch copy that speaks over the
+  row's joins the row's names and fills its own empty fields from the
+  row's view; a batch copy the row's speaks over — a baseline file merged
+  after the update files that superseded it — no longer gives its
+  citations alone but joins its names and values to the row's record, its
+  work pulled into the component for it; and the fixture's full merge
+  joins standing copies the same way, so both merges answer alike. One
+  stop goes with it: a record that drops a name no longer parts its work
+  between two.
+- 2026-09-18, a twin's arcs and the ids they are in — the `pubmed26n1335`
+  hold-out diverged from a full merge by nine arcs and citer lists, of
+  which four had one cause: when a batch withdraws one of a work's two
+  records of a source, the surviving twin's arcs are resolved against the
+  ids *after* the batch, while the graph's existing arcs are in the ids
+  *before* it. An arc whose target the same batch retired is the same arc
+  under a new id, and the diff took it for one the twin no longer gives:
+  it was removed and never restated. The deletions loop now follows the
+  retirement for those (the retirement itself leaves them alone, the
+  pair's record having been withdrawn) and adds any arc the twin gives
+  that the graph has not. Found by hand on the sample: work #94114 held
+  two PubMed records, 1335 withdrew one, and stub #3128522 merged into
+  #882716 in the same batch.
+- 2026-09-18, who cited a name (§11, item 28) — the larger citers list
+  the user chose ("let's do this version, i think"), in the shape SP7
+  already had rather than a new artifact: the `cited_as` set keeps a row
+  for every name a reference gave beside the work it landed on, not only
+  for the names nothing holds. The delta is written per citing work and
+  source, as it already was, so a citation costs one line on the citer's
+  side and never rewrites the cited work's row — which is why the list
+  lives here and not on the work's names, where every citation would
+  rewrite a row. It answers the two cases a batch could not: a name
+  leaving a work that references still cite becomes a stub carrying those
+  citers, their arcs following it; and a work losing its last record
+  keeps its id, becomes a stub, and its names take the citers the
+  evidence names. Relations are in the set too, flagged: they make no arc
+  and no citer, but a name a relation names is a work of its own once it
+  leaves, which is what the sample's own case turned on.
+- 2026-09-18, records from the normalized layer — a batch stopped when a
+  work's promoted abstract, authors or venue came from a record outside
+  the batch whose text no row kept (§11, item 25: PubMed's update file
+  `1335`), and again, on the same file, when a work held two PubMed
+  records and one of them was withdrawn: the graph labels an arc by its
+  source and not by which record of that source gave it, so the batch
+  could not tell the twin's citations from the dead record's. Both are
+  answered the same way. The row already names, per record, the set its
+  speaking copy came from, so the batch opens that one prefix and scans
+  it, rather than wanting a record index (item 18) or every record's text
+  in its row. What it reads is a whole record — names, view, text,
+  relations, references — so the twin that stays can restate the pair's
+  arcs, relations, unresolved rows and cited-as evidence, and only the
+  arcs no twin justifies come off. The reader is a trait the binary
+  answers, `serve` knowing no source; without one the batch stops as
+  before, which is what `serve`'s own fixtures still test.
+- 2026-09-18, the cited-as evidence, built (SP7) — the divergence of
+  §11 item 26 closed, on the user's word to keep "who cited this id" for
+  every id and to start where correctness needs it. What the merge writes:
+  a `cited_as` set beside the others, one row per name a reference gave
+  beside the held work it landed on — the citing work, the source, the
+  landing, the namespace that landed it, and whether that reference was
+  the pair's only one landing there. 849 references on the sample give
+  such a name, 9 KB of rows. What the serving layer adds: a `cited`
+  artifact, a transducer from the name to its rows, published with the
+  epoch; a fifth delta log, `cited_as.jsonl`, put whole per citing work
+  and source; and a fold that indexes the tail by name. What the batch
+  does with it: for every name it gives to a work or a stub it resolves
+  those references again, moving the arc when the new name's namespace
+  outranks the one that landed it, and restating the stub's citers. Both
+  sample harnesses are green with it, the first time since the update
+  files landed.
+- 2026-09-18, the ingest fixes and the reference union, built — the
+  user's four calls of the day, in order. (1) Ingest keeps every id: both
+  of a PubMed record's DOIs, a list of publisher item ids, a `pmc` slot
+  that holds something else as a malformed claim, and a reference's ids of
+  any other kind; the checked-in exclusion list is empty again and the
+  sample is normalized under `normalized/v2/` (model version 2, ingestion
+  plan §10). (2) A record's citations are the union over its standing
+  copies (merge plan §10, version 4): both passes of the full merge and
+  the test fixture read every copy a deletion has not withdrawn; the
+  incremental merge adds a re-delivered record's arcs and removes none,
+  takes citations back only from a withdrawn record, and carries the
+  copies a row's newer copy supersedes in `Batch.cited_only` so their
+  references still make stubs and arcs. (3) A field's candidates order by
+  native name rather than by the run's record order, so two duplicate
+  records of one source land the same way in both merges. Measured on the
+  sample: the baseline harness's full merge appends nothing and the
+  comparison is down to the four rows of item 26; holding out
+  `pubmed26n1337`, the 45,789 registry lines of item 27 are gone. (4)
+  Publisher ids are stored but not yet names: the user's design is our own
+  publisher key mapped to DOI registrants, and the measurement that decides
+  which may be identity is in merge plan §3.1.
+- 2026-09-17, copies and withdrawals built — `merge::copies` ranks every
+  copy (stamp, version, set in path order, place in its set) and reads the
+  deletions sets before the identity pass; both passes, the search
+  documents' text and the test fixture ask it which copy speaks; a merged
+  row's records name their set and version (merge version 3, serving
+  version 4), and the batch ranks its copies against the row's and
+  against the store's own deletions sets, which a batch of sets older
+  than them must see. The batch takes a replaced or withdrawn record's
+  citations back, restates a retired citing work's, and writes a stub's
+  row only if it changed; two new cases stop it (§5). The synthetic store
+  keeps the probes as tests. On the sample, with PubMed's first five
+  update files normalized into the store (ingestion plan §10): the
+  baseline harness, which now holds out a file older than the update
+  files around it, no longer differs in text or registry, and differs by
+  one reference whose names another work took (§11, item 26); the update
+  files, tried one batch each, stop three times in five (item 25); and
+  file 1337 alone, which applies, is followed by a full merge that drops
+  24,081 names and splits 7,234 stubs the batch kept (item 27). Nothing
+  was re-merged in the user's store: its registry would take the update
+  files' ids for good, which is the user's call.
+- 2026-09-17, hosting — the user's: two or three machines. One builds
+  the search index, one serves, and possibly a third is swapped in for
+  the live server once a build is complete. From the user's experience,
+  updating a search index under load is not pretty, so unless
+  incremental updates keep taking seconds, applying batches to the
+  index the live server reads is probably not an option; and periodic
+  full runs are operationally wise in any case. Only the machines and
+  their roles are recorded here (§11, item 28).
 - 2026-09-16, SP3 landed — as shaped, with three small departures: the
   query core got commands of its own (`query work`, `query search`,
   `query expand`) and the artifact-level `graph query` and `search query`
@@ -654,7 +856,14 @@ state kept outside the store, and a limit per principal on calls and on
    some of a stub's names — the rest go to a stub of their own where a
    reference cites them alone, which the stub row's per-name citers
    say, and are dropped otherwise; and a text only the normalized layer
-   has, which stops the batch (§5).
+   has, which the batch reads from there since 2026-09-18 (item 25).
+   Three refusals were added 2026-09-19 with the split rule of item 28,
+   each one §6 reaching past the row it is settling: a reference whose
+   citation text repeats a DOI on each side of the split; one that gave a
+   single namespace on each side, which §6 settles by the order the
+   reference wrote its names in and no row keeps; and one that named a
+   held work whose names here are all dropped, whose arc then leaves for
+   a work the row cannot name. None fires on the sample.
 9. **Consistency across artifacts** is by watermark: a batch is folded
    only once the lexical index has absorbed it, so the older watermark
    is shown and never a mix (built 2026-09-16). Open: how long a lag is
@@ -731,39 +940,34 @@ state kept outside the store, and a limit per principal on calls and on
     for the arc, and a stub made of leftover names cited alone and
     beside a held name in the same batch — and the sample harness
     passes.
-22. **A record delivered twice, its references.** The full merge takes
-    such a record's names from its first copy and its view from the
-    copy with the latest revision stamp, but reads the references of
-    every copy in both passes: its arcs are the union of the lists, its
-    stubs the union of the names they cite. The batch replaces a
+22. ~~**A record delivered twice, its references.**~~ Built 2026-09-17
+    (§10, merge plan §8 step 0). The full merge took such a record's names
+    from its first copy and its view from the copy with the latest
+    revision stamp, but read the references of every copy in both passes,
+    so its arcs were the union of the lists; the batch replaced a
     re-deposited record's list. A probe on the synthetic store — B citing
     E, then delivered again citing A alone — left the batch without the
-    arc from B to E and the full merge with it. The merge plan's §8 says
-    the copy with the latest revision stamp contributes; PubMed's update
-    files deliver records again every day, so which side changes is to
-    settle before they arrive, and the sample harness cannot see it. A
-    second probe found worse in the full merge: it takes a record's names
-    from its first copy, so a name only a later copy carries — a DOI
-    PubMed added — is minted as a work of its own, and once a batch had
+    arc from B to E and the full merge with it. A second probe found worse
+    in the full merge: a name only a later copy carried — a DOI PubMed
+    added — was minted as a work of its own, and once a batch had
     attached that name to the work, the next full merge split the work's
-    id in two. The sample has no such work yet. *Decided 2026-09-17: the
-    newest copy speaks for all of the record, in both merges (§10). Not
-    built.*
-23. **A deleted record's citers.** The batch removes a deleted record's
-    arcs but leaves its work among the citers of the stub names it
-    cited; the full merge does not count it. A probe on the synthetic
-    store — two records citing a stub, one deleted while its work stays
-    held — found that one entry in the stub's evidence and nothing else,
-    but it does not stay evidence: in a second probe a later record took
-    over the stub, and the batch used the stale citer to mint a stub for
-    the name the record left and draw an arc to it from the withdrawn
-    record's work, where the full merge dropped the name. A re-deposit
-    whose new list drops a stub leaves the same stale citer. Invisible
-    to the sample harness, which has no deletions or copies. Related:
-    the full merge's first pass still reads a withdrawn record's
-    references when it decides which names are stubs, and the test
-    fixture skips them. *Decided 2026-09-17: the batch removes stale
-    citers (§10). Not built; the first-pass question is open.*
+    id in two. The sample had no such work. Now the newest copy speaks
+    for all of the record in both merges, and the search documents take
+    their text from it too.
+23. ~~**A deleted record's citers.**~~ Built 2026-09-17 (§10). The batch
+    removed a deleted record's arcs but left its work among the citers of
+    the stub names it cited, where the full merge did not count it; and
+    that did not stay evidence: in a probe where a later record took the
+    stub over, the batch used the stale citer to mint a stub for the name
+    the record left and drew an arc to it from the withdrawn record's
+    work, where the full merge dropped the name. A re-deposit whose new
+    list dropped a stub left the same stale citer. The full merge's first
+    pass, meanwhile, still read a withdrawn record's references when it
+    decided which names are stubs, which the test fixture did not. Now
+    the batch takes a replaced or withdrawn record's citations back,
+    restates a retired citing work's under its survivor, and a stub
+    name's sources are its citers' in both merges; the first pass reads
+    no reference of a copy that does not speak.
 24. **Finding things by paths that were once true.** The user's
     condition on removing stale citers (§10, 2026-09-17): a citation from
     a withdrawn record, a name a later copy no longer carries, a name the
@@ -773,6 +977,123 @@ state kept outside the store, and a limit per principal on calls and on
     as it can, answering by them as what was once so rather than not at
     all. The registry already keeps every dropped name and when; stale
     citers and superseded copies keep nothing yet.
+25. **Update files the batch cannot take.** PubMed's first five update
+    files, tried as one batch each against the rest of the sample and
+    compacted whenever one stopped (2026-09-17): `pubmed26n1335` stopped on
+    a text only the normalized layer has — PubMed deleted a duplicate PMID
+    whose record supplied a work's abstract, and OpenAlex's, not kept in
+    the row, would have to take over; `1336` on a split; `1339` on a stub
+    made of a record's leftover names cited together with another stub;
+    `1337` and `1338` applied. With other update files in the base,
+    `1338` stopped on a split too. Two of those three causes are settled
+    since 2026-09-18: the text is read from the record's own normalized
+    set, which the row already names, rather than wanting the record index
+    of item 18 or every record's text in its row; and a split caused by a
+    record dropping a name cannot happen now that the name stays (merge
+    plan §8). `1335` then stopped on a third cause the same file holds —
+    the work of the deleted PMID keeps another PubMed record — which the
+    same reader answers: the twin is read from its own set and restates
+    the pair. The leftover stub's merge still wants a rule of its own.
+
+    Where the files stand at the end of 2026-09-18: `1335` **applies**,
+    and `1336` stops on a split — the one rule left (merge plan §11, item
+    3), which the user has scoped for later. What `1335` does not yet do
+    is agree with a full merge: held out on its own and merged as a batch,
+    it appends nothing to the registry (it appended three lines before the
+    day's work) but leaves **9 differences** among 5,237,827 ids, all arcs
+    and citers of a handful of works — two citing works whose PubMed
+    records the file re-delivers, one stub, and two works the file itself
+    delivers. Not yet traced; the baseline and `1337` hold-outs, which
+    have no deletion of a duplicate record in them, are both at 0.
+26. ~~**A reference whose names another work takes.**~~ Built 2026-09-18.
+    A reference names a held work's DOI beside a PMID and a PMC id nothing
+    holds, and lands on the held work; a batch then gives the PMID to a
+    stub, and the full merge, ranking a PMID over a DOI, moves the
+    reference there while the batch left the arc where it was. The merged
+    layer now keeps what item 14 of the merge plan only counted: the
+    `cited_as` set, one row per name a reference gave beside the work it
+    landed on, with the citing work, the source, the landing and the
+    namespace that landed it, and whether that reference was the pair's
+    only one landing there. A fifth delta log carries a batch's own rows,
+    whole per citing work and source; the `cited` artifact is a
+    transducer over the set, read by name; and a batch, for every name it
+    gives to a work or a stub, resolves those references again and moves
+    the arc when the new name's namespace outranks the one that landed it.
+    The same round found a second cause of the divergence and fixed it: a
+    re-delivered record's arcs must follow a retirement like any other
+    citer's, since the union no longer restates them. On the sample both
+    harnesses now differ in nothing — the baseline's four rows and the
+    nineteen with `pubmed26n1337` held out are gone.
+
+27. ~~**Compaction churn from changed reference lists.**~~ Traced and
+    cured 2026-09-18 (merge plan §10). Every one of the 45,789 registry
+    lines a full merge wrote after `pubmed26n1337`'s batch was a stub the
+    base had minted: 7,234 splits of the shape {DOI, PMID} into {DOI} and
+    {PMID}, the 14,474 ids those splits minted, and 24,081 names dropped.
+    The cause was PubMed replacing a publisher's reference list with PMC's
+    when an article lands there, and our rule taking only the newest copy's
+    list. With a record's citations the union over its standing copies, the
+    same run appends nothing. What the batch must also do, and now does:
+    read the references of a copy the row's newer copy supersedes
+    (`Batch.cited_only`), or the full merge finds co-citations it does not.
+28. ~~**Who cited a name.**~~ Built 2026-09-18, the larger half of the
+    cited-as evidence the user chose: the `cited_as` set keeps a row for
+    *every* name a reference gave beside the work it landed on, not only
+    the names nothing holds, so the layer can answer "who cited this
+    name" for any name. Two flags keep the uses apart: a row marked
+    *beside* is one whose name named no work when the reference was read,
+    and only such a row can take an arc with it (item 26); two marks say
+    what the reference's own citation text backs — *by text*, that the
+    text repeats a DOI of the work it landed on, and *in text*, that it
+    repeats this row's name — so that a batch ranks the text before the
+    order exactly as a full merge does (merge plan §6), a name the text
+    repeats taking the arc even though the order puts a DOI last, and a
+    landing the text backs moving for no order at all; a row marked
+    *relation* comes from a typed relation, not a reference, and so says
+    the name is still named while making neither arc nor citer — which is
+    how a name the identity pass would leave as a stub of its own is
+    recognised (the sample's case: an OpenAlex record whose location names
+    a PubMed landing page by a PMID PubMed then withdrew). Two cases that stopped a batch are answered by
+    it, both seen on the sample the same day: a name leaving a work while
+    references still cite it — PubMed withdrew a duplicate PMID, the
+    work kept its twin record, and the batch dropped the name a full
+    merge then minted a stub for (three registry lines on the
+    `pubmed26n1335` hold-out) — and a work losing its last record while
+    something cites it, which now keeps its id and becomes the stub its
+    citers name. A name with no citer is dropped as before.
+
+    Extended 2026-09-19, and the reason is worth stating plainly. When a
+    record arrives for some of a stub's names, the batch used to ask one
+    question of each citer — *did it also give a name the record kept?* —
+    and leave the arc where it was if so. That is not §6; it is a guess
+    that happened to agree with §6 while the order alone decided, and it
+    stopped agreeing the moment the citation text could beat the order
+    (merge plan §6, version 6): the names left behind are by construction
+    the ones nothing holds, and the text, measured, backs the DOI in 449
+    of 492 checkable disagreements and the PMID in none — so the rule and
+    the guess were aimed at each other. The batch now **runs the rule**:
+    the row's names as that citer's reference divides them, each with the
+    text mark the stub's row carries since merge version 7, settled the
+    way `resolve_reference` settles one.
+
+    That the row's own names are the whole contest is the claim the path
+    rests on, and it has a proof. §6 picks a *name* — a DOI the text
+    repeats, else the lowest namespace — and then follows it to a work.
+    A split changes no name's namespace and no name's text mark; it
+    changes only which work a name names. So the name §6 picked before
+    the split is the name it picks after, and that name was this row's,
+    since the reference landed here. A name of some other work lost
+    before and cannot win now. Two shapes escape the proof, and both are
+    refused rather than guessed (§5): a reference whose text repeats a
+    DOI on *each* side of the split, where §6 gives the text up and falls
+    back to the order over names the row never held — the case the merge
+    plan's 2026-09-18 entry noted as open and left unruled — and one that
+    gave the same namespace on each side, which §6 settles by the order
+    the reference wrote its names in, and no row keeps that.
+
+    What is still open: a stub minted for leftover names cited together
+    with another stub, and the split rule (merge plan §11, item 3).
+
 
 ## 12. Sources consulted
 

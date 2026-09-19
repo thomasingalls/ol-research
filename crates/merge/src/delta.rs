@@ -36,8 +36,12 @@ pub const RELATIONS: &str = "relations.jsonl";
 #[allow(missing_docs)]
 pub const UNRESOLVED: &str = "unresolved.jsonl";
 
-/// The four logs, in the order the journal lists them.
-pub const FILES: [&str; 4] = [WORKS, EDGES, RELATIONS, UNRESOLVED];
+#[allow(missing_docs)]
+pub const CITED_AS: &str = "cited_as.jsonl";
+
+/// The five logs, in the order the journal lists them. `cited_as` joined
+/// them 2026-09-18 (serving plan §11, item 26).
+pub const FILES: [&str; 5] = [WORKS, EDGES, RELATIONS, UNRESOLVED, CITED_AS];
 
 /// The key a log's byte count is filed under in the journal: the file
 /// name without its extension.
@@ -157,6 +161,33 @@ pub enum RelationLine {
     },
 }
 
+/// One line of the cited-as log: the names a work's references of one
+/// source gave beside the works they landed on, whole (2026-09-18).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "lowercase")]
+pub enum CitedAsLine {
+    /// What `by`'s record of `from` gave, whole.
+    Put {
+        #[allow(missing_docs)]
+        batch: u64,
+        #[allow(missing_docs)]
+        from: WorkId,
+        #[allow(missing_docs)]
+        by: SourceId,
+        #[allow(missing_docs)]
+        rows: Vec<crate::build::OwnedCitedAs>,
+    },
+    /// Every row of `from` now belongs to `into`: a merge.
+    Move {
+        #[allow(missing_docs)]
+        batch: u64,
+        #[allow(missing_docs)]
+        from: WorkId,
+        #[allow(missing_docs)]
+        into: WorkId,
+    },
+}
+
 /// One line of the unresolved log.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "lowercase")]
@@ -205,6 +236,14 @@ impl Stamped for EdgeLine {
             Self::Add { batch, .. } | Self::Remove { batch, .. } | Self::Retire { batch, .. } => {
                 *batch
             }
+        }
+    }
+}
+
+impl Stamped for CitedAsLine {
+    fn batch(&self) -> u64 {
+        match self {
+            Self::Put { batch, .. } | Self::Move { batch, .. } => *batch,
         }
     }
 }

@@ -16,6 +16,7 @@ use merge::public::{self, PREFIX};
 use merge::{Name, OwnedName, WorkId};
 use search::{Hits, Opened};
 
+use crate::cited::{Cited, Row as CitedRow};
 use crate::digest;
 use crate::epoch::{self, Manifest};
 use crate::error::Error;
@@ -42,6 +43,7 @@ pub struct Serving {
     epoch_line: Line,
     names: Names,
     works: Works,
+    cited: Cited,
     graph: Base,
     search: Opened,
     fold: RwLock<Fold>,
@@ -105,6 +107,7 @@ impl Serving {
         };
         let names = Names::open(&dir_of("names", crate::names::MANIFEST)?)?;
         let works = Works::open(&dir_of("works", crate::works::MANIFEST)?)?;
+        let cited = Cited::open(&dir_of("cited", crate::cited::MANIFEST)?)?;
         let graph = Base::open(&dir_of("graph", graph::layout::MANIFEST)?)?;
         let search = Opened::open(&dir_of("search", search::index::MANIFEST)?)?;
         let journal_path = store.journal();
@@ -127,12 +130,41 @@ impl Serving {
             epoch_line,
             names,
             works,
+            cited,
             graph,
             search,
             fold: RwLock::new(fold),
         };
         this.refresh()?;
         Ok(this)
+    }
+
+    /// The references that gave `name` beside the work they landed on
+    /// (merge plan §11, item 14), the base's and the fold's: what lets an
+    /// incremental merge resolve those references again when the name
+    /// becomes a work's (2026-09-18).
+    #[must_use]
+    pub fn cited_as(&self, name: &OwnedName) -> Vec<CitedRow> {
+        let text = name.to_string();
+        let fold = self
+            .fold
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut rows: Vec<CitedRow> = self
+            .cited
+            .rows_of(&text)
+            .into_iter()
+            .filter(|row| !fold.cited.restated(row.from, row.by))
+            .map(|row| CitedRow {
+                from: fold.cited.survivor(row.from),
+                to: fold.cited.survivor(row.to),
+                ..row
+            })
+            .collect();
+        rows.extend(fold.cited.rows_of(&text));
+        rows.sort_unstable();
+        rows.dedup();
+        rows
     }
 
     /// Folds every batch the journal has gained that every artifact can

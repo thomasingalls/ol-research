@@ -22,12 +22,13 @@ use smallvec::SmallVec;
 
 use crate::arena::NameIx;
 use crate::contributor::Contributor;
+use crate::copies::{self, Copies, Fate};
 use crate::identity::{RecordIx, Resolution, Standing, Work as Identified};
 use crate::kind::{Form, Genre};
 use crate::name::{Name, OwnedName};
 use crate::record::{
-    Assert, Citation, Edge, Field, Fields, Flags, NameRow, Named, Other, Record, Rejected,
-    Relation, StatusBy, Unresolved, Why, Work,
+    Assert, Citation, CitedAs, Citer, Edge, Field, Fields, Flags, NameRow, Named, Other, Record,
+    Rejected, Relation, StatusBy, Unresolved, Why, Work,
 };
 use crate::relation::{self, Related};
 use crate::sets;
@@ -102,6 +103,10 @@ pub struct Ids {
 pub struct Stats {
     /// Records viewed per source.
     pub viewed: BTreeMap<SourceId, u64>,
+    /// Copies joined into a record's view, per source: the second and
+    /// later copy of one record, whose values fill what the newest has
+    /// none of (§8).
+    pub filled: BTreeMap<SourceId, u64>,
     /// Per source: references by what became of them — `held`, `stub`,
     /// `self`, `no name`, `shared`, `disagree`, `empty`, `unknown`,
     /// `citing record unknown`.
@@ -177,9 +182,9 @@ pub struct OwnedNamed {
     pub by: Sources,
     #[allow(missing_docs)]
     pub native: bool,
-    /// For a stub's name, the citing works and the sources of their
-    /// records; see [`Named::cited_by`].
-    pub cited_by: SmallVec<[(WorkId, SourceId); 1]>,
+    /// For a stub's name, the references that gave it; see
+    /// [`Named::cited_by`].
+    pub cited_by: SmallVec<[Citer; 1]>,
 }
 
 /// A rejected assertion, owned.
@@ -378,10 +383,9 @@ impl OwnedWork {
         }
     }
 
-    /// Every name's citing works and sources, for a stub; empty lists
-    /// for a held work.
+    /// Every name's references, for a stub; empty lists for a held work.
     #[must_use]
-    pub fn citers_by_name(&self) -> BTreeMap<OwnedName, Vec<(WorkId, SourceId)>> {
+    pub fn citers_by_name(&self) -> BTreeMap<OwnedName, Vec<Citer>> {
         self.names
             .iter()
             .map(|n| (n.name.clone(), n.cited_by.to_vec()))
@@ -465,6 +469,53 @@ impl OwnedCitation {
     }
 }
 
+/// A name given beside a landing, owning its text ([`CitedAs`]).
+// Four flags, each a fact §6 and §11 item 14 name about one row:
+// what it was for, how it landed, and whether it can move.
+#[allow(clippy::struct_excessive_bools)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OwnedCitedAs {
+    #[allow(missing_docs)]
+    pub from: WorkId,
+    #[allow(missing_docs)]
+    pub by: SourceId,
+    #[allow(missing_docs)]
+    pub name: OwnedName,
+    #[allow(missing_docs)]
+    pub to: WorkId,
+    #[allow(missing_docs)]
+    pub landed: Key,
+    #[allow(missing_docs)]
+    pub sole: bool,
+    #[allow(missing_docs)]
+    pub relation: bool,
+    #[allow(missing_docs)]
+    pub beside: bool,
+    #[allow(missing_docs)]
+    pub by_text: bool,
+    #[allow(missing_docs)]
+    pub in_text: bool,
+}
+
+impl OwnedCitedAs {
+    /// The row as the set holds it.
+    #[must_use]
+    pub fn borrow(&self) -> CitedAs<'_> {
+        CitedAs {
+            from: self.from,
+            by: self.by,
+            name: self.name.as_name(),
+            to: self.to,
+            landed: self.landed,
+            sole: self.sole,
+            relation: self.relation,
+            beside: self.beside,
+            by_text: self.by_text,
+            in_text: self.in_text,
+        }
+    }
+}
+
 /// An unresolved reference that owns its text.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OwnedUnresolved {
@@ -518,6 +569,9 @@ pub struct Merged {
     pub relations: Vec<Relation>,
     /// By citing work.
     pub unresolved: Vec<OwnedUnresolved>,
+    /// By citing work: the names references gave beside the works they
+    /// landed on (2026-09-18).
+    pub cited_as: Vec<OwnedCitedAs>,
     #[allow(missing_docs)]
     pub stats: Stats,
     /// Per promoted field, by name.
@@ -571,16 +625,34 @@ pub enum Referenced {
     Unknown,
     /// Only shared names: an unresolved row.
     SharedOnly,
-    /// An edge to `to`; `disagree` when the names named different works
-    /// and the registry's order chose, which is an unresolved row too.
+    /// An edge to `to`, and how the reference's names were settled; a
+    /// disagreement is an unresolved row too.
     Edge {
         #[allow(missing_docs)]
         to: WorkId,
         #[allow(missing_docs)]
         stub: bool,
         #[allow(missing_docs)]
-        disagree: bool,
+        settled: Settled,
     },
+}
+
+/// How a reference's names settled on one work (merge plan §6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Settled {
+    /// Every name that resolved named the same work.
+    Agreed,
+    /// The names named different works and the registry's order chose:
+    /// PMID, PMC id, OpenAlex id, then DOI.
+    ByRank,
+    /// The names named different works and the reference's own citation
+    /// text repeats one of its DOIs, which wins (2026-09-18). The DOI and
+    /// the text are the publisher's deposit travelling together, where a
+    /// PMID beside them is PubMed's later match: of the 492 PubMed
+    /// references whose PMID and DOI name records we hold with different
+    /// DOIs, 449 have a text repeating the reference's DOI and not one
+    /// repeats the PMID's.
+    ByText,
 }
 
 impl Referenced {
@@ -592,7 +664,14 @@ impl Referenced {
             Self::NoName => "no name",
             Self::Unknown => "unknown",
             Self::SharedOnly => "shared",
-            Self::Edge { disagree: true, .. } => "disagree",
+            Self::Edge {
+                settled: Settled::ByRank,
+                ..
+            } => "disagree",
+            Self::Edge {
+                settled: Settled::ByText,
+                ..
+            } => "disagree, the text backing the doi",
             Self::Edge { to, stub, .. } => {
                 if to.get() == from.get() {
                     "self"
@@ -608,15 +687,17 @@ impl Referenced {
 
 /// One reference through a names table (merge plan §6): one work named
 /// is an edge; only shared names, or none, is an unresolved row; names
-/// naming different works follow the registry id — PMID, PMC id,
-/// OpenAlex id before DOI — and keep the rest as an unresolved row too.
+/// naming different works are settled by the reference's own citation
+/// text where it repeats one of its DOIs, and otherwise follow the
+/// registry id — PMID, PMC id, OpenAlex id before DOI — and are kept as
+/// an unresolved row either way.
 pub fn resolve_reference(
     names: &[Name<'_>],
-    citation_empty: bool,
+    citation: &Citation<'_>,
     resolve: impl Fn(Name<'_>) -> Target,
 ) -> Referenced {
     if names.is_empty() {
-        return if citation_empty {
+        return if citation.is_empty() {
             Referenced::Empty
         } else {
             Referenced::NoName
@@ -643,15 +724,20 @@ pub fn resolve_reference(
         return Referenced::Edge {
             to,
             stub,
-            disagree: false,
+            settled: Settled::Agreed,
         };
     }
-    let rank = |k: Key| match k {
-        Key::Pmid => 0,
-        Key::Pmc => 1,
-        Key::OpenAlex => 2,
-        Key::Doi => 3,
-    };
+    // The names disagree. A DOI the reference's own citation text repeats
+    // is the publisher's word about what it deposited, and beats the
+    // registry's order (§6, 2026-09-18); two corroborated DOIs naming
+    // different works settle nothing and leave it to the order.
+    if let Some((to, stub)) = corroborated(&resolved, citation.text) {
+        return Referenced::Edge {
+            to,
+            stub,
+            settled: Settled::ByText,
+        };
+    }
     let (_, to, stub) = resolved
         .iter()
         .min_by_key(|(n, _, _)| rank(n.key()))
@@ -660,7 +746,75 @@ pub fn resolve_reference(
     Referenced::Edge {
         to,
         stub,
-        disagree: true,
+        settled: Settled::ByRank,
+    }
+}
+
+/// Whether a citation text repeats a DOI, case insensitively: the
+/// publisher's deposit written out beside the identifier it deposited
+/// (§6, 2026-09-18). A DOI is ASCII, so the comparison is too.
+#[must_use]
+pub fn repeats(text: &str, doi: &str) -> bool {
+    let (text, doi) = (text.as_bytes(), doi.as_bytes());
+    !doi.is_empty()
+        && doi.len() <= text.len()
+        && text.windows(doi.len()).any(|w| w.eq_ignore_ascii_case(doi))
+}
+
+/// The work of the one DOI among `resolved` that `text` repeats; `None`
+/// where there is no text, no DOI in it, or two that name different works.
+fn corroborated(
+    resolved: &[(Name<'_>, WorkId, bool)],
+    text: Option<&str>,
+) -> Option<(WorkId, bool)> {
+    let text = text?;
+    let mut found: Option<(WorkId, bool)> = None;
+    for (name, id, stub) in resolved {
+        let Name::Doi(doi) = name else {
+            continue;
+        };
+        if !repeats(text, doi) {
+            continue;
+        }
+        match found {
+            None => found = Some((*id, *stub)),
+            Some((other, _)) if other != *id => return None,
+            Some(_) => {}
+        }
+    }
+    found
+}
+
+/// A stub name's citers in order, one entry per citing record: the same
+/// record's references are one citer, and the text mark is true where
+/// any of them repeated the name.
+pub fn join_citers(citers: &mut Vec<Citer>) {
+    citers.sort_unstable();
+    let mut joined: Vec<Citer> = Vec::with_capacity(citers.len());
+    for c in citers.drain(..) {
+        match joined.last_mut() {
+            Some(before) if before.pair() == c.pair() => {
+                // The marks of a record's several references together:
+                // one that writes the name out corroborates it, and one
+                // that named no held work makes it a name of its own.
+                before.in_text |= c.in_text;
+                before.held_beside &= c.held_beside;
+            }
+            _ => joined.push(c),
+        }
+    }
+    *citers = joined;
+}
+
+/// Where a namespace stands when a reference's names disagree: the
+/// registry's own id first, the DOI last (merge plan §6).
+#[must_use]
+pub const fn rank(key: Key) -> u8 {
+    match key {
+        Key::Pmid => 0,
+        Key::Pmc => 1,
+        Key::OpenAlex => 2,
+        Key::Doi => 3,
     }
 }
 
@@ -749,9 +903,12 @@ pub struct Builder {
     edges: Vec<(WorkId, WorkId, SourceId)>,
     relations: Vec<Relation>,
     unresolved: Vec<OwnedUnresolved>,
+    /// Names references gave beside the held works they landed on
+    /// (2026-09-18).
+    cited_as: Vec<OwnedCitedAs>,
     /// Per stub name, the works whose references or relations gave it,
     /// with the source of the record that did.
-    stub_citers: HashMap<NameIx, Vec<(WorkId, SourceId)>>,
+    stub_citers: HashMap<NameIx, Vec<Citer>>,
     survey: bool,
     /// Counts so far.
     pub stats: Stats,
@@ -815,6 +972,7 @@ impl Builder {
             views,
             edges: Vec::new(),
             relations: Vec::new(),
+            cited_as: Vec::new(),
             unresolved: Vec::new(),
             stub_citers: HashMap::new(),
             survey: false,
@@ -874,7 +1032,9 @@ impl Builder {
     pub fn works<S: Contributor>(
         &mut self,
         path: &Path,
+        set: &str,
         limit: Option<usize>,
+        copies: &Copies,
     ) -> Result<u64, Error> {
         let io = |source| Error::Io {
             path: path.to_path_buf(),
@@ -898,30 +1058,39 @@ impl Builder {
                     ordinal,
                     source,
                 };
-                let mut native = None;
-                S::names(&work, &mut |a| {
-                    if a.native && native.is_none() {
-                        native = Some(a.name);
-                    }
-                });
-                let Some((rix, from)) = native.and_then(|n| self.record_of(n)) else {
+                let Some(native) = copies::native_of::<S>(&work) else {
+                    continue;
+                };
+                // A record delivered more than once: the newest copy
+                // gives each field it has, and where it has none, the
+                // newest copy that does (§8, 2026-09-18). Relations are
+                // the speaking copy's alone, since the serving layer
+                // does not read a work's relations back and so cannot
+                // take their union on an incremental merge.
+                let delivery = copies::delivery_of::<S>(&work, set, ordinal);
+                let speaks = match copies.fate(S::SOURCE, native, &delivery) {
+                    Fate::Withdrawn => continue,
+                    Fate::Speaks => true,
+                    Fate::Superseded => false,
+                };
+                let Some((rix, from)) = self.record_of(native) else {
                     continue;
                 };
                 match S::view(&work, table) {
                     Ok(view) => {
-                        // The same record delivered twice: the latest
-                        // revision's fields speak, the first copy's names
-                        // having been kept by the identity pass.
-                        let seen = self.views[rix as usize].as_ref();
-                        if seen.is_none_or(|s| s.revised < view.revised) {
-                            if seen.is_some() {
-                                *self.stats.viewed.entry(S::SOURCE).or_default() -= 1;
+                        let mut owned = Owned::resolve(&view, table);
+                        owned.set = set.into();
+                        let slot = &mut self.views[rix as usize];
+                        *slot = Some(match slot.take() {
+                            None => {
+                                *self.stats.viewed.entry(S::SOURCE).or_default() += 1;
+                                owned
                             }
-                            self.views[rix as usize] = Some(Owned::resolve(&view, table));
-                            *self.stats.viewed.entry(S::SOURCE).or_default() += 1;
-                        } else {
-                            continue;
-                        }
+                            Some(seen) => {
+                                *self.stats.filled.entry(S::SOURCE).or_default() += 1;
+                                owned.joined(seen)
+                            }
+                        });
                     }
                     Err(source) if self.survey => {
                         *self
@@ -932,16 +1101,18 @@ impl Builder {
                     }
                     Err(source) => return Err(unmapped(source)),
                 }
-                match S::relations(&work, table, &mut |r| self.relate(from, S::SOURCE, &r)) {
-                    Ok(()) => {}
-                    Err(source) if self.survey => {
-                        *self
-                            .stats
-                            .unmapped
-                            .entry((S::SOURCE, source.to_string()))
-                            .or_default() += 1;
+                if speaks {
+                    match S::relations(&work, table, &mut |r| self.relate(from, S::SOURCE, &r)) {
+                        Ok(()) => {}
+                        Err(source) if self.survey => {
+                            *self
+                                .stats
+                                .unmapped
+                                .entry((S::SOURCE, source.to_string()))
+                                .or_default() += 1;
+                        }
+                        Err(source) => return Err(unmapped(source)),
                     }
-                    Err(source) => return Err(unmapped(source)),
                 }
                 read += 1;
             }
@@ -963,9 +1134,28 @@ impl Builder {
     /// Notes that a reference of `from`'s record of `source` gave a stub
     /// `name`. Relations do not count: they are not arcs, and what the
     /// evidence serves is moving arcs.
-    fn stub_cited(&mut self, name: Name<'_>, from: WorkId, source: SourceId) {
+    /// Rows for the names references gave beside the works they landed
+    /// on, in the order the references were read.
+    #[must_use]
+    pub fn cited_as_rows(&self) -> &[OwnedCitedAs] {
+        &self.cited_as
+    }
+
+    fn stub_cited(
+        &mut self,
+        name: Name<'_>,
+        from: WorkId,
+        source: SourceId,
+        in_text: bool,
+        held_beside: bool,
+    ) {
         if let Some(ix) = self.res.stubs.find(name) {
-            self.stub_citers.entry(ix).or_default().push((from, source));
+            self.stub_citers.entry(ix).or_default().push(Citer {
+                from,
+                by: source,
+                in_text,
+                held_beside,
+            });
         }
     }
 
@@ -982,6 +1172,24 @@ impl Builder {
                     by: source,
                 });
                 *self.stats.relation_kinds.entry(r.kind).or_default() += 1;
+                if !stub && let Some(name) = r.target.as_ref() {
+                    // A relation names a held work by one of its names:
+                    // kept beside the work like a reference's names, so
+                    // that a batch knows the name is still named if it
+                    // leaves the work (serving plan §11, item 28).
+                    self.cited_as.push(OwnedCitedAs {
+                        from,
+                        by: source,
+                        name: name.clone(),
+                        to,
+                        landed: name.as_name().key(),
+                        sole: true,
+                        relation: true,
+                        beside: false,
+                        by_text: false,
+                        in_text: false,
+                    });
+                }
                 if stub { "stub" } else { "held" }
             }
             Some(Target::Shared) => "shared",
@@ -1000,7 +1208,9 @@ impl Builder {
     pub fn references<S: Contributor>(
         &mut self,
         path: &Path,
+        set: &str,
         limit: Option<usize>,
+        copies: &Copies,
     ) -> Result<u64, Error> {
         let io = |source| Error::Io {
             path: path.to_path_buf(),
@@ -1014,6 +1224,14 @@ impl Builder {
                 .take(limit.unwrap_or(usize::MAX))
             {
                 let (id, reference) = record.map_err(io)?;
+                if !copies.alive_in(S::SOURCE, S::native(&id), set) {
+                    *self
+                        .stats
+                        .references
+                        .entry((S::SOURCE, "a withdrawn copy"))
+                        .or_default() += 1;
+                    continue;
+                }
                 let Some((_, from)) = self.record_of(S::native(&id)) else {
                     *self
                         .stats
@@ -1044,21 +1262,72 @@ impl Builder {
         names: &[Name<'_>],
         citation: &Citation<'_>,
     ) -> &'static str {
-        let referenced = resolve_reference(names, citation.is_empty(), |n| self.resolve(n));
+        let referenced = resolve_reference(names, citation, |n| self.resolve(n));
         match referenced {
             Referenced::Empty | Referenced::Unknown => {}
             Referenced::NoName => self.unresolved(from, source, Why::NoName, names, citation),
             Referenced::SharedOnly => self.unresolved(from, source, Why::Shared, names, citation),
-            Referenced::Edge { to, disagree, stub } => {
+            Referenced::Edge { to, settled, stub } => {
                 self.edges.push((from, to, source));
+                // Whether the citation text repeats a name: what §6 asks
+                // first when names disagree, and so what a later reader
+                // needs to ask it again. A stub's names carry it per
+                // citer, a held work's per cited-as row.
+                let text = citation.text;
+                let backs = |name: Name<'_>| match name {
+                    Name::Doi(doi) => text.is_some_and(|t| repeats(t, doi)),
+                    _ => false,
+                };
                 if stub {
+                    // A reference naming a held work makes no stub name
+                    // (§11, item 14), even where §6 lands it on one.
+                    let held_beside = names
+                        .iter()
+                        .any(|n| matches!(self.resolve(*n), Target::Work(_, false)));
                     for &name in names {
                         if self.resolve(name) == Target::Work(to, true) {
-                            self.stub_cited(name, from, source);
+                            self.stub_cited(name, from, source, backs(name), held_beside);
                         }
                     }
+                } else if let Some(landed) = names
+                    .iter()
+                    .filter(|n| self.resolve(**n) == Target::Work(to, false))
+                    .map(Name::key)
+                    .min_by_key(|k| rank(*k))
+                {
+                    // Every name the reference gave, beside the work it
+                    // landed on: the one that landed it, the others the
+                    // work holds, and the ones nothing holds. That is
+                    // who cited each name, which is what a batch needs
+                    // when a name leaves a work — and, for a name nothing
+                    // holds, what lets it resolve the reference again if
+                    // a later batch gives that name to a work (§11 item
+                    // 14; serving plan §11, items 26 and 28).
+                    // Whether the citation text backs where it landed:
+                    // what says, later, if a name given to another work
+                    // takes the arc with it (§6; serving plan §11,
+                    // item 26).
+                    let by_text = names
+                        .iter()
+                        .any(|n| backs(*n) && self.resolve(*n) == Target::Work(to, stub));
+                    for &name in names {
+                        self.cited_as.push(OwnedCitedAs {
+                            from,
+                            by: source,
+                            name: name.to_owned(),
+                            to,
+                            landed,
+                            // Settled in `finish`, where the edges say
+                            // how many references made each arc.
+                            sole: true,
+                            relation: false,
+                            beside: self.resolve(name) == Target::Unknown,
+                            by_text,
+                            in_text: backs(name),
+                        });
+                    }
                 }
-                if disagree {
+                if settled != Settled::Agreed {
                     self.unresolved(from, source, Why::Disagree, names, citation);
                 }
             }
@@ -1101,6 +1370,7 @@ impl Builder {
             edges,
             relations,
             mut unresolved,
+            mut cited_as,
             stats,
             mut stub_citers,
             ..
@@ -1111,7 +1381,7 @@ impl Builder {
             works.push(held(&res, work, ids.held[w], &views, &mut tallies));
         }
         for (s, names) in stub_works.iter().enumerate() {
-            let citers: Vec<Vec<(WorkId, SourceId)>> = names
+            let citers: Vec<Vec<Citer>> = names
                 .iter()
                 .map(|name| {
                     let mut list = res
@@ -1119,12 +1389,11 @@ impl Builder {
                         .find(name.as_name())
                         .and_then(|ix| stub_citers.remove(&ix))
                         .unwrap_or_default();
-                    list.sort_unstable();
-                    list.dedup();
+                    join_citers(&mut list);
                     list
                 })
                 .collect();
-            works.push(stub(&res, names, &citers, ids.stubs[s]));
+            works.push(stub(names, &citers, ids.stubs[s]));
         }
         works.sort_by_key(|w| w.id);
         let max = works
@@ -1140,6 +1409,19 @@ impl Builder {
         // Edges: one per pair, the sources joined.
         let mut raw = edges;
         raw.sort_unstable();
+        // A `cited_as` row's arc moves whole only if one reference made
+        // it: how many did is what the raw list says (2026-09-18).
+        if !cited_as.is_empty() {
+            let mut twice: HashSet<(WorkId, WorkId, SourceId)> = HashSet::new();
+            for pair in raw.windows(2) {
+                if pair[0] == pair[1] {
+                    twice.insert(pair[0]);
+                }
+            }
+            for row in &mut cited_as {
+                row.sole = !twice.contains(&(row.from, row.to, row.by));
+            }
+        }
         let mut edges: Vec<Edge> = Vec::with_capacity(raw.len());
         for (from, to, source) in raw {
             if let Some(last) = edges.last_mut()
@@ -1202,6 +1484,8 @@ impl Builder {
             }
         }
         unresolved.sort_by_key(|u| u.from);
+        cited_as.sort_by(|a, b| (a.from, &a.name, a.by).cmp(&(b.from, &b.name, b.by)));
+        cited_as.dedup();
         Ok(Merged {
             held: res.works.len() as u64,
             stubs: stub_works.len() as u64,
@@ -1209,6 +1493,7 @@ impl Builder {
             edges,
             relations,
             unresolved,
+            cited_as,
             stats,
             fields: tallies.fields,
             kinds: tallies.kinds,
@@ -1243,7 +1528,10 @@ impl Tallies {
 struct Cand<'v> {
     source: SourceId,
     promoted: bool,
-    rix: RecordIx,
+    /// The record's native name, which orders a source's records the same
+    /// way in both merges (2026-09-18); the resolution's own record order
+    /// is the run's, not the work's.
+    native: &'v OwnedName,
     view: &'v Owned,
 }
 
@@ -1261,16 +1549,16 @@ const GENRE: [SourceId; 3] = [SourceId::Pubmed, SourceId::OpenAlex, SourceId::Cr
 const ACCESS: [SourceId; 3] = VENUE;
 
 /// Candidates in a field's precedence: the order's sources first, a
-/// source's promoted record before its others, then by record.
+/// source's promoted record before its others, then by native name.
 fn ordered<'v>(cands: &[Cand<'v>], order: [SourceId; 3]) -> SmallVec<[Cand<'v>; 3]> {
     let mut out: SmallVec<[Cand<'v>; 3]> = cands.iter().copied().collect();
-    out.sort_by_key(|c| {
+    let key = |c: &Cand<'v>| {
         (
             order.iter().position(|s| *s == c.source).unwrap_or(3),
             !c.promoted,
-            c.rix,
         )
-    });
+    };
+    out.sort_by(|a, b| key(a).cmp(&key(b)).then_with(|| a.native.cmp(b.native)));
     out
 }
 
@@ -1404,18 +1692,22 @@ pub fn held(
         })
         .collect();
     records.sort_by(|a, b| (a.source, &a.native).cmp(&(b.source, &b.native)));
-    let cands: SmallVec<[Cand<'_>; 3]> = work
+    let mut cands: SmallVec<[Cand<'_>; 3]> = work
         .records
         .iter()
         .filter_map(|&rix| {
             views[rix as usize].as_ref().map(|view| Cand {
                 source: res.records[rix as usize].source,
                 promoted: is_promoted(rix),
-                rix,
+                native: res.arena.get(res.records[rix as usize].native),
                 view,
             })
         })
         .collect();
+    // Canonical, so that the counts below and every tie in `ordered` read
+    // the same in both merges: the run's record order is not the work's
+    // (2026-09-18).
+    cands.sort_by(|a, b| (a.source, !a.promoted, a.native).cmp(&(b.source, !b.promoted, b.native)));
     let title = promote(
         "title",
         &cands,
@@ -1571,13 +1863,10 @@ pub fn held(
 /// One stub's row: names, one promoted per namespace, nothing else.
 /// `names` is sorted, as [`Resolution::stub_works`] gives it, and
 /// `citers` is aligned with it: per name, the citing works and sources.
+/// A name's sources are its citers' (decided 2026-09-17), so that an
+/// incremental merge removing a stale citer has the sources follow.
 #[must_use]
-pub fn stub(
-    res: &Resolution,
-    names: &[OwnedName],
-    citers: &[Vec<(WorkId, SourceId)>],
-    id: WorkId,
-) -> OwnedWork {
+pub fn stub(names: &[OwnedName], citers: &[Vec<Citer>], id: WorkId) -> OwnedWork {
     let mut seen: SmallVec<[Key; 4]> = SmallVec::new();
     let rows: SmallVec<[OwnedNamed; 4]> = names
         .iter()
@@ -1590,11 +1879,9 @@ pub fn stub(
                 seen.push(key);
                 Standing::Promoted
             };
-            let by = res
-                .stubs
-                .find(name.as_name())
-                .and_then(|ix| res.stub_by.get(ix as usize).copied())
-                .unwrap_or(Sources::NONE);
+            let by: Sources = citers
+                .get(i)
+                .map_or(Sources::NONE, |c| c.iter().map(|c| c.by).collect());
             OwnedNamed {
                 name: name.clone(),
                 standing,
@@ -1642,6 +1929,7 @@ mod tests {
     use crate::identity::{Identity, Standing};
     use crate::kind::{Form, Genre};
     use crate::name::{Assertion, Name};
+    use crate::record::Citer;
     use crate::record::{Citation, Why};
     use crate::registry::Registry;
     use crate::relation::{Kind, Related};
@@ -1876,6 +2164,37 @@ mod tests {
             "disagree",
             "the PMID wins: an edge to alpha"
         );
+        // The same shape of disagreement, with the reference's own
+        // citation text repeating its DOI: the publisher's word wins
+        // over the order (§6, 2026-09-18), and the case of the text does
+        // not matter.
+        assert_eq!(
+            b.reference(
+                beta,
+                SourceId::Crossref,
+                &[Name::Pmid(pmid(1)), Name::Doi("10.1000/stub")],
+                &Citation {
+                    text: Some("Stu B. 1999. https://doi.org/10.1000/STUB"),
+                    ..Citation::default()
+                }
+            ),
+            "disagree, the text backing the doi",
+            "the DOI wins: an edge to the stub, not to the PMID's work"
+        );
+        // A text that repeats no DOI of its own leaves the order to it.
+        assert_eq!(
+            b.reference(
+                beta,
+                SourceId::Pubmed,
+                &[Name::Pmid(pmid(1)), Name::Doi("10.1000/stub")],
+                &Citation {
+                    text: Some("Stu B. 1999."),
+                    ..Citation::default()
+                }
+            ),
+            "disagree",
+            "no corroboration: the PMID wins again"
+        );
         assert_eq!(
             b.reference(
                 alpha,
@@ -1966,8 +2285,13 @@ mod tests {
         assert!(s.names[0].by.contains(SourceId::Crossref));
         assert_eq!(
             s.names[0].cited_by.to_vec(),
-            vec![(beta, SourceId::Crossref)],
-            "beta's reference names the stub; alpha's relation is not an arc"
+            vec![Citer {
+                from: beta,
+                by: SourceId::Crossref,
+                in_text: true,
+                held_beside: false,
+            }],
+            "beta's two references are one citer, and one writes the DOI out"
         );
         // Edges.
         let edges: Vec<_> = merged
@@ -1985,11 +2309,17 @@ mod tests {
             ]
         );
         assert_eq!(merged.self_citations, 1);
-        assert_eq!(merged.unresolved.len(), 2);
+        // Four unresolved rows: the reference with no name, and the
+        // three disagreements — a disagreement the citation text settles
+        // is still kept as one (§6, 2026-09-18).
+        assert_eq!(merged.unresolved.len(), 4);
         assert_eq!(merged.unresolved[0].why, Why::NoName);
         assert_eq!(merged.unresolved[0].citation.year.as_deref(), Some("1999"));
-        assert_eq!(merged.unresolved[1].why, Why::Disagree);
-        assert_eq!(merged.unresolved[1].names.len(), 2);
+        assert!(
+            merged.unresolved[1..]
+                .iter()
+                .all(|u| u.why == Why::Disagree && u.names.len() == 2)
+        );
         assert_eq!(merged.relations.len(), 1);
         assert_eq!(merged.relations[0].kind, Kind::HasPreprint);
         assert_eq!(

@@ -25,6 +25,7 @@ use smallvec::SmallVec;
 
 use crate::arena::{Arena, NameIx};
 use crate::contributor::Contributor;
+use crate::copies::{self, Copies, Fate};
 use crate::name::{Assertion, Name, OwnedName};
 use crate::sets;
 use crate::title::{self, Agreement, OwnedTitles};
@@ -140,6 +141,15 @@ impl fmt::Display for Error {
     }
 }
 
+impl From<copies::Error> for Error {
+    fn from(e: copies::Error) -> Self {
+        match e {
+            copies::Error::Io { path, source } => Self::Io { path, source },
+            copies::Error::NoNativeName { path, ordinal } => Self::NoNativeName { path, ordinal },
+        }
+    }
+}
+
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
@@ -157,11 +167,22 @@ pub struct Stats {
     pub sets: BTreeMap<SourceId, u64>,
     /// Records kept per source.
     pub records: BTreeMap<SourceId, u64>,
-    /// Records skipped because their native name was already a record's:
-    /// the same work fetched twice.
+    /// Copies whose native name was already a record's: another copy of
+    /// the same record, whose names join it (§8), or two copies given in
+    /// memory, where no copy rule ranks them.
     pub repeated: BTreeMap<SourceId, u64>,
-    /// Records skipped because a later deletions set withdrew them.
+    /// Names a copy added to a record another copy made, per source.
+    pub joined: BTreeMap<SourceId, u64>,
+    /// Copies skipped because a later deletions set withdrew them.
     pub deleted: BTreeMap<SourceId, u64>,
+    /// Copies a newer copy of the record speaks over (merge plan §8):
+    /// their names and relations still join the record's, and their
+    /// fields fill what the newest has none of.
+    pub superseded: BTreeMap<SourceId, u64>,
+    /// Reference rows of withdrawn copies, not read. A superseded copy's
+    /// references are read: a record's citations are the union over its
+    /// standing copies (merge plan §8, 2026-09-18).
+    pub silent_references: BTreeMap<SourceId, u64>,
     /// Assertions per source and field.
     pub asserted: BTreeMap<(SourceId, &'static str), u64>,
     /// References read per source.
@@ -192,7 +213,6 @@ pub struct Identity {
     titles: HashMap<RecordIx, OwnedTitles>,
     stubs: Arena,
     stub_parent: Vec<NameIx>,
-    stub_by: Vec<Sources>,
     pending: Vec<(SourceId, OwnedName)>,
     survey: bool,
     /// Counts so far.
@@ -256,8 +276,9 @@ impl Identity {
     pub fn add<S: Contributor>(
         &mut self,
         path: &Path,
+        set: &str,
         limit: Option<usize>,
-        dead: &dyn Fn(Name<'_>) -> bool,
+        copies: &Copies,
     ) -> Result<u64, Error> {
         let io = |source| Error::Io {
             path: path.to_path_buf(),
@@ -267,23 +288,23 @@ impl Identity {
         let table = reader
             .table()
             .ok_or_else(|| Error::NoTable(path.to_path_buf()))?;
-        let set =
+        let set_ix =
             u32::try_from(self.sets.len()).map_err(|_| io(io::Error::other("too many sets")))?;
         self.sets.push(SetInfo {
             path: path.to_path_buf(),
         });
         *self.stats.sets.entry(S::SOURCE).or_default() += 1;
         let mut read = 0u64;
-        reader.with_table(|| {
+        reader.with_table(|| -> Result<(), Error> {
             for (i, work) in reader
                 .records::<S::Work<'_>>()
                 .take(limit.unwrap_or(usize::MAX))
                 .enumerate()
             {
                 let work = work.map_err(io)?;
-                match self.record::<S>(&work, set, dead) {
+                match self.record::<S>(&work, set_ix, set, i as u64 + 1, copies) {
                     Kept::Record => {}
-                    Kept::Dead => continue,
+                    Kept::Joined | Kept::Silent => continue,
                     Kept::NoNative => {
                         return Err(Error::NoNativeName {
                             path: path.to_path_buf(),
@@ -386,24 +407,39 @@ impl Identity {
         Ok(rix)
     }
 
-    /// Interns one record's names and joins them, unless it is dead or
-    /// asserts no native name.
+    /// Interns one copy's names and joins them, unless a deletion
+    /// withdrew the copy (merge plan §8) or it asserts no native name. A
+    /// record delivered more than once asserts the union of its standing
+    /// copies' names: absence is not an assertion (§8, 2026-09-18), so a
+    /// name the newest copy stopped giving — a version's own DOI, an id
+    /// an editor dropped — stays the record's, and the references that
+    /// cite it keep landing on this work.
     #[allow(clippy::cast_possible_truncation)] // fewer than 2^32 records in a run
     fn record<S: Contributor>(
         &mut self,
         work: &S::Work<'_>,
-        set: u32,
-        dead: &dyn Fn(Name<'_>) -> bool,
+        set_ix: u32,
+        set: &str,
+        ordinal: u64,
+        copies: &Copies,
     ) -> Kept {
         let mut assertions: SmallVec<[Assertion<'_>; 3]> = SmallVec::new();
         S::names(work, &mut |a| assertions.push(a));
         let Some(native_name) = assertions.iter().find(|a| a.native).map(|a| a.name) else {
             return Kept::NoNative;
         };
-        if dead(native_name) {
-            *self.stats.deleted.entry(S::SOURCE).or_default() += 1;
-            return Kept::Dead;
-        }
+        let delivery = copies::delivery_of::<S>(work, set, ordinal);
+        let speaks = match copies.fate(S::SOURCE, native_name, &delivery) {
+            Fate::Speaks => true,
+            Fate::Superseded => {
+                *self.stats.superseded.entry(S::SOURCE).or_default() += 1;
+                false
+            }
+            Fate::Withdrawn => {
+                *self.stats.deleted.entry(S::SOURCE).or_default() += 1;
+                return Kept::Silent;
+            }
+        };
         let mut asserts: SmallVec<[Assert; 3]> = SmallVec::new();
         let mut native = None;
         let (arena, parent) = (&mut self.arena, &mut self.parent);
@@ -426,9 +462,26 @@ impl Identity {
         let Some(native) = native else {
             return Kept::NoNative;
         };
-        if self.natives.contains_key(&native) {
+        if let Some(&rix) = self.natives.get(&native) {
             *self.stats.repeated.entry(S::SOURCE).or_default() += 1;
-            return Kept::Record;
+            let known = &self.records[rix as usize].asserts;
+            let new: SmallVec<[Assert; 3]> = asserts
+                .iter()
+                .filter(|a| !known.iter().any(|x| x.name == a.name))
+                .copied()
+                .collect();
+            for a in new {
+                self.records[rix as usize].asserts.push(a);
+                self.union(native, a.name);
+                *self.stats.asserted.entry((S::SOURCE, a.field)).or_default() += 1;
+                *self.stats.joined.entry(S::SOURCE).or_default() += 1;
+            }
+            // The title pass reads the set the speaking copy is in.
+            if speaks {
+                self.set_of[rix as usize] = set_ix;
+                return Kept::Record;
+            }
+            return Kept::Joined;
         }
         for a in &asserts {
             self.union(native, a.name);
@@ -441,9 +494,9 @@ impl Identity {
             native,
             asserts,
         });
-        self.set_of.push(set);
+        self.set_of.push(set_ix);
         *self.stats.records.entry(S::SOURCE).or_default() += 1;
-        Kept::Record
+        if speaks { Kept::Record } else { Kept::Joined }
     }
 
     /// Finds the conflict components (merge plan §3.2): more than one name
@@ -513,7 +566,9 @@ impl Identity {
     pub fn titles<S: Contributor>(
         &mut self,
         path: &Path,
+        set: &str,
         limit: Option<usize>,
+        copies: &Copies,
     ) -> Result<u64, Error> {
         if self.set_index(path).is_none() {
             return Err(Error::UnknownSet(path.to_path_buf()));
@@ -524,18 +579,21 @@ impl Identity {
         };
         let reader = sets::open::<S>(path, Kind::Works).map_err(io)?;
         let mut kept = 0u64;
-        reader.with_table(|| {
-            for work in reader
+        reader.with_table(|| -> Result<(), Error> {
+            for (i, work) in reader
                 .records::<S::Work<'_>>()
                 .take(limit.unwrap_or(usize::MAX))
+                .enumerate()
             {
                 let work = work.map_err(io)?;
-                let mut native = None;
-                S::names(&work, &mut |a| {
-                    if a.native && native.is_none() {
-                        native = self.arena.find(a.name);
-                    }
-                });
+                let Some(native_name) = copies::native_of::<S>(&work) else {
+                    continue;
+                };
+                let delivery = copies::delivery_of::<S>(&work, set, i as u64 + 1);
+                if copies.fate(S::SOURCE, native_name, &delivery) != Fate::Speaks {
+                    continue;
+                }
+                let native = self.arena.find(native_name);
                 let Some(rix) = native.and_then(|n| self.natives.get(&n).copied()) else {
                     continue;
                 };
@@ -561,7 +619,9 @@ impl Identity {
     pub fn targets<S: Contributor>(
         &mut self,
         path: &Path,
+        set: &str,
         limit: Option<usize>,
+        copies: &Copies,
     ) -> Result<u64, Error> {
         let io = |source| Error::Io {
             path: path.to_path_buf(),
@@ -570,12 +630,16 @@ impl Identity {
         let reader = sets::open::<S>(path, Kind::References).map_err(io)?;
         *self.stats.sets.entry(S::SOURCE).or_default() += 1;
         let mut read = 0u64;
-        reader.with_table(|| {
+        reader.with_table(|| -> Result<(), Error> {
             for record in reader
                 .records::<(S::Id<'_>, S::Reference<'_>)>()
                 .take(limit.unwrap_or(usize::MAX))
             {
-                let (_, reference) = record.map_err(io)?;
+                let (id, reference) = record.map_err(io)?;
+                if !copies.alive_in(S::SOURCE, S::native(&id), set) {
+                    *self.stats.silent_references.entry(S::SOURCE).or_default() += 1;
+                    continue;
+                }
                 let mut names: SmallVec<[Name<'_>; 3]> = SmallVec::new();
                 S::targets(&reference, &mut |name| names.push(name));
                 self.cite(S::SOURCE, &names);
@@ -624,9 +688,7 @@ impl Identity {
                     let ix = self.stubs.intern(name);
                     if self.stub_parent.len() <= ix as usize {
                         self.stub_parent.push(ix);
-                        self.stub_by.push(Sources::NONE);
                     }
-                    self.stub_by[ix as usize].insert(source);
                     match first {
                         None => first = Some(ix),
                         Some(f) => stub_union(&mut self.stub_parent, f, ix),
@@ -749,7 +811,6 @@ impl Identity {
             arena: self.arena,
             stubs: self.stubs,
             stub_parent: self.stub_parent,
-            stub_by: self.stub_by,
             records: self.records,
             works,
             stats: self.stats,
@@ -1038,7 +1099,12 @@ impl Identity {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Kept {
     Record,
-    Dead,
+    /// A copy a newer one speaks over, whose names joined the record's
+    /// (merge plan §8): its relations are not the record's — the
+    /// speaking copy alone gives those.
+    Joined,
+    /// A copy a deletion withdrew.
+    Silent,
     NoNative,
 }
 
@@ -1260,8 +1326,6 @@ pub struct Resolution {
     /// Names cited and held by no work: the stubs' names.
     pub stubs: Arena,
     stub_parent: Vec<NameIx>,
-    /// Per stub name, the sources whose references or relations cite it.
-    pub stub_by: Vec<Sources>,
     #[allow(missing_docs)]
     pub records: Vec<Record>,
     #[allow(missing_docs)]

@@ -6,18 +6,20 @@
 //! a batch is folded only when every artifact can answer at it, so an
 //! answer never mixes two batches.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::File;
 use std::iter::Peekable;
 use std::path::{Path, PathBuf};
 
 use graph::{Arc, Base};
 use ingest::Store;
-use merge::delta::{self, EdgeLine, WorkLine};
+use merge::delta::{self, CitedAsLine, EdgeLine, WorkLine};
 use merge::identity::Standing;
 use merge::journal::{self, Kind, Line};
-use merge::{OwnedName, Sources, WorkId, public, registry};
+use merge::{OwnedName, SourceId, Sources, WorkId, public, registry};
 use search::Opened;
+
+use crate::cited::Row as CitedRow;
 
 use crate::error::Error;
 use crate::names::Resolved;
@@ -228,6 +230,79 @@ pub struct EdgesFold {
     pub lines: u64,
 }
 
+/// The cited-as delta, indexed by name: the rows each batch put, and the
+/// (citing work, source) pairs whose rows in the base they replace
+/// (2026-09-18).
+#[derive(Debug, Default)]
+pub struct CitedTail {
+    by_name: HashMap<String, Vec<CitedRow>>,
+    restated: HashSet<(WorkId, SourceId)>,
+    moved: HashMap<WorkId, WorkId>,
+    #[allow(missing_docs)]
+    pub bytes: u64,
+    /// Lines folded.
+    pub lines: u64,
+}
+
+impl CitedTail {
+    /// Whether a batch has restated what this work's records of that
+    /// source gave, so the base's rows for the pair are stale.
+    #[must_use]
+    pub fn restated(&self, from: WorkId, by: SourceId) -> bool {
+        self.restated.contains(&(from, by))
+    }
+
+    /// Where a retired citing work's rows went.
+    #[must_use]
+    pub fn survivor(&self, from: WorkId) -> WorkId {
+        let mut id = from;
+        while let Some(into) = self.moved.get(&id) {
+            if *into == id {
+                break;
+            }
+            id = *into;
+        }
+        id
+    }
+
+    /// The tail's rows for a name.
+    #[must_use]
+    pub fn rows_of(&self, name: &str) -> Vec<CitedRow> {
+        self.by_name.get(name).cloned().unwrap_or_default()
+    }
+
+    fn apply(&mut self, line: &CitedAsLine) {
+        self.lines += 1;
+        match line {
+            CitedAsLine::Put { from, by, rows, .. } => {
+                self.restated.insert((*from, *by));
+                for list in self.by_name.values_mut() {
+                    list.retain(|row| (row.from, row.by) != (*from, *by));
+                }
+                for row in rows {
+                    self.by_name
+                        .entry(row.name.to_string())
+                        .or_default()
+                        .push(CitedRow::of(&row.borrow()));
+                }
+            }
+            CitedAsLine::Move { from, into, .. } => {
+                self.moved.insert(*from, *into);
+                for list in self.by_name.values_mut() {
+                    for row in list.iter_mut() {
+                        if row.from == *from {
+                            row.from = *into;
+                        }
+                        if row.to == *from {
+                            row.to = *into;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// The base's label on an arc, if the base has it: a binary search over
 /// the citing work's list, whose neighbours are sorted by id.
 fn base_label(base: &Base, from: WorkId, to: WorkId) -> Option<Sources> {
@@ -400,6 +475,8 @@ pub struct Fold {
     pub works: WorksTail,
     #[allow(missing_docs)]
     pub edges: EdgesFold,
+    #[allow(missing_docs)]
+    pub cited: CitedTail,
     /// The batch the lexical index's last commit carried when last read.
     pub lexical: u64,
     /// Bytes of each delta log folded so far, by the journal's keys.
@@ -463,6 +540,10 @@ impl Fold {
             edges: EdgesFold {
                 bytes: offsets["edges"],
                 ..EdgesFold::default()
+            },
+            cited: CitedTail {
+                bytes: offsets["cited_as"],
+                ..CitedTail::default()
             },
             lexical: line.batch,
             offsets,
@@ -615,6 +696,16 @@ impl Fold {
             self.edges.apply(base, l);
         }
         self.edges.bytes = edges_to;
+        let cited_to = range("cited_as", self.cited.bytes)?;
+        let cited_path = self.delta.join(delta::CITED_AS);
+        let cited: Vec<CitedAsLine> =
+            delta::read(&cited_path, self.cited.bytes, cited_to, Some(line.batch))
+                .map_err(|e| Error::io(&cited_path, e))?;
+        for l in &cited {
+            self.cited.apply(l);
+        }
+        self.cited.bytes = cited_to;
+        self.offsets.insert("cited_as".to_owned(), cited_to);
         for key in ["relations", "unresolved"] {
             let to = range(key, self.offsets[key])?;
             self.offsets.insert(key.to_owned(), to);

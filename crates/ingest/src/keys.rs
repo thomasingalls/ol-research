@@ -9,7 +9,9 @@ use std::fmt;
 use crate::source::Source;
 
 /// Which identifier a seed holds, or a `keys` run asks for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub enum Key {
     /// A DOI, lowercase, bare (`10.1000/x`).
     Doi,

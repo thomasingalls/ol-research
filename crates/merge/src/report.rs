@@ -36,12 +36,17 @@ pub fn identity(
         if records == 0 && !s.sets.contains_key(&source) {
             continue;
         }
+        let n = |m: &BTreeMap<SourceId, u64>| m.get(&source).copied().unwrap_or(0);
         writeln!(
             out,
-            "  {source}: {} sets, {records} records ({} repeated), {} references",
-            s.sets.get(&source).copied().unwrap_or(0),
-            s.repeated.get(&source).copied().unwrap_or(0),
-            s.references.get(&source).copied().unwrap_or(0),
+            "  {source}: {} sets, {records} records ({} superseded by a newer copy, {} withdrawn, {} repeated, {} names joined from another copy), {} references ({} of those copies skipped)",
+            n(&s.sets),
+            n(&s.superseded),
+            n(&s.deleted),
+            n(&s.repeated),
+            n(&s.joined),
+            n(&s.references),
+            n(&s.silent_references),
         )?;
     }
     writeln!(out, "  assertions by source and field")?;
@@ -198,6 +203,13 @@ pub fn merge(out: &mut impl Write, m: &Merged, written: Option<&Summary>) -> io:
             .collect::<Vec<_>>()
             .join(", ")
     )?;
+    let filled: u64 = s.filled.values().sum();
+    if filled > 0 {
+        writeln!(
+            out,
+            "    {filled} of those are a second copy of a record, filling what the newest has none of"
+        )?;
+    }
     writeln!(out, "  works: {} held, {} stubs", m.held, m.stubs)?;
     writeln!(
         out,

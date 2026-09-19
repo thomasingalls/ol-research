@@ -8,6 +8,7 @@ use std::path::PathBuf;
 
 use ingest::Store;
 use merge::build::{Builder, Ids, OwnedAssert, OwnedCitation};
+use merge::copies::{Copies, Delivery, Fate};
 use merge::identity::Identity;
 use merge::journal::{self, Kind, Line};
 use merge::name::{Assertion, field_static};
@@ -41,7 +42,7 @@ fn owned(view: &View<'_>) -> Owned {
 }
 
 /// A record: its assertions in order, native first, with a title and a
-/// view.
+/// view, delivered in the set `base`, version 1.
 pub(crate) fn record(
     source: SourceId,
     names: &[&str],
@@ -63,6 +64,8 @@ pub(crate) fn record(
             title: Some(title).filter(|t| !t.is_empty()),
             vernacular: None,
         },
+        version: 1,
+        set: "base",
         ..view
     };
     Incoming {
@@ -81,6 +84,18 @@ pub(crate) fn cites(record: &mut Incoming, names: &[&str]) {
     record.references.push(Reference {
         names: names.iter().map(|n| OwnedName::parse(n).unwrap()).collect(),
         citation: OwnedCitation::default(),
+    });
+}
+
+/// A reference that also prints itself out: the citation text §6 asks
+/// when the names name different works.
+pub(crate) fn cites_as(record: &mut Incoming, names: &[&str], text: &str) {
+    record.references.push(Reference {
+        names: names.iter().map(|n| OwnedName::parse(n).unwrap()).collect(),
+        citation: OwnedCitation {
+            text: Some(text.into()),
+            ..OwnedCitation::default()
+        },
     });
 }
 
@@ -111,24 +126,57 @@ fn text_of(work: &merge::record::Work<'_>, records: &[Incoming]) -> Text {
 }
 
 /// A full merge over `records` into `store`, then every artifact and a
-/// new epoch, as the binary would do it. Returns the epoch number.
+/// new epoch, as the binary would do it: the copy rule of merge plan §8
+/// decides which records speak, each record's place in `records` its place
+/// in its set, and each deletion — source, name, set — withdraws the
+/// copies in the sets before its own. Returns the epoch number.
 #[allow(clippy::too_many_lines)]
 pub(crate) fn full_merge(
     store: &Store,
     records: &[Incoming],
-    deletions: &[(SourceId, &str)],
+    deletions: &[(SourceId, &str, &str)],
 ) -> u64 {
-    let deleted: Vec<(SourceId, OwnedName)> = deletions
+    let mut copies = Copies::new();
+    for (source, name, set) in deletions {
+        copies.withdraw(*source, OwnedName::parse(name).unwrap(), set);
+    }
+    let deliveries: Vec<Delivery> = records
         .iter()
-        .map(|(s, n)| (*s, OwnedName::parse(n).unwrap()))
+        .enumerate()
+        .map(|(i, r)| Delivery::of(&r.view.borrow(), i as u64 + 1))
         .collect();
-    let alive: Vec<&Incoming> = records
+    for (r, delivery) in records.iter().zip(&deliveries) {
+        copies.see(r.source, r.native.as_name(), delivery.clone());
+    }
+    // Relations come from the copy that speaks; its names, fields and
+    // text are joined with the standing copies', since absence is not an
+    // assertion (merge plan §8, 2026-09-18); references come from every
+    // copy a deletion has not withdrawn, a record's citations being their
+    // union (§8).
+    let mut alive: Vec<Incoming> = records
         .iter()
-        .filter(|r| {
-            !deleted
-                .iter()
-                .any(|(s, n)| *s == r.source && *n == r.native)
+        .zip(&deliveries)
+        .filter(|(r, delivery)| copies.fate(r.source, r.native.as_name(), delivery) == Fate::Speaks)
+        .map(|(r, _)| (*r).clone())
+        .collect();
+    for (r, delivery) in records.iter().zip(&deliveries) {
+        if copies.fate(r.source, r.native.as_name(), delivery) != Fate::Superseded {
+            continue;
+        }
+        if let Some(speaking) = alive
+            .iter_mut()
+            .find(|x| x.source == r.source && x.native == r.native)
+        {
+            speaking.absorb(r);
+        }
+    }
+    let standing: Vec<&Incoming> = records
+        .iter()
+        .zip(&deliveries)
+        .filter(|(r, delivery)| {
+            copies.fate(r.source, r.native.as_name(), delivery) != Fate::Withdrawn
         })
+        .map(|(r, _)| r)
         .collect();
     let mut identity = Identity::new();
     for r in &alive {
@@ -153,11 +201,13 @@ pub(crate) fn full_merge(
             .unwrap();
     }
     identity.mark();
-    for r in &alive {
+    for r in &standing {
         for reference in &r.references {
             let names: Vec<Name<'_>> = reference.names.iter().map(OwnedName::as_name).collect();
             identity.cite(r.source, &names);
         }
+    }
+    for r in &alive {
         for relation in &r.relations {
             if let Some(t) = &relation.target {
                 identity.cite(r.source, &[t.as_name()]);
@@ -203,12 +253,15 @@ pub(crate) fn full_merge(
             .unwrap();
         b.ids().held[work]
     };
-    for r in &alive {
+    for r in &standing {
         let from = from_of(&builder, &r.native);
         for reference in &r.references {
             let names: Vec<Name<'_>> = reference.names.iter().map(OwnedName::as_name).collect();
             builder.reference(from, r.source, &names, &reference.citation.borrow());
         }
+    }
+    for r in &alive {
+        let from = from_of(&builder, &r.native);
         for relation in &r.relations {
             builder.relate(from, r.source, relation);
         }
@@ -254,7 +307,7 @@ pub(crate) fn full_merge(
     let public = Public::read(&public_path).unwrap();
     let names_dir = store.names(model::VERSION, merge::VERSION, crate::VERSION);
     crate::names::build(&names_dir, &merged_dir, &public, &registry, batch).unwrap();
-    let owned_records: Vec<Incoming> = alive.iter().map(|r| (*r).clone()).collect();
+    let owned_records: Vec<Incoming> = alive.clone();
     let documents: Vec<Document> = merged
         .works
         .iter()
@@ -266,6 +319,8 @@ pub(crate) fn full_merge(
         .collect();
     let works_dir = store.works(model::VERSION, merge::VERSION, crate::VERSION);
     crate::works::build(&works_dir, &merged_dir, &documents, &public, batch).unwrap();
+    let cited_dir = store.cited(model::VERSION, merge::VERSION, crate::VERSION);
+    crate::cited::build(&cited_dir, &merged_dir, batch).unwrap();
     let graph_dir = graph::layout::dir(store, false);
     let nodes = graph::Nodes::read(&merged_dir).unwrap();
     let edges = merged.edges.clone();
@@ -293,6 +348,7 @@ pub(crate) fn full_merge(
         artifacts: [
             ("names", artifact(&names_dir, crate::names::MANIFEST)),
             ("works", artifact(&works_dir, crate::works::MANIFEST)),
+            ("cited", artifact(&cited_dir, crate::cited::MANIFEST)),
             ("graph", artifact(&graph_dir, graph::layout::MANIFEST)),
             ("search", artifact(&search_dir, search::index::MANIFEST)),
         ]

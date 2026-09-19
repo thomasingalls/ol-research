@@ -70,11 +70,16 @@ pub enum Kind {
     Relations,
     /// Merged: one record per reference that resolved to no work.
     Unresolved,
+    /// Merged: one record per name a reference gave beside the work it
+    /// landed on — the evidence an incremental merge needs to resolve
+    /// that reference again when the name becomes a work's (merge plan
+    /// §11 item 14, 2026-09-18).
+    CitedAs,
 }
 
 impl Kind {
     /// Every kind, in file order.
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Works,
         Self::References,
         Self::Deletions,
@@ -83,6 +88,7 @@ impl Kind {
         Self::Names,
         Self::Relations,
         Self::Unresolved,
+        Self::CitedAs,
     ];
 
     /// The normalized layer's kinds: what [`Binary`] writes per raw file.
@@ -105,6 +111,7 @@ impl Kind {
             Self::Names => "names",
             Self::Relations => "relations",
             Self::Unresolved => "unresolved",
+            Self::CitedAs => "cited_as",
         }
     }
 

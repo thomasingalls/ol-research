@@ -20,6 +20,7 @@ use std::ops::ControlFlow;
 
 pub mod attr;
 pub mod error;
+pub mod exclusions;
 pub mod list;
 pub mod normalize;
 mod parse;
@@ -46,7 +47,7 @@ impl ingest::Keys for Pubmed {
                 }
             }
             ingest::Key::Pmc => {
-                if let Some(pmc) = work.ids.pmc {
+                if let Some(pmc) = work.ids.pmc.as_ref().and_then(model::Claim::valid) {
                     out(pmc.to_string());
                 }
             }
@@ -108,9 +109,9 @@ impl merge::Contributor for Pubmed {
                 native: false,
             });
         }
-        if let Some(pmc) = work.ids.pmc {
+        if let Some(pmc) = work.ids.pmc.as_ref().and_then(model::Claim::valid) {
             out(merge::Assertion {
-                name: merge::Name::Pmc(pmc),
+                name: merge::Name::Pmc(*pmc),
                 field: "ids.pmc",
                 native: false,
             });
@@ -119,6 +120,10 @@ impl merge::Contributor for Pubmed {
 
     fn native(id: &model::Pmid) -> merge::Name<'_> {
         merge::Name::Pmid(*id)
+    }
+
+    fn revision(work: &Self::Work<'_>) -> (Option<model::Date>, u32) {
+        (work.dates.revised, work.version)
     }
 
     fn titles<'w>(work: &'w normalize::Citation<'_>) -> merge::Titles<'w> {

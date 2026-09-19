@@ -167,7 +167,10 @@ model-written query enhancement in front of them.
   funnel's cheap stages — expand, filter, score, keep the top *k* — as one
   server call, so an agent reads only the short list, which is where
   cheap to serve becomes cheap to use; a tool-friendly front door, JSON or
-  MCP, over the same core.
+  MCP, over the same core. Its schemas and answers are a harness tax
+  every client pays on every call ([configuration per
+  query](future-ambitions-configuration.md) §4.4), and the query path
+  itself as a menu of costed configurations is §4.1 there.
 
 ### 5.2 What it would cost
 
@@ -270,7 +273,8 @@ trace touches the work, and kept as a process and version (ambitions §6):
 paid for only on works some question reached, and warming where questions
 cluster. A trail is a session — works with their quotes and the names
 they used, linked by the citations that carry the concept — explored,
-extended, pruned, then dropped or saved, pinned to one epoch.
+extended, pruned, then dropped or saved, pinned to one epoch; what a
+built trail answers is §6.6.
 
 ### 6.5 Where it would struggle
 
@@ -287,6 +291,52 @@ extended, pruned, then dropped or saved, pinned to one epoch.
   neural-network architecture feature — against reviews that tell those
   histories.
 
+### 6.6 Build, then traverse
+
+Added 2026-09-17 at the user's request. The user's framing: reconstruct
+an ephemeral concept graph, *then* use it to do traversals. §6.2's walk
+builds and traverses at once — the best-first loop decides what to read,
+and the walk is the only traversal. Two steps instead make the concept
+graph an object to be queried.
+
+- **Build once, query many.** Construction is where the cost is: every
+  model call. The graph it leaves is small beside the corpus and held
+  whole in memory, so a traversal over it costs nothing next to building
+  it, and one trace answers many questions without another model call.
+- **Nodes and arcs.** A node is a work judged to carry the concept, with
+  its probability, the chosen passage, the name it uses, its date, and
+  whether its references were read in full. Arcs are of more than one
+  kind, each labelled with the process and version that asserted it:
+  *credits* (a citing sentence credits the cited work for the concept —
+  the tracer's engine §2); *same name, same era* (a lexical search
+  restricted to a period, §6.3); *same idea* (a classifier's judgment
+  that two passages state one idea, with no citation between them). The
+  shape is the graph plan's slice with a label per process and version
+  (graph plan §1; ambitions §4).
+- **Traversals the walk alone does not give:**
+  - *origins* — works with no earlier ancestor in the concept graph;
+  - *lineages* — paths from a recent work back to its origins, and the
+    most-credited trunk among them;
+  - *renamings* — arcs across which the name a work uses changes: the
+    concept's vocabulary as a timeline;
+  - *independent discovery* — components that no *credits* arc joins and
+    *same idea* arcs do;
+  - *bridges* — works that carried the idea from one field into another;
+  - *branches* — where the idea splits into variants, a hard sweep and a
+    soft one;
+  - *misplaced credit* — works credited for the idea far beyond their
+    place in its lineage.
+- **Traversal feeds construction.** A renaming whose older name was
+  never searched, or an origin whose references were never read, is a
+  gap, and a gap is the next round of building. The two steps loop; the
+  session of §6.4 is the loop's state.
+- **Incompleteness gives confident wrong answers.** A missing ancestor
+  turns a work into an origin. Hence the flag on every node for
+  references read in full, and *origin* meaning no earlier ancestor among
+  the works read in full. How complete the graph is rests on when
+  construction stops; Undermind's discovery curve is one answer
+  ([retrieval frontier](retrieval-frontier.md) §2.4, §6).
+
 ## 7. Open questions
 
 1. Whether BM25, the graph and query expansion hold up on the citation
@@ -297,3 +347,5 @@ extended, pruned, then dropped or saved, pinned to one epoch.
 4. Where citation contexts come from at scale, and on what terms (§6.3).
 5. Whether answers to one phrasing of a concept can serve another (§6.4).
 6. Whether an internal-data variant is ever in scope (§4).
+7. When construction stops, and how complete a concept graph must be
+   before its traversals are trusted (§6.6).

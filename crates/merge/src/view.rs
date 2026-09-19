@@ -68,6 +68,15 @@ pub struct View<'a> {
     /// The source's own revision stamp: Crossref's `indexed`, PubMed's
     /// `DateRevised`, OpenAlex's `updated_date`.
     pub revised: Option<Date>,
+    /// The source's version of the record: PubMed's `PMID@Version`, which
+    /// a versioned citation raises; 1 where a source has no versions.
+    pub version: u32,
+    /// The normalized set the record was read from, relative to its
+    /// source's directory and without the kind (`updatefiles/pubmed26n1335`):
+    /// with the stamp and the version, what ranks two copies of one record
+    /// (merge plan §8). Empty until the reader sets it.
+    #[serde(borrow)]
+    pub set: &'a str,
     /// The titles, raw markup and all.
     #[serde(borrow)]
     pub titles: Titles<'a>,
@@ -353,6 +362,12 @@ impl OwnedVenue {
             nlm: self.nlm.as_deref().map(Interned::Text),
         }
     }
+
+    /// No id at all.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.openalex.is_none() && self.issns.is_empty() && self.nlm.is_none()
+    }
 }
 
 /// A view that owns its text: what the second pass keeps per record, and
@@ -364,6 +379,10 @@ impl OwnedVenue {
 pub struct Owned {
     #[allow(missing_docs)]
     pub revised: Option<Date>,
+    #[allow(missing_docs)]
+    pub version: u32,
+    #[allow(missing_docs)]
+    pub set: Box<str>,
     #[allow(missing_docs)]
     pub title: Option<Box<str>>,
     #[allow(missing_docs)]
@@ -399,6 +418,8 @@ pub struct Owned {
 #[derive(Deserialize)]
 struct Raw {
     revised: Option<Date>,
+    version: u32,
+    set: Box<str>,
     title: Option<Box<str>>,
     vernacular: Option<Box<str>>,
     has_abstract: bool,
@@ -418,6 +439,8 @@ impl From<Raw> for Owned {
     fn from(r: Raw) -> Self {
         Self {
             revised: r.revised,
+            version: r.version,
+            set: r.set,
             titles: OwnedTitles::of(Titles {
                 title: r.title.as_deref(),
                 vernacular: r.vernacular.as_deref(),
@@ -472,6 +495,8 @@ impl Owned {
     fn with_nlm(view: &View<'_>, nlm: Option<Box<str>>) -> Self {
         Self {
             revised: view.revised,
+            version: view.version,
+            set: view.set.into(),
             title: view.titles.title.map(Box::from),
             vernacular: view.titles.vernacular.map(Box::from),
             titles: OwnedTitles::of(view.titles),
@@ -498,6 +523,8 @@ impl Owned {
     pub fn borrow(&self) -> View<'_> {
         View {
             revised: self.revised,
+            version: self.version,
+            set: &self.set,
             titles: Titles {
                 title: self.title.as_deref(),
                 vernacular: self.vernacular.as_deref(),
@@ -514,6 +541,68 @@ impl Owned {
             references: self.references,
             cited_by: self.cited_by,
         }
+    }
+
+    /// Whether `other` is a newer copy of the same record: the rank of
+    /// merge plan §8 — stamp, then version, then set — without the place
+    /// in the set, which a view does not keep. See
+    /// [`Delivery::older_than`](crate::copies::Delivery::older_than),
+    /// which ranks the same three.
+    #[must_use]
+    pub fn older_than(&self, other: &Self) -> bool {
+        (self.revised, self.version, &self.set) < (other.revised, other.version, &other.set)
+    }
+
+    /// Absence is not an assertion (merge plan §8, 2026-09-18): every
+    /// field this copy has none of, taken from `older`, a copy of the
+    /// same record that a later delivery superseded. The stamp, the
+    /// version and the set stay this copy's: they name the delivery, not
+    /// the work. A value that is merely shorter is not an absence — a
+    /// truncated title or a reference list PMC cut down still speaks,
+    /// because it is there.
+    ///
+    /// The venue fills as one id, never field by field: its three ids
+    /// name one journal, and a later copy that moved the article would
+    /// otherwise leave a venue no journal has.
+    pub fn fill_from(&mut self, older: &Self) {
+        if self.title.is_none() || self.vernacular.is_none() {
+            self.title = self.title.take().or_else(|| older.title.clone());
+            self.vernacular = self.vernacular.take().or_else(|| older.vernacular.clone());
+            self.titles = OwnedTitles::of(Titles {
+                title: self.title.as_deref(),
+                vernacular: self.vernacular.as_deref(),
+            });
+        }
+        self.has_abstract |= older.has_abstract;
+        if self.authors == 0 {
+            self.authors = older.authors;
+        }
+        if self.venue.is_empty() {
+            self.venue = older.venue.clone();
+        }
+        self.published = self.published.or(older.published);
+        self.language = self.language.or(older.language);
+        self.form = self.form.or(older.form);
+        self.genre = self.genre.or(older.genre);
+        self.status.retracted |= older.status.retracted;
+        self.status.corrected |= older.status.corrected;
+        self.status.concern |= older.status.concern;
+        self.access = self.access.or(older.access);
+        self.references = self.references.or(older.references);
+        self.cited_by = self.cited_by.or(older.cited_by);
+    }
+
+    /// Two copies of one record as the rule leaves them: the newer's
+    /// values, the older's where the newer has none.
+    #[must_use]
+    pub fn joined(self, other: Self) -> Self {
+        let (mut newer, older) = if self.older_than(&other) {
+            (other, self)
+        } else {
+            (self, other)
+        };
+        newer.fill_from(&older);
+        newer
     }
 }
 

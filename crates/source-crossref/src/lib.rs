@@ -72,6 +72,10 @@ impl merge::Contributor for Crossref {
         merge::Name::Doi(id.as_str())
     }
 
+    fn revision(work: &Self::Work<'_>) -> (Option<model::Date>, u32) {
+        (Some(work.indexed.date()), 1)
+    }
+
     fn titles<'w>(work: &'w normalize::Work<'_>) -> merge::Titles<'w> {
         merge::Titles {
             title: work.title.filter(|t| !t.trim().is_empty()),

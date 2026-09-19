@@ -108,6 +108,13 @@ pub trait Sink<'n, S: Source> {
     /// A record the source has withdrawn: PubMed's `DeleteCitation`.
     fn deletion(&mut self, id: &S::Id<'n>);
 
+    /// A record a source's checked-in exclusion list keeps out of the
+    /// output (plan §6, the fix loop's third way), with the list's reason.
+    /// Nothing else is emitted for it; a sink that reports counts it.
+    fn excluded(&mut self, id: &S::Id<'n>, reason: &'static str) {
+        let _ = (id, reason);
+    }
+
     /// Called before the first record of each raw file, with the file's
     /// path and its index among the run's files.
     ///
@@ -161,6 +168,10 @@ impl<'n, S: Source, K: Sink<'n, S>> Sink<'n, S> for &mut K {
         (**self).deletion(id);
     }
 
+    fn excluded(&mut self, id: &S::Id<'n>, reason: &'static str) {
+        (**self).excluded(id, reason);
+    }
+
     fn begin_file(&mut self, path: &Path, index: usize) -> io::Result<()> {
         (**self).begin_file(path, index)
     }
@@ -194,6 +205,12 @@ impl<'n, S: Source, K: Sink<'n, S>> Sink<'n, S> for Option<K> {
         }
     }
 
+    fn excluded(&mut self, id: &S::Id<'n>, reason: &'static str) {
+        if let Some(k) = self {
+            k.excluded(id, reason);
+        }
+    }
+
     fn begin_file(&mut self, path: &Path, index: usize) -> io::Result<()> {
         self.as_mut().map_or(Ok(()), |k| k.begin_file(path, index))
     }
@@ -223,6 +240,11 @@ impl<'n, S: Source, A: Sink<'n, S>, B: Sink<'n, S>> Sink<'n, S> for (A, B) {
     fn deletion(&mut self, id: &S::Id<'n>) {
         self.0.deletion(id);
         self.1.deletion(id);
+    }
+
+    fn excluded(&mut self, id: &S::Id<'n>, reason: &'static str) {
+        self.0.excluded(id, reason);
+        self.1.excluded(id, reason);
     }
 
     fn begin_file(&mut self, path: &Path, index: usize) -> io::Result<()> {

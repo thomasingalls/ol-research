@@ -405,6 +405,11 @@ A reading, 2026-09-16, not findings.
 - **Beside the citation scoreboard** of future ambitions §5.2: the
   benchmarks give figures comparable with others; the scoreboard measures
   the corpus as it is.
+- **Reported as a frontier.** Cost against quality, repeated runs,
+  bootstrap intervals, a fixed price list and a labelled harness, not one
+  accuracy figure; and the citation labels as a nearly free way to profile
+  retrieval configurations for a per-query router ([configuration per
+  query](future-ambitions-configuration.md) §4.3, §4.5).
 
 ## 5. Open questions
 

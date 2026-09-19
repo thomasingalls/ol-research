@@ -14,7 +14,26 @@ use model::Issn;
 use crate::compare;
 use crate::core::{Resolved, Serving};
 use crate::fixture::{self, cites, record};
-use crate::incremental::{self, Batch, Error, Incoming};
+use crate::incremental::{self, Batch, Deletion, Incoming};
+
+/// The set every batch record and deletion of these tests is delivered in:
+/// after the base's, so its copies are the newer (merge plan §8).
+const BATCH: &str = "batch";
+
+/// A record as a batch delivers it.
+fn delivered(mut r: Incoming) -> Incoming {
+    r.view.set = BATCH.into();
+    r
+}
+
+/// A deletion a batch carries.
+fn withdrawal(source: SourceId, name: &str) -> Deletion {
+    Deletion {
+        source,
+        native: OwnedName::parse(name).unwrap(),
+        set: BATCH.into(),
+    }
+}
 
 fn view(has_abstract: bool, authors: u32, issn: Option<&str>) -> View<'static> {
     View {
@@ -270,13 +289,20 @@ fn batch() -> Batch {
     // The stub T's leftover DOI becomes, cited alone in the same batch.
     cites(&mut nu, &["doi:10.1000/t"]);
     Batch {
-        records: vec![a3, b2, d, ef, t, u, nu],
-        deletions: vec![
-            (Pubmed, OwnedName::parse("pmid:7").unwrap()),
-            (Pubmed, OwnedName::parse("pmid:8").unwrap()),
-        ],
+        records: [a3, b2, d, ef, t, u, nu]
+            .into_iter()
+            .map(delivered)
+            .collect(),
+        cited_only: Vec::new(),
+        deletions: vec![withdrawal(Pubmed, "pmid:7"), withdrawal(Pubmed, "pmid:8")],
+        store_deletions: Vec::new(),
         inputs: vec!["batch-1".into()],
     }
+}
+
+/// A stub name's citers as records, the text mark left aside.
+fn pairs(named: &crate::row::Named) -> Vec<(WorkId, SourceId)> {
+    named.cited_by.iter().map(|c| c.pair()).collect()
 }
 
 fn resolve(s: &Serving, name: &str) -> Option<WorkId> {
@@ -376,7 +402,7 @@ fn a_batch_folds_and_equals_the_full_merge_after_it() {
     let mut t_doi_citers = vec![(m, SourceId::Crossref), (v, SourceId::Pubmed)];
     t_doi_citers.sort_unstable();
     assert_eq!(
-        t_doi_row.names[0].cited_by.to_vec(),
+        pairs(&t_doi_row.names[0]),
         t_doi_citers,
         "M before the batch, and V's record in it"
     );
@@ -384,7 +410,7 @@ fn a_batch_folds_and_equals_the_full_merge_after_it() {
     let mut v2_citers = vec![(m, SourceId::Crossref), (u_stub, SourceId::Pubmed)];
     v2_citers.sort_unstable();
     assert_eq!(
-        v2_row.names[0].cited_by.to_vec(),
+        pairs(&v2_row.names[0]),
         v2_citers,
         "M before the batch, and U's reference beside B"
     );
@@ -450,7 +476,7 @@ fn a_batch_folds_and_equals_the_full_merge_after_it() {
         let name = OwnedName::parse(name).unwrap();
         let row = serving.work(id).unwrap().unwrap();
         let named = row.names.iter().find(|n| n.name == name).unwrap();
-        named.cited_by.to_vec()
+        pairs(named)
     };
     let mut pmid9 = vec![
         (c, SourceId::Pubmed),
@@ -502,7 +528,10 @@ fn a_batch_folds_and_equals_the_full_merge_after_it() {
     let epoch = fixture::full_merge(
         &store,
         &all,
-        &[(SourceId::Pubmed, "pmid:7"), (SourceId::Pubmed, "pmid:8")],
+        &[
+            (SourceId::Pubmed, "pmid:7", BATCH),
+            (SourceId::Pubmed, "pmid:8", BATCH),
+        ],
     );
     assert_eq!(epoch, 2);
     let after = journal::last(&store.journal()).unwrap().unwrap();
@@ -523,36 +552,23 @@ fn a_batch_folds_and_equals_the_full_merge_after_it() {
 
 #[test]
 fn the_cases_a_full_merge_owns_stop_the_batch_before_it_writes() {
-    use SourceId::{OpenAlex, Pubmed};
+    use SourceId::Pubmed;
     let store = fixture::store("refuse");
     fixture::full_merge(&store, &base(), &[]);
     let serving = Serving::open(&store).unwrap();
     let journal_before = std::fs::read_to_string(store.journal()).unwrap();
     let registry_before = std::fs::read_to_string(store.registry()).unwrap();
-    // A cited work losing its last record.
-    let deleted = Batch {
-        deletions: vec![(Pubmed, OwnedName::parse("pmid:10").unwrap())],
-        ..Batch::default()
-    };
-    let err = incremental::apply(&store, &serving, deleted, None).unwrap_err();
-    assert!(matches!(err, Error::FullMerge(_)), "{err}");
-    assert!(err.to_string().contains("still cited"), "{err}");
-    // A name moving between works: OpenAlex's record of K re-delivered
-    // with another DOI, so K's names part between two works — a split.
-    let mut split = Batch::default();
-    split.records.push(record(
-        OpenAlex,
-        &["openalex:W11", "doi:10.1000/k2"],
-        "Kappa",
-        view(true, 1, None),
-        text(Some("Kappa abstract."), &["Kay O"], None),
-    ));
-    let err = incremental::apply(&store, &serving, split, None).unwrap_err();
-    assert!(err.to_string().contains("split"), "{err}");
+    // A cited work losing its last record no longer stops the batch: it
+    // becomes its citers' stub, tested beside the rule in
+    // a_newer_copy_speaks_and_withdrawn_citations_leave_no_trace.
+    // A record that drops a name no longer parts its work — the name
+    // stays with the record (§8, 2026-09-18) — so the split a
+    // re-delivery used to cause is tested where it belongs, beside the
+    // rule, in a_newer_copy_speaks_and_withdrawn_citations_leave_no_trace.
     // A text only the normalized layer has: L loses the PubMed record
     // whose abstract it carried, and OpenAlex's was never in the row.
     let text_gone = Batch {
-        deletions: vec![(Pubmed, OwnedName::parse("pmid:13").unwrap())],
+        deletions: vec![withdrawal(Pubmed, "pmid:13")],
         ..Batch::default()
     };
     let err = incremental::apply(&store, &serving, text_gone, None).unwrap_err();
@@ -567,6 +583,63 @@ fn the_cases_a_full_merge_owns_stop_the_batch_before_it_writes() {
         registry_before
     );
     assert_eq!(serving.watermark().batch, 1);
+    // A split whose answer is an order over names the row does not hold.
+    // Alpha2's reference names held work C and a stub, and §6 lands it on
+    // the stub because its own text writes that DOI out; when a record
+    // arrives for the stub's other name, the DOI is dropped — no
+    // reference gave it without a held name beside it (merge plan §11,
+    // item 14) — and §6 falls back to an order over C, which the row
+    // never held. The batch refuses rather than guess (§11, item 28).
+    let store = fixture::store("refuse-split");
+    let mut both = record(
+        Pubmed,
+        &["pmid:90"],
+        "Alpha2",
+        view(false, 1, None),
+        text(None, &["Alpha2"], None),
+    );
+    fixture::cites_as(
+        &mut both,
+        &["pmid:1", "doi:10.1000/p91"],
+        "Bee A. 1999. https://doi.org/10.1000/p91",
+    );
+    let mut pair = record(
+        Pubmed,
+        &["pmid:92"],
+        "Beta2",
+        view(false, 1, None),
+        text(None, &["Beta2"], None),
+    );
+    cites(&mut pair, &["pmid:91", "doi:10.1000/p91"]);
+    fixture::full_merge(
+        &store,
+        &base_and(vec![delivered(both), delivered(pair)]),
+        &[],
+    );
+    let serving = Serving::open(&store).unwrap();
+    let arriving = delivered(record(
+        Pubmed,
+        &["pmid:91"],
+        "Gamma2",
+        view(false, 1, None),
+        text(None, &["Gamma2"], None),
+    ));
+    let err = incremental::apply(
+        &store,
+        &serving,
+        Batch {
+            records: vec![arriving],
+            ..Batch::default()
+        },
+        None,
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("named a held work too"), "{err}");
+    drop(serving);
+    std::fs::remove_dir_all(store.root()).unwrap();
+    let store = fixture::store("refuse");
+    fixture::full_merge(&store, &base(), &[]);
+    let serving = Serving::open(&store).unwrap();
     // A batch after a full merge the epoch does not have is refused.
     fixture::full_merge(&store, &base(), &[]);
     let err = incremental::apply(&store, &serving, Batch::default(), None).unwrap_err();
@@ -595,7 +668,10 @@ fn a_reader_opened_later_folds_the_same_and_stops_at_a_compaction() {
     fixture::full_merge(
         &store,
         &all,
-        &[(SourceId::Pubmed, "pmid:7"), (SourceId::Pubmed, "pmid:8")],
+        &[
+            (SourceId::Pubmed, "pmid:7", BATCH),
+            (SourceId::Pubmed, "pmid:8", BATCH),
+        ],
     );
     let advanced = later.refresh().unwrap();
     assert_eq!(advanced.folded, 0);
@@ -604,5 +680,413 @@ fn a_reader_opened_later_folds_the_same_and_stops_at_a_compaction() {
         Some(crate::fold::Stopped::Compaction(4))
     ));
     assert_eq!(later.watermark().batch, 3);
+    std::fs::remove_dir_all(store.root()).unwrap();
+}
+
+/// Applies `batches` in order to a store merged in full from `base`, then
+/// runs a full merge over every record and deletion and checks that it
+/// appends nothing to the registry and answers exactly as the folded
+/// batches do. Returns the store and the serving core for further checks;
+/// the caller removes the store.
+fn batches_equal_the_full_merge(
+    name: &str,
+    base: Vec<Incoming>,
+    store_deletions: &[Deletion],
+    batches: Vec<Batch>,
+) -> (ingest::Store, Serving) {
+    let store = fixture::store(name);
+    let mut all = base;
+    let mut deletions: Vec<(SourceId, String, String)> = store_deletions
+        .iter()
+        .map(|d| (d.source, d.native.to_string(), d.set.to_string()))
+        .collect();
+    {
+        let first: Vec<(SourceId, &str, &str)> = deletions
+            .iter()
+            .map(|(s, n, set)| (*s, n.as_str(), set.as_str()))
+            .collect();
+        fixture::full_merge(&store, &all, &first);
+    }
+    let serving = Serving::open(&store).unwrap();
+    for mut batch in batches {
+        batch.store_deletions = store_deletions.to_vec();
+        all.extend(batch.records.iter().cloned());
+        deletions.extend(
+            batch
+                .deletions
+                .iter()
+                .map(|d| (d.source, d.native.to_string(), d.set.to_string())),
+        );
+        incremental::apply(&store, &serving, batch, Some(&fixture::key())).unwrap();
+    }
+    let before = journal::last(&store.journal()).unwrap().unwrap();
+    let deletions: Vec<(SourceId, &str, &str)> = deletions
+        .iter()
+        .map(|(s, n, set)| (*s, n.as_str(), set.as_str()))
+        .collect();
+    fixture::full_merge(&store, &all, &deletions);
+    let after = journal::last(&store.journal()).unwrap().unwrap();
+    assert_eq!(after.registry, before.registry, "{name}: zero churn");
+    assert_eq!(
+        (after.minted, after.merged, after.split, after.dropped),
+        (0, 0, 0, 0),
+        "{name}"
+    );
+    let rebuilt = Serving::open(&store).unwrap();
+    let differences = compare::differences(&serving, &rebuilt, 20).unwrap();
+    assert!(
+        differences.is_empty(),
+        "{name}:\n{}",
+        differences.join("\n")
+    );
+    (store, serving)
+}
+
+/// The base with more records.
+fn base_and(extra: Vec<Incoming>) -> Vec<Incoming> {
+    let mut all = base();
+    all.extend(extra);
+    all
+}
+
+#[test]
+#[allow(clippy::too_many_lines, clippy::many_single_char_names)]
+fn a_newer_copy_speaks_and_withdrawn_citations_leave_no_trace() {
+    use SourceId::{Crossref, Pubmed};
+    // A record delivered again with a shorter reference list: B cited E and
+    // a stub, and its new copy cites A alone. All three arcs stand, in
+    // both merges: a record's citations are the union over its copies
+    // (merge plan §8, 2026-09-18), because PubMed swaps a publisher's
+    // reference list for PMC's shorter one when an article lands there.
+    let mut with_b_citing = base();
+    let b = with_b_citing
+        .iter_mut()
+        .find(|r| r.native == OwnedName::parse("doi:10.1000/b").unwrap())
+        .unwrap();
+    cites(b, &["doi:10.1000/e"]);
+    cites(b, &["pmid:9"]);
+    let mut b2 = delivered(record(
+        Crossref,
+        &["doi:10.1000/b"],
+        "Beta",
+        view(false, 1, None),
+        text(None, &["Bea"], None),
+    ));
+    cites(&mut b2, &["pmid:1"]);
+    let (store, serving) = batches_equal_the_full_merge(
+        "copy-list",
+        with_b_citing,
+        &[],
+        vec![Batch {
+            records: vec![b2],
+            ..Batch::default()
+        }],
+    );
+    let b = resolve(&serving, "doi:10.1000/b").unwrap();
+    let a = resolve(&serving, "pmid:1").unwrap();
+    let e = resolve(&serving, "doi:10.1000/e").unwrap();
+    let s2 = resolve(&serving, "pmid:9").unwrap();
+    let mut from_b: Vec<u32> = refs(&serving, b).into_iter().map(|(w, _)| w).collect();
+    from_b.sort_unstable();
+    let mut expected = vec![a.get(), e.get(), s2.get()];
+    expected.sort_unstable();
+    assert_eq!(from_b, expected);
+    assert_eq!(citers(&serving, e), vec![(b.get(), "crossref".to_owned())]);
+    let stub = serving.work(s2).unwrap().unwrap();
+    assert!(stub.names[0].cited_by.iter().any(|c| c.from == b));
+    drop(serving);
+    std::fs::remove_dir_all(store.root()).unwrap();
+
+    // A later copy that adds a DOI: the name joins the work, with no id of
+    // its own and no split.
+    let p = record(
+        Pubmed,
+        &["pmid:70"],
+        "Pi",
+        view(false, 1, None),
+        text(None, &["Pi"], None),
+    );
+    let p2 = delivered(record(
+        Pubmed,
+        &["pmid:70", "doi:10.1000/p70"],
+        "Pi",
+        view(false, 1, None),
+        text(None, &["Pi"], None),
+    ));
+    let (store, serving) = batches_equal_the_full_merge(
+        "copy-names",
+        base_and(vec![p]),
+        &[],
+        vec![Batch {
+            records: vec![p2],
+            ..Batch::default()
+        }],
+    );
+    assert_eq!(
+        resolve(&serving, "doi:10.1000/p70"),
+        resolve(&serving, "pmid:70")
+    );
+    drop(serving);
+    std::fs::remove_dir_all(store.root()).unwrap();
+
+    // A later copy that drops a DOI: the name stays, because absence is
+    // not an assertion (§8, 2026-09-18) — K keeps the DOI its OpenAlex
+    // record gave before and gains the new one, where the work's names
+    // used to part between two works and stop the batch.
+    let k3 = delivered(record(
+        SourceId::OpenAlex,
+        &["openalex:W11", "doi:10.1000/k2"],
+        "Kappa",
+        view(true, 1, None),
+        text(Some("Kappa abstract."), &["Kay O"], Some("Kappa Journal")),
+    ));
+    let (store, serving) = batches_equal_the_full_merge(
+        "copy-kept-name",
+        base(),
+        &[],
+        vec![Batch {
+            records: vec![k3],
+            ..Batch::default()
+        }],
+    );
+    let k = resolve(&serving, "doi:10.1000/k").unwrap();
+    assert_eq!(resolve(&serving, "doi:10.1000/k2"), Some(k));
+    assert_eq!(resolve(&serving, "openalex:W11"), Some(k));
+    drop(serving);
+    std::fs::remove_dir_all(store.root()).unwrap();
+
+    // A cited work losing its last record: it keeps its id and becomes
+    // the stub its citers' references name, which the cited-as evidence
+    // says name by name (serving plan §11, item 28, 2026-09-18). J is
+    // cited by C through pmid:10, its only name.
+    let (store, serving) = batches_equal_the_full_merge(
+        "last-record",
+        base(),
+        &[],
+        vec![Batch {
+            deletions: vec![withdrawal(Pubmed, "pmid:10")],
+            ..Batch::default()
+        }],
+    );
+    let j = resolve(&serving, "pmid:10").unwrap();
+    let c = resolve(&serving, "pmid:3").unwrap();
+    let row = serving.work(j).unwrap().unwrap();
+    assert!(row.stub, "{row:?}");
+    assert_eq!(citers(&serving, j), vec![(c.get(), "pubmed".to_owned())]);
+    assert!(pairs(&row.names[0]).contains(&(c, Pubmed)));
+    drop(serving);
+    std::fs::remove_dir_all(store.root()).unwrap();
+
+    // A record arriving for some of a stub's names, where the citer used
+    // a name the record kept *and* one it left, and its own citation text
+    // writes the left one out: §6 asks the text before the order, so the
+    // arc follows the DOI to the leftover stub even though the citer
+    // still names the record's work and the order puts a PMID first
+    // (serving plan §11, item 28, 2026-09-19).
+    let mut reader = record(
+        Pubmed,
+        &["pmid:80"],
+        "Chi",
+        view(false, 1, None),
+        text(None, &["Chi"], None),
+    );
+    fixture::cites_as(
+        &mut reader,
+        &["pmid:81", "doi:10.1000/p81"],
+        "Psi O. 1999. https://doi.org/10.1000/P81",
+    );
+    let held = delivered(record(
+        Pubmed,
+        &["pmid:81"],
+        "Psi",
+        view(false, 1, None),
+        text(None, &["Psi"], None),
+    ));
+    // And a second reader that gives the DOI alone, so the DOI is a name
+    // of its own and not merely an assertion about Psi's work (merge plan
+    // §11, item 14) — without it the DOI is dropped and the arc stays.
+    let mut alone = record(
+        Pubmed,
+        &["pmid:82"],
+        "Omega",
+        view(false, 1, None),
+        text(None, &["Omega"], None),
+    );
+    cites(&mut alone, &["doi:10.1000/p81"]);
+    let (store, serving) = batches_equal_the_full_merge(
+        "split-by-text",
+        base_and(vec![delivered(reader), delivered(alone)]),
+        &[],
+        vec![Batch {
+            records: vec![held],
+            ..Batch::default()
+        }],
+    );
+    let chi = resolve(&serving, "pmid:80").unwrap();
+    let psi = resolve(&serving, "pmid:81").unwrap();
+    let left = resolve(&serving, "doi:10.1000/p81").unwrap();
+    assert!(!serving.is_stub(psi), "the record's own work");
+    assert!(serving.is_stub(left) && left != psi, "the DOI was left");
+    let arcs = refs(&serving, chi);
+    assert!(
+        arcs.iter().any(|(w, _)| *w == left.get()),
+        "the text writes the DOI out, so the arc is the DOI's: {arcs:?}"
+    );
+    assert!(
+        arcs.iter().all(|(w, _)| *w != psi.get()),
+        "and is not the kept PMID's, whose order would otherwise win"
+    );
+    let row = serving.work(left).unwrap().unwrap();
+    assert!(
+        row.names[0].cited_by.iter().any(|c| c.in_text),
+        "the stub it became keeps the mark, so it can be split again"
+    );
+    drop(serving);
+    std::fs::remove_dir_all(store.root()).unwrap();
+
+    // A withdrawn record's citation of a stub another record still cites:
+    // the stub keeps only the citer that remains.
+    let mut xp = record(
+        Pubmed,
+        &["pmid:60", "doi:10.1000/p60"],
+        "Pi",
+        view(false, 1, None),
+        text(None, &["Pi"], None),
+    );
+    cites(&mut xp, &["pmid:61"]);
+    let xc = record(
+        Crossref,
+        &["doi:10.1000/p60"],
+        "Pi",
+        view(false, 1, None),
+        text(None, &["Pi C"], None),
+    );
+    let mut r = record(
+        Pubmed,
+        &["pmid:62"],
+        "Rho",
+        view(false, 1, None),
+        text(None, &["Rho"], None),
+    );
+    cites(&mut r, &["pmid:61"]);
+    let (store, serving) = batches_equal_the_full_merge(
+        "withdrawn-citer",
+        base_and(vec![xp, xc, r]),
+        &[],
+        vec![Batch {
+            deletions: vec![withdrawal(Pubmed, "pmid:60")],
+            ..Batch::default()
+        }],
+    );
+    let stub = serving
+        .work(resolve(&serving, "pmid:61").unwrap())
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        pairs(&stub.names[0]),
+        vec![(resolve(&serving, "pmid:62").unwrap(), Pubmed)]
+    );
+    drop(serving);
+    std::fs::remove_dir_all(store.root()).unwrap();
+
+    // The same, and then a record takes the stub over by its PMID: the
+    // withdrawn citer does not keep the stub's DOI alive, so no stub is
+    // minted for it and no arc drawn from the withdrawn record's work.
+    let mut c1 = record(
+        Crossref,
+        &["doi:10.1000/c81"],
+        "Cee",
+        view(false, 1, None),
+        text(None, &["Cee"], None),
+    );
+    cites(&mut c1, &["pmid:81", "doi:10.1000/s81"]);
+    let mut xp = record(
+        Pubmed,
+        &["pmid:82", "doi:10.1000/x82"],
+        "Ex",
+        view(false, 1, None),
+        text(None, &["Ex"], None),
+    );
+    cites(&mut xp, &["doi:10.1000/s81"]);
+    let xc = record(
+        Crossref,
+        &["doi:10.1000/x82"],
+        "Ex",
+        view(false, 1, None),
+        text(None, &["Ex C"], None),
+    );
+    let mut takes_over = record(
+        Pubmed,
+        &["pmid:81"],
+        "Ar",
+        view(false, 1, None),
+        text(None, &["Ar"], None),
+    );
+    takes_over.view.set = "batch2".into();
+    let (store, serving) = batches_equal_the_full_merge(
+        "withdrawn-then-taken-over",
+        base_and(vec![c1, xp, xc]),
+        &[],
+        vec![
+            Batch {
+                deletions: vec![withdrawal(Pubmed, "pmid:82")],
+                ..Batch::default()
+            },
+            Batch {
+                records: vec![takes_over],
+                ..Batch::default()
+            },
+        ],
+    );
+    let x = resolve(&serving, "doi:10.1000/x82").unwrap();
+    assert!(
+        refs(&serving, x).is_empty(),
+        "no arc from the withdrawn record"
+    );
+    assert_eq!(resolve(&serving, "doi:10.1000/s81"), None);
+    drop(serving);
+    std::fs::remove_dir_all(store.root()).unwrap();
+    // A batch of an older set than a deletions set the store holds: the
+    // store's deletion withdraws the batch's copy too, as the full merge's
+    // rule says, so the copy does not take the record's stub over.
+    let p = record(
+        Pubmed,
+        &["pmid:90"],
+        "Old",
+        view(false, 1, None),
+        text(None, &["Old"], None),
+    );
+    let mut cites_p = record(
+        Crossref,
+        &["doi:10.1000/cites90"],
+        "Citing",
+        view(false, 1, None),
+        text(None, &["Cit"], None),
+    );
+    cites(&mut cites_p, &["pmid:90"]);
+    let later_deletion = Deletion {
+        source: Pubmed,
+        native: OwnedName::parse("pmid:90").unwrap(),
+        set: "zdeleted".into(),
+    };
+    let older_copy = delivered(record(
+        Pubmed,
+        &["pmid:90"],
+        "Old",
+        view(false, 1, None),
+        text(None, &["Old"], None),
+    ));
+    let (store, serving) = batches_equal_the_full_merge(
+        "withdrawn-by-the-store",
+        base_and(vec![p, cites_p]),
+        &[later_deletion],
+        vec![Batch {
+            records: vec![older_copy],
+            ..Batch::default()
+        }],
+    );
+    let stub = resolve(&serving, "pmid:90").unwrap();
+    assert!(serving.is_stub(stub), "still only cited");
+    drop(serving);
     std::fs::remove_dir_all(store.root()).unwrap();
 }

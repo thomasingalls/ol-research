@@ -61,14 +61,20 @@ fn place(ui: &str) -> Option<Place> {
         // Practice Guideline; Guideline; Consensus Statement; Consensus
         // Development Conference, NIH.
         "D017065" | "D016431" | "D016446" | "D016447" => Place::Genre(Genre::Guideline, 45),
-        // Congress, which also spells Conference Proceedings.
-        "D016423" => Place::Genre(Genre::ConferencePaper, 40),
+        // Congress, which also spells Conference Proceedings; Clinical
+        // Conference (pubmed26n1337).
+        "D016423" | "D016429" => Place::Genre(Genre::ConferencePaper, 40),
         // Technical Report.
         "D016427" => Place::Genre(Genre::Report, 40),
         // Interview; Lecture; Address; Biography; Portrait; Personal
-        // Narrative; Bibliography; Video-Audio Media.
+        // Narrative; Bibliography; Video-Audio Media; and, first in the
+        // update files pubmed26n1335 to 1339, Patient Education Handout,
+        // Legal Case, Periodical Index and Overall, the summary record of
+        // a set of articles.
         "D017203" | "D019531" | "D019484" | "D019215" | "D019477" | "D062210" | "D016417"
-        | "D059040" => Place::Genre(Genre::Other, 30),
+        | "D059040" | "D029282" | "D016418" | "D016453" | "D016424" => {
+            Place::Genre(Genre::Other, 30)
+        }
         // Journal Article; Case Reports; Historical Article; Corrected and
         // Republished Article; Clinical Trial Protocol.
         "D016428" | "D002363" | "D016456" | "D016439" | "D000078325" => {
@@ -101,7 +107,11 @@ fn place(ui: &str) -> Option<Place> {
         | "D000068397"
         | "D018486"
         | "D000081262"
-        | "D000077522" => Place::Qualifier,
+        | "D000077522"
+        // Observational Study, Veterinary; Adaptive Clinical Trial
+        // (pubmed26n1335 to 1339).
+        | "D000078323"
+        | "D000076362" => Place::Qualifier,
         _ => return None,
     })
 }
@@ -201,6 +211,8 @@ pub fn view<'w>(work: &'w Citation<'_>, table: &'w Table) -> Result<View<'w>, Un
         .iter()
         .any(|r| r.kind == RefType::ExpressionOfConcernIn);
     Ok(View {
+        version: work.version,
+        set: "",
         revised: work.dates.revised,
         titles: <crate::Pubmed as merge::Contributor>::titles(work),
         has_abstract: work.r#abstract.is_some() || !work.other_abstracts.is_empty(),
@@ -219,7 +231,7 @@ pub fn view<'w>(work: &'w Citation<'_>, table: &'w Table) -> Result<View<'w>, Un
             corrected,
             concern,
         },
-        access: work.ids.pmc.map(|_| true),
+        access: work.ids.pmc.as_ref().and_then(Claim::valid).map(|_| true),
         references: work.number_of_references,
         cited_by: None,
     })
@@ -373,6 +385,14 @@ mod tests {
             "D019484",
             "D019215",
             "D019477",
+            // The update files pubmed26n1335 to 1339.
+            "D029282",
+            "D016424",
+            "D016418",
+            "D000078323",
+            "D000076362",
+            "D016453",
+            "D016429",
         ];
         for ui in observed {
             assert!(place(ui).is_some(), "{ui}");

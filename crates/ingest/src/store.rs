@@ -143,6 +143,14 @@ impl Store {
             .join(format!("v{model}.{merge}.{serve}"))
     }
 
+    /// The cited-as lookup: `cited/v<model>.<merge>.<serve>`.
+    #[must_use]
+    pub fn cited(&self, model: u32, merge: u32, serve: u32) -> PathBuf {
+        self.root
+            .join("cited")
+            .join(format!("v{model}.{merge}.{serve}"))
+    }
+
     /// The works index: `works/v<model>.<merge>.<serve>`.
     #[must_use]
     pub fn works(&self, model: u32, merge: u32, serve: u32) -> PathBuf {

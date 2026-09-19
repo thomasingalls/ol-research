@@ -24,12 +24,13 @@ pub const SHARD: u32 = 65_536;
 pub const SOURCE: &str = "merge";
 
 /// The kinds of a merged set, in file order.
-pub const KINDS: [Kind; 6] = [
+pub const KINDS: [Kind; 7] = [
     Kind::Works,
     Kind::Edges,
     Kind::Names,
     Kind::Relations,
     Kind::Unresolved,
+    Kind::CitedAs,
     Kind::Symbols,
 ];
 
@@ -96,30 +97,35 @@ pub fn write(dir: &Path, merged: &Merged) -> io::Result<Summary> {
         shards,
         ..Summary::default()
     };
-    let (mut w, mut e, mut r, mut u) = (0usize, 0usize, 0usize, 0usize);
+    // One cursor per kind, in the order the loop writes them.
+    let (mut work, mut edge, mut relation, mut unresolved, mut cited) = (0, 0, 0, 0, 0usize);
     for s in 0..shards {
         let end = first(s) + SHARD;
         let in_shard = |id: WorkId| id.get() < end;
         let mut writer = Writer::create(&prefix(dir, s), SOURCE, model::VERSION, &KINDS)?;
-        while w < merged.works.len() && in_shard(merged.works[w].id) {
-            let work = &merged.works[w];
-            writer.put(Kind::Works, &work.borrow())?;
-            for row in work.name_rows() {
-                writer.put(Kind::Names, &row)?;
+        while work < merged.works.len() && in_shard(merged.works[work].id) {
+            let row = &merged.works[work];
+            writer.put(Kind::Works, &row.borrow())?;
+            for name in row.name_rows() {
+                writer.put(Kind::Names, &name)?;
             }
-            w += 1;
+            work += 1;
         }
-        while e < merged.edges.len() && in_shard(merged.edges[e].from) {
-            writer.put(Kind::Edges, &merged.edges[e])?;
-            e += 1;
+        while edge < merged.edges.len() && in_shard(merged.edges[edge].from) {
+            writer.put(Kind::Edges, &merged.edges[edge])?;
+            edge += 1;
         }
-        while r < merged.relations.len() && in_shard(merged.relations[r].from) {
-            writer.put(Kind::Relations, &merged.relations[r])?;
-            r += 1;
+        while relation < merged.relations.len() && in_shard(merged.relations[relation].from) {
+            writer.put(Kind::Relations, &merged.relations[relation])?;
+            relation += 1;
         }
-        while u < merged.unresolved.len() && in_shard(merged.unresolved[u].from) {
-            writer.put(Kind::Unresolved, &merged.unresolved[u].borrow())?;
-            u += 1;
+        while unresolved < merged.unresolved.len() && in_shard(merged.unresolved[unresolved].from) {
+            writer.put(Kind::Unresolved, &merged.unresolved[unresolved].borrow())?;
+            unresolved += 1;
+        }
+        while cited < merged.cited_as.len() && in_shard(merged.cited_as[cited].from) {
+            writer.put(Kind::CitedAs, &merged.cited_as[cited].borrow())?;
+            cited += 1;
         }
         let finished = writer.finish()?;
         for (kind, n) in finished.records {

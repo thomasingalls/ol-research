@@ -88,6 +88,37 @@ pub struct Assert<'a> {
     pub native: bool,
 }
 
+/// One reference that gave a stub's name: the work whose record cited
+/// it, that record's source, and whether the reference's own citation
+/// text repeats the name. The text is what settles the reference again
+/// when a record arrives for some of the stub's names and the rest
+/// become a stub of their own, since the names then name two works and
+/// §6 asks the text first (serving plan §11, item 28, 2026-09-19).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct Citer {
+    /// The citing work.
+    pub from: WorkId,
+    /// The source of the record that cited it.
+    pub by: SourceId,
+    /// The citation text repeats this name. Only a DOI is ever repeated
+    /// (§6), so this is false for every other namespace.
+    pub in_text: bool,
+    /// The reference named a held work too, so it makes no name of its
+    /// own: its other names are assertions about that work, not a stub
+    /// (§11, item 14). §6 can still land it here, over a held work the
+    /// order would prefer, which is why the citer is kept at all. False
+    /// where a record's other reference to the same stub named none.
+    pub held_beside: bool,
+}
+
+impl Citer {
+    /// The citing work and source, which say which record it was.
+    #[must_use]
+    pub const fn pair(self) -> (WorkId, SourceId) {
+        (self.from, self.by)
+    }
+}
+
 /// An accepted name.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Named<'a> {
@@ -96,16 +127,16 @@ pub struct Named<'a> {
     pub name: Name<'a>,
     #[allow(missing_docs)]
     pub standing: Standing,
-    /// Who asserted it; for a stub's name, who cited it.
+    /// Who asserted it; for a stub's name, the sources of its citers.
     pub by: Sources,
     /// Whether a record of the work holds it natively.
     pub native: bool,
-    /// For a stub's name: the works whose references gave it, each with
-    /// the source of the record that did — the evidence an incremental
-    /// merge needs when a record arrives for some of a stub's names and
-    /// not others (serving plan §5). Empty on a held work's names, which
-    /// records assert; relations are not counted, since they are not arcs.
-    pub cited_by: SmallVec<[(WorkId, SourceId); 1]>,
+    /// For a stub's name: the references that gave it — the evidence an
+    /// incremental merge needs when a record arrives for some of a
+    /// stub's names and not others (serving plan §5). One entry per
+    /// citing record. Empty on a held work's names, which records
+    /// assert; relations are not counted, since they are not arcs.
+    pub cited_by: SmallVec<[Citer; 1]>,
 }
 
 /// A rejected assertion: `by`'s record claimed `name`, which `holder`'s
@@ -338,6 +369,53 @@ impl Citation<'_> {
             && self.issue.is_none()
             && self.first_page.is_none()
     }
+}
+
+/// One name a reference gave beside the work it landed on, keyed by the
+/// citing work: the reference named this id too and nothing held it
+/// (merge plan §11, item 14). It is the evidence an incremental merge
+/// needs to resolve that reference again when a later batch gives the id
+/// to a work or a stub (serving plan §11, item 26), which is why it is
+/// kept rather than counted, since 2026-09-18.
+// Four flags, each a fact §6 and §11 item 14 name about one row:
+// what it was for, how it landed, and whether it can move.
+#[allow(clippy::struct_excessive_bools)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CitedAs<'a> {
+    /// The citing work.
+    pub from: WorkId,
+    /// The source whose record cited it.
+    pub by: SourceId,
+    /// The name nothing held.
+    #[serde(borrow)]
+    pub name: Name<'a>,
+    /// The work the reference landed on.
+    pub to: WorkId,
+    /// The namespace of the name that landed it there: a reference whose
+    /// names disagree follows PMID, PMC, OpenAlex, then DOI (§6), so this
+    /// says whether the arc would move if `name` became a work's.
+    pub landed: ingest::Key,
+    /// Whether this was the citing work's only reference of that source
+    /// landing on `to`: if the arc moves, it moves whole; if not, the arc
+    /// stays and only the new one is added.
+    pub sole: bool,
+    /// A relation named it, not a reference (§6): evidence that the name
+    /// is still named, and so still a work of its own if it leaves this
+    /// one, but no arc and no citer — a relation makes neither.
+    pub relation: bool,
+    /// Whether the name named no work when the reference was read: only
+    /// then can a batch giving it to one move this arc (serving plan §11,
+    /// item 26). A name the work already held is evidence of who cited
+    /// it (item 28) and moves nothing.
+    pub beside: bool,
+    /// The reference's own citation text repeats a DOI of the work it
+    /// landed on (§6, 2026-09-18): the landing is the publisher's word,
+    /// which the order alone does not overturn.
+    pub by_text: bool,
+    /// The citation text repeats *this* name, which is how a DOI a batch
+    /// gives to another work takes the arc with it although the order
+    /// puts a DOI last.
+    pub in_text: bool,
 }
 
 /// One reference that made no edge, keyed by the citing work.

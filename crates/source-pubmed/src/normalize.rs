@@ -173,6 +173,20 @@ pub struct OtherId<'n> {
     pub value: &'n str,
 }
 
+/// An `ArticleId` of a kind that is no name of ours — a publisher's item
+/// id and the rest of the DTD's list — kept as the source wrote it, for
+/// the matching stage (merge plan §6). Never identity: an article number
+/// such as `e112` belongs to one article per journal, not one in the
+/// world (2026-09-18).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LooseId<'n> {
+    /// The `IdType` attribute.
+    pub kind: IdType,
+    #[allow(missing_docs)]
+    #[serde(borrow)]
+    pub value: &'n str,
+}
+
 /// The record's identifiers beyond its PMID.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct Identifiers<'n> {
@@ -181,13 +195,18 @@ pub struct Identifiers<'n> {
     pub doi: Option<DoiClaim<'n>>,
     /// `ELocationID EIdType="doi"` — the same identifier from the article
     /// block, once or, on 5 of 15,432 looked-up records, twice (a case
-    /// variant, or a value that is not a DOI beside one that is). Every
-    /// valid one agrees with `doi`.
+    /// variant, or a value that is not a DOI beside one that is). A valid
+    /// one need not agree with `doi`: on 4 of the 126,740 records of the
+    /// 2026 baseline and its first update files the two differ, and at
+    /// Crossref either slot may hold the registered DOI, or both may
+    /// (2026-09-17). Both are kept and both are names.
     #[serde(borrow)]
     pub elocation_doi: Few<DoiClaim<'n>, 1>,
-    /// `ArticleId IdType="pii"`, an opaque publisher item identifier.
+    /// `ArticleId IdType="pii"`, the publisher's own item identifier, once
+    /// or more: PMID 32839689 gives Elsevier's item id and the article
+    /// number.
     #[serde(borrow)]
-    pub pii: Option<&'n str>,
+    pub pii: Few<&'n str, 1>,
     /// `mid`: a manuscript id on a record with an author manuscript —
     /// NIH's `NIHMS…` or Europe PMC's `EMS…` (both first seen in
     /// pubmed26n1333, PMIDs 41576088 and 41583386).
@@ -196,8 +215,12 @@ pub struct Identifiers<'n> {
     /// 87 of 15,432 looked-up records.
     #[serde(borrow)]
     pub elocation_pii: Few<&'n str, 1>,
-    /// `ArticleId IdType="pmc"`.
-    pub pmc: Option<PmcId>,
+    /// `ArticleId IdType="pmc"`, as claimed: 1 of 126,740 records holds a
+    /// publisher's own id in the slot instead (PMID 34850701,
+    /// `wst_2021_260`, which that publisher's other records give as their
+    /// `pii`). A malformed one is kept as written and is never a name.
+    #[serde(borrow)]
+    pub pmc: Option<PmcClaim<'n>>,
     /// `ArticleId IdType="medline"`: an old MEDLINE unique identifier (28
     /// of 15,432).
     pub medline: Option<&'n str>,
@@ -560,6 +583,13 @@ pub struct Reference<'n> {
     /// `ArticleId IdType="pmcid"`, as claimed.
     #[serde(borrow)]
     pub pmc: Option<PmcClaim<'n>>,
+    /// Every other `ArticleId` the reference gives, as written: 1 of the
+    /// 2,811,661 references in the 2026 baseline and its first update
+    /// files carries one (PMID 32960545 cites a Nutrients article by its
+    /// article number, `pii e112`). Kept for the matching stage, never a
+    /// name.
+    #[serde(borrow)]
+    pub loose: Few<LooseId<'n>, 1>,
     /// The citation text, raw markup.
     pub citation: &'n str,
 }
@@ -899,12 +929,13 @@ impl Ctx {
     }
 }
 
-/// The record's own `ArticleId`s, at most one per type.
+/// The record's own `ArticleId`s: at most one per type, except the
+/// publisher's item id, which a record may give more than once.
 #[derive(Default)]
 struct Own<'n> {
     pubmed: Option<&'n str>,
     doi: Option<&'n str>,
-    pii: Option<&'n str>,
+    pii: Few<&'n str, 1>,
     pmc: Option<&'n str>,
     mid: Option<&'n str>,
     medline: Option<&'n str>,
@@ -917,7 +948,10 @@ impl<'n> Own<'n> {
         let slot = match id.id_type {
             IdType::Pubmed => &mut self.pubmed,
             IdType::Doi => &mut self.doi,
-            IdType::Pii => &mut self.pii,
+            IdType::Pii => {
+                self.pii.push(&id.value);
+                return Ok(());
+            }
             IdType::Pmc => &mut self.pmc,
             IdType::Mid => {
                 // A manuscript system's letters, then digits: NIHMS, EMS,
@@ -956,10 +990,39 @@ impl<'n> Own<'n> {
     }
 }
 
+/// `ArticleId IdType="pmc"`: `PMC` and digits, or on a versioned citation
+/// `PMC`, digits, a dot and the version (`PMC8459621.2` on version 2 of
+/// PMID 34621506, pubmed26n1339). The version is `PMID@Version`'s to hold,
+/// so the suffix must agree with it and is not kept. A value that is not a
+/// PMC id at all is a malformed claim, kept as written (2026-09-18).
+fn pmc_of<'n>(ctx: &Ctx, raw: &'n str, version: u32) -> Result<PmcClaim<'n>, Error> {
+    const FIELD: &str = "ArticleId[pmc]";
+    let (id, suffix) = match raw.split_once('.') {
+        Some((id, suffix)) => (id, Some(suffix)),
+        None => (raw, None),
+    };
+    let pmc = match PmcId::from_prefixed(id) {
+        Ok(pmc) => pmc,
+        Err(error) => return Ok(Claim::Malformed { raw, error }),
+    };
+    if let Some(suffix) = suffix {
+        let v = model::id::strict_u32(suffix).map_err(|e| ctx.err(FIELD, raw, ErrorKind::Id(e)))?;
+        if v != version {
+            return Err(ctx.err(
+                FIELD,
+                raw,
+                ErrorKind::Inconsistent("a version suffix other than PMID@Version"),
+            ));
+        }
+    }
+    Ok(Claim::Valid(pmc))
+}
+
 fn identifiers<'n>(
     ctx: &Ctx,
     article: &'n PubmedArticle<'_>,
     pmid: Pmid,
+    version: u32,
 ) -> Result<Identifiers<'n>, Error> {
     let mut own = Own::default();
     if let Some(data) = &article.pubmed_data {
@@ -977,12 +1040,7 @@ fn identifiers<'n>(
         ));
     }
     let doi = own.doi.map(|raw| Claim::from_parse(raw, Doi::parse(raw)));
-    let pmc = own
-        .pmc
-        .map(|raw| {
-            PmcId::from_prefixed(raw).map_err(|e| ctx.err("ArticleId[pmc]", raw, ErrorKind::Id(e)))
-        })
-        .transpose()?;
+    let pmc = own.pmc.map(|raw| pmc_of(ctx, raw, version)).transpose()?;
 
     let (mut elocation_doi, mut elocation_pii) = (Few::new(), Few::new());
     for e in &article.medline_citation.article.elocation_ids {
@@ -995,17 +1053,11 @@ fn identifiers<'n>(
             EIdType::Pii => elocation_pii.push(&*e.value),
         }
     }
-    if let Some(Claim::Valid(a)) = &doi {
-        for b in elocation_doi.iter().filter_map(Claim::valid) {
-            if a != b {
-                return Err(ctx.err(
-                    "ELocationID[doi]",
-                    b.as_str(),
-                    ErrorKind::Inconsistent("differs from the valid ArticleId doi"),
-                ));
-            }
-        }
-    }
+    // Two valid DOIs on one record are kept, both of them: the slots
+    // disagree on 4 of 126,740 records, and Crossref says the right one is
+    // sometimes the `ArticleId`, sometimes the `ELocationID`, and
+    // sometimes both — an early-online DOI beside the issue's (2026-09-18,
+    // merge plan §3.3, "two DOIs, one work").
     Ok(Identifiers {
         doi,
         elocation_doi,
@@ -1128,9 +1180,18 @@ pub fn normalize<'n, K: Sink<'n, Pubmed>>(
     ctx.pmid = Some(pmid);
     let version = model::id::strict_u32(&c.pmid.version)
         .map_err(|e| ctx.err("PMID@Version", &c.pmid.version, ErrorKind::Id(e)))?;
+    let revised = c
+        .date_revised
+        .as_ref()
+        .map(|d| ctx.date("DateRevised", d))
+        .transpose()?;
+    if let Some(reason) = crate::exclusions::reason(pmid, version, revised) {
+        emit.excluded(&pmid, reason);
+        return Ok(());
+    }
     unmodelled(&ctx, article)?;
 
-    let ids = identifiers(&ctx, article, pmid)?;
+    let ids = identifiers(&ctx, article, pmid, version)?;
     let dates = dates(&ctx, c)?;
     let journal = journal(c);
 
@@ -1426,6 +1487,7 @@ fn references<'n, K: Sink<'n, Pubmed>>(
     for list in lists {
         for r in &list.references {
             let (mut pmid, mut doi, mut pmc) = (None, None, None);
+            let mut loose = Few::new();
             for id in &r.article_ids {
                 let taken = match id.id_type {
                     IdType::Pubmed => pmid
@@ -1447,12 +1509,14 @@ fn references<'n, K: Sink<'n, Pubmed>>(
                             PmcId::from_prefixed(&id.value),
                         ))
                         .is_some(),
-                    _ => {
-                        return Err(ctx.err(
-                            FIELD,
-                            &id.value,
-                            ErrorKind::Unmodelled("this IdType on a reference"),
-                        ));
+                    // Any other kind is kept as written and used by
+                    // nothing here (2026-09-18).
+                    kind => {
+                        loose.push(LooseId {
+                            kind,
+                            value: &id.value,
+                        });
+                        false
                     }
                 };
                 if taken {
@@ -1471,6 +1535,7 @@ fn references<'n, K: Sink<'n, Pubmed>>(
                     pmid,
                     doi,
                     pmc,
+                    loose,
                     citation: r.citation.as_str(),
                 },
             );

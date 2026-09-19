@@ -75,7 +75,7 @@
 //! one record" command the failure report promises (plan §6). A failed run
 //! leaves no output: partial files are removed.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fmt::Display;
 use std::io::{self, BufRead, Write};
 use std::num::NonZeroUsize;
@@ -563,10 +563,9 @@ fn dump_one<S: Source>(path: &Path, limit: Option<u64>, out: &mut impl Write) ->
         Kind::References => json_lines::<(S::Id<'_>, S::Reference<'_>)>(&reader, limit, out),
         Kind::Deletions => json_lines::<S::Id<'_>>(&reader, limit, out),
         Kind::Symbols => json_lines::<&str>(&reader, limit, out),
-        Kind::Edges | Kind::Names | Kind::Relations | Kind::Unresolved => Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "a merged set; use merge dump",
-        )),
+        Kind::Edges | Kind::Names | Kind::Relations | Kind::Unresolved | Kind::CitedAs => Err(
+            io::Error::new(io::ErrorKind::InvalidInput, "a merged set; use merge dump"),
+        ),
     })
 }
 
@@ -662,6 +661,7 @@ fn keys_one<S: Keys>(
             Ok(records)
         }
         Kind::Deletions
+        | Kind::CitedAs
         | Kind::Symbols
         | Kind::Edges
         | Kind::Names
@@ -980,9 +980,50 @@ fn merge_options_ok(opts: &Options) -> bool {
 /// the resolution, and per source the works and references sets read.
 struct Pass1 {
     res: Resolution,
-    pubmed: (Vec<PathBuf>, Vec<PathBuf>),
-    crossref: (Vec<PathBuf>, Vec<PathBuf>),
-    openalex: (Vec<PathBuf>, Vec<PathBuf>),
+    pubmed: Sets,
+    crossref: Sets,
+    openalex: Sets,
+    /// Which copy of each record speaks (merge plan §8), for both passes.
+    copies: merge::copies::Copies,
+}
+
+/// One source's normalized sets, each with its name for the copy rule.
+#[derive(Debug, Default)]
+struct Sets {
+    works: Vec<(PathBuf, Box<str>)>,
+    references: Vec<(PathBuf, Box<str>)>,
+    deletions: Vec<(PathBuf, Box<str>)>,
+}
+
+impl Sets {
+    /// Every set of `S` under the store, named.
+    fn find<S: Contributor>(store: &Store) -> Result<Self, merge::identity::Error> {
+        let dir = store.normalized(model::VERSION, S::NAME);
+        let named = |kind: Kind| -> Result<Vec<(PathBuf, Box<str>)>, merge::identity::Error> {
+            let paths =
+                merge::sets::find(&dir, kind).map_err(|source| merge::identity::Error::Io {
+                    path: dir.clone(),
+                    source,
+                })?;
+            paths
+                .into_iter()
+                .map(|path| {
+                    let set = merge::copies::set_name(&dir, &path).ok_or_else(|| {
+                        merge::identity::Error::Io {
+                            path: path.clone(),
+                            source: io::Error::other("not a set under its source's directory"),
+                        }
+                    })?;
+                    Ok((path, set))
+                })
+                .collect()
+        };
+        Ok(Self {
+            works: named(Kind::Works)?,
+            references: named(Kind::References)?,
+            deletions: named(Kind::Deletions)?,
+        })
+    }
 }
 
 /// The identity pass over the store (merge plan §3, §8): the phases in
@@ -996,10 +1037,17 @@ fn merge_pass1(
     let started = std::time::Instant::now();
     let mut identity = Identity::new();
     identity.set_survey(opts.survey);
+    let mut copies = merge::copies::Copies::new();
     let sources = (|| -> Result<_, merge::identity::Error> {
-        let pubmed = merge_add::<Pubmed>(&mut identity, store, limit)?;
-        let crossref = merge_add::<Crossref>(&mut identity, store, limit)?;
-        let openalex = merge_add::<OpenAlex>(&mut identity, store, limit)?;
+        let pubmed = Sets::find::<Pubmed>(store)?;
+        let crossref = Sets::find::<Crossref>(store)?;
+        let openalex = Sets::find::<OpenAlex>(store)?;
+        merge_copies::<Pubmed>(&mut copies, &pubmed, limit)?;
+        merge_copies::<Crossref>(&mut copies, &crossref, limit)?;
+        merge_copies::<OpenAlex>(&mut copies, &openalex, limit)?;
+        merge_add::<Pubmed>(&mut identity, &pubmed, limit, &copies)?;
+        merge_add::<Crossref>(&mut identity, &crossref, limit, &copies)?;
+        merge_add::<OpenAlex>(&mut identity, &openalex, limit, &copies)?;
         Ok((pubmed, crossref, openalex))
     })();
     let (pubmed, crossref, openalex) = sources.map_err(|e| {
@@ -1012,15 +1060,20 @@ fn merge_pass1(
         identity.names(),
         started.elapsed().as_secs_f64()
     );
+    for (source, n) in &copies.stats.within_one_set {
+        eprintln!(
+            "{what}: {source}: {n} records with two copies in one set, whose references are both copies'"
+        );
+    }
     identity.mark();
     eprintln!("{what}: {} conflict components", identity.conflicts());
     let phases = (|| -> Result<(), merge::identity::Error> {
-        merge_titles::<Pubmed>(&mut identity, &pubmed.0, limit)?;
-        merge_titles::<Crossref>(&mut identity, &crossref.0, limit)?;
-        merge_titles::<OpenAlex>(&mut identity, &openalex.0, limit)?;
-        merge_targets::<Pubmed>(&mut identity, &pubmed.1, limit)?;
-        merge_targets::<Crossref>(&mut identity, &crossref.1, limit)?;
-        merge_targets::<OpenAlex>(&mut identity, &openalex.1, limit)?;
+        merge_titles::<Pubmed>(&mut identity, &pubmed, limit, &copies)?;
+        merge_titles::<Crossref>(&mut identity, &crossref, limit, &copies)?;
+        merge_titles::<OpenAlex>(&mut identity, &openalex, limit, &copies)?;
+        merge_targets::<Pubmed>(&mut identity, &pubmed, limit, &copies)?;
+        merge_targets::<Crossref>(&mut identity, &crossref, limit, &copies)?;
+        merge_targets::<OpenAlex>(&mut identity, &openalex, limit, &copies)?;
         identity.relate();
         Ok(())
     })();
@@ -1037,6 +1090,7 @@ fn merge_pass1(
         pubmed,
         crossref,
         openalex,
+        copies,
     })
 }
 
@@ -1207,6 +1261,7 @@ fn merge_all(opts: &Options, public_key: Option<&Path>) -> ExitCode {
         pubmed,
         crossref,
         openalex,
+        copies,
     } = match merge_pass1(opts, &store, limit, what) {
         Ok(pass) => pass,
         Err(code) => return code,
@@ -1256,23 +1311,23 @@ fn merge_all(opts: &Options, public_key: Option<&Path>) -> ExitCode {
     };
     builder.set_survey(opts.survey);
     let phases = (|| -> Result<(), merge::build::Error> {
-        for path in &pubmed.0 {
-            builder.works::<Pubmed>(path, limit)?;
+        for (path, set) in &pubmed.works {
+            builder.works::<Pubmed>(path, set, limit, &copies)?;
         }
-        for path in &crossref.0 {
-            builder.works::<Crossref>(path, limit)?;
+        for (path, set) in &crossref.works {
+            builder.works::<Crossref>(path, set, limit, &copies)?;
         }
-        for path in &openalex.0 {
-            builder.works::<OpenAlex>(path, limit)?;
+        for (path, set) in &openalex.works {
+            builder.works::<OpenAlex>(path, set, limit, &copies)?;
         }
-        for path in &pubmed.1 {
-            builder.references::<Pubmed>(path, limit)?;
+        for (path, set) in &pubmed.references {
+            builder.references::<Pubmed>(path, set, limit, &copies)?;
         }
-        for path in &crossref.1 {
-            builder.references::<Crossref>(path, limit)?;
+        for (path, set) in &crossref.references {
+            builder.references::<Crossref>(path, set, limit, &copies)?;
         }
-        for path in &openalex.1 {
-            builder.references::<OpenAlex>(path, limit)?;
+        for (path, set) in &openalex.references {
+            builder.references::<OpenAlex>(path, set, limit, &copies)?;
         }
         Ok(())
     })();
@@ -1442,9 +1497,132 @@ impl BatchSets {
     }
 }
 
+/// A record the batch does not carry, from the normalized layer (serving
+/// plan §5, 2026-09-18): the one whose text a work's promoted field
+/// wants, or the one a work keeps of a source whose twin the batch
+/// withdraws or moves. The merged row names, per record, the set its
+/// speaking copy came from, so one prefix is opened and scanned.
+struct Normalized<'a> {
+    store: &'a Store,
+}
+
+impl serve::incremental::Records for Normalized<'_> {
+    fn record(
+        &self,
+        source: merge::SourceId,
+        native: &OwnedName,
+        set: &str,
+    ) -> Result<Option<serve::incremental::Incoming>, String> {
+        match source {
+            merge::SourceId::Pubmed => record_in::<Pubmed>(self.store, native, set),
+            merge::SourceId::Crossref => record_in::<Crossref>(self.store, native, set),
+            merge::SourceId::OpenAlex => record_in::<OpenAlex>(self.store, native, set),
+        }
+    }
+}
+
+/// A copy's rank inside one set: its stamp, its version, its place.
+type InSet = (Option<model::Date>, u32, u64);
+
+/// One record of `S` from the set its speaking copy came from: the
+/// newest copy there, joined with the others as the copy rule joins them
+/// (merge plan §8), and every reference the set beside it gives.
+fn record_in<S: Contributor>(
+    store: &Store,
+    native: &OwnedName,
+    set: &str,
+) -> Result<Option<serve::incremental::Incoming>, String> {
+    let dir = store.normalized(model::VERSION, S::NAME);
+    let prefix = dir.join(set);
+    let works_path = Kind::Works.path(&prefix);
+    let say = |path: &Path, e: &dyn Display| format!("{}: {e}", path.display());
+    let reader =
+        merge::sets::open::<S>(&works_path, Kind::Works).map_err(|e| say(&works_path, &e))?;
+    let table = reader
+        .table()
+        .ok_or_else(|| say(&works_path, &"no symbol table"))?;
+    let mut best: Option<(InSet, serve::incremental::Incoming)> = None;
+    reader.with_table(|| -> Result<(), String> {
+        for (i, work) in reader.records::<S::Work<'_>>().enumerate() {
+            let work = work.map_err(|e| say(&works_path, &e))?;
+            if merge::copies::native_of::<S>(&work) != Some(native.as_name()) {
+                continue;
+            }
+            let mut asserts = Vec::new();
+            S::names(&work, &mut |a| {
+                asserts.push(merge::build::OwnedAssert {
+                    name: a.name.to_owned(),
+                    field: a.field.into(),
+                    native: a.native,
+                });
+            });
+            let view = S::view(&work, table).map_err(|e| say(&works_path, &e))?;
+            let text = S::text(&work, table).map_err(|e| say(&works_path, &e))?;
+            let mut relations = Vec::new();
+            S::relations(&work, table, &mut |r| relations.push(r))
+                .map_err(|e| say(&works_path, &e))?;
+            let mut view = merge::view::Owned::resolve(&view, table);
+            view.set = set.into();
+            let rank = (view.revised, view.version, i as u64 + 1);
+            let copy = serve::incremental::Incoming {
+                source: S::SOURCE,
+                native: native.clone(),
+                asserts,
+                view,
+                text,
+                relations,
+                references: Vec::new(),
+            };
+            best = Some(match best.take() {
+                None => (rank, copy),
+                Some((seen, older)) if seen < rank => {
+                    let mut newer = copy;
+                    newer.absorb(&older);
+                    (rank, newer)
+                }
+                Some((seen, mut newer)) => {
+                    newer.absorb(&copy);
+                    (seen, newer)
+                }
+            });
+        }
+        Ok(())
+    })?;
+    let Some((_, mut record)) = best else {
+        return Ok(None);
+    };
+    let references_path = Kind::References.path(&prefix);
+    if references_path.exists() {
+        let reader = merge::sets::open::<S>(&references_path, Kind::References)
+            .map_err(|e| say(&references_path, &e))?;
+        let table = reader.table();
+        reader.with_table(|| -> Result<(), String> {
+            for row in reader.records::<(S::Id<'_>, S::Reference<'_>)>() {
+                let (id, reference) = row.map_err(|e| say(&references_path, &e))?;
+                if S::native(&id) != native.as_name() {
+                    continue;
+                }
+                let mut names = Vec::new();
+                S::targets(&reference, &mut |n| names.push(n.to_owned()));
+                record.references.push(serve::incremental::Reference {
+                    names,
+                    citation: merge::build::OwnedCitation::of(&S::citation(&reference), table),
+                });
+            }
+            Ok(())
+        })?;
+    }
+    Ok(Some(record))
+}
+
 /// Reads one prefix's works, references and deletions sets of `S` into a
-/// batch.
+/// batch, each copy's view naming its set for the copy rule (merge plan
+/// §8): a prefix under the store's normalized layer, as the full merge
+/// reads it. Two copies of one record in the set are one delivery: the
+/// newer's names and fields, both copies' references.
+#[allow(clippy::too_many_lines)]
 fn batch_add<S: Contributor>(
+    store: &Store,
     prefix: &Path,
     batch: &mut serve::incremental::Batch,
 ) -> Result<u64, merge::build::Error> {
@@ -1452,7 +1630,15 @@ fn batch_add<S: Contributor>(
         path: path.to_path_buf(),
         source,
     };
-    let mut by_native: BTreeMap<String, usize> = BTreeMap::new();
+    let dir = store.normalized(model::VERSION, S::NAME);
+    let set = merge::copies::prefix_name(&dir, prefix).ok_or_else(|| {
+        merge::build::Error::Invariant(format!(
+            "{}: not a set under {}, where the full merge reads its sets",
+            prefix.display(),
+            dir.display()
+        ))
+    })?;
+    let mut by_native: BTreeMap<String, (usize, merge::copies::Delivery)> = BTreeMap::new();
     let mut read = 0u64;
     let works_path = Kind::Works.path(prefix);
     if works_path.exists() {
@@ -1488,20 +1674,35 @@ fn batch_add<S: Contributor>(
                 let text = S::text(&work, table).map_err(unmapped)?;
                 let mut relations = Vec::new();
                 S::relations(&work, table, &mut |r| relations.push(r)).map_err(unmapped)?;
-                let key = native.to_string();
-                if by_native.contains_key(&key) {
-                    continue;
-                }
-                by_native.insert(key, batch.records.len());
-                batch.records.push(serve::incremental::Incoming {
+                let mut view = merge::view::Owned::resolve(&view, table);
+                view.set = set.clone();
+                let delivery = merge::copies::Delivery::of(&view.borrow(), i as u64 + 1);
+                let incoming = serve::incremental::Incoming {
                     source: S::SOURCE,
                     native,
                     asserts,
-                    view: merge::view::Owned::resolve(&view, table),
+                    view,
                     text,
                     relations,
                     references: Vec::new(),
-                });
+                };
+                // Two copies of one record in the set: the newer speaks,
+                // and the older's names and values join it, absence
+                // being no assertion (merge plan §8, 2026-09-18).
+                let key = incoming.native.to_string();
+                if let Some((ix, current)) = by_native.get_mut(&key) {
+                    if *current < delivery {
+                        let mut newer = incoming;
+                        newer.absorb(&batch.records[*ix]);
+                        batch.records[*ix] = newer;
+                        *current = delivery;
+                    } else {
+                        batch.records[*ix].absorb(&incoming);
+                    }
+                    continue;
+                }
+                by_native.insert(key, (batch.records.len(), delivery));
+                batch.records.push(incoming);
                 read += 1;
             }
             Ok(())
@@ -1516,7 +1717,7 @@ fn batch_add<S: Contributor>(
             for record in reader.records::<(S::Id<'_>, S::Reference<'_>)>() {
                 let (id, reference) = record.map_err(|e| io(&references_path, e))?;
                 let native = S::native(&id).to_string();
-                let Some(&ix) = by_native.get(&native) else {
+                let Some(&(ix, _)) = by_native.get(&native) else {
                     return Err(merge::build::Error::Invariant(format!(
                         "{}: a reference of {native}, which the works set beside it does not hold",
                         references_path.display()
@@ -1540,7 +1741,47 @@ fn batch_add<S: Contributor>(
             .map_err(|e| io(&deletions_path, e))?;
         for record in reader.records::<S::Id<'_>>() {
             let id = record.map_err(|e| io(&deletions_path, e))?;
-            batch.deletions.push((S::SOURCE, S::native(&id).to_owned()));
+            batch.deletions.push(serve::incremental::Deletion {
+                source: S::SOURCE,
+                native: S::native(&id).to_owned(),
+                set: set.clone(),
+            });
+        }
+    }
+    Ok(read)
+}
+
+/// Every deletions set of `S` the store holds outside the batch's own
+/// sets, for the copy rule: they withdraw the batch's copies in the sets
+/// before theirs.
+fn store_deletions<S: Contributor>(
+    store: &Store,
+    own: &HashSet<Box<str>>,
+    out: &mut Vec<serve::incremental::Deletion>,
+) -> Result<u64, merge::build::Error> {
+    let sets = Sets::find::<S>(store).map_err(|e| merge::build::Error::Invariant(e.to_string()))?;
+    let mut read = 0u64;
+    for (path, set) in &sets.deletions {
+        if own.contains(set) {
+            continue;
+        }
+        let reader = merge::sets::open::<S>(path, Kind::Deletions).map_err(|source| {
+            merge::build::Error::Io {
+                path: path.clone(),
+                source,
+            }
+        })?;
+        for record in reader.records::<S::Id<'_>>() {
+            let id = record.map_err(|source| merge::build::Error::Io {
+                path: path.clone(),
+                source,
+            })?;
+            out.push(serve::incremental::Deletion {
+                source: S::SOURCE,
+                native: S::native(&id).to_owned(),
+                set: set.clone(),
+            });
+            read += 1;
         }
     }
     Ok(read)
@@ -1585,9 +1826,9 @@ fn merge_batch(opts: &Options, public_key: Option<&Path>) -> ExitCode {
     let mut batch = serve::incremental::Batch::default();
     for (prefix, source) in &sets.prefixes {
         let read = match source.as_str() {
-            "pubmed" => batch_add::<Pubmed>(prefix, &mut batch),
-            "crossref" => batch_add::<Crossref>(prefix, &mut batch),
-            "openalex" => batch_add::<OpenAlex>(prefix, &mut batch),
+            "pubmed" => batch_add::<Pubmed>(&store, prefix, &mut batch),
+            "crossref" => batch_add::<Crossref>(&store, prefix, &mut batch),
+            "openalex" => batch_add::<OpenAlex>(&store, prefix, &mut batch),
             other => Err(merge::build::Error::Invariant(format!(
                 "{}: written by {other:?}, which this binary does not merge",
                 prefix.display()
@@ -1603,6 +1844,26 @@ fn merge_batch(opts: &Options, public_key: Option<&Path>) -> ExitCode {
             .to_string_lossy()
             .into_owned();
         batch.inputs.push(relative);
+    }
+    // The store's own deletions sets, which a batch of older sets than
+    // they are must see as the full merge does.
+    for source in sets.prefixes.values().collect::<BTreeSet<&String>>() {
+        let dir = store.normalized(model::VERSION, source);
+        let own: HashSet<Box<str>> = sets
+            .prefixes
+            .iter()
+            .filter(|(_, s)| *s == source)
+            .filter_map(|(prefix, _)| merge::copies::prefix_name(&dir, prefix))
+            .collect();
+        let read = match source.as_ref() {
+            "pubmed" => store_deletions::<Pubmed>(&store, &own, &mut batch.store_deletions),
+            "crossref" => store_deletions::<Crossref>(&store, &own, &mut batch.store_deletions),
+            "openalex" => store_deletions::<OpenAlex>(&store, &own, &mut batch.store_deletions),
+            _ => Ok(0),
+        };
+        if let Err(e) = read {
+            return fail(e.to_string());
+        }
     }
     eprintln!(
         "{what}: {} records, {} deletions read in {:.1} s",
@@ -1629,15 +1890,23 @@ fn merge_batch(opts: &Options, public_key: Option<&Path>) -> ExitCode {
         serving.watermark().batch,
         started.elapsed().as_secs_f64()
     );
-    let applied = match serve::incremental::apply(&store, &serving, batch, key.as_ref()) {
-        Ok(applied) => applied,
-        Err(e) => return fail(e.to_string()),
-    };
+    let texts = Normalized { store: &store };
+    let applied =
+        match serve::incremental::apply_with(&store, &serving, batch, key.as_ref(), &texts) {
+            Ok(applied) => applied,
+            Err(e) => return fail(e.to_string()),
+        };
     let a = &applied;
     println!("batch {} at {}", a.batch, a.at);
     println!(
-        "  records: {} merged ({} repeated), {} deletions ({} of records no work had)",
-        a.records, a.repeated, a.deleted, a.deletions_unknown
+        "  records: {} merged ({} copies superseded by a newer one, {} of them read for their citations alone, {} withdrawn), {} deletions ({} of records no work had, {} not applying to the copy that speaks)",
+        a.records,
+        a.superseded,
+        a.cited_only,
+        a.withdrawn,
+        a.deleted,
+        a.deletions_unknown,
+        a.deletions_not_applying
     );
     println!(
         "  identity: {} components; {} ids minted ({} stubs), {} merged into an older id, {} dropped; {} names attached, {} dropped",
@@ -1665,10 +1934,10 @@ fn merge_batch(opts: &Options, public_key: Option<&Path>) -> ExitCode {
         "  arcs: {} added, {} removed, {} moved with a retired id; {} relation lists, {} unresolved lists",
         a.arcs_added, a.arcs_removed, a.arcs_moved, a.relations_put, a.unresolved_put
     );
-    if a.union_only > 0 || a.uncited_stubs > 0 {
+    if a.arcs_kept > 0 || a.uncited_stubs > 0 {
         println!(
-            "  until a full merge: {} works with a duplicate record outside the batch had arcs added and none removed; {} stubs are left uncited",
-            a.union_only, a.uncited_stubs
+            "  {} arcs kept that a new copy no longer names; {} stubs are left uncited until a full merge",
+            a.arcs_kept, a.uncited_stubs
         );
     }
     for t in &a.truncated {
@@ -1721,6 +1990,7 @@ fn merge_dump_one(path: &Path, limit: Option<u64>, out: &mut impl Write) -> io::
         Kind::Names => json_lines::<NameRow<'_>>(&reader, limit, out),
         Kind::Relations => json_lines::<merge::record::Relation>(&reader, limit, out),
         Kind::Unresolved => json_lines::<merge::record::Unresolved<'_>>(&reader, limit, out),
+        Kind::CitedAs => json_lines::<merge::record::CitedAs<'_>>(&reader, limit, out),
         Kind::Symbols => json_lines::<&str>(&reader, limit, out),
         Kind::References | Kind::Deletions => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -2114,7 +2384,12 @@ fn search_add<S: Contributor>(
     })?;
     let mut read = 0;
     for path in &paths {
-        read += assembler.add::<S>(path)?;
+        let set =
+            merge::copies::set_name(&dir, path).ok_or_else(|| merge::document::Error::Io {
+                path: path.clone(),
+                source: io::Error::other("not a set under its source's directory"),
+            })?;
+        read += assembler.add::<S>(path, &set)?;
     }
     Ok(read)
 }
@@ -2320,6 +2595,15 @@ fn epoch_publish(opts: &Options) -> ExitCode {
             works_write(what, &store, &works_dir, &docs, batch.batch)?;
             documents = Some(docs);
         }
+        let cited_dir = store.cited(model::VERSION, merge::VERSION, serve::VERSION);
+        if !serve::cited::Manifest::read(&cited_dir).is_ok_and(|m| m.batch == batch.batch) {
+            eprintln!(
+                "{what}: building the cited-as lookup for batch {}",
+                batch.batch
+            );
+            serve::cited::build(&cited_dir, &merge::layout::dir(&store), batch.batch)
+                .map_err(|e| fail(e.to_string()))?;
+        }
         let graph_dir = graph::layout::dir(&store, false);
         if !graph::Manifest::read(&graph_dir).is_ok_and(|m| m.built_at >= batch.at) {
             eprintln!("{what}: building the graph");
@@ -2349,6 +2633,7 @@ fn epoch_publish(opts: &Options) -> ExitCode {
             artifacts: [
                 ("names", artifact(&names_dir, serve::names::MANIFEST)?),
                 ("works", artifact(&works_dir, serve::works::MANIFEST)?),
+                ("cited", artifact(&cited_dir, serve::cited::MANIFEST)?),
                 ("graph", artifact(&graph_dir, graph::layout::MANIFEST)?),
                 ("search", artifact(&search_dir, search::index::MANIFEST)?),
             ]
@@ -2967,89 +3252,53 @@ fn search_query(opts: &Options) -> ExitCode {
     }
 }
 
-/// The records a source has withdrawn (PubMed's `DeleteCitation`),
-/// each with the deletions set that says so: a record is dead when a
-/// set later in path order than its own withdraws it.
-#[derive(Debug, Default)]
-struct Deleted {
-    by_name: std::collections::HashMap<OwnedName, PathBuf>,
-}
-
-impl Deleted {
-    /// Reads every deletions set of one source under the store.
-    fn read<S: Contributor>(store: &Store) -> Result<Self, merge::identity::Error> {
-        let dir = store.normalized(model::VERSION, S::NAME);
-        let io = |path: &Path, source| merge::identity::Error::Io {
-            path: path.to_path_buf(),
-            source,
-        };
-        let mut this = Self::default();
-        for path in merge::sets::find(&dir, Kind::Deletions).map_err(|e| io(&dir, e))? {
-            let prefix = Kind::prefix_of(&path).unwrap_or_else(|| path.clone());
-            let reader =
-                merge::sets::open::<S>(&path, Kind::Deletions).map_err(|e| io(&path, e))?;
-            for record in reader.records::<S::Id<'_>>() {
-                let id = record.map_err(|e| io(&path, e))?;
-                let name = S::native(&id).to_owned();
-                let slot = this.by_name.entry(name).or_insert_with(|| prefix.clone());
-                if *slot < prefix {
-                    slot.clone_from(&prefix);
-                }
-            }
-        }
-        Ok(this)
-    }
-
-    /// Whether a record of the set at `prefix` is dead.
-    fn dead(&self, prefix: &Path, name: merge::Name<'_>) -> bool {
-        self.by_name
-            .get(&name.to_owned())
-            .is_some_and(|deleted| deleted.as_path() > prefix)
-    }
-
-    fn len(&self) -> usize {
-        self.by_name.len()
-    }
-}
-
-/// Reads every works set of one source into the identity pass, the
-/// records a later deletions set withdrew left out; returns the works
-/// and references sets found.
-fn merge_add<S: Contributor>(
-    identity: &mut Identity,
-    store: &Store,
+/// Reads one source's deletions sets, then every copy of its records, into
+/// the copy rule (merge plan §8): before the identity pass, which asks it
+/// about each copy.
+fn merge_copies<S: Contributor>(
+    copies: &mut merge::copies::Copies,
+    sets: &Sets,
     limit: Option<usize>,
-) -> Result<(Vec<PathBuf>, Vec<PathBuf>), merge::identity::Error> {
-    let dir = store.normalized(model::VERSION, S::NAME);
-    let io = |source| merge::identity::Error::Io {
-        path: dir.clone(),
-        source,
-    };
-    let works = merge::sets::find(&dir, Kind::Works).map_err(io)?;
-    let references = merge::sets::find(&dir, Kind::References).map_err(io)?;
-    let deleted = Deleted::read::<S>(store)?;
-    if deleted.len() > 0 {
+) -> Result<(), merge::identity::Error> {
+    let mut withdrawn = 0u64;
+    for (path, set) in &sets.deletions {
+        withdrawn += copies.read_deletions::<S>(path, set)?;
+    }
+    if withdrawn > 0 {
         eprintln!(
-            "merge: {}: {} records withdrawn by deletions sets",
-            S::NAME,
-            deleted.len()
+            "merge: {}: {withdrawn} withdrawals in deletions sets",
+            S::NAME
         );
     }
-    for path in &works {
-        let prefix = Kind::prefix_of(path).unwrap_or_else(|| path.clone());
-        identity.add::<S>(path, limit, &|name| deleted.dead(&prefix, name))?;
+    for (path, set) in &sets.works {
+        copies.read_works::<S>(path, set, limit)?;
     }
-    Ok((works, references))
+    Ok(())
+}
+
+/// Reads every works set of one source into the identity pass, each copy
+/// that does not speak for its record left out.
+fn merge_add<S: Contributor>(
+    identity: &mut Identity,
+    sets: &Sets,
+    limit: Option<usize>,
+    copies: &merge::copies::Copies,
+) -> Result<(), merge::identity::Error> {
+    for (path, set) in &sets.works {
+        identity.add::<S>(path, set, limit, copies)?;
+    }
+    Ok(())
 }
 
 fn merge_titles<S: Contributor>(
     identity: &mut Identity,
-    works: &[PathBuf],
+    sets: &Sets,
     limit: Option<usize>,
+    copies: &merge::copies::Copies,
 ) -> Result<(), merge::identity::Error> {
-    for path in works {
+    for (path, set) in &sets.works {
         if identity.needs_titles(path) {
-            identity.titles::<S>(path, limit)?;
+            identity.titles::<S>(path, set, limit, copies)?;
         }
     }
     Ok(())
@@ -3057,11 +3306,12 @@ fn merge_titles<S: Contributor>(
 
 fn merge_targets<S: Contributor>(
     identity: &mut Identity,
-    references: &[PathBuf],
+    sets: &Sets,
     limit: Option<usize>,
+    copies: &merge::copies::Copies,
 ) -> Result<(), merge::identity::Error> {
-    for path in references {
-        identity.targets::<S>(path, limit)?;
+    for (path, set) in &sets.references {
+        identity.targets::<S>(path, set, limit, copies)?;
     }
     Ok(())
 }
@@ -3148,11 +3398,21 @@ fn sample(samples: &mut Vec<String>, raw: &str, error: &impl Display) {
 struct PubmedStats {
     citations: u64,
     deletions: u64,
+    /// Records the checked-in exclusion list kept out, by reason.
+    excluded: BTreeMap<&'static str, u64>,
     doi: [u64; 3],
     elocation_doi: [u64; 3],
     doi_lowercased: u64,
+    /// Records whose two DOI slots hold different valid DOIs (2026-09-18).
+    doi_disagree: u64,
     pii: u64,
+    /// Publisher item ids past the first on one record.
+    pii_extra: u64,
     pmc: u64,
+    /// `ArticleId[pmc]` values that are not PMC ids, kept as written.
+    pmc_malformed: u64,
+    /// Reference ids of a kind that is no name of ours, by kind.
+    reference_loose: BTreeMap<&'static str, u64>,
     published: BTreeMap<&'static str, u64>,
     electronic: u64,
     revised: u64,
@@ -3220,6 +3480,9 @@ impl PubmedStats {
 impl StatsReport for PubmedStats {
     fn report(&self) {
         eprintln!("citations {}  deletions {}", self.citations, self.deletions);
+        for (reason, n) in &self.excluded {
+            eprintln!("  excluded by the checked-in list: {n}, {reason}");
+        }
         eprintln!(
             "  doi           valid {} malformed {} none {}",
             self.doi[0], self.doi[1], self.doi[2]
@@ -3229,7 +3492,10 @@ impl StatsReport for PubmedStats {
             self.elocation_doi[0], self.elocation_doi[1], self.elocation_doi[2]
         );
         eprintln!("  doi lowercased (allocations) {}", self.doi_lowercased);
-        eprintln!("  pii {}  pmc {}", self.pii, self.pmc);
+        eprintln!(
+            "  pii {} (extra on one record {})  pmc {} (not a PMC id, kept {})  two valid dois {}",
+            self.pii, self.pii_extra, self.pmc, self.pmc_malformed, self.doi_disagree
+        );
         eprintln!("  published {:?}", self.published);
         eprintln!(
             "  electronic {}  revised {}  completed {}",
@@ -3280,6 +3546,9 @@ impl StatsReport for PubmedStats {
         eprintln!("  relations {:?}", self.relations);
         eprintln!("references {}", self.references);
         eprintln!("  ids {:?}", self.reference_ids);
+        if !self.reference_loose.is_empty() {
+            eprintln!("  ids of no name of ours, kept: {:?}", self.reference_loose);
+        }
         eprintln!(
             "  malformed: doi {} pmid {} pmc {}",
             self.reference_doi_malformed,
@@ -3296,6 +3565,7 @@ impl StatsReport for PubmedStats {
 }
 
 impl<'n> Sink<'n, Pubmed> for PubmedStats {
+    #[allow(clippy::too_many_lines)]
     fn work(&mut self, c: &Citation<'n>) {
         use source_pubmed::normalize::AuthorName;
         self.citations += 1;
@@ -3303,8 +3573,22 @@ impl<'n> Sink<'n, Pubmed> for PubmedStats {
         for claim in &c.ids.elocation_doi {
             self.doi_claim(1, Some(claim));
         }
-        self.pii += u64::from(c.ids.pii.is_some());
-        self.pmc += u64::from(c.ids.pmc.is_some());
+        self.pii += u64::from(!c.ids.pii.is_empty());
+        self.pii_extra += c.ids.pii.len().saturating_sub(1) as u64;
+        match c.ids.pmc.as_ref() {
+            Some(Claim::Valid(_)) => self.pmc += 1,
+            Some(Claim::Malformed { .. }) => self.pmc_malformed += 1,
+            None => {}
+        }
+        if let Some(a) = c.ids.doi.as_ref().and_then(Claim::valid) {
+            self.doi_disagree += u64::from(
+                c.ids
+                    .elocation_doi
+                    .iter()
+                    .filter_map(Claim::valid)
+                    .any(|b| b != a),
+            );
+        }
         *self
             .published
             .entry(c.dates.published.precision())
@@ -3406,6 +3690,9 @@ impl<'n> Sink<'n, Pubmed> for PubmedStats {
             (true, true, true) => "pmid+doi+pmc",
         };
         *self.reference_ids.entry(key).or_default() += 1;
+        for id in &r.loose {
+            *self.reference_loose.entry(id.kind.token()).or_default() += 1;
+        }
         if let Some(Claim::Malformed { raw, error }) = &r.doi {
             self.reference_doi_malformed += 1;
             sample(&mut self.malformed_samples, raw, error);
@@ -3422,6 +3709,10 @@ impl<'n> Sink<'n, Pubmed> for PubmedStats {
 
     fn deletion(&mut self, _: &Pmid) {
         self.deletions += 1;
+    }
+
+    fn excluded(&mut self, _: &Pmid, reason: &'static str) {
+        *self.excluded.entry(reason).or_default() += 1;
     }
 }
 
@@ -3833,7 +4124,7 @@ impl<'n> Sink<'n, OpenAlex> for OpenAlexStats {
 
 impl Merge for PubmedStats {
     fn merge(&mut self, other: Self) {
-        absorb_all!(self, other: PubmedStats { citations, deletions, doi, elocation_doi, doi_lowercased, pii, pmc, published, electronic, revised, completed, status, languages, publication_types, title, abstracts, sections, sections_markup, sections_math, other_abstracts, journal_issn, journal_issn_linking, journal_issn_malformed, persons, collectives, orcid, affiliations, affiliation_ids, investigators, mesh_headings, mesh_major, chemicals, keywords, grants, grants_with_country, data_banks, history, publication_status, relations, references, reference_ids, reference_doi_malformed, reference_pmid_malformed, reference_pmc_malformed, malformed_samples });
+        absorb_all!(self, other: PubmedStats { citations, deletions, excluded, doi, elocation_doi, doi_lowercased, doi_disagree, pii, pii_extra, pmc, pmc_malformed, published, electronic, revised, completed, status, languages, publication_types, title, abstracts, sections, sections_markup, sections_math, other_abstracts, journal_issn, journal_issn_linking, journal_issn_malformed, persons, collectives, orcid, affiliations, affiliation_ids, investigators, mesh_headings, mesh_major, chemicals, keywords, grants, grants_with_country, data_banks, history, publication_status, relations, references, reference_ids, reference_loose, reference_doi_malformed, reference_pmid_malformed, reference_pmc_malformed, malformed_samples });
     }
 }
 
