@@ -16,6 +16,11 @@ pub type NameIx = u32;
 /// The names of a run, each once.
 #[derive(Debug, Default)]
 pub struct Arena {
+    /// Each name once, in the spelling the record that first asserted it
+    /// wrote — which for a publisher id may not be the canonical one.
+    /// Nothing downstream cares: a name renders canonically wherever it
+    /// is written (`Name`'s `Display`), so the rows are the same however
+    /// the run was ordered.
     names: Vec<OwnedName>,
     dois: HashMap<Box<str>, NameIx>,
     numbers: HashMap<(Key, u64), NameIx>,
@@ -141,7 +146,14 @@ mod tests {
         assert_eq!(arena.len(), 2);
         assert_eq!(
             *arena.get(punctuated),
-            OwnedName::Publisher(elsevier, "S0006349525001234".into())
+            OwnedName::Publisher(elsevier, "S0006349525001234".into()),
+            "one name, either spelling"
+        );
+        // The punctuated spelling was first, so that is what is held;
+        // what is written is the canonical one either way.
+        assert_eq!(
+            arena.get(punctuated).to_string(),
+            "reg1016:S0006349525001234"
         );
         assert_eq!(arena.find(Name::Publisher(other, "cvj_12_1266")), None);
     }

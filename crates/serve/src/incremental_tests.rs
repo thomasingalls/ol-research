@@ -1264,3 +1264,302 @@ fn a_newer_copy_speaks_and_withdrawn_citations_leave_no_trace() {
     drop(serving);
     std::fs::remove_dir_all(store.root()).unwrap();
 }
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn a_records_several_references_to_a_row_divide_one_at_a_time() {
+    use SourceId::{Crossref, Pubmed};
+    // Serving plan §11, item 25, traced 2026-09-19: the churn `1339`
+    // left. A record that cites one work twice is one citer in a stub's
+    // row and one arc in the graph, and the batch used to read its
+    // references' names together — so a reference that gave only names
+    // no part took looked like one that had also given a name a part
+    // took, and made no stub name. Its leftovers then reached their
+    // stubs by other citers alone, one each, where the full merge makes
+    // the one stub that reference's own names are. The cited-as row
+    // says which namespace landed each reference, which is as near as
+    // the evidence comes to telling them apart.
+    //
+    // W is one work of a PubMed record with a wrong link and Crossref's
+    // record of the DOI. The PubMed record carries no text, so
+    // withdrawing it moves no promoted field.
+    let wrong = record(
+        Pubmed,
+        &["pmid:500", "doi:10.1000/w5", "pmc:PMC500"],
+        "Wrong link",
+        view(false, 0, None),
+        text(None, &[], None),
+    );
+    let right = record(
+        Crossref,
+        &["doi:10.1000/w5"],
+        "Wrong link",
+        view(false, 1, None),
+        text(None, &["W"], None),
+    );
+    let mut by_pmid = record(
+        Pubmed,
+        &["pmid:510"],
+        "Cites the PMID",
+        view(false, 1, None),
+        text(None, &["P"], None),
+    );
+    cites(&mut by_pmid, &["pmid:500"]);
+    let mut by_pmc = record(
+        Pubmed,
+        &["pmid:511"],
+        "Cites the PMC id",
+        view(false, 1, None),
+        text(None, &["Q"], None),
+    );
+    cites(&mut by_pmc, &["pmc:PMC500"]);
+    // The record that cites W twice: once by the DOI the Crossref record
+    // keeps, once by the two names the withdrawal leaves behind.
+    let mut twice = record(
+        Pubmed,
+        &["pmid:512"],
+        "Cites it twice",
+        view(false, 1, None),
+        text(None, &["R"], None),
+    );
+    cites(&mut twice, &["doi:10.1000/w5"]);
+    cites(&mut twice, &["pmid:500", "pmc:PMC500"]);
+    let (store, serving) = batches_equal_the_full_merge(
+        "two-references",
+        base_and(vec![wrong, right, by_pmid, by_pmc, twice]),
+        &[],
+        vec![Batch {
+            deletions: vec![withdrawal(Pubmed, "pmid:500")],
+            ..Batch::default()
+        }],
+    );
+    let w = resolve(&serving, "doi:10.1000/w5").unwrap();
+    let stub = resolve(&serving, "pmid:500").unwrap();
+    assert!(serving.is_stub(stub));
+    assert_eq!(
+        resolve(&serving, "pmc:PMC500"),
+        Some(stub),
+        "one stub, not one for each name: the reference that gave both is one"
+    );
+    let r = resolve(&serving, "pmid:512").unwrap();
+    let mut arcs: Vec<u32> = refs(&serving, r).into_iter().map(|(x, _)| x).collect();
+    arcs.sort_unstable();
+    let mut both = vec![w.get(), stub.get()];
+    both.sort_unstable();
+    assert_eq!(
+        arcs, both,
+        "its other reference keeps its arc on the work it still names"
+    );
+    let row = serving.work(stub).unwrap().unwrap();
+    for name in &row.names {
+        assert!(
+            pairs(name).contains(&(r, Pubmed)),
+            "{}: {:?}",
+            name.name,
+            pairs(name)
+        );
+    }
+    drop(serving);
+    std::fs::remove_dir_all(store.root()).unwrap();
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn a_reference_that_named_another_held_work_makes_no_stub_name() {
+    use SourceId::{Crossref, Pubmed};
+    // Serving plan §11, item 26's blind spot, closed 2026-09-19. Merge
+    // plan §11, item 14: a reference that names a held work makes no
+    // name of its own, its other names being assertions about that work.
+    // The full merge asks that of every reference; the batch could only
+    // ask it of the names the row it is dividing holds, and assumed no
+    // held work stood anywhere else — so a name the full merge drops, or
+    // leaves to another citer, became a stub of its own. The cited-as
+    // row now carries the mark, and the batch reads it.
+    //
+    // The shape: W is a PubMed record's wrong link and Crossref's record
+    // of the DOI; V is a held work of its own; one record cites W's PMC
+    // id beside V's DOI, and another cites the PMC id alone.
+    let wrong = record(
+        Pubmed,
+        &["pmid:700", "doi:10.1000/w7", "pmc:PMC700"],
+        "Wrong link",
+        view(false, 0, None),
+        text(None, &[], None),
+    );
+    let right = record(
+        Crossref,
+        &["doi:10.1000/w7"],
+        "Wrong link",
+        view(false, 1, None),
+        text(None, &["W"], None),
+    );
+    let other = record(
+        Crossref,
+        &["doi:10.1000/v7"],
+        "Another held work",
+        view(false, 1, None),
+        text(None, &["V"], None),
+    );
+    let mut beside = record(
+        Pubmed,
+        &["pmid:712"],
+        "Names both",
+        view(false, 1, None),
+        text(None, &["B"], None),
+    );
+    cites(&mut beside, &["pmc:PMC700", "doi:10.1000/v7"]);
+    let mut alone = record(
+        Pubmed,
+        &["pmid:713"],
+        "Names it alone",
+        view(false, 1, None),
+        text(None, &["A"], None),
+    );
+    cites(&mut alone, &["pmc:PMC700"]);
+    let (store, serving) = batches_equal_the_full_merge(
+        "beside-a-held-work",
+        base_and(vec![wrong, right, other, beside, alone]),
+        &[],
+        vec![Batch {
+            deletions: vec![withdrawal(Pubmed, "pmid:700")],
+            ..Batch::default()
+        }],
+    );
+    let stub = resolve(&serving, "pmc:PMC700").unwrap();
+    assert!(serving.is_stub(stub));
+    let b = resolve(&serving, "pmid:712").unwrap();
+    let a = resolve(&serving, "pmid:713").unwrap();
+    let row = serving.work(stub).unwrap().unwrap();
+    let marks: Vec<(WorkId, bool)> = row.names[0]
+        .cited_by
+        .iter()
+        .map(|c| (c.from, c.held_beside))
+        .collect();
+    assert!(
+        marks.contains(&(b, true)),
+        "the reference that named another held work is marked: {marks:?}"
+    );
+    assert!(
+        marks.contains(&(a, false)),
+        "and the one that named nothing else is not: {marks:?}"
+    );
+    drop(serving);
+    std::fs::remove_dir_all(store.root()).unwrap();
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn the_divisions_a_row_cannot_settle_stop_the_batch() {
+    use SourceId::{Crossref, Pubmed};
+    // Two shapes the row's own evidence cannot answer, both found
+    // 2026-09-19 with the marks of items 25 and 26. A refusal is the
+    // answer §5 gives: the normalized layer has the reference lists.
+    //
+    // One: a reference that named a held work besides this row, and
+    // whose only name here item 14 therefore drops. Where its arc goes
+    // is that other work's, and the row cannot name it — the same wall
+    // `split_arc` already meets from the other side.
+    let store = fixture::store("refuse-beside-held");
+    let wrong = record(
+        Pubmed,
+        &["pmid:600", "doi:10.1000/w6", "pmc:PMC600"],
+        "Wrong link",
+        view(false, 0, None),
+        text(None, &[], None),
+    );
+    let right = record(
+        Crossref,
+        &["doi:10.1000/w6"],
+        "Wrong link",
+        view(false, 1, None),
+        text(None, &["W"], None),
+    );
+    let other = record(
+        Crossref,
+        &["doi:10.1000/v6"],
+        "Another held work",
+        view(false, 1, None),
+        text(None, &["V"], None),
+    );
+    let mut beside = record(
+        Pubmed,
+        &["pmid:612"],
+        "Names both",
+        view(false, 1, None),
+        text(None, &["B"], None),
+    );
+    cites(&mut beside, &["pmc:PMC600", "doi:10.1000/v6"]);
+    fixture::full_merge(&store, &base_and(vec![wrong, right, other, beside]), &[]);
+    let serving = Serving::open(&store).unwrap();
+    let registry_before = std::fs::read_to_string(store.registry()).unwrap();
+    let err = incremental::apply(
+        &store,
+        &serving,
+        Batch {
+            deletions: vec![withdrawal(Pubmed, "pmid:600")],
+            ..Batch::default()
+        },
+        None,
+    )
+    .unwrap_err();
+    assert!(
+        err.to_string().contains("every name it gave there dropped"),
+        "{err}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(store.registry()).unwrap(),
+        registry_before
+    );
+    drop(serving);
+    std::fs::remove_dir_all(store.root()).unwrap();
+
+    // Two: a record that cited the row twice through the same namespace,
+    // the division parting the names its two references gave. The
+    // landing tells references apart only where they landed by different
+    // namespaces; here they did not, and which gave which is only in
+    // their own lists.
+    let store = fixture::store("refuse-two-references");
+    let wrong = record(
+        Pubmed,
+        &["pmid:800", "doi:10.1000/w8", "pmc:PMC800"],
+        "Wrong link",
+        view(false, 0, None),
+        text(None, &[], None),
+    );
+    let right = record(
+        Crossref,
+        &["doi:10.1000/w8"],
+        "Wrong link",
+        view(false, 1, None),
+        text(None, &["W"], None),
+    );
+    let mut twice = record(
+        Pubmed,
+        &["pmid:812"],
+        "Cites it twice by the PMID",
+        view(false, 1, None),
+        text(None, &["R"], None),
+    );
+    cites(&mut twice, &["pmid:800", "doi:10.1000/w8"]);
+    cites(&mut twice, &["pmid:800", "pmc:PMC800"]);
+    fixture::full_merge(&store, &base_and(vec![wrong, right, twice]), &[]);
+    let serving = Serving::open(&store).unwrap();
+    let registry_before = std::fs::read_to_string(store.registry()).unwrap();
+    let err = incremental::apply(
+        &store,
+        &serving,
+        Batch {
+            deletions: vec![withdrawal(Pubmed, "pmid:800")],
+            ..Batch::default()
+        },
+        None,
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("more than once through"), "{err}");
+    assert_eq!(
+        std::fs::read_to_string(store.registry()).unwrap(),
+        registry_before
+    );
+    drop(serving);
+    std::fs::remove_dir_all(store.root()).unwrap();
+}

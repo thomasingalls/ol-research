@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react"
 import { useQuery } from "@tanstack/react-query"
 import { createRoute, useNavigate } from "@tanstack/react-router"
-import { api, type ResolveOutcome } from "@/api"
+import { api, type Shared, type Split, type ResolveOutcome } from "@/api"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -11,11 +11,8 @@ import { rootRoute } from "@/routes/root"
 
 /** The protocol's three outcomes, narrowed. */
 const one = (o: ResolveOutcome): o is { public_id: string } => "public_id" in o
-const shared = (
-  o: ResolveOutcome,
-): o is { shared: { public_ids: string[] } } => "shared" in o
-const split = (o: ResolveOutcome): o is { split: { public_id: string } } =>
-  "split" in o
+const shared = (o: ResolveOutcome): o is { shared: Shared } => "shared" in o
+const split = (o: ResolveOutcome): o is { split: Split } => "split" in o
 
 /**
  * `/resolve` and `/resolve?text=…`. The pasted name lives in the URL for the

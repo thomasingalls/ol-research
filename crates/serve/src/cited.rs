@@ -36,8 +36,9 @@ pub const MANIFEST: &str = "manifest.json";
 pub const ROW: usize = 12;
 
 /// One reference that gave a name beside the work it landed on.
-// Four flags, each a fact §6 and §11 item 14 name about one row:
-// what it was for, how it landed, and whether it can move.
+// Five flags, each a fact §6 and §11 item 14 name about one row:
+// what it was for, how it landed, whether it can move, and whether a
+// held work stands beside it.
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Row {
@@ -62,6 +63,10 @@ pub struct Row {
     pub by_text: bool,
     /// The citation text repeats this name.
     pub in_text: bool,
+    /// The reference also named a held work other than the one it landed
+    /// on, so item 14 makes no stub name of this one when the landing's
+    /// work is divided later (2026-09-19).
+    pub beside_held: bool,
 }
 
 impl Row {
@@ -78,6 +83,7 @@ impl Row {
             beside: row.beside,
             by_text: row.by_text,
             in_text: row.in_text,
+            beside_held: row.beside_held,
         }
     }
 
@@ -91,7 +97,8 @@ impl Row {
             u8::from(self.relation)
                 | (u8::from(self.beside) << 1)
                 | (u8::from(self.by_text) << 2)
-                | (u8::from(self.in_text) << 3),
+                | (u8::from(self.in_text) << 3)
+                | (u8::from(self.beside_held) << 4),
         );
     }
 
@@ -112,6 +119,7 @@ impl Row {
             beside: bytes[11] & 2 != 0,
             by_text: bytes[11] & 4 != 0,
             in_text: bytes[11] & 8 != 0,
+            beside_held: bytes[11] & 16 != 0,
         })
     }
 }

@@ -22,6 +22,7 @@ use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use ingest::Key as Namespace;
 use ingest::Store;
 use merge::build::{
     self, OwnedAssert, OwnedCitation, OwnedCitedAs, OwnedNamed, OwnedUnresolved, OwnedWork,
@@ -507,6 +508,13 @@ fn beside_rows(
     let by_text = names
         .iter()
         .any(|n| backs(n) && matches!(target(n), Target::Work(w, _) if w == to));
+    // And whether a held work other than this one stands beside the
+    // landing, which is what item 14 asks of the same names when this
+    // work is divided later (2026-09-19). The full merge asks it in
+    // `build::reference`, in these words.
+    let beside_held = names
+        .iter()
+        .any(|n| matches!(target(n), Target::Work(w, false) if w != to));
     for name in names {
         out.push(OwnedCitedAs {
             from,
@@ -520,6 +528,7 @@ fn beside_rows(
             beside: target(name) == Target::Unknown,
             by_text,
             in_text: backs(name),
+            beside_held,
         });
     }
 }
@@ -683,6 +692,10 @@ struct Engine<'s> {
     /// Arcs of a citing work and source moving from a stub a record took
     /// over to the stub its leftover names became.
     moves: Vec<(WorkId, SourceId, WorkId, WorkId)>,
+    /// Citing work, source and row where one of that record's other
+    /// references to the row stays: its arc is not removed when a
+    /// sibling reference's moves (2026-09-19).
+    arc_stays: HashSet<(WorkId, SourceId, WorkId)>,
     /// Stub rows to write, by id, held back until the arcs are known.
     stub_rows: BTreeMap<WorkId, StubRow>,
     /// The (work, source) pairs whose one record of that source the batch
@@ -758,11 +771,12 @@ impl Engine<'_> {
     }
 
     /// Who cited `name` while it belonged to `work`, from the cited-as
-    /// evidence (serving plan §11, item 28): the citing work and the
-    /// source of the record that cited it, each pair once, those whose
-    /// arc is gone or whose record this batch restates left out.
-    fn citers_of(&self, name: &OwnedName, work: WorkId) -> Vec<Citer> {
-        let mut out: Vec<Citer> = Vec::new();
+    /// evidence (serving plan §11, item 28): the citing work, the source
+    /// of the record that cited it and the namespace that landed the
+    /// reference there, each landing once, those whose arc is gone or
+    /// whose record this batch restates left out.
+    fn citers_of(&self, name: &OwnedName, work: WorkId) -> Vec<Cited> {
+        let mut out: Vec<Cited> = Vec::new();
         for row in self.serving.cited_as(name) {
             if row.relation || self.survivor_of(row.to) != work {
                 continue;
@@ -772,9 +786,14 @@ impl Engine<'_> {
                 from: pair.0,
                 by: row.by,
                 in_text: row.in_text,
-                // The reference landed on this work, which is held; what
-                // else it named is item 26's question, not this one.
-                held_beside: false,
+                // Whether a held work other than this one stood beside
+                // the landing, which the row has carried since
+                // 2026-09-19. Assumed false until then, and that was the
+                // blind spot of item 26: a reference naming two held
+                // works makes no stub name of either's names when one of
+                // them is divided (merge plan §11, item 14), and the
+                // batch minted one.
+                held_beside: row.beside_held,
             };
             if self.replaced.contains(&pair) || self.gone.contains(&pair.0) {
                 continue;
@@ -786,11 +805,17 @@ impl Engine<'_> {
             {
                 continue;
             }
-            out.push(citer);
+            out.push(Cited {
+                citer,
+                landed: Some(row.landed),
+                sole: row.sole,
+            });
         }
-        // One record's several references to the work are one citer, the
-        // text mark theirs together, as a stub's own row has it.
-        build::join_citers(&mut out);
+        // One record's several references that landed here alike are one
+        // citer, the text mark theirs together, as a stub's own row has
+        // it; ones that landed by different namespaces are kept apart,
+        // because item 14 answers them one at a time (2026-09-19).
+        join_cited(&mut out);
         out
     }
 
@@ -1025,7 +1050,15 @@ impl Engine<'_> {
             // citers' arcs already point here and do not move.
             let mut names: BTreeMap<OwnedName, Vec<Citer>> = BTreeMap::new();
             for n in &row.names {
-                let citers = self.citers_of(&n.name, *id);
+                // The whole row becomes one stub, so the landings do not
+                // divide anything: its row holds one citer per citing
+                // record, as a stub's always has.
+                let mut citers: Vec<Citer> = self
+                    .citers_of(&n.name, *id)
+                    .into_iter()
+                    .map(|c| c.citer)
+                    .collect();
+                build::join_citers(&mut citers);
                 if !citers.is_empty() || self.related_to(&n.name, *id) {
                     names.insert(n.name.clone(), citers);
                 }
@@ -1103,30 +1136,72 @@ impl Engine<'_> {
             // work's names are answered by the cited-as evidence, which
             // says the same for every name a reference gave (serving plan
             // §11, item 28, 2026-09-18).
-            let cited_by = |this: &Self, n: &crate::row::Named| -> Vec<Citer> {
+            let cited_by = |this: &Self, n: &crate::row::Named| -> Vec<Cited> {
                 if row.stub {
-                    n.cited_by.to_vec()
+                    n.cited_by.iter().map(|c| Cited::of_stub(*c)).collect()
                 } else {
                     this.citers_of(&n.name, *id)
                 }
             };
-            // Each citing record's own reference, as the names of this
+            // One reference of one citing record, as the names of this
             // row divide it, with the mark its text carries. Dividing a
             // row is that reference resolving again, so it is settled the
             // way §6 settles one — the text first (serving plan §11, item
             // 28, 2026-09-19).
-            let mut gave: BTreeMap<(WorkId, SourceId), Vec<(OwnedName, bool)>> = BTreeMap::new();
+            //
+            // A record that cited this row more than once is the reason
+            // the key is a *landing* and not a citing record: its
+            // references are one citer in a stub's row and one arc in the
+            // graph, but item 14 answers them one at a time, and taking
+            // their names together answers for a reference none of them
+            // made (2026-09-19). The landing namespace is as near as the
+            // evidence comes to naming one of them.
+            let mut gave: BTreeMap<Landing, Vec<(OwnedName, bool)>> = BTreeMap::new();
+            let mut alone: HashMap<Landing, bool> = HashMap::new();
             for n in &row.names {
                 for c in cited_by(self, n) {
-                    gave.entry(c.pair())
+                    gave.entry(c.landing())
                         .or_default()
-                        .push((n.name.clone(), c.in_text));
+                        .push((n.name.clone(), c.citer.in_text));
+                    let sole = alone.entry(c.landing()).or_insert(true);
+                    *sole &= c.sole;
                 }
             }
             let took_a_part = |names: &[(OwnedName, bool)]| -> bool {
                 names.iter().any(|(name, _)| taken.contains_key(name))
             };
-            let mut leftovers: Vec<(OwnedName, Vec<Citer>)> = Vec::new();
+            // Where a landing holds more than one of the record's
+            // references, they answer alike only if they all gave the
+            // one name of the row in the namespace that landed them:
+            // every reference in the landing gave that name, so item 14
+            // reads the same for each, and §6 picks that name for each.
+            // Any other shape mixes references the row cannot tell
+            // apart, and the answers differ between them — the normalized
+            // layer holds the reference lists that would say (§5).
+            for (landing, names) in &gave {
+                if alone.get(landing).copied().unwrap_or(true) {
+                    continue;
+                }
+                let Some(key) = landing.2 else {
+                    continue;
+                };
+                let landing_names: Vec<&OwnedName> = names
+                    .iter()
+                    .map(|(n, _)| n)
+                    .filter(|n| n.as_name().key() == key)
+                    .collect();
+                let settled = match landing_names.as_slice() {
+                    [one] => taken.contains_key(*one) || !took_a_part(names),
+                    _ => false,
+                };
+                if !settled {
+                    return Err(Error::FullMerge(format!(
+                        "{} cited {id} more than once through a {key}, and the division parts the names those references gave: which gave which only their own lists say",
+                        landing.0
+                    )));
+                }
+            }
+            let mut leftovers: Vec<(OwnedName, Vec<Cited>)> = Vec::new();
             for n in &row.names {
                 if taken.contains_key(&n.name) || handled.contains(&n.name) {
                     continue;
@@ -1140,16 +1215,16 @@ impl Engine<'_> {
                 // batch's own references. Where the arc goes is a second
                 // question, and §6's; it is asked below, once the names
                 // that survive are known.
-                let mut movers: Vec<Citer> = Vec::new();
+                let mut movers: Vec<Cited> = Vec::new();
                 for c in cited_by(self, n) {
-                    let pair = c.pair();
-                    if self.replaced.contains(&pair) {
+                    if self.replaced.contains(&c.citer.pair()) {
                         continue;
                     }
-                    let names = gave.get(&pair).ok_or_else(|| {
-                        Error::Mismatch(format!("{pair:?} cited {} of no row", n.name))
+                    let landing = c.landing();
+                    let names = gave.get(&landing).ok_or_else(|| {
+                        Error::Mismatch(format!("{landing:?} cited {} of no row", n.name))
                     })?;
-                    if !took_a_part(names) && !c.held_beside {
+                    if !took_a_part(names) && !c.citer.held_beside {
                         movers.push(c);
                     }
                 }
@@ -1171,14 +1246,14 @@ impl Engine<'_> {
                     leftovers.push((n.name.clone(), movers));
                 }
             }
-            // Leftover names one citing record gave together are one stub.
+            // Leftover names one reference gave together are one stub.
             let mut parent: Vec<usize> = (0..leftovers.len()).collect();
             for i in 0..leftovers.len() {
                 for j in i + 1..leftovers.len() {
                     if leftovers[i]
                         .1
                         .iter()
-                        .any(|c| leftovers[j].1.iter().any(|o| o.pair() == c.pair()))
+                        .any(|c| leftovers[j].1.iter().any(|o| o.landing() == c.landing()))
                     {
                         let (a, b) = (root(&mut parent, i), root(&mut parent, j));
                         if a != b {
@@ -1208,19 +1283,24 @@ impl Engine<'_> {
             // the row, every such reference moves, to a part or to a
             // stub. This is the whole of the divergence item 26 fixes for
             // a held landing (serving plan §11, item 28, 2026-09-19).
-            let made: HashSet<(WorkId, SourceId)> = leftovers
+            let made: HashSet<Landing> = leftovers
                 .iter()
-                .flat_map(|(_, movers)| movers.iter().map(|c| c.pair()))
+                .flat_map(|(_, movers)| movers.iter().map(|c| c.landing()))
                 .collect();
-            let mut joined: Vec<Vec<(WorkId, SourceId)>> = vec![Vec::new(); groups.len()];
-            for (pair, names) in &gave {
-                if made.contains(pair) || self.replaced.contains(pair) {
+            let mut joined: Vec<Vec<Landing>> = vec![Vec::new(); groups.len()];
+            for (landing, names) in &gave {
+                let pair = (landing.0, landing.1);
+                if made.contains(landing) || self.replaced.contains(&pair) {
                     continue;
                 }
                 let d = split_arc(names, *id, &dest)?;
                 if let Some(g) = d.checked_sub(parts.len()) {
-                    joined[g].push(*pair);
-                } else if stays != Some(d) {
+                    joined[g].push(*landing);
+                } else if stays == Some(d) {
+                    // One of the record's references stays here, so the
+                    // arc does, whatever its others do (2026-09-19).
+                    self.arc_stays.insert((pair.0, pair.1, *id));
+                } else {
                     // §6 sends it to a part that is not this row's
                     // continuation: the arc follows the name it chose.
                     self.moves.push((pair.0, pair.1, *id, parts[d]));
@@ -1230,16 +1310,16 @@ impl Engine<'_> {
                 let mut names: BTreeMap<OwnedName, Vec<Citer>> = BTreeMap::new();
                 for i in members {
                     let (name, movers) = &leftovers[*i];
-                    names.insert(name.clone(), movers.clone());
+                    names.insert(name.clone(), movers.iter().map(|c| c.citer).collect());
                 }
                 // A reference §6 sends here cites every name of this stub
                 // it gave, as the full merge's own reference pass has it.
-                for pair in &joined[g] {
-                    for (name, in_text) in &gave[pair] {
+                for landing in &joined[g] {
+                    for (name, in_text) in &gave[landing] {
                         if let Some(citers) = names.get_mut(name) {
                             citers.push(Citer {
-                                from: pair.0,
-                                by: pair.1,
+                                from: landing.0,
+                                by: landing.1,
                                 in_text: *in_text,
                                 // It made no name of this stub, and will
                                 // not of the next division either.
@@ -1262,8 +1342,8 @@ impl Engine<'_> {
                 self.applied.minted += 1;
                 self.applied.stubs_minted += 1;
                 let mut moved: HashSet<(WorkId, SourceId)> = HashSet::new();
-                for movers in names.values() {
-                    for c in movers {
+                for citers in names.values() {
+                    for c in citers {
                         if moved.insert(c.pair()) {
                             self.moves.push((c.from, c.by, *id, stub_id));
                         }
@@ -1504,6 +1584,63 @@ impl Engine<'_> {
             changed: false,
         })
     }
+}
+
+/// One landing of one citing record on a row being divided: the citing
+/// work, the source of the record, and the namespace that landed the
+/// reference there. It is the evidence's nearest thing to naming one
+/// reference — a record's several references to one work are one citer
+/// and one arc, and only the namespace that landed each tells them
+/// apart (serving plan §11, item 28, 2026-09-19). `None` on a stub's own
+/// row, which keeps citers and no landings.
+type Landing = (WorkId, SourceId, Option<Namespace>);
+
+/// One citing reference of a row being divided, as the row's evidence
+/// has it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Cited {
+    citer: Citer,
+    /// The namespace that landed the reference on the row.
+    landed: Option<Namespace>,
+    /// The citing record made only this one reference landing here, so
+    /// the names under this landing are one reference's. A stub's row
+    /// keeps no such mark and its citers have always been read as one
+    /// reference each; that is item 28's own open work, not this rule's.
+    sole: bool,
+}
+
+impl Cited {
+    /// A citer a stub's row holds, which names no landing.
+    const fn of_stub(citer: Citer) -> Self {
+        Self {
+            citer,
+            landed: None,
+            sole: true,
+        }
+    }
+
+    fn landing(self) -> Landing {
+        (self.citer.from, self.citer.by, self.landed)
+    }
+}
+
+/// A stub name's citers joined per landing rather than per citing
+/// record: [`build::join_citers`]'s rule, on the finer key the cited-as
+/// evidence gives.
+fn join_cited(cited: &mut Vec<Cited>) {
+    cited.sort_unstable_by_key(|c| (c.landing(), c.citer));
+    let mut joined: Vec<Cited> = Vec::with_capacity(cited.len());
+    for c in cited.drain(..) {
+        match joined.last_mut() {
+            Some(before) if before.landing() == c.landing() => {
+                before.citer.in_text |= c.citer.in_text;
+                before.citer.held_beside &= c.citer.held_beside;
+                before.sole &= c.sole;
+            }
+            _ => joined.push(c),
+        }
+    }
+    *cited = joined;
 }
 
 /// Where §6 sends a reference whose names a divided row scatters: the
@@ -2082,6 +2219,7 @@ impl Engine<'_> {
                                 beside: false,
                                 by_text: false,
                                 in_text: false,
+                                beside_held: false,
                             });
                         }
                     }
@@ -2191,6 +2329,7 @@ impl Engine<'_> {
                         beside: false,
                         by_text: false,
                         in_text: false,
+                        beside_held: false,
                     });
                     put_cited_as.insert((work, r.source));
                 }
@@ -2482,7 +2621,9 @@ impl Engine<'_> {
         // references that used them alone follow them to the new stub.
         for (x, s, from, to) in self.moves.clone() {
             let by: Sources = [s].into_iter().collect();
-            lists.remove(x, from, by);
+            if !self.arc_stays.contains(&(x, s, from)) {
+                lists.remove(x, from, by);
+            }
             lists.add(x, to, by);
             self.applied.arcs_moved += 1;
         }
@@ -3053,6 +3194,7 @@ pub fn apply_with(
         dropped: Vec::new(),
         gone: HashSet::new(),
         moves: Vec::new(),
+        arc_stays: HashSet::new(),
         stub_rows: BTreeMap::new(),
         replaced: HashSet::new(),
         names_dropped: 0,

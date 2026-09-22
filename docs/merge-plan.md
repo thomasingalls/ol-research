@@ -129,16 +129,25 @@ rules, each with the measurement behind it:
   all PubMed's, and only 22 of their 414 values are even Elsevier-shaped.
   A record with two DOIs of different registrants tie-breaks by the lower.
 - **The value is stored exactly as written** — no case folding, no
-  punctuation stripped, because punctuation is part of an identifier.
-  The one exception is Elsevier's printed PII, which the world writes
-  punctuated (`S0006-3495(25)00123-4`) and bare (`S0006349525001234`) and
-  which we write bare. Both spellings occur for one article on 8,350
-  DOIs, and the split is by source, not by publisher: PubMed writes the
-  punctuated form (51,120 rows), Crossref the bare one (8,801), 8,345
-  that way round and 5 the other, none writing both for one article.
-  Every one agrees once rewritten; no normalised id is owned by more than
-  one article, no raw id is, and no rewritten value collides with an
-  unrelated one.
+  punctuation stripped, because punctuation is part of an identifier —
+  and there is no exception. Elsevier's printed PII, which the world
+  writes punctuated (`S0006-3495(25)00123-4`) and bare
+  (`S0006349525001234`), is held in whichever spelling the record used.
+  What the two share is a **canonical spelling**, the bare one, and since
+  2026-09-19 that is a *view* and not a stored fact: a name's equality,
+  hash, order and text form are computed over it, so the two spellings
+  are one name and every string form — the registry's lines, a merged
+  row, `merge dump`, the names transducer's keys, the serving layer's
+  rows — carries the bare one. Rendering rather than storing it is what
+  lets `publisher::ELSEVIER` change (see below), and also what keeps
+  those files deterministic: either spelling may be read first and what
+  is written out does not depend on which. Both spellings occur for one
+  article on 8,350 DOIs, and the split is by source, not by publisher:
+  PubMed writes the punctuated form (51,120 rows), Crossref the bare one
+  (8,801), 8,345 that way round and 5 the other, none writing both for
+  one article. Every one agrees once rewritten; no normalised id is owned
+  by more than one article, no raw id is, and no rewritten value collides
+  with an unrelated one.
 - **The rewrite is gated on the publisher, not on the shape** (the user,
   2026-09-19, against a measurement that argued for shape): anything that
   went through Elsevier's machinery matches Elsevier's rules, but a value
@@ -146,7 +155,11 @@ rules, each with the measurement behind it:
   publisher's identifier must not be mangled. `publisher::ELSEVIER` is
   the checked-in list of registrants, and the normalize surveys count the
   PII-shaped values whose registrant is off it, by registrant: that count
-  is how the list grows, on evidence rather than on a guess.
+  is how the list grows, on evidence rather than on a guess. Adding a
+  registrant costs a full merge — two spellings that were two names
+  become one, which moves works together and retires ids — but nothing
+  more: a name sealed under the old list reads back in the spelling its
+  line carries.
 - **A value that is just the DOI again is not a publisher id**, tested
   *after* the rewrite against the DOI and its suffix with the printed
   PII's punctuation dropped and the case folded. Order matters: 786 rows
@@ -1050,18 +1063,20 @@ stays.
   asserts no publisher name at all — 344 records, 0.335 %, all PubMed's,
   and only 22 of their 414 values are even Elsevier-shaped.
 
-  *Written exactly as the publisher wrote it, with one exception.* No
-  case folding and no punctuation stripped, because punctuation is part
-  of an identifier. The exception is Elsevier's printed PII, written
+  *Written exactly as the publisher wrote it.* No case folding and no
+  punctuation stripped, because punctuation is part of an identifier.
+  Elsevier's printed PII is the one value with a canonical spelling
+  besides its own — the bare one — and that spelling is a view, not what
+  is stored (the amendment later the same day, below). It is written
   punctuated (`S0006-3495(25)00123-4`) and bare (`S0006349525001234`) for
   one article on 8,350 DOIs — a split by source rather than by publisher:
   PubMed writes the punctuated form (51,120 rows), Crossref the bare one
   (8,801), 8,345 that way round, 5 the other, none writing both for one
   article. Every one agrees once rewritten, no id normalised or raw is
   owned by more than one article, and no rewritten value collides with an
-  unrelated one. The rewrite happens where an id becomes an assertion and
-  not in the normalized layer, so the layer still says what the source
-  said and extending the list below costs a merge and not a re-normalize.
+  unrelated one. The rewrite happens where a name is rendered and not in
+  the normalized layer, so the layer still says what the source said and
+  extending the list below costs a merge and not a re-normalize.
 
   *Gated on the publisher, not on the shape.* The measurement argued for
   shape — the rewrite is safe on the whole sample whoever the registrant
@@ -1077,7 +1092,7 @@ stays.
   every one of those would have been rewritten. `publisher::ELSEVIER`
   holds 10.1016 and 10.1053 and nothing else; the counter, printed by
   registrant, is how it grows, and each addition is a full merge because
-  it changes the canonical spelling of names already written.
+  it makes two names one.
 
   *The DOI restated is not a publisher id, tested after the rewrite.*
   786 rows restate their own DOI only once rewritten, and the only two
@@ -1147,6 +1162,30 @@ stays.
   else is in the run. And it
   is itself a fact about a run, which is a divergence between a full merge
   and an incremental one (§11, item 24).
+
+  Later still the same day the canonical spelling moved out of the stored
+  form, because the list could not otherwise grow. 10.1006 and 10.1074
+  were added on the survey's evidence — 66 PII-shaped values and 19
+  articles written both ways under the first, 126 and 57 under the second
+  — and the next merge died while *reading* the registry:
+  `"reg1006:S0003-2697(96)90292-4" is not a name: not canonical`, line
+  5,310,863. A name was stored in its canonical spelling and `Name::parse`
+  refused one that was not, so the list was part of the on-disk format and
+  adding a registrant retroactively unspelled the 99 punctuated
+  `reg1006:`/`reg1074:` names journal batch 6 had sealed. Two rules went:
+  the rewrite in `Name::to_owned`, so a name keeps the spelling it was
+  written in, and the refusal in `Name::parse`, so it reads back in that
+  spelling whatever the list says later. `publisher::check`'s rules —
+  shape, length, printable ASCII, article numbers, a DOI, the collision
+  rule — are facts about the value and stayed. What runs over the
+  canonical spelling instead is `Name`'s equality and hash, which already
+  did, and now its order and its `Display`; `OwnedName` stopped deriving
+  the four and delegates to `Name`, which closes a latent disagreement
+  between an equality that folded the two spellings and an order that did
+  not. No byte under `merged/` changes — every name is written through
+  `Display` and `Display` still renders canonical, and the registry holds
+  no punctuated value under either registrant on the list — so no merge
+  version. 10.1006 and 10.1074 stay off until the user puts them back.
 
 ## 11. Open items
 
@@ -1276,11 +1315,216 @@ stays.
 15. **The registry's size.** 94 bytes a line as JSON, 379 MB for the
     sample's four million ids; the binary form of item 10 before the
     corpus.
-16. **Pass 2's memory.** 5.0 GB resident on the sample (§8), most of it
-    the unresolved rows' citation text and the four million works' rows;
-    the range shape of §8 bounds it, and the unresolved stream could be
-    written as it is read once shards are open per range. Before the
-    corpus, with item 10.
+16. **Pass 2's memory.** The 5.0 GB of §8 is a real measurement of a run
+    that no longer exists: it was taken when the merged layer held
+    4,039,076 works (§7), and `OwnedWork` has grown since — version 7
+    gave every stub name its citers, version 8 gave every rejection its
+    reason and every publisher id a name. The sentence beside it, that
+    the unresolved rows' citation text is most of it, does not survive
+    the arithmetic either. On today's types and today's counts
+    **`Merged.works` is 91 % of the resident floor, and 85 % of
+    `Merged.works` is the `records`, `fields` and `rejected` slots of
+    works that by definition have none.** The present figure is
+    unmeasured. `/usr/bin/time -l ol-rht merge --survey` prints it:
+    `--survey` runs both passes, `finish` and the invariants — so it
+    reaches the peak, which is inside `finish` — and writes nothing but
+    `merged/merge.lock`. The number to read is `maximum resident set
+    size`.
+
+    **What a work costs.** `cargo +nightly rustc -p merge --lib --
+    -Zprint-type-sizes` gives `size_of::<build::OwnedWork>()` = **1,920
+    bytes**: `records` 1,088 (`SmallVec<[OwnedRecord; 3]>`, an
+    `OwnedRecord` being 360 — a 176-byte `view::Owned`, a 24-byte
+    `OwnedName`, a 152-byte `SmallVec<[OwnedAssert; 3]>`), `fields` 520
+    (`OwnedFields`, of which the venue's `Field<OwnedVenue>` is 176 and
+    the title's 80), `names` 232 (`SmallVec<[OwnedNamed; 4]>`, an
+    `OwnedNamed` being 56 — a 24-byte name and a 24-byte
+    `SmallVec<[Citer; 1]>`), `rejected` 64, and 16 for the id, the
+    flags, the stub bit and padding.
+
+    The sample's merged layer at `data/merged/v2.8` holds **5,227,338
+    works, 148,210 held and 5,079,128 stubs** — the same 5,227,338 the
+    identity report reuses — with 6,544,183 edges, and 242,629 distinct
+    records behind the held ones. So, flat, before a single byte of the
+    text that hangs off these rows:
+
+    | structure | count × `size_of` | bytes |
+    |---|---|---|
+    | `Merged.works` | 5,227,338 × 1,920 | 10,036,488,960 (9.35 GiB) |
+    | — its stub half | 5,079,128 × 1,920 | 9,751,925,760 (9.08 GiB) |
+    | — its held half | 148,210 × 1,920 | 284,563,200 (271 MiB) |
+    | `Registry.names` floor | 5,238,452 × 32 | 167,630,464 |
+    | `Builder.stub_citers` floor | 5,870,063 × 28 | 164,361,764 |
+    | `Resolution.stubs` names | 5,870,063 × 24 | 140,881,512 |
+    | `Builder.stub_works` inner | 5,870,063 × 24 | 140,881,512 |
+    | `Builder.stub_works` outer | 5,079,128 × 24 | 121,899,072 |
+    | raw edges + deduped edges | 6,544,183 × 12 twice | 157,060,392 |
+    | `Builder.views` | 242,629 × 176 | 42,702,704 |
+    | `stub_parent` + `stub_name_work` | 5,870,063 × 4 twice | 46,960,504 |
+    | `holds` | 5,227,338 × 2 | 10,454,676 |
+    | `Resolution.records` + `.works` | 242,629 × 88, 148,210 × 104 | 36,765,192 |
+
+    **10.31 GiB**, of which `Merged.works` is 90.7 %. Unmeasured and not
+    in the table: the DOI text behind every `OwnedName` (2,071,850
+    distinct DOIs, each owned four times over — the stubs arena,
+    `stub_works`, the registry's map, and the stub's own row), the
+    per-record title, venue and set strings behind `views`, the hash
+    tables' capacity over their entries, and the `unresolved` and
+    `cited_as` rows, whose counts on this sample no report carries. On
+    disk those two are 75.5 MiB and 2.0 MiB of the layer's 220 MiB, and
+    an `OwnedUnresolved` is 208 bytes plus up to nine `Box<str>` of
+    citation text; `ol-rht merge --survey`'s merge report prints both
+    counts.
+
+    **One stub, followed through.** 4,513,264 of the 5,079,128 stubs —
+    88.9 % — have exactly one name (1: 4,513,264, 2: 342,804, 3:
+    221,821, 4+: 1,239). Take one: a DOI some PubMed record's reference
+    list cites and nothing holds. Pass 1 interns it in `Resolution.stubs`
+    (24 bytes and the DOI's own text) and gives it a `stub_parent` slot
+    (4). `stub_works()` clones it into a one-element `Vec<OwnedName>` —
+    a 24-byte outer `Vec`, a 24-byte heap block, a second copy of the
+    text — and `merge_assign` clones the whole list again into `all` for
+    the registry, a third; the registry's `names` map holds a fourth.
+    `Builder::new` gives it a `stub_name_work` slot (4). The one
+    reference that cites it pushes an 8-byte `Citer` into a `Vec` in
+    `stub_citers` (a 24-byte header and a heap block of its own). Then
+    `finish` builds it an `OwnedWork`: **1,920 bytes to carry a 4-byte
+    id, a 24-byte name, three one-byte verdicts and an 8-byte citer** —
+    fewer than forty bytes of content. 1,672 of the 1,920 are the
+    `records`, `fields` and `rejected` slots, which a stub is *defined*
+    as not having; another 168 are the three unused `OwnedNamed` slots.
+    Across the stubs that is 5,079,128 × 1,672 = **8,492,302,016 bytes
+    (7.91 GiB) of structurally empty inline capacity**, and the sort in
+    `finish` moves all 9.35 GiB of `works` to put them in id order —
+    and `sort_by_key` is a stable sort, so it also takes scratch at
+    1,920 bytes an element it holds, which is the other thing the
+    `--survey` peak will show.
+
+    **Shapes.** `works` is linear in *works* — held plus stubs, and
+    stubs are distinct names cited by something we hold and held by
+    nobody, so they grow with references read and shrink as a *fraction*
+    as coverage rises. `views` is linear in *records*; `edges` in *arcs*;
+    `unresolved` in arcs that resolve to nothing; `cited_as` in names per
+    reference × arcs landing on held works, which grows *faster* than
+    arcs as coverage rises; `stub_citers` in arcs landing on stubs, which
+    shrinks as it rises; the stubs arena, `stub_parent` and
+    `stub_name_work` in *stub names*; `Registry.names` in *names ever
+    minted*, the one structure linear in the store's history rather than
+    in the run's input.
+
+    **Which crosses the box first, and on what ratio.** `works`, and not
+    close. At 1,920 bytes a work it crosses the box's 128 GB at
+    66,666,667 works. The load-bearing number is not the work count but
+    **stubs per held work, 34.3 on the sample** (5,079,128 / 148,210):
+    the resident cost is 1,920 × (1 + 34.3) = **67,718 bytes of `works`
+    per held work**, against 1.52 KiB per held work for the whole layer
+    as written (220 MiB / 148,210) — a 44× amplification. At that ratio
+    the box is full at **1,890,191 held works**, thirteen times the
+    sample and two orders short of the corpus. The ratio is the thing to
+    watch, and every run already prints it: the merge report's `works: N
+    held, M stubs`, and in the identity report alone the stub count
+    against the registry's reused total.
+
+    **Options, ranked.**
+
+    1. **A stub is not a held work.** Split `OwnedWork` into a held row
+       and a stub row — `{ id, names }` — and `Merged.works` into two
+       lists that `layout::write` merges, which costs it nothing: it
+       already walks each kind forward once in id order. A `SmallVec<[T;
+       n]>` is 8 + max(*n* × `size_of::<T>()`, 16) bytes — the formula
+       checks against all six the merge instantiates — so with `names`
+       kept at inline capacity 4 a stub row is 240 bytes and the saving
+       is 5,079,128 × (1,920 − 240) = 8,532,935,040 bytes (7.95 GiB),
+       putting the box's limit at 12.6 M held works. Dropping the inline
+       capacity to 1 takes `names` from 232 bytes to 64 and the row to
+       72, the saving to 9,386,228,544 (8.74 GiB) and the limit to
+       29.2 M held works, at the price of a heap allocation for each of
+       the 565,864 stubs with two names or more. (By the same formula
+       `cited_by`'s `SmallVec<[Citer; 1]>` and a `SmallVec<[Citer; 2]>`
+       are both 24 bytes, the inline slot being unable to shrink below
+       the pointer and capacity it aliases: a second inline citer is
+       free.) Nothing on disk changes: `record::Work` is what is
+       written, and it is untouched. What it costs: `build.rs`
+       (`OwnedWork`, `Merged`, `held`, `stub`, `finish`),
+       `layout::write`, `report::merge`, `delta.rs` — which already
+       boxes `OwnedWork` in its event, for this reason — and
+       `serve::fixture`. No rule moves, no format moves, and the sort
+       drops from 9.35 GiB of rows moved to 620 MiB (148,210 × 1,920
+       held, 5,079,128 × 72 stub).
+    2. **Stubs never become rows.** The only thing pass 2 learns about a
+       stub is its citers; the names, their order and their promoted /
+       alias standing are settled at the end of pass 1. So pass 2 can
+       append `(work id, name ix, Citer)` — 16 bytes — to a spill file
+       as it reads references, and `finish` can sort that file and stream
+       stubs straight into the writer in id order, which is the order
+       `layout::write` already wants. `stub_citers`, `stub_works` and the
+       stub half of `works` all go: 9.08 GiB plus the 157 MiB of stub
+       tables, for one external sort of 6,544,183 × 16 = 104,706,928
+       bytes of 16-byte records, an upper bound since some arcs land on
+       held works. The box's limit becomes 66.7 M held works. What it gives
+       up is `Merged` as a value: the crate's tests read `merged.works`
+       and would need an iterator or a collect-for-tests path, and the
+       invariants that walk every row (`holds`, `live`, `is_stub`) must
+       be filled from the id lists rather than from the rows. Do this
+       after 1, not instead of it — 1 is what makes the stub row a
+       separate thing to stream.
+    3. **`NameIx` in the owned rows.** Pass 1 already interns every name;
+       pass 2's owned rows re-own the text. Carrying `NameIx` instead
+       would take `OwnedNamed` from 56 bytes to 32 and `OwnedCitedAs`
+       from 40 to 20, make `stub_works` a `Vec<Vec<NameIx>>` (5,870,063
+       × (24 − 4) = 117,401,260 bytes saved on the inner lists alone)
+       and hold each of the 2,071,850 DOIs' text once instead of four
+       times. The sets already write a symbol table per shard, so this
+       is an in-memory representation change only. It is also most of the
+       answer to the allocation count: pass 1 makes 87,640,842
+       allocations (16.8 per work), and `stub_works()` plus
+       `merge_assign`'s `all` account for 2 × 5,079,128 = 10,158,256 Vec
+       allocations and 2 × 2,071,850 = 4,143,700 string allocations
+       between them before pass 2 begins.
+    4. **Range-sharded pass 2**, §8's own answer: run it once per range
+       of `WorkId`s, the input read *k* times, memory bounded by *N/k*.
+       It is the multiplier of last resort, not the first fix — it
+       divides the cost but does not change the ratio, and without 1 and
+       2 it needs *k* in the tens before the corpus, which turns a merge
+       into a day. With 1 and 2 done, a small *k* suffices. A reference
+       from range *i* to range *j* must reach *j*'s shard, which is the
+       same spill-and-sort as 2; do them together.
+    5. **Arena allocation** for the 87.6 M allocations. Worth it for
+       time, not for the box: an arena does not reduce live bytes, and
+       options 1–3 retire most of those allocations as a side effect.
+       Revisit only if a measured run says allocation is the cost.
+
+    Two other things belong in whichever of these lands first.
+    `Assignment.lines` is resident through pass 2 in `merge_all` — 56
+    bytes a line plus its names, and nothing today because a steady-state
+    run appends none, but one `Mint` per work on a first merge of the
+    corpus, a third resident copy of every name. It should be streamed to
+    the file, not collected. And `stub_works()` is computed twice, once
+    in `merge_assign` and again in `Builder::new`; the second should take
+    the first's.
+
+    **Order against the rest of the list.** Independent of **item 10**:
+    the registry's fold is a different structure on a different axis
+    (names ever minted, not this run's works), and at 5,238,452 × 32 =
+    167,630,464 bytes it is 1.6 % of the floor. The two share a
+    currency, though — item 10's binary log and option 3's `NameIx` both
+    want names to be dense integers — so if 3 is taken, take it once, for
+    both, and tell item 10 that `Assignment.lines` is resident.
+    Independent of **item 22 / serving item 18** as well: the record
+    index retires `in_text`, `held_beside` and `by_text`, which are
+    one-byte flags inside a 40-byte `cited_as` row and an 8-byte `Citer`,
+    2.0 MiB of the layer on disk. It changes what pass 2 must *recompute*
+    and nothing about what it must *hold*. The memory plan should not
+    wait on either.
+
+    **Recommended.** Option 1 now, before the corpus and before item 10:
+    it is a day in `build.rs` and four call sites, changes no rule and no
+    written format, buys 8.74 GiB on today's sample and fifteen times the
+    headroom, and leaves the stub row as a separate thing that option 2
+    can stream later. Then re-measure with `/usr/bin/time -l ol-rht merge
+    --survey` and record the peak, the `unresolved` and `cited_as` counts
+    and the stubs-per-held ratio here, since none of the three is
+    measured today.
 17. **Journal-issue DOIs on articles.** 12 PubMed articles carry a DOI
     Crossref registered as a `journal-issue`: the publisher deposited the
     issue's DOI on every article. Flagged as a kind conflict; whether the

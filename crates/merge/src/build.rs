@@ -500,6 +500,8 @@ pub struct OwnedCitedAs {
     pub by_text: bool,
     #[allow(missing_docs)]
     pub in_text: bool,
+    #[allow(missing_docs)]
+    pub beside_held: bool,
 }
 
 impl OwnedCitedAs {
@@ -517,6 +519,7 @@ impl OwnedCitedAs {
             beside: self.beside,
             by_text: self.by_text,
             in_text: self.in_text,
+            beside_held: self.beside_held,
         }
     }
 }
@@ -1196,6 +1199,8 @@ impl Builder {
                         beside: false,
                         by_text: false,
                         in_text: false,
+                        // A relation names one work and nothing beside it.
+                        beside_held: false,
                     });
                 }
                 if stub { "stub" } else { "held" }
@@ -1318,6 +1323,15 @@ impl Builder {
                     let by_text = names
                         .iter()
                         .any(|n| backs(*n) && self.resolve(*n) == Target::Work(to, stub));
+                    // And whether a held work *other than this one* stands
+                    // beside the landing: then item 14 makes no stub name
+                    // of any name here when a later batch divides this
+                    // work, exactly as it makes none where the reference
+                    // lands on a stub. The same question, asked of the
+                    // same names, by the same rule (2026-09-19).
+                    let beside_held = names
+                        .iter()
+                        .any(|n| matches!(self.resolve(*n), Target::Work(w, false) if w != to));
                     for &name in names {
                         self.cited_as.push(OwnedCitedAs {
                             from,
@@ -1332,6 +1346,7 @@ impl Builder {
                             beside: self.resolve(name) == Target::Unknown,
                             by_text,
                             in_text: backs(name),
+                            beside_held,
                         });
                     }
                 }

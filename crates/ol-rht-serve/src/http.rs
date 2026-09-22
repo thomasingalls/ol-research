@@ -17,6 +17,14 @@
 //! taken. A refusal carries the gRPC code by name and the reason, under
 //! the HTTP status that code maps to, so both surfaces say the same
 //! thing, each in its own vocabulary.
+//!
+//! Each route declares what it takes, as a struct [`crate::query`] reads
+//! the query string into. That declaration is the only list of the
+//! names: what is refused is what it does not have, and the TypeScript
+//! the browser client builds its URLs from is generated from it
+//! ([`crate::ts`]), so a client that compiles is a client this surface
+//! will answer. It was written out three times until 2026-09-19, and the
+//! three fell out of step.
 
 // Every route is a thin call into the synchronous query core, which the
 // gRPC methods call the same way; there is nothing to await inside one.
@@ -25,34 +33,86 @@
 use std::fmt;
 use std::sync::Arc;
 
-use axum::extract::{FromRequestParts, Query, Request, State};
-use axum::http::request::Parts;
+use axum::extract::{Request, State};
 use axum::http::{HeaderValue, Method, StatusCode, Uri, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router, middleware};
+use serde::Deserialize;
 use tonic::{Code, Status};
 
 use crate::answers::{Answers, Direction};
 use crate::proto::v1 as pb;
+use crate::query::Params;
 use crate::service::{self, Service};
 
-/// The routes, under `/v1`: one per call in the protocol, every one a
-/// GET, since every one is a question. A work is named in a parameter
-/// and never in the path — a name is `doi:10.1000/x`, with a slash in
-/// it, and a path segment would have to carry it twice-encoded.
+/// The one list of the routes, read three ways: by `axum` as the router
+/// ([`routed`]), by the refusal that names them ([`ROUTES`]), and by the
+/// TypeScript as the map a client indexes by (`each_route`, walked from
+/// [`crate::ts`]). It was three lists until 2026-09-19, and a route in
+/// one and not another was a misleading 404 or a path no client could
+/// write.
+///
+/// A row is the path, the handler, what the handler reads the query
+/// string into and the message it answers with. The two types are not
+/// taken on trust: [`held`] fails to compile when they are not the
+/// handler's own.
+macro_rules! routes {
+    ($($path:literal => $handler:ident($params:ty) -> $response:ty,)+) => {
+        fn routed<A: Answers>() -> Router<Arc<Service<A>>> {
+            Router::new()
+                $(.route($path, get(held::<A, $params, $response, _, _, _>($handler::<A>))))+
+        }
+
+        /// The paths, for the refusal that names them.
+        pub(crate) const ROUTES: &[&str] = &[$($path),+];
+
+        /// Every route's path and two types, in the router's order.
+        #[cfg(test)]
+        pub(crate) fn each_route(visit: &mut impl crate::ts::EachRoute) {
+            $(visit.route::<$params, $response>($path);)+
+        }
+    };
+}
+
+// Under `/v1`: one per call in the protocol, every one a GET, since
+// every one is a question. A work is named in a parameter and never in
+// the path — a name is `doi:10.1000/x`, with a slash in it, and a path
+// segment would have to carry it twice-encoded.
+routes! {
+    "/v1/epoch" => epoch(EpochParams) -> pb::EpochInfo,
+    "/v1/resolve" => resolve(ResolveParams) -> pb::ResolveResponse,
+    "/v1/work" => work(WorkParams) -> pb::GetWorkResponse,
+    "/v1/references" => references(ListParams) -> pb::WorkPage,
+    "/v1/citers" => citers(ListParams) -> pb::WorkPage,
+    "/v1/search" => search(SearchParams) -> pb::SearchResponse,
+    "/v1/expand" => expand(ExpandParams) -> pb::ExpandResponse,
+    "/v1/related" => related(RelatedParams) -> pb::RelatedResponse,
+    "/v1/path" => path(PathParams) -> pb::PathResponse,
+}
+
+/// What a handler may answer with, for a route whose message is `R`.
+trait Body<R> {}
+impl<R> Body<R> for Json<R> {}
+impl<R> Body<R> for Result<Json<R>, Refusal> {}
+
+/// The handler, unchanged — having been held to the row it is listed in:
+/// it reads `P` and answers with `R`, or this does not compile.
+fn held<A, P, R, H, F, O>(handler: H) -> H
+where
+    A: Answers,
+    H: Fn(State<Arc<Service<A>>>, Params<P>) -> F,
+    F: Future<Output = O>,
+    O: Body<R>,
+{
+    handler
+}
+
+/// The routes, with what is not one refused by name and the origins
+/// allowed to ask.
 pub fn router<A: Answers>(service: Arc<Service<A>>, origins: Origins) -> Router {
-    Router::new()
-        .route("/v1/epoch", get(epoch::<A>))
-        .route("/v1/resolve", get(resolve::<A>))
-        .route("/v1/work", get(work::<A>))
-        .route("/v1/references", get(references::<A>))
-        .route("/v1/citers", get(citers::<A>))
-        .route("/v1/search", get(search::<A>))
-        .route("/v1/expand", get(expand::<A>))
-        .route("/v1/related", get(related::<A>))
-        .route("/v1/path", get(path::<A>))
+    routed::<A>()
         .fallback(no_route)
         .method_not_allowed_fallback(no_method)
         .layer(middleware::from_fn_with_state(origins, cors))
@@ -73,85 +133,143 @@ pub async fn serve<A: Answers>(
 }
 
 // --- the routes -----------------------------------------------------------
+//
+// Each route declares the parameters it takes as a struct, which is the
+// whole of what it takes: `crate::query` refuses anything else by that
+// declaration, and `crate::ts` generates the TypeScript the browser
+// client builds its URLs from out of the same struct, so the names are
+// written once. What a struct cannot say is a range, so the caps stay in
+// `service::bounded`, called here with the name this transport spells
+// the parameter by.
+
+/// A count the request left out, in the spelling [`service::bounded`]
+/// reads as "the default": zero. The protocol's own spelling too —
+/// prost writes an unset `uint32` as zero — so both transports hand the
+/// shared cap the same thing.
+fn count(given: Option<u32>) -> u32 {
+    given.unwrap_or(0)
+}
+
+/// What `/v1/epoch` takes: nothing. Declared all the same, so that a
+/// parameter sent to it is refused by the rule every other route is
+/// refused by, rather than by this one remembering to ask.
+#[derive(Debug, Deserialize)]
+#[cfg_attr(test, derive(::ts_rs::TS), ts(export_to = "serving.ts"))]
+pub(crate) struct EpochParams {}
 
 /// `GET /v1/epoch` — which epoch and batch the server answers from, its
 /// counts, and the terms.
 async fn epoch<A: Answers>(
     State(service): State<Arc<Service<A>>>,
-    params: Params,
-) -> Result<Json<pb::EpochInfo>, Refusal> {
-    params.only(&[])?;
+    _: Params<EpochParams>,
+) -> Json<pb::EpochInfo> {
     let a = service.current();
-    Ok(Json(service::epoch_info(&*a, service.terms())))
+    Json(service::epoch_info(&*a, service.terms()))
+}
+
+/// What `/v1/resolve` takes.
+#[derive(Debug, Deserialize)]
+#[cfg_attr(test, derive(::ts_rs::TS), ts(export_to = "serving.ts"))]
+pub(crate) struct ResolveParams {
+    /// A name — `doi:10.1000/x`, `pmid:12345678` — or a public id.
+    text: String,
 }
 
 /// `GET /v1/resolve?text=` — which work a name or public id is.
 async fn resolve<A: Answers>(
     State(service): State<Arc<Service<A>>>,
-    params: Params,
+    Params(params): Params<ResolveParams>,
 ) -> Result<Json<pb::ResolveResponse>, Refusal> {
-    params.only(&["text"])?;
     let a = service.current();
-    Ok(Json(service::resolved(
-        &*a,
-        service.terms(),
-        params.one("text")?,
-    )?))
+    Ok(Json(service::resolved(&*a, service.terms(), &params.text)?))
+}
+
+/// What `/v1/work` takes.
+#[derive(Debug, Deserialize)]
+#[cfg_attr(test, derive(::ts_rs::TS), ts(export_to = "serving.ts"))]
+pub(crate) struct WorkParams {
+    /// The work, by public id or by any name that points at it.
+    work: String,
 }
 
 /// `GET /v1/work?work=` — everything the merge knows about one work.
 async fn work<A: Answers>(
     State(service): State<Arc<Service<A>>>,
-    params: Params,
+    Params(params): Params<WorkParams>,
 ) -> Result<Json<pb::GetWorkResponse>, Refusal> {
-    params.only(&["work"])?;
     let a = service.current();
-    Ok(Json(service::one_work(
-        &*a,
-        service.terms(),
-        params.one("work")?,
-    )?))
+    Ok(Json(service::one_work(&*a, service.terms(), &params.work)?))
 }
 
-/// `GET /v1/references?work=&page=&cursor=&hydrate=` — one page of what
-/// a work cites.
+/// What `/v1/references` and `/v1/citers` take: the same page of the
+/// same shape, walked in opposite directions.
+#[derive(Debug, Deserialize)]
+#[cfg_attr(
+    test,
+    derive(::ts_rs::TS),
+    ts(export_to = "serving.ts", optional_fields)
+)]
+pub(crate) struct ListParams {
+    /// The work whose list this is.
+    work: String,
+    /// Arcs a page carries, to a cap of 100; 50 when it is not asked.
+    page_size: Option<u32>,
+    /// Where to resume, from the previous page's `cursor`. Empty, or
+    /// absent, is the start of the list.
+    cursor: Option<String>,
+    /// Whether each arc carries the summary of the work it points at.
+    /// Off unless asked, in either literal `true` or `false`.
+    hydrate: Option<bool>,
+}
+
+/// `GET /v1/references?work=&page_size=&cursor=&hydrate=` — one page of
+/// what a work cites.
 async fn references<A: Answers>(
     State(service): State<Arc<Service<A>>>,
-    params: Params,
+    Params(params): Params<ListParams>,
 ) -> Result<Json<pb::WorkPage>, Refusal> {
     list(&service, &params, Direction::References)
 }
 
-/// `GET /v1/citers?work=&page=&cursor=&hydrate=` — one page of what
+/// `GET /v1/citers?work=&page_size=&cursor=&hydrate=` — one page of what
 /// cites a work.
 async fn citers<A: Answers>(
     State(service): State<Arc<Service<A>>>,
-    params: Params,
+    Params(params): Params<ListParams>,
 ) -> Result<Json<pb::WorkPage>, Refusal> {
     list(&service, &params, Direction::Citers)
 }
 
 /// One page of a list. The stream sends page after page; a request here
 /// takes one, and the `cursor` the page carries asks for the next —
-/// empty when the list is done. `page` is the page's size, not its
-/// number, as it is in the protocol.
+/// empty when the list is done.
+///
+/// `page_size` is the arcs a page carries, which is what it says. There
+/// is no page number to confuse it with — a list is walked by cursor —
+/// but the parameter was called `page` until 2026-09-19, and a name that
+/// reads as a number is a wrong answer given confidently, which is the
+/// thing this surface is built not to do. The protocol still spells the
+/// field `page` (`ListRequest.page`), so the two transports differ in
+/// this one name: renaming it there would change nothing on the wire,
+/// where fields are numbered, but it would break every client that names
+/// them — the reflection descriptor this server registers among them —
+/// and the protocol is the user's to rename.
 fn list<A: Answers>(
     service: &Service<A>,
-    params: &Params,
+    params: &ListParams,
     direction: Direction,
 ) -> Result<Json<pb::WorkPage>, Refusal> {
-    params.only(&["work", "page", "cursor", "hydrate"])?;
     let a = service.current();
-    let id = service::work_id(&*a, params.one("work")?)?;
-    let page = service::bounded(
-        params.count("page")?,
+    let id = service::work_id(&*a, &params.work)?;
+    let page_size = service::bounded(
+        count(params.page_size),
         service::PAGE_DEFAULT,
         service::PAGE_MAX,
-        "page",
+        "page_size",
     )?;
     // Empty is the start of the list, which is what the protocol's empty
     // cursor means; anything else must be this epoch's.
-    let offset = match params.at_most_one("cursor")?.filter(|c| !c.is_empty()) {
+    let offset = match params.cursor.as_deref().filter(|c| !c.is_empty()) {
         Some(text) => service::cursor(text, a.epoch().epoch)?,
         None => 0,
     };
@@ -161,49 +279,167 @@ fn list<A: Answers>(
         id,
         direction,
         offset,
-        page,
-        params.flag("hydrate")?,
+        page_size,
+        params.hydrate.unwrap_or(false),
     )?))
 }
 
-/// `GET /v1/search?query=&limit=&facets=` — works matching a query, with
-/// facet counts over the matches.
+/// What `/v1/search` takes.
+///
+/// `facet_values` is the values kept per facet root, not a number of
+/// roots: the mapping's seven roots are all always answered, and this
+/// says how deep each one goes. The protocol calls the same field
+/// `facets`, which reads as a count of roots and is not one; renaming it
+/// there would break every client keying on the name, so the JSON
+/// spelling is the corrected one (the user, 2026-09-19).
+#[derive(Debug, Deserialize)]
+#[cfg_attr(
+    test,
+    derive(::ts_rs::TS),
+    ts(export_to = "serving.ts", optional_fields)
+)]
+pub(crate) struct SearchParams {
+    /// The query, as typed.
+    query: String,
+    /// Hits returned, to a cap of 100; 10 when it is not asked.
+    limit: Option<u32>,
+    /// Values kept per facet root, to a cap of 20; 5 when it is not
+    /// asked.
+    facet_values: Option<u32>,
+}
+
+/// `GET /v1/search?query=&limit=&facet_values=` — works matching a
+/// query, with facet counts over the matches.
 async fn search<A: Answers>(
     State(service): State<Arc<Service<A>>>,
-    params: Params,
+    Params(params): Params<SearchParams>,
 ) -> Result<Json<pb::SearchResponse>, Refusal> {
-    params.only(&["query", "limit", "facets"])?;
     let a = service.current();
+    let limit = service::bounded(
+        count(params.limit),
+        service::SEARCH_DEFAULT,
+        service::SEARCH_MAX,
+        "limit",
+    )?;
+    let facet_values = service::bounded(
+        count(params.facet_values),
+        service::FACETS_DEFAULT,
+        service::FACETS_MAX,
+        "facet_values",
+    )?;
     Ok(Json(service::searched(
         &*a,
         service.terms(),
-        params.one("query")?,
-        params.count("limit")?,
-        params.count("facets")?,
+        &params.query,
+        limit,
+        facet_values,
     )?))
 }
 
+/// Which way an expansion walks. Named and not numbered: the protocol's
+/// enum has no text form a query string could carry, and a number here
+/// would be a client writing `2` and meaning nothing it could read back.
+/// Absent is `both`, which is what an expansion was before they were
+/// split.
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "lowercase")]
+#[cfg_attr(test, derive(::ts_rs::TS), ts(export_to = "serving.ts"))]
+pub(crate) enum Walk {
+    /// Both directions at once.
+    Both,
+    /// What the seeds cite.
+    References,
+    /// What cites the seeds.
+    Citers,
+}
+
+impl From<Walk> for serve::Walk {
+    fn from(walk: Walk) -> Self {
+        match walk {
+            Walk::Both => Self::Both,
+            Walk::References => Self::References,
+            Walk::Citers => Self::Citers,
+        }
+    }
+}
+
+/// What `/v1/expand` takes.
+#[derive(Debug, Deserialize)]
+#[cfg_attr(
+    test,
+    derive(::ts_rs::TS),
+    ts(export_to = "serving.ts", optional_fields)
+)]
+pub(crate) struct ExpandParams {
+    /// The seed set, written one `seeds=` at a time: a name may hold any
+    /// punctuation a separator could use, so there is no separator. One
+    /// to 100 of them.
+    seeds: Vec<String>,
+    /// Which way to walk; `both` when it is not asked.
+    walk: Option<Walk>,
+    /// Neighbours returned, to a cap of 1000; 20 when it is not asked.
+    budget: Option<u32>,
+    /// Whether each neighbour carries a summary. Off unless asked.
+    hydrate: Option<bool>,
+}
+
 /// `GET /v1/expand?seeds=&seeds=&walk=&budget=&hydrate=` — one hop out
-/// from a seed set. `seeds` is repeated, once per seed, since a name may
-/// hold any punctuation a separator could use. `walk` is `references`,
-/// `citers` or `both`, named rather than numbered: the protocol's enum
-/// has no text form a query string could carry, and a number here would
-/// be a client writing `2` and meaning nothing it could read back.
+/// from a seed set.
 async fn expand<A: Answers>(
     State(service): State<Arc<Service<A>>>,
-    params: Params,
+    Params(params): Params<ExpandParams>,
 ) -> Result<Json<pb::ExpandResponse>, Refusal> {
-    params.only(&["seeds", "walk", "budget", "hydrate"])?;
     let a = service.current();
-    let seeds = params.every("seeds");
     Ok(Json(service::expanded(
         &*a,
         service.terms(),
-        &seeds,
-        service::walk_named(params.at_most_one("walk")?)?,
-        params.count("budget")?,
-        params.flag("hydrate")?,
+        &params.seeds,
+        params.walk.unwrap_or(Walk::Both).into(),
+        count(params.budget),
+        params.hydrate.unwrap_or(false),
     )?))
+}
+
+/// Which neighbourhood `/v1/related` answers. Required and never
+/// defaulted: the two are opposite questions, and a default would answer
+/// one of them to a client that meant the other.
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+#[cfg_attr(test, derive(::ts_rs::TS), ts(export_to = "serving.ts"))]
+pub(crate) enum RelatedBy {
+    /// Seeded with the work's references, walking their citers: papers
+    /// that cite the same sources as this one.
+    CitesSame,
+    /// Seeded with the work's citers, walking their references: papers
+    /// cited alongside this one.
+    CitedAlongside,
+}
+
+impl From<RelatedBy> for serve::By {
+    fn from(by: RelatedBy) -> Self {
+        match by {
+            RelatedBy::CitesSame => Self::CitesSame,
+            RelatedBy::CitedAlongside => Self::CitedAlongside,
+        }
+    }
+}
+
+/// What `/v1/related` takes.
+#[derive(Debug, Deserialize)]
+#[cfg_attr(
+    test,
+    derive(::ts_rs::TS),
+    ts(export_to = "serving.ts", optional_fields)
+)]
+pub(crate) struct RelatedParams {
+    /// The work the neighbourhood is measured around.
+    work: String,
+    /// Which of the two questions to answer.
+    by: RelatedBy,
+    /// Neighbours returned, to a cap of 1000; 20 when it is not asked.
+    limit: Option<u32>,
+    /// Whether each neighbour carries a summary. Off unless asked.
+    hydrate: Option<bool>,
 }
 
 /// `GET /v1/related?work=&by=&limit=&hydrate=` — what else cites what a
@@ -211,23 +447,41 @@ async fn expand<A: Answers>(
 /// (`by=cited-alongside`), in one call. The shorthand for the two
 /// questions the reader asks; `/v1/expand` is the primitive under it and
 /// stays as it is, for a seed set that is nobody's list.
-///
-/// `by` is named and required: the two are opposite questions, and a
-/// default would answer one of them to a client that meant the other.
 async fn related<A: Answers>(
     State(service): State<Arc<Service<A>>>,
-    params: Params,
+    Params(params): Params<RelatedParams>,
 ) -> Result<Json<pb::RelatedResponse>, Refusal> {
-    params.only(&["work", "by", "limit", "hydrate"])?;
     let a = service.current();
     Ok(Json(service::related(
         &*a,
         service.terms(),
-        params.one("work")?,
-        service::by_named(params.one("by")?)?,
-        params.count("limit")?,
-        params.flag("hydrate")?,
+        &params.work,
+        params.by.into(),
+        count(params.limit),
+        params.hydrate.unwrap_or(false),
     )?))
+}
+
+/// What `/v1/path` takes.
+#[derive(Debug, Deserialize)]
+#[cfg_attr(
+    test,
+    derive(::ts_rs::TS),
+    ts(export_to = "serving.ts", optional_fields)
+)]
+pub(crate) struct PathParams {
+    /// The work the path starts at.
+    from: String,
+    /// The work it is looked for at.
+    to: String,
+    /// Arcs a path may be long, to a cap of 10; 6 when it is not asked.
+    depth: Option<u32>,
+    /// Paths one answer may carry, each through a different middle, to a
+    /// cap of 10; 3 when it is not asked.
+    paths: Option<u32>,
+    /// Whether each work along a path carries a summary. Off unless
+    /// asked.
+    hydrate: Option<bool>,
 }
 
 /// `GET /v1/path?from=&to=&depth=&paths=&hydrate=` — the shortest
@@ -236,18 +490,17 @@ async fn related<A: Answers>(
 /// [`service::pathed`].
 async fn path<A: Answers>(
     State(service): State<Arc<Service<A>>>,
-    params: Params,
+    Params(params): Params<PathParams>,
 ) -> Result<Json<pb::PathResponse>, Refusal> {
-    params.only(&["from", "to", "depth", "paths", "hydrate"])?;
     let a = service.current();
     Ok(Json(service::pathed(
         &*a,
         service.terms(),
-        params.one("from")?,
-        params.one("to")?,
-        params.count("depth")?,
-        params.count("paths")?,
-        params.flag("hydrate")?,
+        &params.from,
+        &params.to,
+        count(params.depth),
+        count(params.paths),
+        params.hydrate.unwrap_or(false),
     )?))
 }
 
@@ -267,112 +520,6 @@ async fn no_method(method: Method, uri: Uri) -> Refusal {
         "{method} {}: every route is a GET",
         uri.path()
     )))
-}
-
-/// The routes, for the refusal that names them.
-const ROUTES: [&str; 9] = [
-    "/v1/epoch",
-    "/v1/resolve",
-    "/v1/work",
-    "/v1/references",
-    "/v1/citers",
-    "/v1/search",
-    "/v1/expand",
-    "/v1/related",
-    "/v1/path",
-];
-
-// --- the query string -----------------------------------------------------
-
-/// A request's query string, as the pairs it was written with: a
-/// repeated key is kept, since an expansion names its seeds one `seeds`
-/// at a time, and a key the route does not read is refused rather than
-/// ignored — a misspelled parameter is otherwise a wrong answer given
-/// confidently.
-#[derive(Debug)]
-struct Params(Vec<(String, String)>);
-
-impl<S: Send + Sync> FromRequestParts<S> for Params {
-    type Rejection = Refusal;
-
-    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
-        Query::<Vec<(String, String)>>::from_request_parts(parts, state)
-            .await
-            .map(|Query(pairs)| Self(pairs))
-            .map_err(|e| Refusal(Status::invalid_argument(e.body_text())))
-    }
-}
-
-impl Params {
-    /// Refuses any key the route does not read. Every route calls this
-    /// first, so a misspelling is named before whatever it left missing.
-    fn only(&self, known: &[&str]) -> Result<(), Refusal> {
-        for (key, _) in &self.0 {
-            if !known.contains(&key.as_str()) {
-                return Err(invalid(&format!(
-                    "{key:?} is not a parameter of this route; it takes {}",
-                    if known.is_empty() {
-                        "none".to_owned()
-                    } else {
-                        known.join(", ")
-                    }
-                )));
-            }
-        }
-        Ok(())
-    }
-
-    /// The one value of a key the route requires.
-    fn one(&self, key: &str) -> Result<&str, Refusal> {
-        match self.at_most_one(key)? {
-            Some(value) if !value.is_empty() => Ok(value),
-            Some(_) => Err(invalid(&format!("{key} is empty"))),
-            None => Err(invalid(&format!("{key} is required"))),
-        }
-    }
-
-    /// The value of a key given at most once.
-    fn at_most_one(&self, key: &str) -> Result<Option<&str>, Refusal> {
-        let mut found = self.0.iter().filter(|(k, _)| k == key);
-        let first = found.next().map(|(_, v)| v.as_str());
-        if found.next().is_some() {
-            return Err(invalid(&format!("{key} was given more than once")));
-        }
-        Ok(first)
-    }
-
-    /// Every value of a repeated key, in the order they were written.
-    fn every(&self, key: &str) -> Vec<String> {
-        self.0
-            .iter()
-            .filter(|(k, _)| k == key)
-            .map(|(_, v)| v.clone())
-            .collect()
-    }
-
-    /// A count, zero when absent — the protocol's spelling for "the
-    /// default", which the shared cap then applies.
-    fn count(&self, key: &str) -> Result<u32, Refusal> {
-        match self.at_most_one(key)? {
-            None => Ok(0),
-            Some(text) => text
-                .parse()
-                .map_err(|_| invalid(&format!("{key}={text:?} is not a count"))),
-        }
-    }
-
-    /// A flag, false when absent; `true` and `false` and nothing else.
-    fn flag(&self, key: &str) -> Result<bool, Refusal> {
-        match self.at_most_one(key)? {
-            None | Some("false") => Ok(false),
-            Some("true") => Ok(true),
-            Some(text) => Err(invalid(&format!("{key}={text:?}; true or false expected"))),
-        }
-    }
-}
-
-fn invalid(why: &str) -> Refusal {
-    Refusal(Status::invalid_argument(why.to_owned()))
 }
 
 // --- refusals -------------------------------------------------------------

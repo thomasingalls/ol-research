@@ -32,7 +32,14 @@ tonic-prost.workspace = true
 tonic-reflection.workspace = true
 
 [dev-dependencies]
+# The descriptor set, read back in `ts.rs` to prove no enum reaches a
+# response body. A build-dependency already; this is the same crate.
+prost-types.workspace = true
 smallvec.workspace = true
+# The browser client's TypeScript, generated from these same types (see
+# `src/ts.rs`). A dev-dependency, and the derive `build.rs` adds is
+# `cfg(test)`: nothing of ts-rs reaches the server binary.
+ts-rs.workspace = true
 # The JSON surface is tested over a real socket, with the blocking client
 # the ingestion side already uses; nothing new enters the tree for it.
 ureq.workspace = true

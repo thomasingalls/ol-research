@@ -25,7 +25,13 @@
 //! publisher's identifier must not be mangled to make ours tidier.
 //! [`ELSEVIER`] is that list of registrants and [`pii_shaped`] is what
 //! counts the values it is missing, so the list grows on evidence rather
-//! than on a guess about who else prints a PII.
+//! than on a guess about who else prints a PII. Each entry carries the
+//! evidence that put it there. The list decides a name's canonical
+//! spelling, but no longer what is stored: a name keeps the spelling it
+//! was written in and [`canonical`] is a view of it, computed where the
+//! name is rendered ([`crate::name::Name`], 2026-09-19). So the list is
+//! free to change, and a change costs a merge rather than a migration of
+//! the registry. See [`ELSEVIER`].
 //!
 //! A publisher id is scoped by the registrant that issued it, so a record
 //! with no DOI has nothing to scope one by and asserts no name through it:
@@ -55,13 +61,46 @@ use crate::name::Name;
 /// count against that registrant: it says that a publisher we do not know
 /// to be Elsevier prints Elsevier's identifier, and one of the two facts
 /// has to give. Nothing is guessed here — a registrant nobody has seen
-/// carrying a printed PII does not belong on the list — and extending the
-/// list changes the canonical spelling of names already written, so it is
-/// a full merge, not a patch (decision log, 2026-09-19).
+/// carrying a printed PII does not belong on the list.
+///
+/// **What a change costs, and why it once cost more.** A name used to be
+/// stored in its canonical spelling and `Name::parse` refused one that was
+/// not canonical, so putting a registrant on this list retroactively
+/// unspelled every name already sealed under it: the merge of 2026-09-19
+/// failed while *reading* the registry, before it did any work, on 99
+/// punctuated `reg1006:`/`reg1074:` names that journal batch 6 had sealed.
+/// The names are now stored as they were written and the canonical
+/// spelling is a view, so a sealed name reads back whatever this list says
+/// later and an entry costs a merge rather than a migration: two spellings
+/// that were two names become one, which moves works together, retires
+/// ids and rewrites the rows that carry them. That is a full merge, and
+/// the reason `merge::VERSION` mentions this list.
+///
+/// **What the counter says the registrant is not.** The id is issued by
+/// whoever produces the journal, and the registrant records only who
+/// registered that DOI: 110 of the 1,285 journal prefixes seen under
+/// 10.1016 are also seen under some other registrant, which is why this
+/// list keeps growing an entry at a time. `10.1007` is the case left off
+/// on the survey of 2026-09-19 — 23 PII-shaped values and 6 articles
+/// written both ways, against 10.1006's 66 and 19 and 10.1074's 126 and
+/// 57 — because it is Springer's prefix carrying a few journals that
+/// moved to Elsevier and at least one that did not (Psychometrika's
+/// `S003331230004477X` on `10.1007/bf02288892`), and because nine
+/// registrants nobody has proposed carry more of the same evidence
+/// (10.1038's 33 articles, 10.1136's 28, 10.1093's 19, 10.1111's 17).
+/// Whether the registrant is the right gate at all is the user's to
+/// answer; until it is, 1007 is not worth a merge on its own.
 pub const ELSEVIER: &[u32] = &[
     // The main prefix: 35,833 Elsevier-shaped values on the sample.
     1016, // Elsevier's second prefix in the sample (the user, 2026-09-19).
     1053,
+    // Off the list until the user says otherwise, the format no longer
+    // being the reason (2026-09-19): 1006 (Academic Press, 26 of its 28
+    // journal prefixes also issued under 10.1016 itself) and 1074
+    // (ASBMB's, whose two journals — the Journal of Biological
+    // Chemistry's S00219258 and Molecular & Cellular Proteomics'
+    // S15359476 — Elsevier produced end to end). Adding either is a
+    // decision and a merge, not a migration; the evidence is above.
 ];
 
 /// The longest publisher id worth keeping. The longest observed is the
@@ -418,7 +457,7 @@ mod tests {
         assert_eq!(punctuated.to_string(), "reg5555:S0006-3495(25)00123-4");
         assert!(pii_shaped("S0006-3495(25)00123-4"), "counted as off-list");
         assert!(!is_elsevier(Doi::parse("10.5555/x").unwrap().registrant()));
-        // Both of Elsevier's registrants do rewrite it.
+        // Every registrant on the list does rewrite it.
         for registrant in ELSEVIER {
             let text = format!("10.{registrant}/x");
             let doi = Doi::parse(&text).unwrap();
@@ -519,6 +558,68 @@ mod tests {
             assert_eq!(name.to_string(), format!("reg1016:{written}"), "{value:?}");
             assert_eq!(Name::parse(&name.to_string()).unwrap(), name);
         }
+    }
+
+    #[test]
+    fn the_registrants_the_survey_of_2026_09_19_found_are_still_off_the_list() {
+        // The survey's evidence is real — 66 PII-shaped values under
+        // 10.1006 and 126 under 10.1074, 19 and 57 articles written both
+        // ways, Crossref bare and PubMed punctuated. Adding them is now
+        // only a decision and a merge, and it is the user's to make. So
+        // both stay off, both spellings stay two names, and the off-list
+        // counter keeps reporting them. See ELSEVIER.
+        for (doi, punctuated, bare) in [
+            (
+                "10.1006/jmbi.1998.2346",
+                "S0022-2836(98)92346-4",
+                "S0022283698923464",
+            ),
+            (
+                "10.1074/jbc.273.47.31222",
+                "S0021-9258(19)59147-5",
+                "S0021925819591475",
+            ),
+        ] {
+            let dois = [Doi::parse(doi).unwrap()];
+            let scope = scoped(&dois);
+            assert!(!is_elsevier(scope.registrant().unwrap()), "{doi}");
+            let written = scope.name(punctuated).unwrap();
+            let read = scope.name(bare).unwrap();
+            assert_ne!(written, read, "{doi}: off the list, so two names");
+            // Both still round-trip, punctuation and all, which is what
+            // lets the registry keep the names it already sealed.
+            for name in [&written, &read] {
+                assert_eq!(Name::parse(&name.to_string()).unwrap(), *name);
+            }
+            assert!(pii_shaped(punctuated) && pii_shaped(bare), "{doi}");
+        }
+    }
+
+    #[test]
+    fn springers_prefix_is_left_off_and_keeps_being_counted() {
+        // The same evidence in miniature — 23 PII-shaped values under
+        // 10.1007 and 6 articles written both ways on the survey of
+        // 2026-09-19, against 10.1038's 33 and 10.1136's 28, which are
+        // off the list too. So the two spellings stay two names, the
+        // punctuated one keeps the punctuation Elsevier's machinery
+        // printed under Springer's DOI, and the counter keeps asking.
+        let dois = [Doi::parse("10.1007/s11605-012-1859-9").unwrap()];
+        let scope = scoped(&dois);
+        assert!(!is_elsevier(scope.registrant().unwrap()));
+        let punctuated = scope.name("S1091-255X(23)03813-1").unwrap();
+        let bare = scope.name("S1091255X23038131").unwrap();
+        assert_ne!(punctuated, bare, "not ours to merge");
+        assert_eq!(punctuated.to_string(), "reg1007:S1091-255X(23)03813-1");
+        assert_eq!(bare.to_string(), "reg1007:S1091255X23038131");
+        assert!(pii_shaped("S1091-255X(23)03813-1"), "counted as off-list");
+        assert!(pii_shaped("S1091255X23038131"), "counted as off-list");
+    }
+
+    #[test]
+    fn the_list_is_in_order_and_holds_each_registrant_once() {
+        // The doc asks for the digits in order; a duplicate or a value
+        // out of place is a merge conflict resolved by hand going wrong.
+        assert!(ELSEVIER.windows(2).all(|w| w[0] < w[1]), "{ELSEVIER:?}");
     }
 
     #[test]

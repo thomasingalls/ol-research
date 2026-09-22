@@ -97,4 +97,11 @@ pub use work::{SourceId, Sources, WorkId};
 /// ([`identity::Reason`]) and a holder only where a record holds the
 /// name, because a publisher id one source claims for more than one of
 /// its own records is no article's identifier and no record holds it.
-pub const VERSION: u32 = 8;
+/// Version 9 (2026-09-19): a `cited_as` row says whether the reference
+/// also named a held work *other than* the one it landed on. Item 14
+/// makes no stub name of such a reference's names, and until now only
+/// the pass that read the reference knew — a batch dividing that work
+/// later had to assume it named none, and minted stubs a full merge
+/// does not ([`record::CitedAs::beside_held`], serving plan §11, item
+/// 26). The mark is written by the second pass, so it is a full merge.
+pub const VERSION: u32 = 9;

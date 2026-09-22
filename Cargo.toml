@@ -65,6 +65,12 @@ md-5 = "0.11"
 # lists fit in the record itself, so parsing one allocates for the rare
 # long list only.
 smallvec = { version = "1", features = ["serde", "const_generics", "union"] }
+# The browser client's TypeScript, generated from the same Rust types the
+# JSON is serialized from (serving plan §7). A dev-dependency only: the
+# derive exists when `ol-rht-serve` is built for its own tests and never
+# in the server. `serde-compat` is on by default and is what makes the
+# generated field names the ones serde writes.
+ts-rs = "12"
 
 [workspace.lints.rust]
 missing_debug_implementations = "warn"

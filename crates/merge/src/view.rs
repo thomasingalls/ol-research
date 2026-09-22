@@ -162,6 +162,25 @@ pub struct Text {
 /// paragraphs do not run together — the XML entities decoded, whitespace
 /// runs collapsed. Not a parser: enough for a title or an abstract, whose
 /// markup is inline.
+///
+/// A `<` opens a tag only when what stands between it and the next `>`
+/// reads as one ([`is_tag`]); otherwise the `<` is text, and reading
+/// resumes at the character after it. Science writes inequalities, and
+/// taking every `<`…`>` for markup deleted the span between them, which
+/// in an abstract is prose: `p < 0.05 was met for n > 30` came out as
+/// `p 30`. On the OpenAlex works on disk that is 194 spans in 118 of
+/// 24,090 abstracts, several of them whole paragraphs (the user,
+/// 2026-09-19).
+///
+/// The entities are decoded in this same pass, so a `&lt;` reaches the
+/// output as a `<` and is never read again as a tag. That single pass
+/// used to be the only thing keeping Crossref's and PubMed's escaped `<`
+/// out of the tag branch — those two escape it, OpenAlex hands us the
+/// character itself — and now that [`is_tag`] does that work it is belt
+/// and braces. It stays single-pass deliberately: what a source means by
+/// a double-escaped `&lt;jats:p&gt;` — markup it escaped twice, or the
+/// characters themselves — is a question about the source, and
+/// re-scanning the decoded text would answer it silently.
 #[must_use]
 pub fn strip_markup(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
@@ -169,12 +188,15 @@ pub fn strip_markup(raw: &str) -> String {
     while let Some(c) = rest.chars().next() {
         if c == '<' {
             let after = &rest[1..];
-            if let Some(end) = after.find('>') {
+            if let Some(end) = after.find('>').filter(|&end| is_tag(&after[..end])) {
                 if is_block(&after[..end]) {
                     push_space(&mut out);
                 }
                 rest = &after[end + 1..];
             } else {
+                // Text, or a `<` with no `>` after it at all. Only the
+                // `<` is taken, so the `<i>` inside `(p < 0.05, <i>n</i>
+                // = 30)` is still read as the tag it is.
                 out.push('<');
                 rest = after;
             }
@@ -207,6 +229,91 @@ pub fn strip_markup(raw: &str) -> String {
         out.pop();
     }
     out
+}
+
+/// Whether what stands between a `<` and the next `>` reads as a tag: an
+/// optional `/`, an XML name, then nothing at all, a `/`, or whitespace
+/// and attributes. The shape is the whole test — an element we have
+/// never heard of is still an element, and this asks nothing about the
+/// name.
+///
+/// A bare word in angle brackets parses as a tag and is dropped, though
+/// the source may have meant the word: `<Base>`, `<Das>`, `X_<Pro>`. It
+/// is the same shape as `<i>`, so no rule can tell them apart, and
+/// guessing from the name would only move the mistake somewhere less
+/// predictable. On the OpenAlex works on disk it costs 9 spans of the
+/// 20,734. A comment or a declaration — `<!-- … -->`, `<?xml …?>` —
+/// does not parse as a tag and so survives as text; neither occurs in
+/// our sources, and a wart that shows is the safer mistake here.
+fn is_tag(inner: &str) -> bool {
+    let named = inner.strip_prefix('/').unwrap_or(inner);
+    let Some(rest) = take_name(named) else {
+        return false;
+    };
+    // The `/` of a self-closing tag — and equally the last character of
+    // an unquoted value like `href=http://example.org/`, which the
+    // attributes read below would have taken anyway.
+    let rest = rest.strip_suffix('/').unwrap_or(rest);
+    if rest.is_empty() {
+        return true;
+    }
+    rest.starts_with(char::is_whitespace) && attributes(rest)
+}
+
+/// What follows an XML name — a letter or `_`, then letters, digits,
+/// `.`, `-`, `_`, `:` — or `None` when the text does not open with one.
+/// ASCII only: every tag our sources write is.
+fn take_name(text: &str) -> Option<&str> {
+    let mut chars = text.char_indices();
+    let (_, first) = chars.next()?;
+    if !first.is_ascii_alphabetic() && first != '_' {
+        return None;
+    }
+    for (i, c) in chars {
+        if !c.is_ascii_alphanumeric() && !matches!(c, '.' | '-' | '_' | ':') {
+            return Some(&text[i..]);
+        }
+    }
+    Some("")
+}
+
+/// Whether what follows a tag's name reads as its attributes: a name,
+/// optionally `=` and a value, quoted or bare, over and over. Shape
+/// only — nothing is read out of them.
+fn attributes(mut rest: &str) -> bool {
+    loop {
+        rest = rest.trim_start();
+        if rest.is_empty() {
+            return true;
+        }
+        let Some(after_name) = take_name(rest) else {
+            return false;
+        };
+        let Some(value) = after_name.trim_start().strip_prefix('=') else {
+            // A bare attribute, which HTML allows and XML does not.
+            rest = after_name;
+            continue;
+        };
+        let value = value.trim_start();
+        rest = if let Some(quote) = value.chars().next().filter(|c| *c == '"' || *c == '\'') {
+            let quoted = &value[1..];
+            // A quote the span does not close means the `>` we stopped
+            // at stands inside the value, which is not well-formed;
+            // keeping the text is the safer mistake.
+            match quoted.find(quote) {
+                Some(end) => &quoted[end + 1..],
+                None => return false,
+            }
+        } else {
+            let end = value
+                .find(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '=' | '<' | '>'))
+                .unwrap_or(value.len());
+            if end == 0 {
+                return false;
+            }
+            &value[end..]
+        };
+    }
 }
 
 /// A tag whose contents stand apart from what follows.
@@ -646,6 +753,71 @@ mod tests {
             "Hello world Hello"
         );
         assert!(inverted_index("[1,2]").is_err());
+    }
+
+    /// The `<`…`>` spans below are all real, from the OpenAlex works on
+    /// disk, where 194 of them were being deleted whole (2026-09-19).
+    #[test]
+    fn an_inequality_is_not_a_tag() {
+        use super::strip_markup;
+        assert_eq!(
+            strip_markup("the threshold p < 0.05 was met for n > 30"),
+            "the threshold p < 0.05 was met for n > 30"
+        );
+        // A span that runs for sentences between one inequality and the
+        // next, all of it prose.
+        assert_eq!(
+            strip_markup(
+                "the infants who received dopamine had a significantly higher systolic BP, \
+                 a median of 39 mmHg (range 30-58), P < 0.05. In addition, 10 infants who \
+                 received dopamine, but only 3 who received dobutamine, had a systolic BP > \
+                 40 mmHg."
+            ),
+            "the infants who received dopamine had a significantly higher systolic BP, \
+             a median of 39 mmHg (range 30-58), P < 0.05. In addition, 10 infants who \
+             received dopamine, but only 3 who received dobutamine, had a systolic BP > \
+             40 mmHg."
+        );
+        // A tag inside such a span is still a tag.
+        assert_eq!(
+            strip_markup("(<i>P</i> < 0.05) and formed more myotubes (<i>P</i> < 0.01)"),
+            "(P < 0.05) and formed more myotubes (P < 0.01)"
+        );
+        assert_eq!(
+            strip_markup("lower FT3 than those without DN (<i>P<</i>0.05)."),
+            "lower FT3 than those without DN (P<0.05)."
+        );
+        // Neither a digit nor a space opens a name.
+        assert_eq!(
+            strip_markup("the \u{3b4} ^<13>C of the standard"),
+            "the \u{3b4} ^<13>C of the standard"
+        );
+        assert_eq!(
+            strip_markup("severe AKI (<1.6 mg/dL), mild AKI (>3.0 mg/dL)"),
+            "severe AKI (<1.6 mg/dL), mild AKI (>3.0 mg/dL)"
+        );
+        assert_eq!(
+            strip_markup("dans la gamme de concentration 4,6<x<5,3. Des exp\u{e9}riences"),
+            "dans la gamme de concentration 4,6<x<5,3. Des exp\u{e9}riences"
+        );
+        // Attributes, quoted and self-closing, are still read as tags.
+        assert_eq!(
+            strip_markup(r#"<a href="https://doi.org/10.5281/x" rel="noopener">DOI</a>"#),
+            "DOI"
+        );
+        assert_eq!(
+            strip_markup(r#"one<hr align="left" size="1" width="33%" />two"#),
+            "onetwo"
+        );
+        assert_eq!(strip_markup("a<br/>b"), "a b");
+        // Nothing to close the span, and a `<` at the very end.
+        assert_eq!(strip_markup("a <i unclosed"), "a <i unclosed");
+        assert_eq!(strip_markup("ends with <"), "ends with <");
+        assert_eq!(strip_markup("<"), "<");
+        assert_eq!(strip_markup("<>"), "<>");
+        // A bare word in angle brackets is the shape of a tag, and goes:
+        // `\u{ab}Das\u{bb} Wunderkind` was written with angle brackets.
+        assert_eq!(strip_markup("<<Das>> Wunderkind"), "<> Wunderkind");
     }
 
     use std::cmp::Ordering;

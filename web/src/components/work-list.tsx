@@ -1,6 +1,6 @@
 import { Link } from "@tanstack/react-router"
 import { Badge } from "@/components/ui/badge"
-import { nameText, primaryName, year, type Name, type Summary } from "@/api"
+import { nameText, primaryName, year, type Name, type Rendered } from "@/api"
 
 /** Render the names that point at a work, e.g. doi:10.1234/x, pmid:12345678. */
 export function Names({ names, omit }: { names: Name[]; omit?: Name | null }) {
@@ -25,8 +25,11 @@ export function Names({ names, omit }: { names: Name[]; omit?: Name | null }) {
   )
 }
 
-/** A row is a summary plus whatever its list adds: the asserters of an arc. */
-export interface Row extends Summary {
+/**
+ * A row is a summary — or as much of one as the server sent — plus whatever
+ * its list adds: the asserters of an arc.
+ */
+export type Row = Rendered & {
   /** Who asserted the arc, on a references or citers list. */
   by?: string[]
 }

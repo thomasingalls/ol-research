@@ -388,7 +388,15 @@ be shown instead.
 **The transport** is a second binary: gRPC first, decided 2026-09-15 on
 `tonic` 0.14 over `hyper` 1, with server streaming for a hub's citers
 and deadlines on every call; a JSON facade over the same core later if
-wanted, on `axum` 0.8. Landed 2026-09-16 as `ol-rht-serve` (SP4). The transport is where `WorkId` becomes public id
+wanted, on `axum` 0.8. Landed 2026-09-16 as `ol-rht-serve` (SP4). It was
+wanted: the facade landed 2026-09-19 as `ol_rht_serve::http`, nine GET
+routes under `/v1` on a listener of its own, each calling the same
+`service` function its gRPC method calls and answering the same message
+serialized as JSON — a browser cannot speak gRPC over `fetch`, and
+nothing is shaped twice, so the two transports cannot drift. The
+protocol's two streams answer one page a request there, resumed by the
+cursor the page carries; the origins a browser may read from are an
+exact list and never `*`. The transport is where `WorkId` becomes public id
 and back: nothing serialized outward carries a `WorkId`, and the core's
 types never reach the wire unmapped.
 
@@ -442,9 +450,15 @@ state kept outside the store, and a limit per principal on calls and on
   `ol-rht merge --batch <path>… [--public-key <file>]`, the incremental
   merge over the normalized sets at the paths (set files, prefixes or
   directories), with a report of what it minted, merged, dropped, added
-  and removed; `ol-rht-serve --store <root> --listen <addr> [--poll
-  <seconds>]`, which folds the journal every poll, one second by
-  default.
+  and removed; `ol-rht-serve --store <root> [--listen <addr>] [--http
+  <addr>|off] [--allow-origin <origin>]… [--poll <seconds>]`, which
+  folds the journal every poll, one second by default, and serves §7's
+  JSON facade on a second listener — `127.0.0.1:50052` unless told
+  otherwise, `off` to leave the port unbound, and the origins named
+  exactly, the Vite dev server's two in both spellings of loopback when
+  none is given. Both listeners are bound before anything else starts,
+  so a port already taken stops the server rather than leaving half of
+  it up.
 - **Fail fast.** A delta line whose batch is not the journal's stops the
   reader; a journal with a gap stops it; an epoch naming a base whose
   digest differs stops the open; a batch against an epoch older than the
@@ -614,7 +628,7 @@ state kept outside the store, and a limit per principal on calls and on
   hydrating a hundred held rows decompresses **25.6 MiB to keep 349 KB**.
   A block of held works is 687 KB raw where the average block is 38 KB,
   because stubs are 97 % of the index and nearly free while held rows are
-  large and cluster together. End to end, `/v1/citers?page=100` is
+  large and cluster together. End to end, `/v1/citers?page_size=100` is
   **0.5 ms** and the same page with `hydrate=true` is **20 ms** — forty
   times, all of it block decompression for rows thrown away.
 
@@ -1592,6 +1606,52 @@ state kept outside the store, and a limit per principal on calls and on
     to compute, which is exactly what a corpus that needs the bound will
     not be. The retrieval benchmarks of the inbox are what would settle
     it.
+
+33. **`resolve` cannot be attributed, and why.** Every other answer
+    names the sources it drew on: a work names who holds records of it, a
+    page of arcs names who asserted them, a path names the asserters
+    along it. A resolve names none — `Sources::NONE` — and that is the
+    honest stamp and not an oversight (2026-09-19). The names artifact
+    is text → `WorkId` and nothing besides (§3), and the
+    registry tail it folds past the epoch is no better: a `mint` or
+    `name` line carries an id, a name and a timestamp, and no source.
+    The merged layer does know — `NameRow::by` is exactly which sources
+    asserted a name for a work — and `names::build` reads that column
+    and drops it.
+
+    The work's own `held_by` is not a stand-in, and a stub shows why: on
+    epoch 7, `doi:10.1371/journal.pmed.1000097` resolves to a stub whose
+    `held_by` is empty and whose every name is marked asserted by PubMed
+    and Crossref. Who holds records of a work and who said a name is that
+    work are two different claims, and on 97 % of the index the first is
+    nobody.
+
+    What it would take, in the two halves the artifact has. **The base**
+    would carry a `Sources` per key, which is a `u8` over the three
+    sources today; the transducer's value is already a `u64` with the
+    `WorkId` in its low 32 bits and the shared flag at bit 63, so the
+    three bits ride in the value's spare middle rather than in a file of
+    their own, and the shared side list gains a byte per member. On the
+    epoch of 2026-09-19 that is 11,534,123 keys over a 145 MB
+    transducer; the values there are already one per key and so share
+    nothing, which is the case where widening them is cheapest, but the
+    number is a build away and not a calculation. Of those keys 5,238,452
+    are public ids, which no source asserted and which would carry the
+    empty set, truthfully. **The delta** needs no new format: the fold
+    already reads whole rows out of the works delta and already sees
+    `names[].by` on them (`NamesTail::apply_row`), so the tail can key a
+    name to its asserters without the registry changing — which matters,
+    because the registry is the store of record and adding a field to
+    the 5,350,333 lines it already holds is a different and much larger
+    decision. What wants checking first is whether every name event past
+    an epoch does arrive with a works-delta row for its work; where one
+    does not, the tail would have to answer with no sources, and an
+    answer whose attribution depends on how recently the name was
+    asserted is worse than one that never claims any.
+
+    Then a names base rebuilt and an epoch published, both the user's.
+    Until then the stamp stays empty, and the reason is written where
+    the empty stamp is set and not only here.
 
 ## 12. Sources consulted
 

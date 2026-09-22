@@ -11,8 +11,16 @@
 pub mod answers;
 pub mod convert;
 pub mod http;
+/// The query string a route reads its parameters from, as the struct
+/// the route declares: one list of names instead of three.
+mod query;
 pub mod service;
 pub mod terms;
+/// The browser client's TypeScript, from these same types. Tests only:
+/// it generates `web/src/generated/serving.ts` and fails when what is
+/// committed there is not what the protocol generates today.
+#[cfg(test)]
+mod ts;
 
 /// The generated protocol.
 #[allow(

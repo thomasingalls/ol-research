@@ -99,26 +99,66 @@ than showing an empty result. There is no mock data and no fallback anywhere.
 
 ## The API contract lives in one file
 
-`src/api.ts` holds every type and every route. It mirrors
-`crates/ol-rht-serve/proto/olrht/v1/serving.proto`, which the HTTP surface
-serves as JSON — the same messages, the same shape, **snake_case** field names.
-If the protocol moves, this file moves with it and nothing else has to.
+`src/api.ts` is the one place a screen calls the API from, and the one place
+its types come from. The types themselves are no longer written there: since
+2026-09-19 **both halves of every call** are generated from the Rust that
+serves them, into `src/generated/serving.ts`, and `api.ts` re-exports them. The
+server writes that file (`crates/ol-rht-serve/src/ts.rs`); `just ts-types`
+regenerates it and `just check` fails while it is stale. Do not edit it by hand
+— a change there is a change to `crates/ol-rht-serve/src/http.rs` or to
+`crates/ol-rht-serve/proto/olrht/v1/serving.proto`.
+
+Response bodies are generated from the Rust and not from the `.proto` because
+the bytes are serde's rendering of the prost types and not proto3 JSON: field
+names are **snake_case**, not `publicId`, and a `uint64` is a JSON number and
+not a string. A generator reading the protocol would be wrong on both.
+
+Requests are generated from the Rust for a different reason: they are not
+protocol messages at all. A route declares the parameters it takes as a struct
+and reads the query string into it, so the struct is at once what the server
+accepts, what it refuses, and what the generated `Routes` map says may be sent.
+Two of their names differ from the protocol's on purpose — `page_size` for its
+`page`, `facet_values` for its `facets` — and the struct is where the
+corrected spelling lives.
+
+`Routes` maps each path to its request and response, and the one `get` in
+`api.ts` is indexed by it:
+
+```ts
+function get<P extends keyof Routes>(
+  path: P,
+  params: Routes[P]["params"],
+): Promise<Routes[P]["response"]>
+```
+
+So a parameter this API does not read, a required one left out, a count sent as
+a string, a `by` that is not one of the two, or a path that is no route are each
+a **type error on the line the call is written on** — the same guarantee a route
+path already had against the router, now on the other end of the wire. On the
+morning of 2026-09-19 this client sent `page` where the route reads `page_size`
+and could only find out at runtime; that is what this is for.
+
+The refusal body is the one shape still written by hand, because the HTTP
+surface builds it and the protocol never mentions it.
 
 ```
-GET /v1/epoch                                        -> { answered, merged, nodes, works, arcs }
-GET /v1/resolve    ?text=                            -> { answered, outcome }
-GET /v1/work       ?work=                            -> { answered, work }
-GET /v1/references ?work=&page=&cursor=&hydrate=     -> { answered, arcs, cursor, total }
-GET /v1/citers     ?work=&page=&cursor=&hydrate=     -> { answered, arcs, cursor, total }
-GET /v1/search     ?query=&limit=&facets=            -> { answered, total, hits, facets }
-GET /v1/related    ?work=&by=&limit=&hydrate=        -> { answered, related, seeds_used, total, seeds_total }
+GET /v1/epoch                                         -> { answered, merged, nodes, works, arcs }
+GET /v1/resolve    ?text=                             -> { answered, outcome }
+GET /v1/work       ?work=                             -> { answered, work }
+GET /v1/references ?work=&page_size=&cursor=&hydrate= -> { answered, arcs, cursor, total }
+GET /v1/citers     ?work=&page_size=&cursor=&hydrate= -> { answered, arcs, cursor, total }
+GET /v1/search     ?query=&limit=&facet_values=       -> { answered, total, hits, facets }
+GET /v1/related    ?work=&by=&limit=&hydrate=         -> { answered, related, seeds_used, total, seeds_total }
 ```
+
+Read from `Routes` in `src/generated/serving.ts`, which is the authority; the
+table above is the same nine lines in prose.
 
 `by` is `cites-same` or `cited-alongside` — the same two strings the URL
 carries, so a tab is a link.
 
-`/v1/expand` and `/v1/path` also exist; no screen here uses them, so they are
-not in `api.ts`. In particular, related works are **one** call to `/v1/related`
+`/v1/expand` and `/v1/path` also exist and are in `Routes`; no screen here uses
+them, so there is no method for them on `api`. In particular, related works are **one** call to `/v1/related`
 and never two calls to `/v1/expand` stitched together here: expand seeds from
 whatever the caller passes it, so a client that seeds from the page of citers
 it happens to hold gets an answer no other client would get. The seeding is the
@@ -134,19 +174,23 @@ fields its own context adds, and one **`summary`**:
 plus `by` on an arc, and `touches`, `degree`, `score` on a related row. One
 shape, so `WorkRow` renders a row from any list without knowing which.
 
-`summary` is **absent unless the request asks to `hydrate`**, and absent for an
-id nothing behind it has a row — so it is read through `summaryOf()`, which
-falls back to the public id. The id alone is still a row and still a link.
+`summary` is **`null` unless the request asks to `hydrate`**, and null for an
+id nothing behind it has a row — `null` on the wire and not a missing key, so
+the generated type is `Summary | null` and never `summary?`. It is read through
+`summaryOf()`, which falls back to the public id. The id alone is still a row
+and still a link.
 
 Things the contract will punish you for getting wrong:
 
 - **Everything is a query parameter.** A work is never a path segment, because
   a name like `doi:10.1000/xyz` contains a slash.
 - **An unknown query parameter is a 400**, as is a doubled one, a non-numeric
-  count, or a `hydrate` that is not literally `true` / `false`. Send only the
-  parameters a route reads.
-- **Caps are refused, not clamped**: `page` <= 100 (50 by default), `limit` <=
-  100 (10), `facets` <= 20 (5). Related works ask for 25, and 100 on "Show more".
+  count, or a `hydrate` that is not literally `true` / `false` — `1`, `yes`,
+  `TRUE` and an empty value are all refused. Send only the parameters a route
+  reads, which since 2026-09-19 is what the types already say.
+- **Caps are refused, not clamped**: `page_size` <= 100 (50 by default),
+  `limit` <= 100 (10), `facet_values` <= 20 (5). Related works ask for 25, and
+  100 on "Show more".
 - **`seeds_used` against `seeds_total`.** A work with 882 citers may be seeded
   with fewer of them: `seeds_total` is what it had, `seeds_used` is what was
   walked, and the list says both — "measured from 200 of its 882 citers" —

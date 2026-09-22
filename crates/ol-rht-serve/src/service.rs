@@ -213,6 +213,25 @@ pub(crate) fn resolved<A: Answers>(
         None => return Err(Status::not_found(format!("{text}: no such work"))),
     };
     Ok(pb::ResolveResponse {
+        // No sources, and not for want of asking: this is the one answer
+        // the layer cannot attribute today (2026-09-19; §11, item 33).
+        // A resolve is answered out of the names artifact, a transducer
+        // from a name's text to a `WorkId` and nothing besides (§3), and
+        // the registry tail it folds past the epoch is no better — a
+        // `mint` or `name` line carries the id, the name and the
+        // timestamp, and no source at all. The merged
+        // layer does know: `merge::record::NameRow::by` is exactly which
+        // sources asserted a name for a work, and `serve::names::build`
+        // reads that column and does not keep it.
+        //
+        // Nothing adjacent stands in for it. The work's `held_by` is who
+        // holds records of the work, which is a different claim from who
+        // said this name is that work; a shared name has no one work to
+        // ask; a split's retired id has no row left to ask at all; and a
+        // public id was minted here, so no source asserted it in the
+        // first place. So the stamp says what is true — this answer
+        // names no source it can stand behind — rather than a plausible
+        // set of sources that would read as provenance and not be any.
         answered: Some(answered(a, terms, Sources::NONE)),
         outcome: Some(outcome),
     })
@@ -276,17 +295,20 @@ pub(crate) fn one_page<A: Answers>(
 ///
 /// # Errors
 ///
-/// A count over its cap, or a query the engine refuses.
+/// A query the engine refuses. The two counts arrive already bounded,
+/// because the transports spell them differently: gRPC's `facets` field
+/// is JSON's `facet_values`, which is what the number is (the user,
+/// 2026-09-19).
 pub(crate) fn searched<A: Answers>(
     a: &A,
     terms: &Terms,
     query: &str,
-    limit: u32,
-    facets: u32,
+    limit: usize,
+    facet_values: usize,
 ) -> Result<pb::SearchResponse, Status> {
-    let limit = bounded(limit, SEARCH_DEFAULT, SEARCH_MAX, "limit")?;
-    let facets = bounded(facets, FACETS_DEFAULT, FACETS_MAX, "facets")?;
-    let hits = a.search(query, limit, facets).map_err(|e| status(&e))?;
+    let hits = a
+        .search(query, limit, facet_values)
+        .map_err(|e| status(&e))?;
     Ok(pb::SearchResponse {
         answered: Some(answered(a, terms, Terms::all())),
         total: hits.total as u64,
@@ -315,6 +337,11 @@ pub(crate) fn searched<A: Answers>(
     })
 }
 
+/// The directions by the names a transport carrying text spells them
+/// with, which is the JSON surface's [`crate::http::Walk`] and the words
+/// the refusal below lists.
+pub(crate) const WALKS: [&str; 3] = ["both", "references", "citers"];
+
 /// Which arcs a hop follows, from the protocol's enum. Both transports
 /// name it the same way; an enum value the protocol does not have is
 /// refused, never quietly taken for the default.
@@ -325,23 +352,6 @@ pub(crate) fn walk(code: i32) -> Result<Walk, Status> {
         Ok(pb::Walk::Citers) => Ok(Walk::Citers),
         Err(_) => Err(Status::invalid_argument(format!(
             "walk {code} is not a direction; {} expected",
-            WALKS.join(", ")
-        ))),
-    }
-}
-
-/// The directions by the names the JSON surface spells them with.
-pub(crate) const WALKS: [&str; 3] = ["both", "references", "citers"];
-
-/// A direction by name, for a transport that carries text; absent is
-/// both, which is what an expansion was before they were split.
-pub(crate) fn walk_named(text: Option<&str>) -> Result<Walk, Status> {
-    match text {
-        None | Some("both") => Ok(Walk::Both),
-        Some("references") => Ok(Walk::References),
-        Some("citers") => Ok(Walk::Citers),
-        Some(other) => Err(Status::invalid_argument(format!(
-            "walk={other:?}; {} expected",
             WALKS.join(", ")
         ))),
     }
@@ -380,7 +390,9 @@ pub(crate) fn expanded<A: Answers>(
     })
 }
 
-/// The two questions by the names the JSON surface spells them with.
+/// The two questions by the names a transport carrying text spells them
+/// with, which is the JSON surface's [`crate::http::RelatedBy`] and the
+/// words the refusal below lists.
 pub(crate) const BYS: [&str; 2] = ["cites-same", "cited-alongside"];
 
 /// Which neighbourhood, from the protocol's enum; an enum value the
@@ -392,20 +404,6 @@ pub(crate) fn by(code: i32) -> Result<By, Status> {
         Ok(pb::By::CitedAlongside) => Ok(By::CitedAlongside),
         Err(_) => Err(Status::invalid_argument(format!(
             "by {code} is not a neighbourhood; {} expected",
-            BYS.join(", ")
-        ))),
-    }
-}
-
-/// A neighbourhood by name, for a transport that carries text. Required
-/// and never defaulted: the two are opposite questions, and guessing
-/// which one was meant would answer a question nobody asked.
-pub(crate) fn by_named(text: &str) -> Result<By, Status> {
-    match text {
-        "cites-same" => Ok(By::CitesSame),
-        "cited-alongside" => Ok(By::CitedAlongside),
-        other => Err(Status::invalid_argument(format!(
-            "by={other:?}; {} expected",
             BYS.join(", ")
         ))),
     }
@@ -634,8 +632,8 @@ impl<A: Answers> Serving for Service<A> {
             &*a,
             &self.terms,
             &req.query,
-            req.limit,
-            req.facets,
+            bounded(req.limit, SEARCH_DEFAULT, SEARCH_MAX, "limit")?,
+            bounded(req.facets, FACETS_DEFAULT, FACETS_MAX, "facets")?,
         )?))
     }
 

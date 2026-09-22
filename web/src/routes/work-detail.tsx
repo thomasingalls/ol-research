@@ -158,7 +158,7 @@ function Edges({ kind, id }: { kind: "references" | "citers"; id: string }) {
 
   const query = useInfiniteQuery({
     queryKey: [kind, id],
-    queryFn: ({ pageParam }) => api[kind](id, pageParam as string),
+    queryFn: ({ pageParam }) => api[kind](id, pageParam),
     initialPageParam: "",
     getNextPageParam: (last) => last.cursor || undefined,
   })

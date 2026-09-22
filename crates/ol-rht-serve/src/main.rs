@@ -15,6 +15,7 @@ use ol_rht_serve::proto::v1::serving_server::ServingServer;
 use ol_rht_serve::{Origins, Service, Terms};
 use serve::Serving;
 use tonic::transport::Server;
+use tonic::transport::server::TcpIncoming;
 
 const USAGE: &str = "usage: ol-rht-serve [--store <root>] [--listen <addr>] [--http <addr>|off] [--allow-origin <origin>]... [--poll <seconds>]";
 
@@ -84,39 +85,49 @@ async fn main() -> ExitCode {
         }
     };
     let mut epoch = serving.epoch().epoch;
-    eprintln!(
-        "ol-rht-serve: epoch {epoch}, batch {}, folded to {}, listening on {}",
-        serving.epoch().batch,
-        serving.watermark().batch,
-        args.listen
-    );
-    let addr = match args.listen.parse() {
+    let addr: std::net::SocketAddr = match args.listen.parse() {
         Ok(addr) => addr,
         Err(e) => {
             eprintln!("ol-rht-serve: {}: {e}", args.listen);
             return ExitCode::from(2);
         }
     };
-    // Bound before anything else starts, so a port already taken stops
-    // the server rather than leaving half of it up.
+    // Both ports bound before anything else starts, so a port already
+    // taken stops the server rather than leaving half of it up — and
+    // before the line below is printed, which until 2026-09-19 said the
+    // server was listening on a port it had not tried yet, and then
+    // failed underneath itself.
+    let grpc = match tokio::net::TcpListener::bind(addr).await {
+        Ok(listener) => listener,
+        Err(e) => {
+            eprintln!("ol-rht-serve: {}: {e}", args.listen);
+            return ExitCode::from(2);
+        }
+    };
     let json = if args.http == "off" {
         None
     } else {
         match tokio::net::TcpListener::bind(&args.http).await {
-            Ok(listener) => {
-                eprintln!(
-                    "ol-rht-serve: JSON on {}, readable from {}",
-                    args.http,
-                    origins.listed().join(", ")
-                );
-                Some(listener)
-            }
+            Ok(listener) => Some(listener),
             Err(e) => {
                 eprintln!("ol-rht-serve: {}: {e}", args.http);
                 return ExitCode::from(2);
             }
         }
     };
+    eprintln!(
+        "ol-rht-serve: epoch {epoch}, batch {}, folded to {}, listening on {}",
+        serving.epoch().batch,
+        serving.watermark().batch,
+        args.listen
+    );
+    if json.is_some() {
+        eprintln!(
+            "ol-rht-serve: JSON on {}, readable from {}",
+            args.http,
+            origins.listed().join(", ")
+        );
+    }
     let service = Arc::new(Service::new(serving, Terms::stub()));
     let json = json.map(|listener| {
         let service = service.clone();
@@ -206,7 +217,7 @@ async fn main() -> ExitCode {
         .add_service(reflection_v1)
         .add_service(reflection_v1alpha)
         .add_service(ServingServer::from_arc(service))
-        .serve_with_shutdown(addr, async {
+        .serve_with_incoming_shutdown(TcpIncoming::from(grpc), async {
             let _ = tokio::signal::ctrl_c().await;
             eprintln!("ol-rht-serve: stopping");
         })

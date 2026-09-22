@@ -380,8 +380,9 @@ impl Citation<'_> {
 /// needs to resolve that reference again when a later batch gives the id
 /// to a work or a stub (serving plan §11, item 26), which is why it is
 /// kept rather than counted, since 2026-09-18.
-// Four flags, each a fact §6 and §11 item 14 name about one row:
-// what it was for, how it landed, and whether it can move.
+// Five flags, each a fact §6 and §11 item 14 name about one row:
+// what it was for, how it landed, whether it can move, and whether a
+// held work stands beside it.
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CitedAs<'a> {
@@ -419,6 +420,16 @@ pub struct CitedAs<'a> {
     /// gives to another work takes the arc with it although the order
     /// puts a DOI last.
     pub in_text: bool,
+    /// The reference also named a name of a *held work other than the one
+    /// it landed on* (2026-09-19). Item 14 then says it makes no name of
+    /// its own — its other names are assertions about that work — and so,
+    /// when this row's work is divided later and this name is one no part
+    /// takes, the name is not a stub's. The batch had no way to ask this:
+    /// it knows the names the reference gave that this row holds, and
+    /// nothing about the ones another work holds, so it assumed no. That
+    /// is the one mark [`Citer::held_beside`] wants that only the pass
+    /// that read the reference can give.
+    pub beside_held: bool,
 }
 
 /// One reference that made no edge, keyed by the citing work.

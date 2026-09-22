@@ -43,8 +43,10 @@ pub use row::Row;
 /// version, and a stub name's sources are its citers'. Version 5
 /// (2026-09-19): the names base keeps the parts of every id a split
 /// retired, so an id with no survivor answers with them rather than not
-/// at all (serving plan §11, item 24).
-pub const VERSION: u32 = 5;
+/// at all (serving plan §11, item 24). Version 6 (2026-09-19): the
+/// cited-as rows carry the merged layer's new mark, whether a held work
+/// stood beside the landing (merge plan §11, item 14; §11, item 26).
+pub const VERSION: u32 = 6;
 
 /// The directory name for this binary's versions.
 #[must_use]
