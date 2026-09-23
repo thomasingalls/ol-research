@@ -1,0 +1,13 @@
+# The Cloud Native Buildpacks project descriptor. The homelab's Tekton
+# build reads the build environment below and nothing else in this file
+# (deployment plan §2).
+[_]
+schema-version = "0.2"
+
+# The two binaries. Without it the cargo buildpack runs `cargo install`
+# on every workspace member, the library crates included, and fails.
+# Picking members by name needs the patched cargo buildpack: upstream's
+# 0.16.0 misreads Rust 1.77+ member ids (upstream-contributions/).
+[[io.buildpacks.build.env]]
+name = "BP_CARGO_WORKSPACE_MEMBERS"
+value = "ol-rht,ol-rht-serve"

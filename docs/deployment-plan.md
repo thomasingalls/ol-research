@@ -209,13 +209,31 @@ repository's `main` produce an image in Forgejo:
   token's read access to this repository and the registry token's write
   access to `oxidation-labs/ol-rht` (secrets are the user's).
 
-Two choices in it are the user's: how the Rust build step is sized
-against `tekton-ci`'s limits (every container at most 3 CPU and 4 GiB,
-a default CPU limit of one CPU, and quotas of 3 CPU and 8 GiB requested
-in all), whether by raising those limits or by building elsewhere; and
-whether `just check` runs in the pipeline now or later. Flux's image
+Both of its choices were the user's, 2026-09-22 (§9): the build stays
+inside `tekton-ci`'s existing limits — it asks for one CPU and 2 GiB and
+may take the namespace's per-container ceiling of 3 CPU and 4 GiB, since
+CI cannot have the machine — and `just check` waits. Flux's image
 automation for the new image belongs to D5, with the Deployment that
 uses it.
+
+**Written 2026-09-22**, uncommitted, in the homelab unless marked:
+
+| File | What |
+|---|---|
+| `project.toml` (this repository) | `BP_CARGO_WORKSPACE_MEMBERS` |
+| `infra/cnb/builders/ol-rust-builder-amd64/builder.toml` | the builder: the homelab's stack, the meta-buildpack's order, lifecycle 0.21.20, the patched cargo |
+| `…/ol-rust-builder-amd64/README.md` | the runbook: mirror four buildpacks by amd64 digest, package the patched cargo, `pack builder create --publish`, pin the tag |
+| `infra/cnb/buildpacks/paketo-community-cargo/` | the patch and why it exists |
+| `tekton-ci/eventlistener-monorepo-ci.yaml` | both existing triggers named to the monorepo; a third for `oxidation-labs/ol-rht` |
+| `tekton-ci/triggertemplate-ol-rht-ci-run.yaml` | the run: amd64 node, 2 h timeout, source and cache workspaces |
+| `tekton-ci/pipeline-ol-rht-ci.yaml` | one task, on builder `ol-rust-builder-amd64:20260923064544` |
+| `tekton-ci/task-ol-rht-image-build.yaml` | clone and tag, `project.toml`, then `creator` under `flock` on the cache |
+| `tekton-ci/pvc-ol-rht-build-cache.yaml` | the cache, `local-path-retain` on the tower |
+| `tekton-ci/kustomization.yaml`, `tekton-pruner-namespace-config.yaml` | the new files; one run of history kept |
+
+`kubectl kustomize` builds the namespace with all four new objects. Nothing
+is committed, and no Tekton object has been applied or validated against a
+cluster.
 
 The web UI is a separate build and waits for the exposure plan (§7).
 
@@ -449,6 +467,10 @@ facade and the web UI go with it.
   noise but that a scanner like Trivy reacts, and a minimal image is
   secure by construction ("this approach has saved my bacon in the past,
   it will again in the future"). Not a goal for now (§11).
+- 2026-09-22, D1's two choices — the Rust build stays within
+  `tekton-ci`'s limits ("it's gonna be slow regardless, i can't just give
+  the whole machine to ci"), and `just check` in the pipeline waits. D1's
+  files were written the same day (§2), none committed.
 
 ## 10. Open items
 
@@ -479,8 +501,13 @@ facade and the web UI go with it.
    at D6 against the same graph on ZFS. The tower's NVMe is inferred to
    be most of the cluster's 1951 GiB of allocatable ephemeral storage,
    the Pis' cards being small; to be confirmed.
-11. **D1's two choices** (§2): the Rust build step against `tekton-ci`'s
-    limits, and `just check` in the pipeline now or later.
+11. ~~**D1's two choices.**~~ Decided 2026-09-22 (§2).
+12. **D1's first run** (§2): the Forgejo webhook on this repository and
+    the CI tokens' access to it, then the two pushes. The buildpacks and
+    the builder were published 2026-09-23 and the builder's tag is
+    pinned; Forgejo refused pack's multi-platform buildpack index, so the
+    patched cargo buildpack is published per architecture, like the
+    homelab's other mirrors.
 
 ## 11. Eventually
 
