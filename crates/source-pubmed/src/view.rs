@@ -99,9 +99,10 @@ fn place(ui: &str) -> Option<Place> {
         // Narrative; Bibliography; Video-Audio Media; and, first in the
         // update files pubmed26n1335 to 1339, Patient Education Handout,
         // Legal Case, Periodical Index and Overall, the summary record of
-        // a set of articles.
+        // a set of articles. Directory and Autobiography joined them from
+        // the oldest baseline files, pubmed26n0001 and 0002.
         "D017203" | "D019531" | "D019484" | "D019215" | "D019477" | "D062210" | "D016417"
-        | "D059040" | "D029282" | "D016418" | "D016453" | "D016424" => {
+        | "D059040" | "D029282" | "D016418" | "D016453" | "D016424" | "D016435" | "D020493" => {
             Place::Genre(Genre::Other, 30)
         }
         // Journal Article; Case Reports; Historical Article; Corrected and
