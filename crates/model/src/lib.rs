@@ -14,7 +14,14 @@
 /// a PMC id is kept as written, and a reference keeps every other id kind
 /// it carries. Ids the model cannot place are kept and never matched on
 /// (ingestion plan §6).
-pub const VERSION: u32 = 2;
+///
+/// Version 3, 2026-09-23: a publication date can be a seasonal volume
+/// (`PartialDate::Seasons`) — the years a volume spans with the season or
+/// seasons its issue names, as PubMed's oldest baseline files write them
+/// (`1976-1977 Winter`, `1977-1978 Fall-Winter`). Modelled rather than
+/// flattened to a year span, because the old records are full of them
+/// (the user's call, 2026-09-23).
+pub const VERSION: u32 = 3;
 
 pub mod claim;
 pub mod code;
@@ -35,7 +42,7 @@ pub use claim::Claim;
 pub use code::{CountryCode, CurrencyCode, Error as CodeError};
 pub use date::{
     Date, DateTime, Day, Error as DateError, MedlineError as MedlineDateError, Month, PartialDate,
-    Quarter, Season, TimeOfDay, Year,
+    Quarter, Season, Seasons, TimeOfDay, Year,
 };
 pub use doi::{Doi, Error as DoiError, Registrant};
 pub use id::{OpenAlexId, ParseError, PmcId, Pmid};

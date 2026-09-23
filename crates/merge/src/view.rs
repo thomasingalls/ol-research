@@ -424,6 +424,13 @@ pub fn bound(date: &PartialDate) -> Bound {
             month: Some(d.month()),
             day: Some(d.day()),
         },
+        // A seasonal volume compares as its first year: which of its two
+        // years a season falls in is what the source did not say.
+        PartialDate::Seasons(s) => Bound {
+            year: s.from_year,
+            month: None,
+            day: None,
+        },
         PartialDate::Span(span) => span.start,
     }
 }

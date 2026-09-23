@@ -90,6 +90,23 @@ pub struct Span {
     pub end: Bound,
 }
 
+/// A seasonal volume: the years a volume spans with the season or seasons
+/// its issue names — `1976-1977 Winter`, `1977-1978 Fall-Winter`, both
+/// pubmed26n0001. Exactly the two facts the source states, with no guess
+/// about which of the two years a season falls in; `from_year == to_year`
+/// and `from == to` when the source names one of either.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct Seasons {
+    /// The first year named.
+    pub from_year: Year,
+    /// The last year named.
+    pub to_year: Year,
+    /// The first season named.
+    pub from: Season,
+    /// The last season named.
+    pub to: Season,
+}
+
 /// A publication date at whatever precision the source gave.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum PartialDate {
@@ -103,6 +120,8 @@ pub enum PartialDate {
     YearSeason(Year, Season),
     /// Year and quarter.
     YearQuarter(Year, Quarter),
+    /// A seasonal volume, over one year or two.
+    Seasons(Seasons),
     /// A range.
     Span(Span),
 }
@@ -244,12 +263,14 @@ impl Month {
             .ok_or(Error::Month)
     }
 
-    /// The month for a three-letter English name.
+    /// The month for a three-letter English name, in any case: PubMed's
+    /// oldest records shout them (`1975 MAR-APR`, `1977 JAN-FEB`) and
+    /// sometimes only half of one (`1976 Jul-AUG`, pubmed26n0001).
     #[must_use]
     pub fn from_name(s: &str) -> Option<Self> {
         Self::NAMES
             .iter()
-            .position(|name| *name == s)
+            .position(|name| name.eq_ignore_ascii_case(s))
             .and_then(|i| Self::from_number(u8::try_from(i + 1).ok()?))
     }
 
@@ -697,10 +718,13 @@ const FULL_MONTHS: [&str; 12] = [
 /// `Mon`, or the month's full name, at the front of `s`.
 fn take_month(s: &str) -> Result<(Month, &str), MedlineError> {
     for (number, name) in (1u8..).zip(FULL_MONTHS) {
-        if let Some(rest) = s.strip_prefix(name)
+        // Case-insensitively, for the same reason `Month::from_name` is.
+        if s.len() >= name.len()
+            && s.is_char_boundary(name.len())
+            && s[..name.len()].eq_ignore_ascii_case(name)
             && let Some(month) = Month::from_number(number)
         {
-            return Ok((month, rest));
+            return Ok((month, &s[name.len()..]));
         }
     }
     if s.len() < 3 || !s.is_char_boundary(3) {
@@ -708,6 +732,15 @@ fn take_month(s: &str) -> Result<(Month, &str), MedlineError> {
     }
     let month = Month::from_name(&s[..3]).ok_or(MedlineError::Unrecognized)?;
     Ok((month, &s[3..]))
+}
+
+/// A season's name at the front of `s`.
+fn take_season(s: &str) -> Result<(Season, &str), MedlineError> {
+    let end = s
+        .find(|c: char| !c.is_ascii_alphabetic())
+        .unwrap_or(s.len());
+    let season = Season::from_name(&s[..end]).ok_or(MedlineError::Unrecognized)?;
+    Ok((season, &s[end..]))
 }
 
 /// `D` or `DD` at the front of `s`.
@@ -765,6 +798,12 @@ impl PartialDate {
     /// | `YYYY-YYYY`              | `1976-1977`              |
     /// | `YYYY Season`            | `2000 Spring`            |
     /// | `YYYY Nth Quarter`       | `2025 1st Quarter`       |
+    /// | `YYYY-YYYY Season`       | `1976-1977 Winter`       |
+    /// | `YYYY-YYYY Season-Season`| `1977-1978 Fall-Winter`  |
+    ///
+    /// The last two are [`PartialDate::Seasons`]. A season range within one
+    /// year (`2026 Spring-Summer`) is expressible in the model but not yet
+    /// parsed: no file has shown one.
     ///
     /// A range that starts with a month takes any of its four separators
     /// wherever the plain `-` is allowed, and a month may be spelled out in
@@ -780,6 +819,25 @@ impl PartialDate {
         }
         if let Some(rest) = rest.strip_prefix('-') {
             let (end, rest) = take_year(rest)?;
+            if let Some(rest) = rest.strip_prefix(' ') {
+                // `YYYY-YYYY Season` or `YYYY-YYYY Season-Season`: a
+                // seasonal volume, which the years alone would lose.
+                let (from, rest) = take_season(rest)?;
+                let to = if let Some(rest) = rest.strip_prefix('-') {
+                    let (to, rest) = take_season(rest)?;
+                    done(rest)?;
+                    to
+                } else {
+                    done(rest)?;
+                    from
+                };
+                return Ok(Self::Seasons(Seasons {
+                    from_year: year,
+                    to_year: end,
+                    from,
+                    to,
+                }));
+            }
             done(rest)?;
             return Ok(Self::Span(Span {
                 start: bound(year, None, None)?,
@@ -883,6 +941,7 @@ impl PartialDate {
             Self::Day(_) => "day",
             Self::YearSeason(..) => "year-season",
             Self::YearQuarter(..) => "year-quarter",
+            Self::Seasons(_) => "seasons",
             Self::Span(_) => "span",
         }
     }
@@ -934,8 +993,8 @@ impl<'de> Deserialize<'de> for DateTime {
 #[cfg(test)]
 mod tests {
     use super::{
-        Bound, Date, DateTime, Day, Error, MedlineError, Month, PartialDate, Quarter, Season, Span,
-        Year,
+        Bound, Date, DateTime, Day, Error, MedlineError, Month, PartialDate, Quarter, Season,
+        Seasons, Span, Year,
     };
 
     fn y(v: u16) -> Year {
@@ -963,7 +1022,12 @@ mod tests {
         assert_eq!(Month::parse("01"), Ok(Month::January));
         assert_eq!(Month::parse("1"), Ok(Month::January));
         assert_eq!(Month::parse("12"), Ok(Month::December));
-        for bad in ["jan", "JAN", "January", "0", "13", "001", "", " 1"] {
+        // Any case since 2026-09-23: PubMed's oldest records shout their
+        // months. `January` is still not a `Month` element's spelling; only
+        // a `MedlineDate` writes the full name.
+        assert_eq!(Month::parse("jan"), Ok(Month::January));
+        assert_eq!(Month::parse("JAN"), Ok(Month::January));
+        for bad in ["January", "0", "13", "001", "", " 1"] {
             assert_eq!(Month::parse(bad), Err(Error::Month), "{bad:?}");
         }
         assert_eq!(Month::September.name(), "Sep");
@@ -1160,6 +1224,105 @@ mod tests {
         );
     }
 
+    /// The four forms pubmed26n0001, the corpus's oldest file, spells in
+    /// upper case; `Jul-AUG` is its own record's mixture.
+    #[test]
+    fn medline_months_in_any_case() {
+        let span = |a: Bound, b: Bound| PartialDate::Span(Span { start: a, end: b });
+        let b = |year: u16, month: Option<Month>, day: Option<u8>| Bound {
+            year: y(year),
+            month,
+            day: day.map(d),
+        };
+        assert_eq!(
+            PartialDate::parse_medline("1975 MAR-APR"),
+            Ok(span(
+                b(1975, Some(Month::March), None),
+                b(1975, Some(Month::April), None)
+            ))
+        );
+        assert_eq!(
+            PartialDate::parse_medline("1976 MAR-APR"),
+            Ok(span(
+                b(1976, Some(Month::March), None),
+                b(1976, Some(Month::April), None)
+            ))
+        );
+        assert_eq!(
+            PartialDate::parse_medline("1977 JAN-FEB"),
+            Ok(span(
+                b(1977, Some(Month::January), None),
+                b(1977, Some(Month::February), None)
+            ))
+        );
+        assert_eq!(
+            PartialDate::parse_medline("1976 Jul-AUG"),
+            Ok(span(
+                b(1976, Some(Month::July), None),
+                b(1976, Some(Month::August), None)
+            ))
+        );
+        // The full names too, which take_month matches before the short
+        // ones, and a month element on its own.
+        assert_eq!(
+            PartialDate::parse_medline("1975 MARCH-APRIL"),
+            Ok(span(
+                b(1975, Some(Month::March), None),
+                b(1975, Some(Month::April), None)
+            ))
+        );
+        assert_eq!(Month::from_name("mar"), Some(Month::March));
+    }
+
+    /// Seasonal volumes, the other thing pubmed26n0001 taught us.
+    #[test]
+    fn medline_seasonal_volumes() {
+        let seasons = |from_year: u16, to_year: u16, from: Season, to: Season| {
+            Ok(PartialDate::Seasons(Seasons {
+                from_year: y(from_year),
+                to_year: y(to_year),
+                from,
+                to,
+            }))
+        };
+        assert_eq!(
+            PartialDate::parse_medline("1976-1977 Winter"),
+            seasons(1976, 1977, Season::Winter, Season::Winter)
+        );
+        assert_eq!(
+            PartialDate::parse_medline("1977-1978 Fall-Winter"),
+            seasons(1977, 1978, Season::Fall, Season::Winter)
+        );
+        // The years still stand alone, and a season range inside one year
+        // waits for a file that shows one.
+        assert_eq!(
+            PartialDate::parse_medline("1976-1977"),
+            Ok(PartialDate::Span(Span {
+                start: Bound {
+                    year: y(1976),
+                    month: None,
+                    day: None
+                },
+                end: Bound {
+                    year: y(1977),
+                    month: None,
+                    day: None
+                }
+            }))
+        );
+        for bad in [
+            "1976-1977 Wintr",
+            "1976-1977 Winter-",
+            "1976-1977 Winter Spring",
+        ] {
+            assert_eq!(
+                PartialDate::parse_medline(bad),
+                Err(MedlineError::Unrecognized),
+                "{bad:?}"
+            );
+        }
+    }
+
     #[test]
     fn medline_forms_not_yet_observed_fail() {
         for s in [
@@ -1173,7 +1336,6 @@ mod tests {
             "2026 Jan / Dec",
             "2026 Jan 1 - 5",
             "2026 Jan-Dec ",
-            "2026 jan-dec",
             "Jan-Dec 2026",
             "2026 Jan 1",
             "",

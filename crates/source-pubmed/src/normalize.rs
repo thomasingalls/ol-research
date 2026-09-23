@@ -1138,18 +1138,25 @@ fn journal<'n>(c: &'n MedlineCitation<'_>) -> Journal<'n> {
 }
 
 /// DTD content the file has never contained: an error on first sight.
+///
+/// `SpaceFlightMission` was on this list until 2026-09-23, when the oldest
+/// baseline file (pubmed26n0001) first showed it: 20 elements over 4
+/// records, NASA's indexing of space-biology studies. Its values are
+/// `Skylab 2 Project`, `Skylab 3 Project`, `Skylab 4 Project`, `Soyuz 22
+/// Project`, `OFO-1(A) Project`, `Flight Experiment`, `manned`, `unmanned`,
+/// `short duration` and `long duration` — free text about the flight, not
+/// about the work. Nothing here identifies a work, cites one or is searched,
+/// so the field is parsed and dropped rather than modelled, which would have
+/// cost a model version for ten phrases in the corpus's first file. The raw
+/// layer keeps it if it is ever wanted (the user's call, 2026-09-23).
 fn unmodelled(ctx: &Ctx, article: &PubmedArticle<'_>) -> Result<(), Error> {
-    let c = &article.medline_citation;
-    let checks: [(&'static str, bool); 2] = [
-        ("SpaceFlightMission", !c.space_flight_missions.is_empty()),
-        (
-            "ObjectList",
-            article
-                .pubmed_data
-                .as_ref()
-                .is_some_and(|d| !d.objects.is_empty()),
-        ),
-    ];
+    let checks: [(&'static str, bool); 1] = [(
+        "ObjectList",
+        article
+            .pubmed_data
+            .as_ref()
+            .is_some_and(|d| !d.objects.is_empty()),
+    )];
     for (name, present) in checks {
         if present {
             return Err(ctx.err(

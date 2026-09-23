@@ -429,14 +429,24 @@ mod normalized {
     #[test]
     fn unmodelled_content_fails_on_first_sight() {
         // GeneSymbolList was the example until the looked-up records of
-        // 2026-09-15 modelled it; SpaceFlightMission is still unseen.
+        // 2026-09-15 modelled it, and SpaceFlightMission until
+        // pubmed26n0001 showed it on 2026-09-23 and it was dropped;
+        // ObjectList is what remains unseen.
         let input = fixture("shortest").replace(
-            "<CitationSubset>IM</CitationSubset>",
-            "<CitationSubset>IM</CitationSubset><SpaceFlightMission>Apollo 11</SpaceFlightMission>",
+            "</ArticleIdList>",
+            "</ArticleIdList><ObjectList><Object Type=\"NCT\"><Param Name=\"id\">NCT00000000</Param></Object></ObjectList>",
         );
         let article = only_article(&input);
         let err = normalize(&article, &mut Collect::default()).unwrap_err();
-        assert_eq!(err.field, "SpaceFlightMission", "{err}");
+        assert_eq!(err.field, "ObjectList", "{err}");
+
+        // Dropped, not modelled: a record carrying it normalizes.
+        let input = fixture("shortest").replace(
+            "<CitationSubset>IM</CitationSubset>",
+            "<CitationSubset>IM</CitationSubset><SpaceFlightMission>Skylab 2 Project</SpaceFlightMission>",
+        );
+        let article = only_article(&input);
+        normalize(&article, &mut Collect::default()).expect("SpaceFlightMission is dropped");
         let input = fixture("shortest").replace(
             "<Minute>36</Minute>",
             "<Minute>36</Minute><Second>1</Second>",

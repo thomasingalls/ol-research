@@ -231,9 +231,25 @@ uses it.
 | `tekton-ci/pvc-ol-rht-build-cache.yaml` | the cache, `local-path-retain` on the tower |
 | `tekton-ci/kustomization.yaml`, `tekton-pruner-namespace-config.yaml` | the new files; one run of history kept |
 
-`kubectl kustomize` builds the namespace with all four new objects. Nothing
-is committed, and no Tekton object has been applied or validated against a
-cluster.
+**D1 landed 2026-09-23.** A push to `main` builds
+`git.tail0e0d4.ts.net/oxidation-labs/ol-rht:main-<sha7>-<unix time>` on the
+tower. The first green run, `main-1df8c7f-1790147889`: 3 minutes 32 seconds
+from a cold cache, 61.9 MB compressed, amd64, eleven layers, `ring` and
+`zstd-sys` compiled (so the build image has its C compiler) and nothing was
+killed at the 4 GiB ceiling. Both process types exist — `ol-rht`, the
+default, and `ol-rht-serve` — each `tini -g -- <binary>` with the binaries
+under `/workspace/source/repo/bin/`, so a Job's `command` is
+`/cnb/process/ol-rht` and the server's is `/cnb/process/ol-rht-serve`.
+
+Three failures came first, each worth keeping: the CI account could read only
+the monorepo, because the service accounts were set up when a monorepo was the
+plan (the user: "turns out that wasn't practical"); Forgejo refused pack's
+multi-platform buildpack index, so the patched cargo buildpack is published
+per architecture; and the first green builder carried an *unpatched* cargo,
+because the runbook's `git apply` line still had a `<homelab>` placeholder in
+it and failed silently — the patch brings its own tests, so `go test` passes
+on unpatched source too. The runbook now derives its paths and greps the
+source before building.
 
 The web UI is a separate build and waits for the exposure plan (§7).
 
@@ -317,6 +333,24 @@ of them are derived. Whether the graph earns its place there is measured
 at D6: the same graph built on both, the first queries after an epoch
 swap timed on each, since a cold start is where the disk shows.
 
+**Written 2026-09-23** (D2), uncommitted, all in the homelab:
+
+| File | What |
+|---|---|
+| `storage/storageclass-zfspv-ol-rht-bulk.yaml` | `tank/ol-rht/bulk`, default record size, `lz4`, thin, Retain, expandable |
+| `storage/storageclass-zfspv-ol-rht-serving.yaml` | `tank/ol-rht/serving`, 16 KiB records, `lz4`, thin, Retain, expandable |
+| `ol-rht/namespace.yaml` | the namespace, restricted pod security |
+| `ol-rht/pvc-store-bulk.yaml` | `ol-rht-store-bulk`, 4 TiB as a ceiling |
+| `ol-rht/pvc-store-serving.yaml` | `ol-rht-store-serving`, 600 GiB |
+| `ol-rht/README.md` | the one-time `zfs create` commands, the ARC note, and the two secrets with example manifests |
+| `ol-rht/kustomization.yaml`, `flux-system/ol-rht-kustomization.yaml` | applied after `storage` |
+
+Thin on purpose: the sizes are quotas on the datasets, not reservations, so a
+claim that is not full leaves the pool's space to Postgres and the rest. Both
+are the user's to adjust; the classes allow expansion. `primarycache=metadata`
+is a property of the parent dataset, not the class, so it is in the `zfs
+create` line the README carries.
+
 ZFS snapshots of the bulk dataset give the store of record the property
 HDFS gave at the user's previous job: a snapshot before each full merge
 makes the merge reversible.
@@ -396,18 +430,18 @@ tower. The swap-in spare of that decision is already the epoch: a full
 run builds a new epoch and the server moves to it when `epochs/current`
 flips.
 
-## 6. Getting the sample in
+## 6. The first data on the box
 
-The laptop's raw layer, receipts and listings are copied to the box, and
-everything after them is rebuilt there by a full run (§4), which proves
-the image, the store, the Job and the server before any large download,
-and asks nothing of the providers again. With no `kubectl cp` into a
-throwaway pod, the bytes go through SeaweedFS: a tarball uploaded over a
-port-forward into a bucket a committed Job creates, then a committed Job
-that unpacks it into the bulk volume.
+The box fetches its own (decided 2026-09-23, §9). The laptop's sample
+stays where it is: copying it in would have meant a staging bucket, a
+credential and 3.1 GB moved, to arrive at records no better for proving
+the pipeline than ones NLM will hand the box directly. One baseline file
+is a single bulk request to a provider that publishes it for exactly
+that, where re-fetching the sample's lookups — 2.8 GB of it, one id at a
+time — would not have been.
 
-The normalize invocations that built the sample's sets are to be written
-down once, as the full run's first stage.
+What the box downloads is therefore the store of record from its first
+line, which is also what the corpus (D6) will be.
 
 ## 7. Exposure
 
@@ -416,15 +450,23 @@ facade and the web UI go with it.
 
 ## 8. Milestones
 
-- **D1 — the image.** Tekton builds and pushes it from a push to this
-  repository; Flux's image automation follows the tag.
-- **D2 — the namespace and the store.** Namespace, the two datasets, the
-  StorageClasses and volumes; the key and the registry pull secret made
-  by the user.
-- **D3 — the sample in.** The tarball through SeaweedFS into the bulk
-  volume.
-- **D4 — the first full run on the box.** The Job of §4, then `epoch
-  check` as a Job of its own.
+- ~~**D1 — the image.**~~ Landed 2026-09-23 (§2): Tekton builds and
+  pushes it from a push to this repository. Flux's image automation is
+  still to come, with D5.
+- ~~**D2 — the namespace and the store.**~~ Done 2026-09-23: the
+  datasets made through the OpenEBS node pod (no debug pod needed), the
+  secrets written by the user, the claims Pending until a pod asks for
+  them, which is what D3 does.
+- **D3 and D4 — the first run.** Decided 2026-09-23: nothing is copied
+  from the laptop. Whatever the box's store holds, the box fetched (§9),
+  so `job-first-run-v1.yaml` takes the first baseline file NLM lists,
+  about 30 MB and published for bulk download, and carries it through
+  normalize, merge, the four artifacts and `epoch publish`, each stage an
+  init container with its own memory limit. The sample's 3.1 GB, of which
+  2.8 GB was fetched one id at a time, stays on the laptop; proving the
+  pipeline does not need the same records, only records.
+- **D4 — folded into D3** (above): the same Job publishes and checks
+  the epoch.
 - **D5 — the server.** The Deployment of §5, reachable inside the
   cluster; exposure is §7's.
 - **D6 — the corpus.** The downloads, then the full run at scale — where
@@ -449,6 +491,11 @@ facade and the web UI go with it.
 
   Also recorded: the tower's disks are four 4 TB SATA SSDs under ZFS;
   ol-rht may claim up to 100 GB of the cluster's memory.
+- 2026-09-23, the box fetches its own data — the user: "the data that
+  currently exists on this laptop should be re-downloaded on the box",
+  and for the first run, "i'm fine with 2, getting a baseline file from
+  pubmed to prove the mechanics work". The import Job and the SeaweedFS
+  credential it would have needed were dropped (§6).
 - 2026-09-22, later — the runs are Kubernetes Jobs (§4) and the store
   takes two ZFS datasets (§3), both as proposed. The user asked how
   possible it would be to put the graph on the NVMe's XFS instead of
@@ -471,6 +518,9 @@ facade and the web UI go with it.
   `tekton-ci`'s limits ("it's gonna be slow regardless, i can't just give
   the whole machine to ci"), and `just check` in the pipeline waits. D1's
   files were written the same day (§2), none committed.
+- 2026-09-23, D1 done (§2). Measured on the way: the build fits the
+  namespace's limits with room, and the Jammy build image compiles the
+  workspace's C dependencies.
 
 ## 10. Open items
 
@@ -480,18 +530,14 @@ facade and the web UI go with it.
    dataset's record size is measured at D6.
 3. **The ARC's ceiling** (§3): its value, chosen with the user before
    corpus scale; the Talos key confirmed.
-4. **The builder** (§2): a committed `builder.toml` for a Rust builder
-   on the homelab's stack, proposed; whether `ol-base-build` carries a C
-   compiler (the trial build answers it); the build step's size and its
-   cache volume.
+4. ~~**The builder.**~~ Built and published 2026-09-23 from a committed
+   `builder.toml`; `ol-base-build` does carry a C compiler.
 5. ~~**The cargo buildpack's workspace bugs.**~~ A patched build,
    2026-09-22 (§2). Left: `go test` on the patch and the reproduction
    run before and after it (both download; the user's), then the patched
    package built for amd64 and mirrored into Forgejo.
-6. **The first image** (§2): the `command` form confirmed on a patched
-   image; whether the server and the CLI want `tini`
-   (`BP_CARGO_TINI_DISABLED`); the homelab's own builder tried, for its
-   build image's C compiler.
+6. ~~**The first image.**~~ Built 2026-09-23 (§2). `tini` wraps both
+   processes; whether to keep it is a small question for D5.
 7. ~~**The image's base.**~~ Jammy base for now, 2026-09-22 (§2);
    distroless or from scratch eventually (§11).
 8. **The toolchain** (§2): `rust-toolchain.toml` says `stable`, so each
@@ -502,12 +548,7 @@ facade and the web UI go with it.
    be most of the cluster's 1951 GiB of allocatable ephemeral storage,
    the Pis' cards being small; to be confirmed.
 11. ~~**D1's two choices.**~~ Decided 2026-09-22 (§2).
-12. **D1's first run** (§2): the Forgejo webhook on this repository and
-    the CI tokens' access to it, then the two pushes. The buildpacks and
-    the builder were published 2026-09-23 and the builder's tag is
-    pinned; Forgejo refused pack's multi-platform buildpack index, so the
-    patched cargo buildpack is published per architecture, like the
-    homelab's other mirrors.
+12. ~~**D1's first run.**~~ Green 2026-09-23 (§2).
 
 ## 11. Eventually
 
