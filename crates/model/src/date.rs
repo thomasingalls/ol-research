@@ -800,10 +800,9 @@ impl PartialDate {
     /// | `YYYY Nth Quarter`       | `2025 1st Quarter`       |
     /// | `YYYY-YYYY Season`       | `1976-1977 Winter`       |
     /// | `YYYY-YYYY Season-Season`| `1977-1978 Fall-Winter`  |
+    /// | `YYYY Season-Season`     | `1978 Fall-Winter`       |
     ///
-    /// The last two are [`PartialDate::Seasons`]. A season range within one
-    /// year (`2026 Spring-Summer`) is expressible in the model but not yet
-    /// parsed: no file has shown one.
+    /// The last three are [`PartialDate::Seasons`].
     ///
     /// A range that starts with a month takes any of its four separators
     /// wherever the plain `-` is allowed, and a month may be spelled out in
@@ -850,6 +849,20 @@ impl PartialDate {
         }
         if let Some(season) = Season::from_name(rest) {
             return Ok(Self::YearSeason(year, season));
+        }
+        // `YYYY Season-Season`, one year's seasonal issue spanning two of
+        // them: `1978 Fall-Winter`, pubmed26n0002.
+        if let Ok((from, after)) = take_season(rest)
+            && let Some(after) = after.strip_prefix('-')
+            && let Ok((to, after)) = take_season(after)
+            && done(after).is_ok()
+        {
+            return Ok(Self::Seasons(Seasons {
+                from_year: year,
+                to_year: year,
+                from,
+                to,
+            }));
         }
         let (month, rest) = take_month(rest)?;
         if rest == "." {
@@ -1293,8 +1306,16 @@ mod tests {
             PartialDate::parse_medline("1977-1978 Fall-Winter"),
             seasons(1977, 1978, Season::Fall, Season::Winter)
         );
-        // The years still stand alone, and a season range inside one year
-        // waits for a file that shows one.
+        // A season range inside one year, which pubmed26n0002 showed.
+        assert_eq!(
+            PartialDate::parse_medline("1978 Fall-Winter"),
+            seasons(1978, 1978, Season::Fall, Season::Winter)
+        );
+        assert_eq!(
+            PartialDate::parse_medline("2026 Spring-Summer"),
+            seasons(2026, 2026, Season::Spring, Season::Summer)
+        );
+        // The years still stand alone.
         assert_eq!(
             PartialDate::parse_medline("1976-1977"),
             Ok(PartialDate::Span(Span {
@@ -1329,7 +1350,6 @@ mod tests {
             "2026 Jan",
             "2026 Jan..",
             "2026 Febr",
-            "2026 Spring-Summer",
             "2026 Jan-",
             "2026 Jan -Dec",
             "2026 Jan- Dec",
