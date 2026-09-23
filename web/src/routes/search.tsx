@@ -1,12 +1,23 @@
 import { useEffect, useState } from "react"
 import { useQuery } from "@tanstack/react-query"
 import { createRoute, useNavigate } from "@tanstack/react-router"
+import { SearchIcon } from "lucide-react"
 import { api } from "@/api"
 import { rootRoute } from "@/routes/root"
-import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
+import {
+  InputGroup,
+  InputGroupAddon,
+  InputGroupInput,
+} from "@/components/ui/input-group"
+import {
+  Empty,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from "@/components/ui/empty"
 import { WorkList } from "@/components/work-list"
-import { Empty, ErrorBox, LoadingRows } from "@/components/states"
+import { ErrorBox, LoadingRows } from "@/components/states"
 
 const LIMIT = 50
 
@@ -33,7 +44,7 @@ function Search() {
   // Back, forward, or a pasted link moves the URL under us; the box follows it.
   useEffect(() => setDraft(q), [q])
 
-  // Search runs on submit, not on every keystroke: fewer requests, and the
+  // Search runs on Enter, not on every keystroke: fewer requests, and the
   // results stop shifting under the cursor while you type. Submitting is a
   // navigation, so every search you ran is a history entry you can go back to.
   const search = useQuery({
@@ -44,52 +55,86 @@ function Search() {
 
   return (
     <div className="space-y-6">
+      {/* No submit button: Enter submits, since this is the form's only
+          text field. An empty box submits to the bare `/`. */}
       <form
-        className="flex gap-2"
         onSubmit={(event) => {
           event.preventDefault()
           void navigate({ to: "/", search: { q: draft.trim() } })
         }}
       >
-        <Input
-          value={draft}
-          onChange={(event) => setDraft(event.target.value)}
-          placeholder="Search works…"
-          autoFocus
-        />
-        <Button type="submit" disabled={draft.trim().length === 0}>
-          Search
-        </Button>
+        <InputGroup>
+          <InputGroupInput
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+            placeholder="Search works…"
+            autoFocus
+          />
+          <InputGroupAddon>
+            <SearchIcon />
+          </InputGroupAddon>
+        </InputGroup>
       </form>
 
-      {q.length === 0 && <Empty>Type a query and press Search.</Empty>}
+      {q.length === 0 && <Corpus />}
 
       {q.length > 0 && search.isPending && <LoadingRows />}
       {search.isError && <ErrorBox error={search.error} />}
 
-      {search.isSuccess && (
-        <>
-          <p className="text-muted-foreground text-sm">
-            {search.data.total} {search.data.total === 1 ? "work" : "works"} for{" "}
-            <span className="font-mono">{q}</span>
-            {search.data.total > search.data.hits.length &&
-              ` · showing the first ${search.data.hits.length}`}
-          </p>
+      {search.isSuccess &&
+        (search.data.hits.length === 0 ? (
+          <Empty>
+            <EmptyHeader>
+              <EmptyMedia variant="icon">
+                <SearchIcon />
+              </EmptyMedia>
+              <EmptyTitle>No matches</EmptyTitle>
+            </EmptyHeader>
+          </Empty>
+        ) : (
+          <>
+            <p className="text-muted-foreground text-sm">
+              {search.data.total} {search.data.total === 1 ? "work" : "works"}{" "}
+              for <span className="font-mono">{q}</span>
+              {search.data.total > search.data.hits.length &&
+                ` · showing the first ${search.data.hits.length}`}
+            </p>
 
-          {search.data.hits.length === 0 ? (
-            <Empty>Nothing matched.</Empty>
-          ) : (
-            /* A hit carries a title and an id; year and venue live on the
-               work itself, one click away. */
+            {/* A hit carries a title and an id; year and venue live on the
+                work itself, one click away. */}
             <WorkList
               rows={search.data.hits.map((hit) => ({
                 public_id: hit.public_id,
                 title: hit.title,
               }))}
             />
-          )}
-        </>
-      )}
+          </>
+        ))}
     </div>
+  )
+}
+
+/**
+ * Before any query: what there is to search, not how to search it. The counts
+ * are the epoch the footer already asked for, so this costs no request; until
+ * they arrive, or if they never do, the icon stands alone.
+ */
+function Corpus() {
+  const epoch = useQuery({ queryKey: ["epoch"], queryFn: api.epoch })
+
+  return (
+    <Empty>
+      <EmptyHeader>
+        <EmptyMedia variant="icon">
+          <SearchIcon />
+        </EmptyMedia>
+        {epoch.isSuccess && (
+          <EmptyDescription className="tabular-nums">
+            <p>{epoch.data.works.toLocaleString()} works</p>
+            <p>{epoch.data.arcs.toLocaleString()} citations</p>
+          </EmptyDescription>
+        )}
+      </EmptyHeader>
+    </Empty>
   )
 }

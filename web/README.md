@@ -253,7 +253,8 @@ pnpm dlx shadcn@4.21.0 add <component>
 ```
 
 Keep the version pinned to something at least two weeks old. Currently
-installed: `button`, `input`, `card`, `badge`, `skeleton`, `alert`.
+installed: `button`, `input`, `card`, `badge`, `skeleton`, `alert`,
+`input-group`, `empty`, and `textarea`, which `input-group` imports.
 
 The related-works tabs are not a `tabs` component. Which tab is open lives in
 the URL, so each tab is a `Link` — a real one, that can be middle-clicked,
