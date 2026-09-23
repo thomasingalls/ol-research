@@ -3,11 +3,23 @@
 @import "shadcn/tailwind.css";
 @import "@fontsource-variable/geist";
 
+/* The Oxidation Labs wordmark face, copied from ol-homepage
+   (prototype/parts/fonts). A subset: it holds only the glyphs of
+   "oxidation labsThomasIngalls", which is why the wordmark is lowercase. */
+@font-face {
+    font-family: "Love Ya Like A Sister";
+    font-style: normal;
+    font-weight: 400;
+    font-display: swap;
+    src: url("./assets/fonts/love-ya-like-a-sister-400-subset.woff2") format("woff2");
+}
+
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
     --font-heading: var(--font-sans);
     --font-sans: 'Geist Variable', sans-serif;
+    --font-brand: 'Love Ya Like A Sister', cursive;
     --color-sidebar-ring: var(--sidebar-ring);
     --color-sidebar-border: var(--sidebar-border);
     --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
