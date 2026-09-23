@@ -61,6 +61,19 @@ enum Place {
 /// Retracted Publication: the record was retracted (status, not genre).
 const RETRACTED_PUBLICATION: &str = "D016441";
 
+/// Where a publication type sits in the table, as one word: the genre it
+/// gives a record, `qualifier` for the types that say nothing about genre,
+/// or `None` when the table has never seen it — which is what stops a merge
+/// (`ol-rht pubmed genres`, so the corpus can be asked before it is merged
+/// rather than after).
+#[must_use]
+pub fn genre_of(ui: &str) -> Option<&'static str> {
+    Some(match place(ui)? {
+        Place::Genre(genre, _) => genre.name(),
+        Place::Qualifier => "qualifier",
+    })
+}
+
 /// The table, by descriptor UI. Priorities: a notice about another work
 /// (retraction, erratum, concern) over the base a record cannot be
 /// without (article); a review over the article it also is.
@@ -350,7 +363,23 @@ fn person(p: &PersonName<'_>) -> String {
 mod tests {
     use merge::kind::Genre;
 
-    use super::{Place, place};
+    use super::{Place, genre_of, place};
+
+    /// What `ol-rht pubmed genres` answers with: the table asked rather than
+    /// printed, so a corpus can be checked before it is merged.
+    #[test]
+    fn genre_of_names_the_place_or_nothing() {
+        assert_eq!(genre_of("D016428"), Some("article"));
+        assert_eq!(genre_of("D016454"), Some("review"));
+        // A study design says nothing about genre.
+        assert_eq!(genre_of("D013485"), Some("qualifier"));
+        // The two the oldest baseline files added, 2026-09-23.
+        assert_eq!(genre_of("D016435"), Some("other"));
+        assert_eq!(genre_of("D020493"), Some("other"));
+        // Not a publication type at all, and not in the table.
+        assert_eq!(genre_of("D999999"), None);
+        assert_eq!(genre_of(""), None);
+    }
 
     #[test]
     fn the_sample_publication_types_are_all_in_the_table() {

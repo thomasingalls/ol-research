@@ -118,6 +118,7 @@ const USAGE: &str = "usage:
   ol-rht <pubmed|crossref|openalex> list [--store <root>] [--mailto <address>] [--seed <file> --by <doi|pmid|pmc|openalex>]
   ol-rht <pubmed|crossref|openalex> fetch <listing> [--store <root>] [--workers N] [--limit N] [--mailto <address>]
   ol-rht <pubmed|crossref|openalex> ingest <listing> [--store <root>] [--workers N] [--limit N] [--out <dir>] [--mailto <address>]
+  ol-rht pubmed genres < publication-type-uis.txt
   ol-rht merge identity [--store <root>] [--limit N] [--survey]
   ol-rht merge [--store <root>] [--limit N] [--survey] [--public-key <file>]
   ol-rht merge --batch <path>... [--store <root>] [--public-key <file>]
@@ -190,6 +191,7 @@ fn main() -> ExitCode {
                 ("pubmed", "list") => list::<Pubmed>(&opts),
                 ("pubmed", "fetch") => fetch::<Pubmed>(&opts),
                 ("pubmed", "ingest") => ingest::<Pubmed, PubmedStats>(&opts),
+                ("pubmed", "genres") => genres(),
                 ("crossref", "check") => check::<Crossref>(&opts),
                 ("crossref", "normalize") => normalize::<Crossref, CrossrefStats>(&opts),
                 ("crossref", "dump") => dump::<Crossref>(&opts),
@@ -436,10 +438,56 @@ fn ids(parse: Parser) -> ExitCode {
     }
 }
 
+/// Where each PubMed publication type on stdin sits in the genre table:
+/// one UI a line — or a UI and anything after a tab, so a `<UI>\t<name>`
+/// listing can be piped in as it comes.
+///
+/// The table is a `match`, so it cannot be printed; it can be asked, which
+/// is what this does. A merge stops at the first type the table has never
+/// seen (merge plan §5), and finding all of them takes one pass over the
+/// corpus rather than one merge per surprise.
+fn genres() -> ExitCode {
+    let (mut known, mut unknown) = (0u64, 0u64);
+    for line in io::stdin().lock().lines() {
+        let line = match line {
+            Ok(line) => line,
+            Err(err) => {
+                eprintln!("stdin: {err}");
+                return ExitCode::from(2);
+            }
+        };
+        let ui = line.split('\t').next().unwrap_or("").trim();
+        if ui.is_empty() {
+            continue;
+        }
+        if let Some(genre) = source_pubmed::view::genre_of(ui) {
+            known += 1;
+            println!("{ui}\t{genre}");
+        } else {
+            unknown += 1;
+            println!("{ui}\tUNKNOWN");
+        }
+    }
+    eprintln!("pubmed genres: {known} in the table, {unknown} not");
+    if unknown == 0 {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
 /// A source's stats report (plan §6): what every normalized field held.
 /// One per worker, merged at the end.
 trait StatsReport: Default + Merge + Send {
     fn report(&self);
+
+    /// Values this build cannot place and a merge would stop at. Reported
+    /// by [`Self::report`]; counted here so `--survey` fails on them, as it
+    /// does on a record it cannot read — both are the corpus saying the
+    /// model is not ready for it.
+    fn unplaced(&self) -> u64 {
+        0
+    }
 }
 
 fn check<S: Source>(opts: &Options) -> ExitCode {
@@ -453,6 +501,17 @@ fn check<S: Source>(opts: &Options) -> ExitCode {
         }
         Err(failure) => failed(&failure),
     }
+}
+
+/// What `--survey` found and whether it stands between this build and a
+/// merge: a record it cannot read, or a value with no place in a table.
+/// Both say the model is not ready for this corpus, so both fail.
+fn survey_failed(name: &str, survey: &ingest::run::Survey, unplaced: u64) -> bool {
+    eprint!("{name}: survey: {survey}");
+    if unplaced > 0 {
+        eprintln!("{name}: survey: {unplaced} records carry a value with no place in a table");
+    }
+    !survey.is_empty() || unplaced > 0
 }
 
 #[allow(clippy::cast_precision_loss)] // reporting only
@@ -496,6 +555,7 @@ where
         binaries.extend(b);
     }
     stats.report();
+    let unplaced = stats.unplaced();
     match outcome.result {
         Ok(report) => {
             let mut written: Vec<Written> = Vec::new();
@@ -538,11 +598,8 @@ where
                 );
             }
             eprintln!("{}: {report}", S::NAME);
-            if opts.survey {
-                eprint!("{}: survey: {}", S::NAME, outcome.survey);
-                if !outcome.survey.is_empty() {
-                    return ExitCode::FAILURE;
-                }
+            if opts.survey && survey_failed(S::NAME, &outcome.survey, unplaced) {
+                return ExitCode::FAILURE;
             }
             ExitCode::SUCCESS
         }
@@ -3857,6 +3914,10 @@ struct PubmedStats {
     status: BTreeMap<&'static str, u64>,
     languages: BTreeMap<&'static str, u64>,
     publication_types: BTreeMap<String, u64>,
+    /// Publication types with no place in the genre table, by `UI name`.
+    /// A merge stops at the first of these (merge plan §5), so a survey
+    /// that found one has found a reason the corpus cannot be merged yet.
+    unplaced_types: BTreeMap<String, u64>,
     title: [u64; 3],
     abstracts: u64,
     sections: u64,
@@ -3915,6 +3976,10 @@ impl PubmedStats {
 }
 
 impl StatsReport for PubmedStats {
+    fn unplaced(&self) -> u64 {
+        self.unplaced_types.values().sum()
+    }
+
     fn report(&self) {
         eprintln!("citations {}  deletions {}", self.citations, self.deletions);
         for (reason, n) in &self.excluded {
@@ -3945,6 +4010,12 @@ impl StatsReport for PubmedStats {
             "  publication types: {} distinct",
             self.publication_types.len()
         );
+        if !self.unplaced_types.is_empty() {
+            eprintln!(
+                "  publication types with no genre, which stop a merge and fail this survey: {:?}",
+                self.unplaced_types
+            );
+        }
         eprintln!(
             "  title plain {} markup {} empty {}",
             self.title[0], self.title[1], self.title[2]
@@ -4043,7 +4114,14 @@ impl<'n> Sink<'n, Pubmed> for PubmedStats {
             *self.languages.entry(l.alpha_3()).or_default() += 1;
         }
         for pt in &c.publication_types {
-            bump(&mut self.publication_types, pt.name.as_text().unwrap_or(""));
+            let name = pt.name.as_text().unwrap_or("");
+            bump(&mut self.publication_types, name);
+            if source_pubmed::view::genre_of(pt.ui.as_str()).is_none() {
+                bump(
+                    &mut self.unplaced_types,
+                    &format!("{} {name}", pt.ui.as_str()),
+                );
+            }
         }
         if c.title.is_empty() {
             self.title[2] += 1;
@@ -4573,7 +4651,7 @@ impl<'n> Sink<'n, OpenAlex> for OpenAlexStats {
 
 impl Merge for PubmedStats {
     fn merge(&mut self, other: Self) {
-        absorb_all!(self, other: PubmedStats { citations, deletions, excluded, doi, elocation_doi, doi_lowercased, doi_disagree, pii, pii_extra, publisher, pmc, pmc_malformed, published, electronic, revised, completed, status, languages, publication_types, title, abstracts, sections, sections_markup, sections_math, other_abstracts, journal_issn, journal_issn_linking, journal_issn_malformed, persons, collectives, orcid, affiliations, affiliation_ids, investigators, mesh_headings, mesh_major, chemicals, keywords, grants, grants_with_country, data_banks, history, publication_status, relations, references, reference_ids, reference_loose, reference_doi_malformed, reference_pmid_malformed, reference_pmc_malformed, malformed_samples });
+        absorb_all!(self, other: PubmedStats { citations, deletions, excluded, doi, elocation_doi, doi_lowercased, doi_disagree, pii, pii_extra, publisher, pmc, pmc_malformed, published, electronic, revised, completed, status, languages, publication_types, unplaced_types, title, abstracts, sections, sections_markup, sections_math, other_abstracts, journal_issn, journal_issn_linking, journal_issn_malformed, persons, collectives, orcid, affiliations, affiliation_ids, investigators, mesh_headings, mesh_major, chemicals, keywords, grants, grants_with_country, data_banks, history, publication_status, relations, references, reference_ids, reference_loose, reference_doi_malformed, reference_pmid_malformed, reference_pmc_malformed, malformed_samples });
     }
 }
 
