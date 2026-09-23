@@ -445,8 +445,19 @@ line, which is also what the corpus (D6) will be.
 
 ## 7. Exposure
 
-The user's, planned separately through kgateway (2026-09-22). The JSON
-facade and the web UI go with it.
+`research.oxidationlabs.com`, through what the homelab already has
+(`public-ingress/README.md`, read 2026-09-23): TLS ends on a cloud
+kgateway, which reaches home over a WireGuard tunnel the cluster dials
+out, so nothing listens at the user's house. Publishing is three things:
+the namespace labelled `oxidationlabs.dev/public-ingress: "true"`, an
+HTTPRoute attached to `public-ingress/public`, and the removal of the
+whoami placeholder that holds the hostname today.
+
+One route, two backends, so the app and the API share an origin and
+there is no CORS to configure: `/v1` to `ol-rht-serve`, everything else
+to the frontend's nginx. The built bundle asks its own origin for the
+API (`web/src/api.ts`, 2026-09-23), so no hostname is baked into the
+image.
 
 ## 8. Milestones
 
@@ -457,7 +468,18 @@ facade and the web UI go with it.
   datasets made through the OpenEBS node pod (no debug pod needed), the
   secrets written by the user, the claims Pending until a pod asks for
   them, which is what D3 does.
-- **D3 and D4 — the first run.** Decided 2026-09-23: nothing is copied
+- **D3 and D4 — the first run** (in progress 2026-09-23). What the box
+  taught in four attempts, each a cycle of build, run, fail, fix: the
+  oldest baseline files spell months in upper case and carry seasonal
+  volumes; `SpaceFlightMission` and two publication types (Directory,
+  Autobiography) were unmodelled; and `fetch --limit 1` means "one file
+  I do not have", so every re-run pulled a new, unseen file and met a
+  new surprise. Two practices came out of it, both cheap: simulate the
+  Job in a scratch store before pushing, which turned three round trips
+  into one; and enumerate a table's inputs straight from the raw XML
+  (every `PublicationType UI` against `place()`) rather than meeting
+  them one failure at a time.
+- **D3 and D4 — as designed.** Decided 2026-09-23: nothing is copied
   from the laptop. Whatever the box's store holds, the box fetched (§9),
   so `job-first-run-v1.yaml` takes the first baseline file NLM lists,
   about 30 MB and published for bulk download, and carries it through
@@ -467,8 +489,26 @@ facade and the web UI go with it.
   pipeline does not need the same records, only records.
 - **D4 — folded into D3** (above): the same Job publishes and checks
   the epoch.
-- **D5 — the server.** The Deployment of §5, reachable inside the
-  cluster; exposure is §7's.
+- ~~**D5 — the server and the site.**~~ Live 2026-09-23:
+  `https://research.oxidationlabs.com` serves the app, `/v1` answers on the
+  same origin (epoch 1, 140 hits for "learning disabilities"), and
+  `/work/ol:…` falls back to index.html as the frontend's README requires.
+  The whoami placeholder is gone. One wrinkle kept: the buildpack renders
+  nginx.conf at *launch*, into the app directory, so the pod copies that
+  directory into an emptyDir at start rather than giving up a read-only
+  root — the clearest argument yet for the distroless pass (§11), where a
+  static site needs no launch machinery at all.
+
+  As written 2026-09-23: the serve
+  Deployment and Service (gRPC health probes, `Recreate` because the
+  store is ReadWriteOnce, its memory limit doubling as its cache of the
+  mapped artifacts), and the frontend's own build lane — a Tekton step
+  running the repository's pinned pnpm, then Paketo's `nginx` buildpack
+  over the built `dist/`, because Paketo's web-server lane knows npm and
+  yarn only and npm would ignore `pnpm-workspace.yaml`'s two-week hold on
+  fresh releases. The two lanes are path-gated so a backend push never
+  pays for pnpm, nor a frontend push for cargo. Left: the web Deployment
+  and Service, the HTTPRoute, and deleting the placeholder.
 - **D6 — the corpus.** The downloads, then the full run at scale — where
   graph plan G3, the ARC's ceiling and the serving dataset's record size
   are measured rather than guessed.
@@ -508,6 +548,17 @@ facade and the web UI go with it.
   reads Rust 1.77+ workspace ids; the upstream issue, a minimal
   reproduction and the patch were drafted at the user's request in
   `upstream-contributions/paketo-community-cargo/`, unfiled.
+- 2026-09-23, the model grew for the corpus's oldest files — months in
+  any case, `PartialDate::Seasons` for seasonal volumes (model VERSION
+  3), `SpaceFlightMission` dropped with its values recorded in the
+  comment, Directory and Autobiography placed as `Other`. Each was the
+  fail-fast design working as intended: the data disagreed with the code
+  and the run stopped rather than guessing.
+- 2026-09-23, the frontend's lane — two images, not one (the user: "i
+  like B because it's faster to do two separate builds rather than incur
+  the cost of the frontend build every time the backend has an update").
+  pnpm runs in a Tekton step against the repository's own pin, not in a
+  buildpack that would have used npm.
 - 2026-09-22, the image's base — the Jammy base for the first
   deployment, for the debugging a shell allows. Eventually distroless or
   from scratch, as far as it goes; the user's reason is not scanner
