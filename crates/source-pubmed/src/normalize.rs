@@ -1275,16 +1275,28 @@ fn identifiers<'n>(
     // of the article and `PMID@Version` counts versions of the record about
     // it, so the two never had to agree and the twelve records that stopped
     // the run over it were right and the rule was wrong (2026-09-23).
+    //
+    // A record giving both is not claiming its PMC id twice over, whatever
+    // it looked like: 106 records of the 2026 baseline write `pmc` and
+    // `pmcid` together (survey v4, 2026-09-23), and until `pmcid` was read
+    // at all they failed further up as an id kind with no slot. They are
+    // two spellings of one claim and meet the same rule as any other pair
+    // of assertions — where they agree the record has said one thing twice
+    // ([`concur`]); where they disagree it has not said, and the slot is
+    // empty. Only the record's own PMID is worth refusing over.
     let pmc = match (own.pmc, own.pmcid) {
         (Some(raw), None) => Some(pmc_of(ctx, raw)?),
         (None, Some(raw)) => Some(pmcid_of(raw)),
         (None, None) => None,
-        (Some(_), Some(raw)) => {
-            return Err(ctx.err(
-                "ArticleIdList/ArticleId",
-                raw,
-                ErrorKind::Inconsistent("more than one ArticleId of one type"),
-            ));
+        (Some(one), Some(other)) => {
+            let (a, b) = (pmc_of(ctx, one)?, pmcid_of(other));
+            match (&a, &b) {
+                // The same id, however each was spelled.
+                (Claim::Valid(x), Claim::Valid(y)) if x == y => Some(a),
+                // Both malformed and textually the same thing: one claim.
+                _ if concur(one, other).is_some() => Some(a),
+                _ => None,
+            }
         }
     };
 

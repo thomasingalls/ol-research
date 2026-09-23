@@ -750,18 +750,37 @@ mod normalized {
             out.citations[0].ids.pmc.as_ref().unwrap(),
             Claim::Malformed { raw, .. } if *raw == "wst_2021_260"
         ));
-        // One record claims its PMC id once, whichever tokens it uses.
+        // One record claims its PMC id once, whichever tokens it uses: the
+        // two spellings of one id agree, and the record keeps it. 106
+        // records of the 2026 baseline write both (survey v4, 2026-09-23),
+        // so refusing them would refuse the corpus.
         let input = with(
             "<ArticleId IdType=\"pmc\">PMC8459621</ArticleId>\
              <ArticleId IdType=\"pmcid\">8459621</ArticleId>",
         );
         let article = only_article(&input);
-        let err = normalize(&article, &mut Collect::default()).unwrap_err();
-        assert_eq!(err.field, "ArticleIdList/ArticleId", "{err}");
+        let mut out = Collect::default();
+        normalize(&article, &mut out).unwrap();
         assert!(
-            err.to_string()
-                .contains("more than one ArticleId of one type"),
-            "{err}"
+            matches!(
+                out.citations[0].ids.pmc.as_ref().unwrap(),
+                Claim::Valid(pmc) if pmc.to_string() == "PMC8459621"
+            ),
+            "the two spellings are one claim"
+        );
+        // Two PMC ids that are not the same id: the record has not said
+        // which, so neither does this — the slot is empty, and the record
+        // survives. Only its own PMID is worth refusing over.
+        let input = with(
+            "<ArticleId IdType=\"pmc\">PMC8459621</ArticleId>\
+             <ArticleId IdType=\"pmcid\">9277196</ArticleId>",
+        );
+        let article = only_article(&input);
+        let mut out = Collect::default();
+        normalize(&article, &mut out).unwrap();
+        assert!(
+            out.citations[0].ids.pmc.is_none(),
+            "disagreeing PMC ids leave the slot empty"
         );
     }
 
