@@ -168,14 +168,42 @@ pub struct Outcome<K> {
 
 /// What `--survey` collects (plan §6): every distinct failure signature,
 /// how often it fired, and a few examples, so one run surfaces many warts
-/// instead of one. Parse failures are not surveyed: they are structural
-/// and stop the run as always.
+/// instead of one.
+///
+/// Parse failures are surveyed too, and were not until 2026-09-23. The
+/// old rule — structural, so stop — was written when a survey read two
+/// sample files on this machine. Stopping costs a code change, a rebuild,
+/// an image push and a re-run for every wart found, which is affordable
+/// over two files and not over 1,334 on a cluster: the first survey of
+/// the whole PubMed baseline died partway through the first of eight
+/// shares, one wart the wiser. Collapsing that loop is the mode's whole
+/// purpose, and a parse failure is a wart like any other.
+///
+/// What a parse failure costs is the rest of its file. A normalize
+/// failure is one record's; a parse failure leaves the reader's place in
+/// the byte stream untrustworthy, and [`Source::records`] has no way to
+/// be asked for the next record after it — so the file is abandoned and
+/// the next one taken. That is a hole in the run, and a survey that hid
+/// it would be worse than one that stopped, so every abandoned file is
+/// named in [`Survey::abandoned`] and in the report.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Survey {
-    /// Records that failed to normalize.
+    /// Records that failed to parse or to normalize.
     pub failed: u64,
     /// By signature.
     pub seen: BTreeMap<String, Seen>,
+    /// Files given up on at a record that would not parse; their later
+    /// records were never read, and are in no count here.
+    pub abandoned: Vec<Abandoned>,
+}
+
+/// A file a survey stopped reading partway through, and where.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Abandoned {
+    /// The raw file.
+    pub path: PathBuf,
+    /// The ordinal, from one, of the record that would not parse.
+    pub record: u64,
 }
 
 /// One signature's tally.
@@ -199,9 +227,21 @@ impl Survey {
         }
     }
 
+    /// A file given up on where a record would not parse: the failure is
+    /// tallied like any other, and the file is named, because everything
+    /// after that record went unread.
+    fn abandon(&mut self, path: &Path, record: u64, signature: String, example: String) {
+        self.note(signature, example);
+        self.abandoned.push(Abandoned {
+            path: path.to_path_buf(),
+            record,
+        });
+    }
+
     /// Adds another worker's survey.
     pub fn merge(&mut self, other: Self) {
         self.failed += other.failed;
+        self.abandoned.extend(other.abandoned);
         for (signature, seen) in other.seen {
             let mine = self.seen.entry(signature).or_default();
             mine.count += seen.count;
@@ -213,28 +253,59 @@ impl Survey {
         }
     }
 
-    /// Nothing failed.
+    /// Nothing failed, and nothing went unread.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.failed == 0
+        self.failed == 0 && self.abandoned.is_empty()
+    }
+
+    /// The abandoned files, by path.
+    fn abandoned_in_order(&self) -> Vec<&Abandoned> {
+        let mut sorted: Vec<&Abandoned> = self.abandoned.iter().collect();
+        sorted.sort_by(|a, b| a.path.cmp(&b.path).then_with(|| a.record.cmp(&b.record)));
+        sorted
     }
 }
 
 impl fmt::Display for Survey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(
+        write!(
             f,
-            "{} records failed to normalize, {} distinct signature{}",
+            "{} record{} failed, {} distinct signature{}",
             self.failed,
+            if self.failed == 1 { "" } else { "s" },
             self.seen.len(),
             if self.seen.len() == 1 { "" } else { "s" }
         )?;
+        // The count goes in the first line as well as the list below it:
+        // a run that read only part of its corpus must say so where the
+        // eye lands, not under a page of signatures.
+        if !self.abandoned.is_empty() {
+            write!(
+                f,
+                ", {} file{} abandoned",
+                self.abandoned.len(),
+                if self.abandoned.len() == 1 { "" } else { "s" }
+            )?;
+        }
+        writeln!(f)?;
         let mut by_count: Vec<(&String, &Seen)> = self.seen.iter().collect();
         by_count.sort_by(|a, b| b.1.count.cmp(&a.1.count).then_with(|| a.0.cmp(b.0)));
         for (signature, seen) in by_count {
             writeln!(f, "{:>8}  {signature}", seen.count)?;
             for example in &seen.examples {
                 writeln!(f, "          e.g. {example}")?;
+            }
+        }
+        if !self.abandoned.is_empty() {
+            writeln!(
+                f,
+                "{} file{} given up on at a record that would not parse; nothing after that record was read:",
+                self.abandoned.len(),
+                if self.abandoned.len() == 1 { "" } else { "s" }
+            )?;
+            for a in self.abandoned_in_order() {
+                writeln!(f, "          {} from record {}", a.path.display(), a.record)?;
             }
         }
         Ok(())
@@ -260,7 +331,8 @@ pub(crate) struct Progress<'a> {
     done: &'a AtomicU64,
     pending: &'a AtomicU64,
     halt: &'a AtomicBool,
-    /// Tally normalize failures instead of stopping at the first.
+    /// Tally failures instead of stopping at the first: a normalize
+    /// failure costs its record, a parse failure the rest of its file.
     survey: bool,
 }
 
@@ -463,6 +535,12 @@ where
     }
     match read {
         Ok(()) => {}
+        // A survey gives up on the file, not on the run: nothing after
+        // this record was read, so the file is named along with the
+        // signature. Every other mode stops here, as always.
+        Err(ReadError::Parse(e)) if progress.survey => {
+            survey.abandon(path, records + 1, e.signature(), e.to_string());
+        }
         Err(ReadError::Io(e)) => return Err(fail(records, Stage::Read, Box::new(e))),
         Err(ReadError::Parse(e)) => return Err(fail(records + 1, Stage::Parse, Box::new(e))),
     }
@@ -578,7 +656,8 @@ pub fn parse_parallel<S: Source, P: AsRef<Path> + Sync>(
 /// from a shared queue until none is left. Never more workers than files.
 /// With `survey`, a record that does not normalize is tallied in the
 /// outcome's [`Survey`] instead of stopping the run; the sink may have
-/// received part of it.
+/// received part of it. So is a record that does not parse, at the price
+/// of the rest of its file, which the survey then names as abandoned.
 pub fn normalize_parallel<S, K, F, P>(
     paths: &[P],
     limit: Option<u64>,
@@ -814,7 +893,7 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU32, Ordering};
 
-    use super::{Stage, mirror, normalize, normalize_parallel, parse, parse_parallel};
+    use super::{Abandoned, Stage, mirror, normalize, normalize_parallel, parse, parse_parallel};
     use crate::binary::{Binary, Kind, Reader, read_all};
     use crate::frame::{self, ReadError};
     use crate::source::{Count, Sink, Source};
@@ -1066,21 +1145,72 @@ mod tests {
         assert_eq!((seen.count, seen.examples.len()), (3, 3));
         assert!(
             outcome.survey.to_string().starts_with(
-                "3 records failed to normalize, 1 distinct signature\n       3  bad line\n          e.g. bad line"
+                "3 records failed, 1 distinct signature\n       3  bad line\n          e.g. bad line"
             ),
             "{}",
             outcome.survey
         );
-        let bad = file("#parse\n", false);
-        let outcome = normalize_parallel::<Lines, Count, _, _>(&[&bad], None, 1, true, |_| {
+        assert!(
+            outcome.survey.abandoned.is_empty(),
+            "a normalize failure costs its record and no more"
+        );
+        for f in [a, b] {
+            std::fs::remove_file(f).unwrap();
+        }
+    }
+
+    #[test]
+    fn a_survey_tallies_a_parse_failure_and_goes_on_to_the_next_file() {
+        let a = file("1: 2\n#bad\n3: 4\n", false);
+        let b = file("5: 6\n7: 8\n", false);
+        // One worker, so the files are read in order and the assertions
+        // below are about what one worker did with both.
+        let outcome = normalize_parallel::<Lines, Count, _, _>(&[&a, &b], None, 1, true, |_| {
             Ok(Count::default())
         });
+        let report = outcome
+            .result
+            .expect("a parse failure does not stop a survey");
+        assert_eq!(report.files, 2, "the next file was still read");
         assert_eq!(
-            outcome.result.unwrap_err().stage,
-            Stage::Parse,
-            "parse failures still stop a survey"
+            (report.records, total(&outcome.sinks).works),
+            (3, 3),
+            "one record before the bad one, two from the next file; \
+             the record after the bad one was never read"
         );
-        for f in [a, b, bad] {
+        assert_eq!((outcome.survey.failed, outcome.survey.seen.len()), (1, 1));
+        assert_eq!(outcome.survey.seen["bad line"].count, 1);
+        assert_eq!(
+            outcome.survey.abandoned,
+            [Abandoned {
+                path: a.clone(),
+                record: 2
+            }],
+            "the file and the record it was given up at"
+        );
+        assert!(!outcome.survey.is_empty(), "a survey that found this fails");
+        let report = outcome.survey.to_string();
+        assert!(
+            report.starts_with("1 record failed, 1 distinct signature, 1 file abandoned\n"),
+            "{report}"
+        );
+        assert!(
+            report.contains(&format!(
+                "1 file given up on at a record that would not parse; \
+                 nothing after that record was read:\n          {} from record 2\n",
+                a.display()
+            )),
+            "{report}"
+        );
+
+        // The default path is untouched: without a survey the same file
+        // stops the run at the record that would not parse.
+        let outcome = normalize_parallel::<Lines, Count, _, _>(&[&a], None, 1, false, |_| {
+            Ok(Count::default())
+        });
+        let err = outcome.result.unwrap_err();
+        assert_eq!((err.stage, err.record, &err.path), (Stage::Parse, 2, &a));
+        for f in [a, b] {
             std::fs::remove_file(f).unwrap();
         }
     }

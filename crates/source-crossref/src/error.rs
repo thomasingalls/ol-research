@@ -39,6 +39,26 @@ impl fmt::Display for Error {
     }
 }
 
+impl ingest::source::Signature for Error {
+    /// Where in the shape and what serde disagreed with, without the item
+    /// or line number, the DOI, or the input position serde appends: the
+    /// same wart on ten thousand items is one line of a survey.
+    fn signature(&self) -> String {
+        let message = self.source.to_string();
+        // serde ends with `at line L column C`: where this record is, not
+        // what is wrong with it.
+        let what = message
+            .rfind(" at line ")
+            .map_or(message.as_str(), |at| &message[..at]);
+        let where_ = match self.context {
+            Context::Envelope => "envelope",
+            Context::Item(_) => "item",
+            Context::Line(_) => "line",
+        };
+        format!("{where_}: {what}")
+    }
+}
+
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         Some(&self.source)

@@ -48,7 +48,7 @@ pub use keys::{Key, Keys};
 pub use list::{Index, Lister, Lookup};
 pub use listing::Entry;
 pub use receipt::Receipt;
-pub use run::{Failure, Report, Seen, Stage, Survey, normalize, parse};
+pub use run::{Abandoned, Failure, Report, Seen, Stage, Survey, normalize, parse};
 pub use source::{Count, Signature, Sink, Source};
 pub use store::Store;
 pub use text::Text;

@@ -24,6 +24,21 @@ impl fmt::Display for Error {
     }
 }
 
+impl ingest::source::Signature for Error {
+    /// What serde disagreed with, without the line or the id, and without
+    /// the input position serde appends: the same wart on ten thousand
+    /// lines is one line of a survey.
+    fn signature(&self) -> String {
+        let message = self.source.to_string();
+        // serde ends with `at line L column C`: where this record is, not
+        // what is wrong with it.
+        message
+            .rfind(" at line ")
+            .map_or(message.as_str(), |at| &message[..at])
+            .to_owned()
+    }
+}
+
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         Some(&self.source)

@@ -44,7 +44,8 @@ pub trait Source: Sized {
     /// with.
     type Reference<'n>: Serialize + Deserialize<'n>;
     /// Why a record did not parse: structural strictness (plan §6).
-    type ParseError: Error + Send + Sync + 'static;
+    /// Signed, so `--survey` can group failures.
+    type ParseError: Error + Signature + Send + Sync + 'static;
     /// Why a value did not fit the model: value-level strictness (plan §6).
     /// Signed, so `--survey` can group failures.
     type NormalizeError: Error + Signature + Send + Sync + 'static;
@@ -79,9 +80,11 @@ pub trait Source: Sized {
     ) -> Result<(), Self::NormalizeError>;
 }
 
-/// A normalize error's signature (plan §6, `--survey`): what failed and
-/// how — the field and the kind of disagreement — without the record's
-/// own values, so that one wart seen a thousand times is one line.
+/// A failure's signature (plan §6, `--survey`): what failed and how —
+/// where in the record, and the kind of disagreement — without the
+/// record's own values or its position in the file, so that one wart seen
+/// a thousand times is one line. Both a parse failure and a normalize one
+/// carry it; the survey groups them the same way.
 pub trait Signature {
     #[allow(missing_docs)]
     fn signature(&self) -> String;

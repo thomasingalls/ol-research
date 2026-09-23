@@ -67,9 +67,13 @@
 //! * `merge dump <set.zst>... [--limit N]` prints a merged set as JSON
 //!   lines, for eyes.
 //!
-//! `--survey` (plan §6) keeps going past records that do not normalize and
-//! reports every distinct failure signature with counts and examples; it
-//! writes no output and exits non-zero when anything failed.
+//! `--survey` (plan §6) keeps going past records this build cannot read
+//! and reports every distinct failure signature with counts and examples;
+//! it writes no output and exits non-zero when anything failed. A record
+//! that does not normalize costs that record; a record that does not
+//! parse costs the rest of its file, which the report names as abandoned,
+//! because nothing after it in that byte stream can be trusted to be a
+//! record boundary. Without `--survey` the first of either stops the run.
 //! `--store` is the root of the store of record, `data` by default.
 //! `--mailto <address>` puts an address in the User-Agent for sources
 //! that reward it; none is sent unless given.

@@ -872,7 +872,13 @@ fetching.
 Two ergonomic details that do not weaken the contract: `--limit N` for fast
 iteration, and opt-in `--survey`, which scans everything, writes no output,
 and reports every distinct failure signature with counts and samples, so one
-run surfaces many warts instead of one. Default is stop-at-first.
+run surfaces many warts instead of one. Default is stop-at-first. A survey
+surveys parse failures too (2026-09-23), at the price of the rest of the
+file the failure was in: the reader's place in the byte stream is no longer
+a record boundary, so the file is abandoned and the next taken. Every
+abandoned file and the record it was abandoned at is named in the report,
+because a survey that quietly skipped most of a file would be worse than
+one that stopped.
 
 ## 7. POC acquisition
 
@@ -1024,8 +1030,16 @@ in your environment, never in the repo or in this conversation.
    opt-in, default stop-at-first. Built the same day: `normalize --survey`
    tallies every distinct failure signature (field and kind, no values)
    with counts and three examples, writes nothing, exits non-zero if
-   anything failed; parse failures still stop it. First use found five
-   warts in one PubMed file in one pass.
+   anything failed. First use found five warts in one PubMed file in one
+   pass. ~~Parse failures still stop it.~~ Reversed 2026-09-23: they are
+   surveyed too, costing the rest of their file, which the report names.
+   The old rule was written for two sample files on this machine; over
+   1,334 files on the cluster it charged a code change, a rebuild, an
+   image push and a re-run per wart, and the first full-baseline survey
+   died partway through the first of eight shares knowing one thing
+   (`pubmed26n0573.xml.gz` record 11927, PMID 17669187, no
+   `<PublicationType>`). Whether that element should be required at all
+   is still open, and is what the survey now exists to answer.
 5. Country (ISO 3166-1) and currency (ISO 4217) vocabularies: `CountryCode`
    and `CurrencyCode` check shape only (two or three uppercase letters). A
    generated table like `Lang`'s, from Debian iso-codes, would close them;

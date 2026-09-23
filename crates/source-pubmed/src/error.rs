@@ -94,6 +94,15 @@ impl fmt::Display for Error {
     }
 }
 
+impl ingest::source::Signature for Error {
+    /// The element path and the disagreement, without the byte offset or
+    /// the PMID: the same wart in ten thousand records is one line of a
+    /// survey.
+    fn signature(&self) -> String {
+        format!("{}: {}", self.path, self.kind)
+    }
+}
+
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match &self.kind {
