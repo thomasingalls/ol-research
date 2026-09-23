@@ -2,10 +2,14 @@
 //! works of the POC sample's one-hop expansion — one per form the 2026
 //! baseline files never showed (plan §6, §9 M5). Each is the regression
 //! fixture for that form.
+//!
+//! Four more were looked up on 2026-09-23, named by the first survey of the
+//! whole baseline as the records behind two of its signatures: the shapes
+//! are too rare for the two files on this machine to hold one.
 
 use ingest::Sink;
 use model::{Claim, PartialDate, Pmid, Season};
-use source_pubmed::attr::{NoteOwner, OtherIdSource};
+use source_pubmed::attr::{AffiliationIdSource, NoteOwner, OtherIdSource};
 use source_pubmed::normalize::{Citation, Reference, normalize};
 use source_pubmed::record::Record;
 use source_pubmed::{ArticleSet, Pubmed};
@@ -122,4 +126,72 @@ fn the_rarer_elements_are_kept() {
 fn a_language_that_is_not_a_code_is_a_claim() {
     let c = &run("other_abstract_lang_sp").citations[0];
     assert!(c.other_abstracts.iter().any(|o| o.language.is_malformed()));
+}
+
+/// The one `Language` in the 2026 baseline that is not an ISO 639-2 code:
+/// `crg`, beside `eng`, on an English paper. The record normalizes, and
+/// says only what it is in.
+#[test]
+fn a_language_that_is_no_language_at_all_is_dropped() {
+    let c = &run("language_crg").citations[0];
+    assert_eq!(c.pmid.get(), 40_316_125);
+    assert_eq!(
+        c.languages
+            .iter()
+            .map(|l| l.bibliographic())
+            .collect::<Vec<_>>(),
+        ["eng"]
+    );
+}
+
+/// The three `AffiliationInfo/Identifier@Source` values that name no
+/// organization registry. Each record normalizes, keeps its affiliation
+/// text, and carries no identifier it cannot stand behind.
+#[test]
+fn an_affiliation_identifier_that_names_no_organization_is_dropped() {
+    // A person's ORCID, filed in the affiliation envelope: the author has
+    // no identifier of its own, and does not gain one from this.
+    let c = &run("affiliation_id_orcid").citations[0];
+    let a = &c.authors[0];
+    assert!(a.orcid.is_none());
+    assert!(a.affiliations[0].text.contains("Johns Hopkins"));
+    assert!(a.affiliations[0].ids.is_empty());
+
+    // Elsevier's own key for the affiliation line.
+    let c = &run("affiliation_id_es_uid").citations[0];
+    assert!(c.authors[0].affiliations[0].text.contains("Vanderbilt"));
+    assert!(c.authors[0].affiliations[0].ids.is_empty());
+
+    // A Ringgold identifier doubled, on a record whose other affiliations
+    // carry a plain one: the plain ones survive, the doubled ones do not.
+    let c = &run("affiliation_id_doubled").citations[0];
+    let ids: Vec<_> = c
+        .authors
+        .iter()
+        .flat_map(|a| a.affiliations.iter())
+        .flat_map(|af| af.ids.iter())
+        .collect();
+    assert!(!ids.is_empty());
+    assert!(
+        ids.iter()
+            .all(|id| id.source == AffiliationIdSource::Ringgold)
+    );
+    assert!(ids.iter().all(|id| id.value == "7890"));
+}
+
+/// A source outside both the four registries and the read warts is still a
+/// failure: the vocabulary is closed, and the survey's samples are a sample.
+#[test]
+fn an_unread_affiliation_identifier_source_still_stops_the_run() {
+    let input = fixture("affiliation_id_es_uid").replace("ES-UID", "WIKIDATA");
+    let mut set = ArticleSet::new(&input);
+    let Some(Record::Article(article)) = set.next_record().expect("parses") else {
+        panic!("not an article")
+    };
+    let err = normalize(&article, &mut Collect::default()).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("not in the vocabulary of affiliation identifier sources"),
+        "{err}"
+    );
 }

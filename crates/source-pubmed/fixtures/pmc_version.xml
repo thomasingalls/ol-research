@@ -1,0 +1,175 @@
+<PubmedArticle>
+    <MedlineCitation Status="MEDLINE" VersionID="2" VersionDate="2021/09/22" IndexingMethod="Automated" Owner="NLM">
+      <PMID Version="2">34621506</PMID>
+      <DateCompleted>
+        <Year>2021</Year>
+        <Month>10</Month>
+        <Day>21</Day>
+      </DateCompleted>
+      <DateRevised>
+        <Year>2026</Year>
+        <Month>02</Month>
+        <Day>03</Day>
+      </DateRevised>
+      <Article PubModel="Electronic-eCollection">
+        <Journal>
+          <ISSN IssnType="Electronic">2046-1402</ISSN>
+          <JournalIssue CitedMedium="Internet">
+            <Volume>10</Volume>
+            <PubDate>
+              <Year>2021</Year>
+            </PubDate>
+          </JournalIssue>
+          <Title>F1000Research</Title>
+          <ISOAbbreviation>F1000Res</ISOAbbreviation>
+        </Journal>
+        <ArticleTitle>Nutrient loading and farm characteristics of giant gourami fish aquaculture systems in Lake Maninjau, Indonesia: basic knowledge of production performance.</ArticleTitle>
+        <Pagination>
+          <MedlinePgn>378</MedlinePgn>
+        </Pagination>
+        <ELocationID EIdType="doi" ValidYN="Y">10.12688/f1000research.52613.2</ELocationID>
+        <Abstract>
+          <AbstractText>Background Aquaculture systems for giant gourami, <i>Osphronemus goramy</i> Lacepède (1801), have significantly improved fish production yields and food security in Indonesia. However, these systems also cause serious problems in terms of eutrophication in waterbodies. This study analysed the nutrient loading and farm characteristics of giant gourami in floating cages in Lake Maninjau. Method A total of 20 floating cages were used to record these nutrients in feed supply, female and male juvenile fish, dead fish and harvested fish to estimate nutrient loading. Data on the harvested fish, production cycle, stock number and cage capacity were used to estimate the stocking density, feeding rate, feed efficiency, and net fish yield, and the relationship between feed supply and nutrient loading and farm characteristics was analysed by least squares regression methods. Results A total of 20 floating cages released nutrients into waterbodies at an average rate of 236.27±60.44 kg/cycle for C, 84.52±20.86 kg/cycle for N and 8.70±3.63 kg/cycle for P. On average, fish production for each floating cage (±SD) was 1226±282 kg wet weight/cycle, and the net fish yield was 12.63±2.82 kg/m <sup>3</sup>/cycle. Survival rates ranged from 86.33 to 95.27%/cycle. The production cycles varied from 160 to 175 days with feed conversion ratios between 1.60 and 1.75, feed conversion efficiencies were between 0.58 and 0.63. The production parameters that had strong relationships with the net fish yield were feed supply ( <i>r</i><sup>2</sup>=0.960), stocking rates ( <i>r</i><sup>2</sup>=0.924) and feeding rates ( <i>r</i><sup>2</sup>=0.961). In contrast, the length of the production cycle was not strongly related to the net fish yield ( <i>r</i><sup>2</sup>=0.187). Conclusion Nutrient loading from the supplied feed was greater than that from the harvested fish, juvenile fish and dead fish. Increasing the net fish yield in floating cages was better predicted by the stocking densities and feeding levels than by the other factors.</AbstractText>
+          <CopyrightInformation>Copyright: © 2021 Syandri H et al.</CopyrightInformation>
+        </Abstract>
+        <AuthorList CompleteYN="Y">
+          <Author ValidYN="Y">
+            <LastName>Syandri</LastName>
+            <ForeName>Hafrijal</ForeName>
+            <Initials>H</Initials>
+            <Identifier Source="ORCID">0000-0002-3684-8842</Identifier>
+            <AffiliationInfo>
+              <Affiliation>Department of Aquaculture, Faculty of Fisheries and Marine Science, Universitas Bung Hatta, Padang, West Sumatera, 25133, Indonesia.</Affiliation>
+            </AffiliationInfo>
+          </Author>
+          <Author ValidYN="Y">
+            <LastName>Azrita</LastName>
+            <ForeName>Azrita</ForeName>
+            <Initials>A</Initials>
+            <Identifier Source="ORCID">0000-0003-2407-5587</Identifier>
+            <AffiliationInfo>
+              <Affiliation>Department of Biology Education, Faculty of Education, Universitas Bung Hatta, Padang, West Sumatera, 25133, Indonesia.</Affiliation>
+            </AffiliationInfo>
+          </Author>
+          <Author ValidYN="Y">
+            <LastName>Sumiarsih</LastName>
+            <ForeName>Eni</ForeName>
+            <Initials>E</Initials>
+            <AffiliationInfo>
+              <Affiliation>Department of Aquaculture, Faculty of Fisheries and Marine Science, Universitas Riau, Pekanbaru, 28293, Indonesia.</Affiliation>
+            </AffiliationInfo>
+          </Author>
+          <Author ValidYN="Y">
+            <LastName>Undefined</LastName>
+            <ForeName>Elfiondri</ForeName>
+            <Initials>E</Initials>
+            <Identifier Source="ORCID">0000-0003-2424-5128</Identifier>
+            <AffiliationInfo>
+              <Affiliation>Faculty of Humanities, Universitas Bung Hatta, Padang, West Sumatera, 25133, Indonesia.</Affiliation>
+            </AffiliationInfo>
+          </Author>
+        </AuthorList>
+        <Language>eng</Language>
+        <DataBankList CompleteYN="Y">
+          <DataBank>
+            <DataBankName>figshare</DataBankName>
+            <AccessionNumberList>
+              <AccessionNumber>10.6084/m9.figshare.14369999</AccessionNumber>
+            </AccessionNumberList>
+          </DataBank>
+        </DataBankList>
+        <PublicationTypeList>
+          <PublicationType UI="D016428">Journal Article</PublicationType>
+          <PublicationType UI="D013485">Research Support, Non-U.S. Gov't</PublicationType>
+        </PublicationTypeList>
+        <ArticleDate DateType="Electronic">
+          <Year>2021</Year>
+          <Month>05</Month>
+          <Day>12</Day>
+        </ArticleDate>
+      </Article>
+      <MedlineJournalInfo>
+        <Country>England</Country>
+        <MedlineTA>F1000Res</MedlineTA>
+        <NlmUniqueID>101594320</NlmUniqueID>
+        <ISSNLinking>2046-1402</ISSNLinking>
+      </MedlineJournalInfo>
+      <ChemicalList>
+        <Chemical>
+          <RegistryNumber>0</RegistryNumber>
+          <NameOfSubstance UI="D000078622">Nutrients</NameOfSubstance>
+        </Chemical>
+      </ChemicalList>
+      <CitationSubset>IM</CitationSubset>
+      <MeshHeadingList>
+        <MeshHeading>
+          <DescriptorName UI="D000818" MajorTopicYN="N">Animals</DescriptorName>
+        </MeshHeading>
+        <MeshHeading>
+          <DescriptorName UI="D017756" MajorTopicYN="Y">Aquaculture</DescriptorName>
+        </MeshHeading>
+        <MeshHeading>
+          <DescriptorName UI="D005260" MajorTopicYN="N">Female</DescriptorName>
+        </MeshHeading>
+        <MeshHeading>
+          <DescriptorName UI="D005399" MajorTopicYN="N">Fishes</DescriptorName>
+        </MeshHeading>
+        <MeshHeading>
+          <DescriptorName UI="D007214" MajorTopicYN="N" Type="Geographic">Indonesia</DescriptorName>
+        </MeshHeading>
+        <MeshHeading>
+          <DescriptorName UI="D060106" MajorTopicYN="Y">Lakes</DescriptorName>
+        </MeshHeading>
+        <MeshHeading>
+          <DescriptorName UI="D008297" MajorTopicYN="N">Male</DescriptorName>
+        </MeshHeading>
+        <MeshHeading>
+          <DescriptorName UI="D000078622" MajorTopicYN="N">Nutrients</DescriptorName>
+        </MeshHeading>
+      </MeshHeadingList>
+      <KeywordList Owner="NOTNLM">
+        <Keyword MajorTopicYN="N">Lake Maninjau</Keyword>
+        <Keyword MajorTopicYN="N">farm characteristics.</Keyword>
+        <Keyword MajorTopicYN="N">floating cage aquaculture</Keyword>
+        <Keyword MajorTopicYN="N">giant gourami culture</Keyword>
+        <Keyword MajorTopicYN="N">nutrient loading</Keyword>
+      </KeywordList>
+      <CoiStatement>No competing interests were disclosed.</CoiStatement>
+    </MedlineCitation>
+    <PubmedData>
+      <History>
+        <PubMedPubDate PubStatus="accepted">
+          <Year>2021</Year>
+          <Month>09</Month>
+          <Day>16</Day>
+        </PubMedPubDate>
+        <PubMedPubDate PubStatus="entrez">
+          <Year>2021</Year>
+          <Month>10</Month>
+          <Day>11</Day>
+          <Hour>6</Hour>
+          <Minute>1</Minute>
+        </PubMedPubDate>
+        <PubMedPubDate PubStatus="pubmed">
+          <Year>2021</Year>
+          <Month>10</Month>
+          <Day>12</Day>
+          <Hour>6</Hour>
+          <Minute>0</Minute>
+        </PubMedPubDate>
+        <PubMedPubDate PubStatus="medline">
+          <Year>2023</Year>
+          <Month>2</Month>
+          <Day>25</Day>
+          <Hour>6</Hour>
+          <Minute>0</Minute>
+        </PubMedPubDate>
+      </History>
+      <PublicationStatus>epublish</PublicationStatus>
+      <ArticleIdList>
+        <ArticleId IdType="pubmed">34621506</ArticleId>
+        <ArticleId IdType="doi">10.12688/f1000research.52613.2</ArticleId>
+        <ArticleId IdType="pmc">PMC8459621.2</ArticleId>
+      </ArticleIdList>
+    </PubmedData>
+  </PubmedArticle>

@@ -182,6 +182,10 @@ fn every_fixture_round_trips_through_clone_and_eq() {
         "sici",
         "general_note",
         "zero_references",
+        "language_crg",
+        "affiliation_id_orcid",
+        "affiliation_id_doubled",
+        "affiliation_id_es_uid",
     ] {
         let input = fixture(name);
         let a = only_article(&input);
@@ -260,7 +264,7 @@ mod normalized {
     use model::{Claim, Month, PartialDate, Pmid};
     use source_pubmed::Pubmed;
     use source_pubmed::attr::{
-        AffiliationIdSource, IssnType, PubStatus, PublicationStatus, RefType,
+        AffiliationIdSource, EIdType, IdType, IssnType, PubStatus, PublicationStatus, RefType,
     };
     use source_pubmed::normalize::{AuthorName, Citation, Reference, normalize};
 
@@ -334,6 +338,13 @@ mod normalized {
 
     fn view_of<'w>(c: &'w Citation<'_>, table: &'w model::Table) -> merge::View<'w> {
         <Pubmed as merge::Contributor>::view(c, table).expect("views")
+    }
+
+    /// The names the merge reads off a record (merge plan §3.1).
+    fn names_of<'w>(c: &'w Citation<'_>) -> Vec<merge::Name<'w>> {
+        let mut names = Vec::new();
+        <Pubmed as merge::Contributor>::names(c, &mut |a| names.push(a.name));
+        names
     }
 
     /// The empty list, all the way through: a record with no publication
@@ -601,6 +612,156 @@ mod normalized {
         assert_eq!(
             out.citations[0].ids.pii.as_slice(),
             ["2844550", "S2213-5766(20)30238-4"]
+        );
+    }
+
+    /// `PubMedPubDate (Year, Month, Day, (Hour, (Minute, Second?)?)?)`:
+    /// the minute is optional inside the time, and the survey of the whole
+    /// 2026 baseline, ~37M records, found history dates that stop at the
+    /// hour (2026-09-23). The hour is carried at that precision; no minute
+    /// is invented for it.
+    ///
+    /// Edited from a real record rather than looked up, as the two tests
+    /// after it are: none of their three shapes appears in the 126,740
+    /// records of the last baseline files and the first updates, in the
+    /// 15,432 looked up by PMID, or in 1,900 sampled across 1975-2024
+    /// through `efetch`, so there is no record of one to quote.
+    #[test]
+    fn a_history_date_may_stop_at_the_hour() {
+        let input = fixture("shortest").replace("<Minute>36</Minute>", "");
+        let article = only_article(&input);
+        let mut out = Collect::default();
+        normalize(&article, &mut out).unwrap();
+        let time = out.citations[0].history[0]
+            .time
+            .expect("an hour is a time of day");
+        assert_eq!(time.hour(), 12);
+        assert_eq!(time.minute(), None);
+        assert_eq!(time.to_string(), "12");
+        // No time at all is still no time; a minute with no hour is still
+        // refused, by the content model, before the value layer sees it.
+        let input =
+            fixture("shortest").replace("<Hour>12</Hour>\n          <Minute>36</Minute>", "");
+        let article = only_article(&input);
+        let mut out = Collect::default();
+        normalize(&article, &mut out).unwrap();
+        assert_eq!(out.citations[0].history[0].time, None);
+        let input = fixture("shortest").replace("<Hour>12</Hour>", "");
+        assert!(
+            source_pubmed::ArticleSet::new(&input)
+                .next_record()
+                .is_err(),
+            "a Minute with no Hour is still refused"
+        );
+    }
+
+    /// `ValidYN="N"` is NLM saying the identifier is the wrong one: the
+    /// DOI a publisher sent before it sent a correction, kept beside the
+    /// corrected one. It is kept, and it is no name of this work — a name
+    /// would join this record to whatever the wrong DOI really names.
+    #[test]
+    fn an_elocation_id_marked_invalid_is_kept_and_is_never_a_name() {
+        const WRONG: &str = "10.1001/jama.2025.1570";
+        let input = fixture("shortest").replace(
+            "<ELocationID EIdType=\"doi\" ValidYN=\"Y\">10.1001/jama.2025.15703</ELocationID>",
+            &format!(
+                "<ELocationID EIdType=\"doi\" ValidYN=\"Y\">10.1001/jama.2025.15703</ELocationID>\
+                 <ELocationID EIdType=\"doi\" ValidYN=\"N\">{WRONG}</ELocationID>"
+            ),
+        );
+        let article = only_article(&input);
+        let mut out = Collect::default();
+        normalize(&article, &mut out).unwrap();
+        let c = &out.citations[0];
+        assert_eq!(c.ids.elocation_doi.len(), 1);
+        assert_eq!(c.ids.invalid_elocation.len(), 1);
+        assert_eq!(c.ids.invalid_elocation[0].kind, EIdType::Doi);
+        assert_eq!(c.ids.invalid_elocation[0].value, WRONG);
+        let names = names_of(c);
+        assert!(
+            names
+                .iter()
+                .any(|n| matches!(n, merge::Name::Doi(d) if *d == "10.1001/jama.2025.15703"))
+        );
+        assert!(
+            !names
+                .iter()
+                .any(|n| matches!(n, merge::Name::Doi(d) if *d == WRONG))
+        );
+    }
+
+    /// The rest of the DTD's `IdType` list on a record's own id list:
+    /// `pmcid` is the record's PMC id under the token a reference uses,
+    /// and `pmcpid`, `pmpid`, `pmcbook` and `bookaccession` name
+    /// something this model has no name for — kept as written, never a
+    /// name (2026-09-23).
+    #[test]
+    fn the_other_id_types_of_a_records_own_list_are_kept() {
+        let with = |ids: &str| {
+            fixture("shortest").replace("<ArticleId IdType=\"pii\">2844550</ArticleId>", ids)
+        };
+        let input = with(
+            "<ArticleId IdType=\"pmcpid\">wst_2021_260</ArticleId>\
+             <ArticleId IdType=\"bookaccession\">NBK1116</ArticleId>",
+        );
+        let article = only_article(&input);
+        let mut out = Collect::default();
+        normalize(&article, &mut out).unwrap();
+        let c = &out.citations[0];
+        assert_eq!(c.ids.loose.len(), 2);
+        assert_eq!(c.ids.loose[0].kind, IdType::Pmcpid);
+        assert_eq!(c.ids.loose[0].value, "wst_2021_260");
+        assert_eq!(c.ids.loose[1].kind, IdType::BookAccession);
+        assert_eq!(c.ids.loose[1].value, "NBK1116");
+        // Nothing they say reaches the merge: the record names what it
+        // named before, its PMID and its two DOI slots.
+        let plain = fixture("shortest");
+        let plain = only_article(&plain);
+        let mut base = Collect::default();
+        normalize(&plain, &mut base).unwrap();
+        assert_eq!(names_of(c).len(), names_of(&base.citations[0]).len());
+
+        // `pmcid` fills the PMC slot, in either spelling of the value.
+        for value in ["PMC8459621", "8459621"] {
+            let input = with(&format!("<ArticleId IdType=\"pmcid\">{value}</ArticleId>"));
+            let article = only_article(&input);
+            let mut out = Collect::default();
+            normalize(&article, &mut out).unwrap();
+            let pmc = out.citations[0].ids.pmc.as_ref().expect("a PMC id");
+            assert_eq!(
+                pmc.valid().expect("valid").to_string(),
+                "PMC8459621",
+                "{value}"
+            );
+            assert!(
+                names_of(&out.citations[0])
+                    .iter()
+                    .any(|n| matches!(n, merge::Name::Pmc(p) if p.get() == 8_459_621)),
+                "{value}"
+            );
+        }
+        // A value that is neither spelling is kept as written, as a `pmc`
+        // slot that does not parse is.
+        let input = with("<ArticleId IdType=\"pmcid\">wst_2021_260</ArticleId>");
+        let article = only_article(&input);
+        let mut out = Collect::default();
+        normalize(&article, &mut out).unwrap();
+        assert!(matches!(
+            out.citations[0].ids.pmc.as_ref().unwrap(),
+            Claim::Malformed { raw, .. } if *raw == "wst_2021_260"
+        ));
+        // One record claims its PMC id once, whichever tokens it uses.
+        let input = with(
+            "<ArticleId IdType=\"pmc\">PMC8459621</ArticleId>\
+             <ArticleId IdType=\"pmcid\">8459621</ArticleId>",
+        );
+        let article = only_article(&input);
+        let err = normalize(&article, &mut Collect::default()).unwrap_err();
+        assert_eq!(err.field, "ArticleIdList/ArticleId", "{err}");
+        assert!(
+            err.to_string()
+                .contains("more than one ArticleId of one type"),
+            "{err}"
         );
     }
 

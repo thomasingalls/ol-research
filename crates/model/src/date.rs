@@ -477,12 +477,27 @@ impl Date {
     }
 }
 
-/// A time of day to the minute with no zone, as PubMed's history dates
-/// carry it. One byte each.
+/// A time of day with no zone, as PubMed's history dates carry it: an
+/// hour, and the minute when the record gave one.
+///
+/// `PubMedPubDate (Year, Month, Day, (Hour, (Minute, Second?)?)?)` makes
+/// the minute optional inside the time, so an hour standing alone is a
+/// shape the DTD allows, and the survey of the whole 2026 baseline, ~37M
+/// records, found records that write one (2026-09-23). It is a partial
+/// value, the way a `PubDate` that stops at the year is, not an error.
+///
+/// The minute is kept absent rather than rounded to `:00`: a record that
+/// says nothing about the minute must not read afterwards as one that
+/// says zero, and no later reader could tell the two apart if it did.
+/// Ordering follows from that — `None` sorts before `Some(0)`, so the
+/// hour-only value comes before the same hour's first minute, which is
+/// the only order a partial value can honestly claim.
+///
+/// One byte for the hour, two for the minute.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct TimeOfDay {
     hour: u8,
-    minute: u8,
+    minute: Option<u8>,
 }
 
 impl TimeOfDay {
@@ -490,7 +505,20 @@ impl TimeOfDay {
     #[must_use]
     pub const fn new(hour: u8, minute: u8) -> Option<Self> {
         if hour <= 23 && minute <= 59 {
-            Some(Self { hour, minute })
+            Some(Self {
+                hour,
+                minute: Some(minute),
+            })
+        } else {
+            None
+        }
+    }
+
+    /// An hour, `0..=23`, with no minute beside it.
+    #[must_use]
+    pub const fn at_hour(hour: u8) -> Option<Self> {
+        if hour <= 23 {
+            Some(Self { hour, minute: None })
         } else {
             None
         }
@@ -502,16 +530,22 @@ impl TimeOfDay {
         self.hour
     }
 
-    /// The minute.
+    /// The minute, when the source gave one.
     #[must_use]
-    pub const fn minute(self) -> u8 {
+    pub const fn minute(self) -> Option<u8> {
         self.minute
     }
 }
 
 impl fmt::Display for TimeOfDay {
+    /// `12:36`, or the bare hour — `12` — when that is all the source
+    /// said: what is printed is what the record states, nothing rounded
+    /// in to fill the gap.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:02}:{:02}", self.hour, self.minute)
+        match self.minute {
+            Some(minute) => write!(f, "{:02}:{minute:02}", self.hour),
+            None => write!(f, "{:02}", self.hour),
+        }
     }
 }
 
@@ -1007,7 +1041,7 @@ impl<'de> Deserialize<'de> for DateTime {
 mod tests {
     use super::{
         Bound, Date, DateTime, Day, Error, MedlineError, Month, PartialDate, Quarter, Season,
-        Seasons, Span, Year,
+        Seasons, Span, TimeOfDay, Year,
     };
 
     fn y(v: u16) -> Year {
@@ -1125,6 +1159,29 @@ mod tests {
             PartialDate::from_numbers(2020, Some(13), None),
             Err(Error::Month)
         );
+    }
+
+    /// A history date may stop at the hour, which the DTD's
+    /// `(Hour, (Minute, Second?)?)?` allows and the 2026 baseline
+    /// contains (2026-09-23). The hour-only value keeps its minute
+    /// absent, prints as the bare hour, and sorts before the same hour's
+    /// `:00` — the only order a value that says less can claim.
+    #[test]
+    fn a_time_of_day_may_stop_at_the_hour() {
+        let hour = TimeOfDay::at_hour(12).unwrap();
+        assert_eq!(hour.hour(), 12);
+        assert_eq!(hour.minute(), None);
+        assert_eq!(hour.to_string(), "12");
+        let full = TimeOfDay::new(12, 36).unwrap();
+        assert_eq!(full.minute(), Some(36));
+        assert_eq!(full.to_string(), "12:36");
+        assert_eq!(TimeOfDay::at_hour(0).unwrap().to_string(), "00");
+        assert_ne!(hour, TimeOfDay::new(12, 0).unwrap());
+        assert!(hour < TimeOfDay::new(12, 0).unwrap());
+        assert!(TimeOfDay::at_hour(24).is_none());
+        assert!(TimeOfDay::new(23, 60).is_none());
+        assert_eq!(size_of::<TimeOfDay>(), 3);
+        assert_eq!(size_of::<Option<TimeOfDay>>(), 3);
     }
 
     #[test]

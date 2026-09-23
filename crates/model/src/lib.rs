@@ -33,7 +33,25 @@
 /// what the merge's `Option<Genre>` means, and these records simply
 /// never reached it. Normalized output under version 3 is rebuilt, not
 /// patched, because it is missing those records.
-pub const VERSION: u32 = 4;
+/// Version 5 (2026-09-23): the last of what the survey of the whole 2026
+/// baseline found — 11,343 records in 39,983,661 that this build could
+/// not read. Three shapes the model had never been taught: a
+/// `PubMedPubDate` may stop at the hour, so [`date::TimeOfDay`] holds an
+/// optional minute rather than inventing a `:00` no later reader could
+/// tell from a stated zero; an `ELocationID` marked `ValidYN="N"` is NLM
+/// saying an identifier is the wrong one, so it is kept in its own slot,
+/// where it can still match a citation that repeats the mistake, and is
+/// never a name; and a record's own id list may carry the kinds that name
+/// a deposit or a Bookshelf document rather than a work, which join the
+/// loose ids of version 2. Three more were PubMed disagreeing with
+/// itself, and needed no new shape: two assertions of one identifier
+/// agree or they say nothing, a `PMCnnn.v` suffix is PMC's own version
+/// and never had to match `PMID@Version`, and three affiliation
+/// identifier sources and one language code name nothing and are dropped.
+/// Only the first group changes the layout; the rest change which records
+/// exist. Normalized output under version 4 is rebuilt, not patched,
+/// because it is both misdescribed and short of those records.
+pub const VERSION: u32 = 5;
 
 pub mod claim;
 pub mod code;
