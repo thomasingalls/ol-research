@@ -49,8 +49,11 @@ pub enum Form {
 }
 
 /// What the item is: OpenAlex's types, which are the genres an
-/// aggregator can tell apart, and the four PubMed's publication types add
-/// — a comment, an expression of concern, a guideline, a news item.
+/// aggregator can tell apart, and the ten PubMed's publication types add
+/// — a comment, an expression of concern, a guideline, a news item, and
+/// the six document forms NLM indexes that no aggregator names
+/// (`festschrift`, `legal`, `media`, `reference`, `instructional`,
+/// `integrity-review`; see `source_pubmed::view::place`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 #[allow(missing_docs)]
@@ -83,6 +86,19 @@ pub enum Genre {
     SupplementaryMaterials,
     Paratext,
     Libguides,
+    /// A collection honouring a person or an institution.
+    Festschrift,
+    /// Legislation, or a court's decision.
+    Legal,
+    /// A recording: audio, video, a webcast.
+    Media,
+    /// A work to be consulted, not read through: a dictionary, a
+    /// bibliography, a directory, an index.
+    Reference,
+    /// A work whose purpose is to teach: a tutorial, a handout.
+    Instructional,
+    /// A report on research integrity, naming questionable research.
+    IntegrityReview,
     Other,
 }
 
@@ -164,6 +180,12 @@ impl Form {
     /// table is generous where the sources are known to blur (a
     /// proceedings article is `article` to OpenAlex) and strict where a
     /// pairing says one source is wrong. `other` admits everything.
+    ///
+    /// The six genres only PubMed names are admitted wherever NLM or a
+    /// registry could plausibly put them, because only one source says
+    /// them: a pairing like `book` / `festschrift` is two sources
+    /// agreeing seen from two vocabularies, not a disagreement, and
+    /// counting it as one would bury the conflicts that mean something.
     #[must_use]
     #[allow(clippy::too_many_lines)] // a table
     pub const fn admits(self, genre: Genre) -> bool {
@@ -187,6 +209,12 @@ impl Form {
                     | G::BookReview
                     | G::ConferencePaper
                     | G::ConferenceAbstract
+                    | G::Festschrift
+                    | G::Legal
+                    | G::Media
+                    | G::Reference
+                    | G::Instructional
+                    | G::IntegrityReview
                     | G::Paratext
                     | G::Other
             ),
@@ -207,6 +235,8 @@ impl Form {
                     | G::BookReview
                     | G::ConferencePaper
                     | G::Erratum
+                    | G::Festschrift
+                    | G::Reference
                     | G::Paratext
                     | G::Other
             ),
@@ -222,12 +252,16 @@ impl Form {
                     | G::Report
                     | G::Review
                     | G::ReferenceEntry
+                    | G::Festschrift
+                    | G::Legal
+                    | G::Reference
+                    | G::Instructional
                     | G::Paratext
                     | G::Other
             ),
             Self::Component => matches!(
                 genre,
-                G::SupplementaryMaterials | G::Dataset | G::Paratext | G::Other
+                G::SupplementaryMaterials | G::Dataset | G::Media | G::Paratext | G::Other
             ),
             Self::Dataset | Self::Database => matches!(
                 genre,
@@ -265,7 +299,14 @@ impl Form {
             ),
             Self::Report | Self::ReportComponent | Self::ReportSeries => matches!(
                 genre,
-                G::Report | G::Article | G::Review | G::Dataset | G::Paratext | G::Other
+                G::Report
+                    | G::Article
+                    | G::Review
+                    | G::Dataset
+                    | G::Legal
+                    | G::IntegrityReview
+                    | G::Paratext
+                    | G::Other
             ),
             Self::Standard => matches!(genre, G::Standard | G::Other),
             Self::Other => true,
@@ -275,7 +316,7 @@ impl Form {
 
 impl Genre {
     /// Every genre.
-    pub const ALL: [Self; 29] = [
+    pub const ALL: [Self; 35] = [
         Self::Article,
         Self::Review,
         Self::Letter,
@@ -304,6 +345,12 @@ impl Genre {
         Self::SupplementaryMaterials,
         Self::Paratext,
         Self::Libguides,
+        Self::Festschrift,
+        Self::Legal,
+        Self::Media,
+        Self::Reference,
+        Self::Instructional,
+        Self::IntegrityReview,
         Self::Other,
     ];
 
@@ -339,6 +386,12 @@ impl Genre {
             Self::SupplementaryMaterials => "supplementary-materials",
             Self::Paratext => "paratext",
             Self::Libguides => "libguides",
+            Self::Festschrift => "festschrift",
+            Self::Legal => "legal",
+            Self::Media => "media",
+            Self::Reference => "reference",
+            Self::Instructional => "instructional",
+            Self::IntegrityReview => "integrity-review",
             Self::Other => "other",
         }
     }

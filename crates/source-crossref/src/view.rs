@@ -271,6 +271,9 @@ pub fn view<'w>(work: &'w Work<'_>, table: &'w Table) -> Result<View<'w>, Unmapp
                 UpdateType::Erratum,
             ]),
             concern: by(&[UpdateType::ExpressionOfConcern]),
+            // Crossmark has no update type for it: a duplicate is
+            // PubMed's word, and only PubMed's.
+            duplicate: false,
         },
         access: open,
         references: work.references_count,

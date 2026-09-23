@@ -226,6 +226,9 @@ pub struct StatusBy {
     pub corrected: Sources,
     #[allow(missing_docs)]
     pub concern: Sources,
+    /// Who says the record duplicates material published elsewhere;
+    /// today only PubMed can (`source_pubmed::view`).
+    pub duplicate: Sources,
 }
 
 /// The promoted fields of §5 and their disagreements.

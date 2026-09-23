@@ -51,6 +51,7 @@ impl Venue<'_> {
 /// What one source says about a work's status; derived by the merge from
 /// publication types, relations, Crossmark updates and flags (§5).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[allow(clippy::struct_excessive_bools)] // four independent facts, not a state
 pub struct Status {
     #[allow(missing_docs)]
     pub retracted: bool,
@@ -58,6 +59,11 @@ pub struct Status {
     pub corrected: bool,
     /// An expression of concern.
     pub concern: bool,
+    /// The record is a duplicate of material published elsewhere. Only
+    /// PubMed says it, and only through its `Duplicate Publication`
+    /// publication type: no source has a relation for it, so the flag
+    /// says that this record is a duplicate and never of what.
+    pub duplicate: bool,
 }
 
 /// One record's values, borrowed. A field the source does not have is
@@ -701,6 +707,7 @@ impl Owned {
         self.status.retracted |= older.status.retracted;
         self.status.corrected |= older.status.corrected;
         self.status.concern |= older.status.concern;
+        self.status.duplicate |= older.status.duplicate;
         self.access = self.access.or(older.access);
         self.references = self.references.or(older.references);
         self.cited_by = self.cited_by.or(older.cited_by);

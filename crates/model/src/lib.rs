@@ -21,7 +21,19 @@
 /// (`1976-1977 Winter`, `1977-1978 Fall-Winter`). Modelled rather than
 /// flattened to a year span, because the old records are full of them
 /// (the user's call, 2026-09-23).
-pub const VERSION: u32 = 3;
+///
+/// Version 4, 2026-09-23: a PubMed record can carry no publication types
+/// at all. `PublicationTypeList` is declared `(PublicationType+)`, and
+/// 26 records of the 2026 baseline, ~37M records, write it with nothing
+/// inside it — the element present every time, never absent. Five of the
+/// 26 are `Status="MEDLINE"` with MeSH headings, so an empty list is a
+/// shape NLM ships in fully indexed records and not a gap curation will
+/// close; the parser now reads it as written instead of rejecting the
+/// record. Nothing downstream changes: a work with no genre was already
+/// what the merge's `Option<Genre>` means, and these records simply
+/// never reached it. Normalized output under version 3 is rebuilt, not
+/// patched, because it is missing those records.
+pub const VERSION: u32 = 4;
 
 pub mod claim;
 pub mod code;

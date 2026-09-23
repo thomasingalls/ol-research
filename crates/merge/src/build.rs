@@ -1795,6 +1795,9 @@ pub fn held(
         if c.view.status.concern {
             status.concern.insert(c.source);
         }
+        if c.view.status.duplicate {
+            status.duplicate.insert(c.source);
+        }
         if let Some(n) = c.view.references {
             references.push(Other {
                 source: c.source,
@@ -1818,6 +1821,7 @@ pub fn held(
         ("retracted", status.retracted),
         ("corrected", status.corrected),
         ("concern", status.concern),
+        ("duplicate", status.duplicate),
     ] {
         if !by.is_empty() {
             *tallies.status.entry((flag, by.to_string())).or_default() += 1;

@@ -1,7 +1,7 @@
 //! The `Article` subtree.
 
 use super::citation::{NameSlots, affiliation_info, identifier, keyed};
-use super::{Child, DateSlots, Parser, Result, Tag, list};
+use super::{Child, DateSlots, Parser, Result, Tag, list, maybe_empty_list};
 use crate::attr::{AuthorListType, CitedMedium, EIdType, IssnType, NlmCategory, PubModel, YesNo};
 use crate::error::ErrorKind;
 use crate::record::{
@@ -14,6 +14,10 @@ use crate::text::Text;
 /// `Article (Journal, ArticleTitle, ((Pagination, ELocationID*) | ELocationID+),
 /// Abstract?, AuthorList?, Language+, DataBankList?, GrantList?,
 /// PublicationTypeList, VernacularTitle?, ArticleDate*)` with `PubModel`.
+///
+/// The element itself is required — the dump of the 26 empty lists in the
+/// 2026 baseline showed it present every time, never absent — but its
+/// `PublicationType+` is read as `*` ([`maybe_empty_list`]).
 #[allow(clippy::too_many_lines)]
 pub(super) fn article<'a>(p: &mut Parser<'a>, tag: Tag<'a>) -> Result<Article<'a>> {
     p.enter(&tag);
@@ -55,7 +59,7 @@ pub(super) fn article<'a>(p: &mut Parser<'a>, tag: Tag<'a>) -> Result<Article<'a
                 p,
                 publication_types,
                 "PublicationTypeList",
-                list(p, t, "PublicationType", keyed)?
+                maybe_empty_list(p, t, "PublicationType", keyed)?
             ),
             "VernacularTitle" => set_once!(p, vernacular_title, "VernacularTitle", p.mixed(&t)?),
             "ArticleDate" => article_dates.push(article_date(p, t)?),

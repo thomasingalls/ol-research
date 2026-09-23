@@ -159,7 +159,9 @@ pub struct Article<'a> {
     pub data_bank_list: Option<DataBankList<'a>>,
     /// `GrantList?`.
     pub grant_list: Option<GrantList<'a>>,
-    /// `PublicationTypeList (PublicationType+)`.
+    /// `PublicationTypeList (PublicationType+)`, read as `*`: the
+    /// element is always there and is sometimes empty (2026-09-23,
+    /// `parse::maybe_empty_list`), so this list can be.
     pub publication_types: Few<Keyed<'a>, 4>,
     /// `VernacularTitle? (%text; | mml:math)*`.
     pub vernacular_title: Option<RawXml<'a>>,

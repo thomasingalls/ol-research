@@ -104,4 +104,12 @@ pub use work::{SourceId, Sources, WorkId};
 /// later had to assume it named none, and minted stubs a full merge
 /// does not ([`record::CitedAs::beside_held`], serving plan §11, item
 /// 26). The mark is written by the second pass, so it is a full merge.
-pub const VERSION: u32 = 9;
+/// Version 10 (2026-09-23): a record's status says whether PubMed marked
+/// it a duplicate publication ([`view::Status::duplicate`]), beside
+/// retracted, corrected and concerned. The type says a record duplicates
+/// another without saying which — PubMed has no `Duplicate` relation, so
+/// unlike a retraction there is nothing to follow — and the merge does
+/// not pair them; it carries the mark so a later pass can. Only the
+/// shape under `merged/` changes, not a rule, and the model's own
+/// version moves with it, but the shape is what this number is for.
+pub const VERSION: u32 = 10;

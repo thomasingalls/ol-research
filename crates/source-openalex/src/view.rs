@@ -127,6 +127,7 @@ pub fn view<'w>(work: &'w Work<'_>, _: &'w Table) -> Result<View<'w>, Unmapped> 
             retracted: work.is_retracted == Some(true),
             corrected: false,
             concern: false,
+            duplicate: false,
         },
         access: Some(work.open_access.status != OaStatus::Closed),
         references: Some(work.referenced_works_count),

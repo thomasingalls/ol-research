@@ -110,6 +110,53 @@ fn mathml_stays_raw_inside_abstracts() {
     assert!(!a.medline_citation.mesh_headings.is_empty());
 }
 
+/// The shortest record with its one `PublicationType` taken out, so the
+/// list is present and empty: the shape 26 records of the 2026 baseline
+/// have.
+fn without_publication_types(input: &str) -> String {
+    let out = input.replace(
+        "<PublicationType UI=\"D016428\">Journal Article</PublicationType>",
+        "",
+    );
+    assert!(
+        out.contains("<PublicationTypeList>"),
+        "the list is still there"
+    );
+    out
+}
+
+/// `PublicationTypeList` is declared `(PublicationType+)`, and 26 records
+/// of the 2026 baseline write it empty — five of them `Status="MEDLINE"`
+/// with MeSH headings, so it is a shape NLM ships in fully indexed
+/// records and not a gap curation will close. Both spellings of empty
+/// are read, and the record survives with no publication types.
+#[test]
+fn an_empty_publication_type_list_is_read_as_no_publication_types() {
+    let emptied = without_publication_types(&fixture("shortest"));
+    let mut collapsed = emptied.clone();
+    let open = collapsed
+        .find("<PublicationTypeList>")
+        .expect("an open tag");
+    let end = "</PublicationTypeList>";
+    let close = collapsed.find(end).expect("a close tag") + end.len();
+    collapsed.replace_range(open..close, "<PublicationTypeList/>");
+    for input in [&emptied, &collapsed] {
+        let a = only_article(input);
+        assert!(a.medline_citation.article.publication_types.is_empty());
+    }
+
+    // The element itself stays required: the dump showed it present in
+    // all 26, so a record without one is a shape we have not seen and
+    // would rather be told about.
+    let mut absent = emptied.clone();
+    absent.replace_range(open..close, "");
+    let err = ArticleSet::new(&absent).next_record().unwrap_err();
+    assert!(
+        matches!(err.kind, ErrorKind::MissingElement("PublicationTypeList")),
+        "{err}"
+    );
+}
+
 #[test]
 fn every_fixture_round_trips_through_clone_and_eq() {
     for name in [
@@ -274,11 +321,56 @@ mod normalized {
     }
 
     fn run(name: &str) -> Collect<'static> {
-        let input = Box::leak(fixture(name).into_boxed_str());
+        run_text(fixture(name))
+    }
+
+    fn run_text(input: String) -> Collect<'static> {
+        let input = Box::leak(input.into_boxed_str());
         let article = Box::leak(Box::new(only_article(input)));
         let mut out = Collect::default();
         normalize(article, &mut out).expect("normalizes");
         out
+    }
+
+    fn view_of<'w>(c: &'w Citation<'_>, table: &'w model::Table) -> merge::View<'w> {
+        <Pubmed as merge::Contributor>::view(c, table).expect("views")
+    }
+
+    /// The empty list, all the way through: a record with no publication
+    /// types normalizes, and its view has no genre — which the merge's
+    /// `Option<Genre>` already meant, so nothing downstream had to change.
+    #[test]
+    fn a_record_with_no_publication_types_has_no_genre() {
+        let out = run_text(super::without_publication_types(&fixture("shortest")));
+        let c = &out.citations[0];
+        assert!(c.publication_types.is_empty());
+        let table = model::Table::default();
+        let view = view_of(c, &table);
+        assert_eq!(view.genre, None);
+        // The form PubMed implies does not depend on the genre it has none
+        // of: a journal article is still what the record is in.
+        assert_eq!(view.form, Some(merge::kind::Form::JournalArticle));
+    }
+
+    /// Duplicate Publication is a qualifier — it says nothing about the
+    /// document's form — and separately a flag, because no source has a
+    /// relation that says a work is a duplicate.
+    #[test]
+    fn a_duplicate_publication_sets_the_flag_and_leaves_the_genre_alone() {
+        let input = fixture("shortest").replace(
+            "<PublicationType UI=\"D016428\">Journal Article</PublicationType>",
+            "<PublicationType UI=\"D016428\">Journal Article</PublicationType>\
+             <PublicationType UI=\"D016438\">Duplicate Publication</PublicationType>",
+        );
+        let out = run_text(input);
+        let table = model::Table::default();
+        let view = view_of(&out.citations[0], &table);
+        assert!(view.status.duplicate);
+        assert_eq!(view.genre, Some(merge::kind::Genre::Article));
+        assert!(!view.status.retracted && !view.status.corrected && !view.status.concern);
+        // And the plain record does not set it.
+        let plain = run("shortest");
+        assert!(!view_of(&plain.citations[0], &table).status.duplicate);
     }
 
     #[test]

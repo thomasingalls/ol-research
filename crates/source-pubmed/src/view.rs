@@ -4,10 +4,12 @@
 //! genre, `CommentsCorrections` types to a relation kind.
 //!
 //! The genre table is keyed by descriptor UI, which is stable where the
-//! term is not, and holds exactly the 61 publication types the sample
-//! showed (2026-09-15) plus the base type; a type outside it stops the
-//! run, which is how the rest of NLM's list gets added, one evidence at
-//! a time.
+//! term is not, and holds the publication types the corpus has shown: the
+//! sample's 61 plus the base type (2026-09-15), the update files' few
+//! more, and the nine the survey of the whole 2026 baseline, ~37M
+//! records, turned up (2026-09-23). A type outside it stops the run,
+//! which is how the rest of NLM's list gets added, one evidence at a
+//! time.
 
 use model::date::Bound;
 use model::symbol::Interned;
@@ -61,6 +63,19 @@ enum Place {
 /// Retracted Publication: the record was retracted (status, not genre).
 const RETRACTED_PUBLICATION: &str = "D016441";
 
+/// Duplicate Publication: the record is a duplicate of material already
+/// published elsewhere, unacknowledged (MeSH D016438) — status, not
+/// genre, and so a qualifier in the table as well as a flag here.
+///
+/// Unlike `retracted`, there is nothing to OR this with. PubMed's whole
+/// relation vocabulary was read from the raw XML (2026-09-23) and has no
+/// `Duplicate*` `RefType`: the 23 words are the ones [`relation_kind`]
+/// spells, and none of them says "is a duplicate of". So the publication
+/// type is the only evidence, and the flag it sets says only that this
+/// record is a duplicate — never of what. Finding the other copy is the
+/// merge's own work, which is why it wants the fact.
+const DUPLICATE_PUBLICATION: &str = "D016438";
+
 /// Where a publication type sits in the table, as one word: the genre it
 /// gives a record, `qualifier` for the types that say nothing about genre,
 /// or `None` when the table has never seen it — which is what stops a merge
@@ -76,7 +91,11 @@ pub fn genre_of(ui: &str) -> Option<&'static str> {
 
 /// The table, by descriptor UI. Priorities: a notice about another work
 /// (retraction, erratum, concern) over the base a record cannot be
-/// without (article); a review over the article it also is.
+/// without (article); a review over the article it also is; and, between
+/// those, a word the other sources also speak over one only NLM has,
+/// because the promoted genre is compared across sources and a word
+/// Crossref and OpenAlex cannot say makes nothing agree or disagree
+/// (2026-09-23).
 #[allow(clippy::too_many_lines)]
 fn place(ui: &str) -> Option<Place> {
     Some(match ui {
@@ -84,6 +103,13 @@ fn place(ui: &str) -> Option<Place> {
         "D016440" => Place::Genre(Genre::Retraction, 90),
         "D016425" => Place::Genre(Genre::Erratum, 90),
         "D000075742" => Place::Genre(Genre::ExpressionOfConcern, 90),
+        // Scientific Integrity Review, which MeSH scopes as the U.S.
+        // Office of Research Integrity's reports naming questionable
+        // research: a notice about other work, like the 90s, not a form.
+        // Below them because when a record is both, the journal's own
+        // retraction or erratum is the act and this is the finding that
+        // prompted it.
+        "D016426" => Place::Genre(Genre::IntegrityReview, 85),
         // Preprint; Dataset.
         "D000076942" => Place::Genre(Genre::Preprint, 80),
         "D064886" => Place::Genre(Genre::Dataset, 80),
@@ -106,26 +132,60 @@ fn place(ui: &str) -> Option<Place> {
         // Congress, which also spells Conference Proceedings; Clinical
         // Conference (pubmed26n1337).
         "D016423" | "D016429" => Place::Genre(Genre::ConferencePaper, 40),
-        // Technical Report.
-        "D016427" => Place::Genre(Genre::Report, 40),
-        // Interview; Lecture; Address; Biography; Portrait; Personal
-        // Narrative; Bibliography; Video-Audio Media; and, first in the
-        // update files pubmed26n1335 to 1339, Patient Education Handout,
-        // Legal Case, Periodical Index and Overall, the summary record of
-        // a set of articles. Directory and Autobiography joined them from
-        // the oldest baseline files, pubmed26n0001 and 0002.
-        "D017203" | "D019531" | "D019484" | "D019215" | "D019477" | "D062210" | "D016417"
-        | "D059040" | "D029282" | "D016418" | "D016453" | "D016424" | "D016435" | "D020493" => {
-            Place::Genre(Genre::Other, 30)
-        }
+        // Technical Report, which was this genre's only member, joined by
+        // Government Publication: MeSH scopes it as anything a local,
+        // regional or national government or its agencies issues, which
+        // is a technical report under another name (2026-09-23).
+        "D016427" | "D022903" => Place::Genre(Genre::Report, 40),
+        // The six forms NLM indexes that no aggregator names. All at one
+        // priority: each is a definite statement about what the document
+        // is, so above `Other`'s 30, which is the shrug; below
+        // `ConferencePaper` and `Report`'s 40, which say the same kind of
+        // thing in a word the other sources can also say. They do not
+        // compete with each other — nothing in the corpus is both a
+        // dictionary and a webcast — so a band rather than an order.
+        //
+        // Festschrift: a collection honouring a person or an institution,
+        // which is what the volume is, whatever its articles are about.
+        "D016221" => Place::Genre(Genre::Festschrift, 35),
+        // Legislation, the text of a bill or a statute; Legal Case, a
+        // court's decision. Both are the law itself rather than writing
+        // about it, which is what sets them apart from an article on
+        // health policy.
+        "D020485" | "D016418" => Place::Genre(Genre::Legal, 35),
+        // Webcast; Video-Audio Media. A recording, not a text: the thing
+        // a reader cannot read.
+        "D057405" | "D059040" => Place::Genre(Genre::Media, 35),
+        // Dictionary; Bibliography; Directory; Periodical Index. Works to
+        // be consulted rather than read through — they answer a lookup,
+        // and none of them argues anything.
+        "D016437" | "D016417" | "D016435" | "D016453" => Place::Genre(Genre::Reference, 35),
+        // Interactive Tutorial; Patient Education Handout. Written to
+        // teach someone, the reader named in the form itself.
+        "D054710" | "D029282" => Place::Genre(Genre::Instructional, 35),
+        // What is left of the grab-bag after the six forms above took
+        // their share (2026-09-23): Interview; Lecture; Address;
+        // Biography; Portrait; Personal Narrative; Autobiography; and
+        // Overall, the summary record of a set of articles. Each names a
+        // way of speaking rather than a kind of document, and the genres
+        // the merge has do not tell them apart — a lecture and an
+        // interview are both, as far as the vocabulary goes, an article
+        // that is not one.
+        "D017203" | "D019531" | "D019484" | "D019215" | "D019477" | "D062210" | "D016424"
+        | "D020493" => Place::Genre(Genre::Other, 30),
         // Journal Article; Case Reports; Historical Article; Corrected and
         // Republished Article; Clinical Trial Protocol.
         "D016428" | "D002363" | "D016456" | "D016439" | "D000078325" => {
             Place::Genre(Genre::Article, 10)
         }
-        // Retracted Publication is status, not genre; the rest are study
+        // Retracted Publication and Duplicate Publication are status,
+        // not genre. Seminal Article is a judgement of importance —
+        // MeSH scopes it as a milestone frequently cited since — and
+        // says nothing about the document's form; the rest are study
         // designs and funding notes.
         RETRACTED_PUBLICATION
+        | DUPLICATE_PUBLICATION
+        | "D016419"
         | "D013485"
         | "D052061"
         | "D013486"
@@ -253,6 +313,11 @@ pub fn view<'w>(work: &'w Citation<'_>, table: &'w Table) -> Result<View<'w>, Un
         .relations
         .iter()
         .any(|r| r.kind == RefType::ExpressionOfConcernIn);
+    // No relation to OR in: see `DUPLICATE_PUBLICATION`.
+    let duplicate = work
+        .publication_types
+        .iter()
+        .any(|t| t.ui.as_str() == DUPLICATE_PUBLICATION);
     Ok(View {
         version: work.version,
         set: "",
@@ -273,6 +338,7 @@ pub fn view<'w>(work: &'w Citation<'_>, table: &'w Table) -> Result<View<'w>, Un
             retracted,
             corrected,
             concern,
+            duplicate,
         },
         access: work.ids.pmc.as_ref().and_then(Claim::valid).map(|_| true),
         references: work.number_of_references,
@@ -363,7 +429,7 @@ fn person(p: &PersonName<'_>) -> String {
 mod tests {
     use merge::kind::Genre;
 
-    use super::{Place, genre_of, place};
+    use super::{DUPLICATE_PUBLICATION, Place, genre_of, place};
 
     /// What `ol-rht pubmed genres` answers with: the table asked rather than
     /// printed, so a corpus can be checked before it is merged.
@@ -373,9 +439,14 @@ mod tests {
         assert_eq!(genre_of("D016454"), Some("review"));
         // A study design says nothing about genre.
         assert_eq!(genre_of("D013485"), Some("qualifier"));
-        // The two the oldest baseline files added, 2026-09-23.
-        assert_eq!(genre_of("D016435"), Some("other"));
+        // The two the oldest baseline files added, 2026-09-23. Directory
+        // is a reference work; Autobiography stayed in the grab-bag.
+        assert_eq!(genre_of("D016435"), Some("reference"));
         assert_eq!(genre_of("D020493"), Some("other"));
+        // Seminal Article and Duplicate Publication are judgements about
+        // a work, not statements about what it is.
+        assert_eq!(genre_of("D016419"), Some("qualifier"));
+        assert_eq!(genre_of(DUPLICATE_PUBLICATION), Some("qualifier"));
         // Not a publication type at all, and not in the table.
         assert_eq!(genre_of("D999999"), None);
         assert_eq!(genre_of(""), None);
@@ -459,5 +530,112 @@ mod tests {
         assert_eq!(place("D999999"), None, "outside the table");
         assert_eq!(place("D016454"), Some(Place::Genre(Genre::Review, 50)));
         assert_eq!(place("D013485"), Some(Place::Qualifier));
+    }
+
+    /// The nine the survey of the whole 2026 baseline turned up
+    /// (2026-09-23), each with the name the corpus and MeSH both give it,
+    /// and the four the `other` bucket gave up to the new genres. A merge
+    /// stops on any of these until they are placed, so the test is the
+    /// list itself.
+    #[test]
+    fn the_baseline_survey_types_are_all_placed() {
+        let expected = [
+            // The nine the survey found, most common first.
+            ("D016419", "Seminal Article", Place::Qualifier),
+            (
+                "D016221",
+                "Festschrift",
+                Place::Genre(Genre::Festschrift, 35),
+            ),
+            ("D020485", "Legislation", Place::Genre(Genre::Legal, 35)),
+            ("D016438", "Duplicate Publication", Place::Qualifier),
+            ("D057405", "Webcast", Place::Genre(Genre::Media, 35)),
+            ("D016437", "Dictionary", Place::Genre(Genre::Reference, 35)),
+            (
+                "D016426",
+                "Scientific Integrity Review",
+                Place::Genre(Genre::IntegrityReview, 85),
+            ),
+            (
+                "D054710",
+                "Interactive Tutorial",
+                Place::Genre(Genre::Instructional, 35),
+            ),
+            (
+                "D022903",
+                "Government Publication",
+                Place::Genre(Genre::Report, 40),
+            ),
+            // The four that left `other` for a genre that names them.
+            (
+                "D016417",
+                "Bibliography",
+                Place::Genre(Genre::Reference, 35),
+            ),
+            ("D016435", "Directory", Place::Genre(Genre::Reference, 35)),
+            (
+                "D016453",
+                "Periodical Index",
+                Place::Genre(Genre::Reference, 35),
+            ),
+            (
+                "D059040",
+                "Video-Audio Media",
+                Place::Genre(Genre::Media, 35),
+            ),
+            (
+                "D029282",
+                "Patient Education Handout",
+                Place::Genre(Genre::Instructional, 35),
+            ),
+            ("D016418", "Legal Case", Place::Genre(Genre::Legal, 35)),
+            // And the ones that stayed, which the genres cannot tell apart.
+            ("D017203", "Interview", Place::Genre(Genre::Other, 30)),
+            ("D019531", "Lecture", Place::Genre(Genre::Other, 30)),
+            ("D019484", "Address", Place::Genre(Genre::Other, 30)),
+            ("D019215", "Biography", Place::Genre(Genre::Other, 30)),
+            ("D019477", "Portrait", Place::Genre(Genre::Other, 30)),
+            (
+                "D062210",
+                "Personal Narrative",
+                Place::Genre(Genre::Other, 30),
+            ),
+            ("D020493", "Autobiography", Place::Genre(Genre::Other, 30)),
+            ("D016424", "Overall", Place::Genre(Genre::Other, 30)),
+        ];
+        for (ui, name, want) in expected {
+            assert_eq!(place(ui), Some(want), "{ui} {name}");
+        }
+    }
+
+    /// The rule the priorities exist for: the highest wins. The six new
+    /// genres beat the grab-bag and the base type, and lose to the words
+    /// the other sources also speak.
+    #[test]
+    fn a_records_types_are_settled_by_priority() {
+        let best = |uis: &[&str]| {
+            uis.iter()
+                .filter_map(|ui| match place(ui) {
+                    Some(Place::Genre(g, p)) => Some((p, g)),
+                    _ => None,
+                })
+                .max_by_key(|(p, _)| *p)
+                .map(|(_, g)| g)
+        };
+        // Journal Article + Dictionary: a dictionary, not an article.
+        assert_eq!(best(&["D016428", "D016437"]), Some(Genre::Reference));
+        // Interview + Video-Audio Media: the recording beats the shrug.
+        assert_eq!(best(&["D017203", "D059040"]), Some(Genre::Media));
+        // Congress + Festschrift: the word Crossref and OpenAlex also
+        // have wins.
+        assert_eq!(best(&["D016423", "D016221"]), Some(Genre::ConferencePaper));
+        // Journal Article + Scientific Integrity Review: the notice.
+        assert_eq!(best(&["D016428", "D016426"]), Some(Genre::IntegrityReview));
+        // ... but a retraction notice is the act, and outranks it.
+        assert_eq!(best(&["D016426", "D016440"]), Some(Genre::Retraction));
+        // Journal Article + Seminal Article: a qualifier adds nothing.
+        assert_eq!(best(&["D016428", "D016419"]), Some(Genre::Article));
+        // No types at all: no genre, which is a shape the merge has.
+        assert_eq!(best(&[]), None);
     }
 }

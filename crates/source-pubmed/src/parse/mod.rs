@@ -432,6 +432,27 @@ pub(crate) fn date_ymd<'a>(p: &mut Parser<'a>, tag: Tag<'a>) -> Result<Date<'a>>
     Ok(date)
 }
 
+/// The children of a wrapper element with no attributes, the parser left
+/// inside it so a caller's own complaint about the list names the list.
+fn children<'a, T, const N: usize>(
+    p: &mut Parser<'a>,
+    tag: &Tag<'a>,
+    child: &'static str,
+    parse: impl Fn(&mut Parser<'a>, Tag<'a>) -> Result<T>,
+) -> Result<Few<T, N>> {
+    p.enter(tag);
+    p.no_attributes(tag)?;
+    let mut items = Few::new();
+    while let Child::Elem(t) = p.next_child(tag)? {
+        if t.name() == child {
+            items.push(parse(p, t)?);
+        } else {
+            return Err(p.unexpected(&t));
+        }
+    }
+    Ok(items)
+}
+
 /// A wrapper element with no attributes whose content is `child+`.
 pub(crate) fn list<'a, T, const N: usize>(
     p: &mut Parser<'a>,
@@ -439,17 +460,32 @@ pub(crate) fn list<'a, T, const N: usize>(
     child: &'static str,
     parse: impl Fn(&mut Parser<'a>, Tag<'a>) -> Result<T>,
 ) -> Result<Few<T, N>> {
-    p.enter(&tag);
-    p.no_attributes(&tag)?;
-    let mut items = Few::new();
-    while let Child::Elem(t) = p.next_child(&tag)? {
-        if t.name() == child {
-            items.push(parse(p, t)?);
-        } else {
-            return Err(p.unexpected(&t));
-        }
-    }
+    let items = children(p, &tag, child, parse)?;
     let items = p.at_least_one(child, items)?;
+    p.leave();
+    Ok(items)
+}
+
+/// A wrapper element with no attributes whose content is `child*` — the
+/// DTD's `+` read as `*`, for the one list NLM writes empty.
+///
+/// `PublicationTypeList` is declared `(PublicationType+)` and 26 records
+/// of the 2026 baseline, ~37M records, hold it with nothing inside it
+/// (`ol-rht pubmed normalize --survey`, 2026-09-23). Five of the 26 are
+/// `Status="MEDLINE"` and carry MeSH headings, so this is not a
+/// publisher-supplied record waiting for curation to fill the list in:
+/// it is a shape NLM ships in fully indexed records, and a parser that
+/// rejects the record loses an indexed article over a list we do not
+/// need. The empty list is read as written — no publication types — and
+/// the genre table, which already answers `None`, decides what that
+/// means (`view::genre`).
+pub(crate) fn maybe_empty_list<'a, T, const N: usize>(
+    p: &mut Parser<'a>,
+    tag: Tag<'a>,
+    child: &'static str,
+    parse: impl Fn(&mut Parser<'a>, Tag<'a>) -> Result<T>,
+) -> Result<Few<T, N>> {
+    let items = children(p, &tag, child, parse)?;
     p.leave();
     Ok(items)
 }

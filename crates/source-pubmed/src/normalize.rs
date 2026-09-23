@@ -97,7 +97,8 @@ pub struct Citation<'n> {
     pub other_abstracts: Few<OtherAbstract<'n>, 2>,
     /// `Language+`, ISO 639-2 bibliographic codes.
     pub languages: Few<Lang, 1>,
-    /// `PublicationType+`.
+    /// `PublicationType*`: the DTD says `+`, and the list is sometimes
+    /// empty, so a record can have none (model version 4).
     #[serde(borrow)]
     pub publication_types: Few<MeshTerm<'n>, 4>,
     /// `AuthorList/Author*`.

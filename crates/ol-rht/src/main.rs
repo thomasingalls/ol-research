@@ -3119,6 +3119,7 @@ fn print_facts(out: &mut impl Write, row: &serve::Row) -> io::Result<()> {
         ("retracted", f.status.retracted),
         ("corrected", f.status.corrected),
         ("concern", f.status.concern),
+        ("duplicate", f.status.duplicate),
     ] {
         if !by.is_empty() {
             facts.push(format!("{flag} by {by}"));
