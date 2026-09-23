@@ -151,7 +151,8 @@ pub struct Citation<'n> {
     #[serde(borrow)]
     pub citation_subsets: Few<&'n str, 2>,
     /// `PubmedData/History`.
-    pub history: Few<HistoryEntry, 8>,
+    #[serde(borrow)]
+    pub history: Few<HistoryEntry<'n>, 8>,
     /// `PubmedData/PublicationStatus`.
     pub publication_status: Option<PublicationStatus>,
     /// `CommentsCorrections*`: errata, retractions, comments, by kind.
@@ -600,14 +601,122 @@ pub struct DataBank<'n> {
 }
 
 /// One `PubMedPubDate`.
+///
+/// Its date and its time are kept as the record wrote them when they name
+/// no day or no time that exists, and the record normalizes (model version
+/// 6, the user's decision of 2026-09-24). The survey of the whole 2026
+/// baseline on model version 5 found 200 records with a history day that
+/// never was — the 31st of a thirty-day month, 29 February of a year that
+/// had none (`2010-02-29`, `2011-09-31`) — and 48 with `null` where an hour
+/// or a minute goes; each of them used to stop the run. Twelve of the 200,
+/// fetched from `efetch` the same day, carry the bad day on a date the
+/// publisher supplied (`received` 7, `accepted` 4, `revised` 1), never on
+/// one NLM stamps itself (`entrez`, `pubmed`, `medline`). Nothing outside
+/// this crate reads a history date, so a whole record — title, abstract,
+/// authors, MeSH, references — was being lost to a timestamp no consumer
+/// has; and nothing is rounded or guessed in its place, because the day
+/// a publisher meant by `2011-09-31` is not ours to choose.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HistoryEntry {
+pub struct HistoryEntry<'n> {
     #[allow(missing_docs)]
     pub status: PubStatus,
     #[allow(missing_docs)]
-    pub date: Date,
+    #[serde(borrow)]
+    pub date: HistoryDate<'n>,
     /// Local time with no zone, when given.
-    pub time: Option<TimeOfDay>,
+    #[serde(borrow)]
+    pub time: Option<HistoryTime<'n>>,
+}
+
+/// A history date: the day, or the `Year`, `Month` and `Day` as written
+/// and why they are not one.
+///
+/// The shape of [`Claim`], with the raw text in the three parts the record
+/// wrote it in: a `Claim` borrows one string, and joining the parts into
+/// `2011-09-31` would keep a string the record never contained.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum HistoryDate<'n> {
+    /// It is a day.
+    Valid(Date),
+    /// It is not; here is what the record wrote, and why.
+    Malformed {
+        #[allow(missing_docs)]
+        year: &'n str,
+        #[allow(missing_docs)]
+        month: &'n str,
+        #[allow(missing_docs)]
+        day: &'n str,
+        #[allow(missing_docs)]
+        error: DateError,
+    },
+}
+
+/// A history time: an hour and perhaps a minute, or the `Hour` and
+/// `Minute` as written and why they are not one — [`DateError::TimeDigits`]
+/// for `null` in either (`null:null`, `5:null`), [`DateError::Time`] for
+/// digits out of range.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum HistoryTime<'n> {
+    /// It is a time.
+    Valid(TimeOfDay),
+    /// It is not; here is what the record wrote, and why.
+    Malformed {
+        #[allow(missing_docs)]
+        hour: &'n str,
+        /// `Minute`, when the record wrote one.
+        minute: Option<&'n str>,
+        #[allow(missing_docs)]
+        error: DateError,
+    },
+}
+
+impl HistoryDate<'_> {
+    /// The day, if the record named one.
+    #[must_use]
+    pub const fn valid(&self) -> Option<Date> {
+        match self {
+            Self::Valid(date) => Some(*date),
+            Self::Malformed { .. } => None,
+        }
+    }
+}
+
+impl HistoryTime<'_> {
+    /// The time, if the record named one.
+    #[must_use]
+    pub const fn valid(&self) -> Option<TimeOfDay> {
+        match self {
+            Self::Valid(time) => Some(*time),
+            Self::Malformed { .. } => None,
+        }
+    }
+}
+
+/// The day, or the parts as the record wrote them: `2011-09-31`.
+impl fmt::Display for HistoryDate<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Valid(date) => date.fmt(f),
+            Self::Malformed {
+                year, month, day, ..
+            } => write!(f, "{year}-{month}-{day}"),
+        }
+    }
+}
+
+/// The time, or the parts as the record wrote them: `null:null`.
+impl fmt::Display for HistoryTime<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Valid(time) => time.fmt(f),
+            Self::Malformed {
+                hour,
+                minute: Some(minute),
+                ..
+            } => write!(f, "{hour}:{minute}"),
+            Self::Malformed { hour, .. } => f.write_str(hour),
+        }
+    }
 }
 
 /// A `CommentsCorrections` entry: how this record relates to another.
@@ -784,9 +893,16 @@ impl Ctx {
         Ok(match (m, d, s) {
             (None, None, None) => PartialDate::Year(y),
             (Some(m), None, None) => PartialDate::YearMonth(y, m),
-            (Some(m), Some(d), None) => PartialDate::Day(
-                Date::new(y, m, d).map_err(|e| self.err(FIELD, year, ErrorKind::Date(e)))?,
-            ),
+            // The whole date in the report, as `date` writes one, not only
+            // the year: the day that does not exist is the finding.
+            (Some(m), Some(d), None) => PartialDate::Day(Date::new(y, m, d).map_err(|e| {
+                let raw = format!(
+                    "{year}-{}-{}",
+                    month.as_deref().unwrap_or_default(),
+                    day.as_deref().unwrap_or_default()
+                );
+                self.err(FIELD, &raw, ErrorKind::Date(e))
+            })?),
             (None, None, Some(s)) => PartialDate::YearSeason(y, s),
             _ => {
                 return Err(self.err(
@@ -947,7 +1063,10 @@ impl Ctx {
         })
     }
 
-    fn history(&self, h: &record::PubMedPubDate<'_>) -> Result<HistoryEntry, Error> {
+    /// One `PubMedPubDate`. Its values never stop the run — a date or a
+    /// time that is none is kept as written ([`HistoryEntry`]) — but a
+    /// shape the DTD does not allow still does.
+    fn history<'n>(&self, h: &'n record::PubMedPubDate<'_>) -> Result<HistoryEntry<'n>, Error> {
         const FIELD: &str = "History/PubMedPubDate";
         if let Some(second) = &h.second {
             return Err(self.err(
@@ -956,7 +1075,7 @@ impl Ctx {
                 ErrorKind::Unmodelled("a Second in a history date"),
             ));
         }
-        let date = self.date(FIELD, &h.date)?;
+        let date = history_date(&h.date);
         let time = match (h.hour.as_deref(), h.minute.as_deref()) {
             (None, None) => None,
             // `PubMedPubDate (Year, Month, Day, (Hour, (Minute,
@@ -969,7 +1088,7 @@ impl Ctx {
             // could tell from a stated zero — the same rule as a `PubDate`
             // that stops at the year (2026-09-23, from the survey of the
             // whole 2026 baseline).
-            (Some(hour), minute) => Some(self.time_of_day(FIELD, hour, minute)?),
+            (Some(hour), minute) => Some(history_time(hour, minute)),
             // The DTD cannot express this and the parser's content model
             // rejects it first; kept here so the value layer says so too.
             (None, Some(minute)) => {
@@ -986,33 +1105,50 @@ impl Ctx {
             time,
         })
     }
+}
 
-    /// An `Hour` and the `Minute` beside it when the record wrote one,
-    /// each one or two digits (history dates write both `9` and `09`).
-    fn time_of_day(
-        &self,
-        field: &'static str,
-        hour: &str,
-        minute: Option<&str>,
-    ) -> Result<TimeOfDay, Error> {
-        let digits = |s: &str| -> Option<u8> {
-            if s.is_empty() || s.len() > 2 || !s.bytes().all(|b| b.is_ascii_digit()) {
-                return None;
-            }
-            s.parse().ok()
-        };
-        let time = match (digits(hour), minute.map(digits)) {
-            (Some(hh), None) => TimeOfDay::at_hour(hh),
-            (Some(hh), Some(Some(mm))) => TimeOfDay::new(hh, mm),
-            _ => None,
-        };
-        time.ok_or_else(|| {
-            let raw = match minute {
-                Some(minute) => format!("{hour}:{minute}"),
-                None => hour.to_owned(),
-            };
-            self.err(field, &raw, ErrorKind::Date(DateError::Time))
-        })
+/// A history date's `Year`, `Month` and `Day` as the day they name, or as
+/// written with the first reason they name none.
+fn history_date<'n>(d: &'n DateText<'_>) -> HistoryDate<'n> {
+    let parsed = Year::parse(&d.year).and_then(|year| {
+        let month = Month::parse(&d.month)?;
+        let day = Day::parse(&d.day)?;
+        Date::new(year, month, day)
+    });
+    match parsed {
+        Ok(date) => HistoryDate::Valid(date),
+        Err(error) => HistoryDate::Malformed {
+            year: &d.year,
+            month: &d.month,
+            day: &d.day,
+            error,
+        },
+    }
+}
+
+/// An `Hour` and the `Minute` beside it when the record wrote one, each one
+/// or two digits (history dates write both `9` and `09`), as the time they
+/// name or as written with why they name none: `null` in either is
+/// [`DateError::TimeDigits`], digits past `23:59` [`DateError::Time`].
+fn history_time<'n>(hour: &'n str, minute: Option<&'n str>) -> HistoryTime<'n> {
+    let digits = |s: &str| -> Option<u8> {
+        if s.is_empty() || s.len() > 2 || !s.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        s.parse().ok()
+    };
+    let time = match (digits(hour), minute.map(digits)) {
+        (Some(hh), None) => TimeOfDay::at_hour(hh).ok_or(DateError::Time),
+        (Some(hh), Some(Some(mm))) => TimeOfDay::new(hh, mm).ok_or(DateError::Time),
+        _ => Err(DateError::TimeDigits),
+    };
+    match time {
+        Ok(time) => HistoryTime::Valid(time),
+        Err(error) => HistoryTime::Malformed {
+            hour,
+            minute,
+            error,
+        },
     }
 }
 

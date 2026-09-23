@@ -82,6 +82,11 @@ pub struct Bound {
 }
 
 /// A range of publication dates, from PubMed's `MedlineDate`.
+///
+/// Its end is never before its start, as far as the two say: a part one
+/// bound leaves out is not compared. [`PartialDate::parse_medline`], the
+/// one place a span is made, refuses any other
+/// ([`MedlineError::Backwards`], model version 6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Span {
     /// The start.
@@ -152,6 +157,13 @@ pub enum Error {
     DateShape,
     /// Hours, minutes or seconds out of range.
     Time,
+    /// An hour or a minute that is not one or two digits at all — the
+    /// word `null`, in the history dates of the 2026 baseline, where a
+    /// serializer wrote its name for nothing into a field that has no way
+    /// to be empty. Not [`Error::Time`]: `25:00` is a time that cannot be,
+    /// `null:null` is no time, and a report that says the one for the
+    /// other sends its reader looking for the wrong thing.
+    TimeDigits,
 }
 
 impl fmt::Display for Error {
@@ -170,6 +182,7 @@ impl fmt::Display for Error {
             }
             Self::DateShape => "date is not YYYY-MM-DD",
             Self::Time => "time of day out of range",
+            Self::TimeDigits => "hour or minute is not one or two digits",
         })
     }
 }
@@ -183,6 +196,15 @@ pub enum MedlineError {
     Unrecognized,
     /// A recognized form with a bad part.
     Part(Error),
+    /// A recognized form whose parts are each good and which ends before
+    /// it begins: `1990 Dec 12-8`, two nursing weeklies' issue for the
+    /// week of the 12th (PMIDs 2123665, 2255640). Before model version 6
+    /// this was read as a span ending four days before its start, without
+    /// a word — false data in a shape we knew. It is refused rather than
+    /// repaired: that `12-8` means `12-18`, a tens digit elided the way
+    /// NLM elides page ranges, is a reading of one month of one year, and
+    /// waits on a source that states the convention.
+    Backwards,
 }
 
 impl fmt::Display for MedlineError {
@@ -190,6 +212,7 @@ impl fmt::Display for MedlineError {
         match self {
             Self::Unrecognized => f.write_str("not a recognized MedlineDate form"),
             Self::Part(e) => write!(f, "MedlineDate part: {e}"),
+            Self::Backwards => f.write_str("MedlineDate range ends before it starts"),
         }
     }
 }
@@ -361,17 +384,26 @@ impl Season {
         Self::from_name(s).ok_or(Error::Season)
     }
 
-    /// The season for its name.
+    /// The season for its name, in any case, for the reason
+    /// [`Month::from_name`] takes any: the records of the 1970s shout their
+    /// seasons as they shout their months (`1976 WINTER`, `1975 AUTUMN`,
+    /// `1979 SPRING`) — the commonest shape among the 9,662 `MedlineDate`
+    /// values the survey of the whole 2026 baseline on model version 5
+    /// could not read (2026-09-24).
     #[must_use]
     pub fn from_name(s: &str) -> Option<Self> {
-        Some(match s {
-            "Winter" => Self::Winter,
-            "Spring" => Self::Spring,
-            "Summer" => Self::Summer,
+        const NAMES: [(&str, Season); 5] = [
+            ("Winter", Season::Winter),
+            ("Spring", Season::Spring),
+            ("Summer", Season::Summer),
+            ("Fall", Season::Fall),
             // `Autumn` on 2 of 15,432 PubMed records looked up 2026-09-15.
-            "Fall" | "Autumn" => Self::Fall,
-            _ => return None,
-        })
+            ("Autumn", Season::Fall),
+        ];
+        NAMES
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case(s))
+            .map(|&(_, season)| season)
     }
 }
 
@@ -778,9 +810,19 @@ fn take_season(s: &str) -> Result<(Season, &str), MedlineError> {
 }
 
 /// `D` or `DD` at the front of `s`.
+///
+/// A longer run of digits is not a day out of range but some other number
+/// where a day would go — a shape this grammar does not know, and
+/// reported as one. Before model version 6 `take_day` read any run of
+/// digits and let [`Day::parse`] refuse it, so the survey of the whole
+/// 2026 baseline on model version 5 counted 140 records as `day is not
+/// 1..31`; the seven distinct strings among its 24 examples put a year
+/// there (`2016 Nov-Dec 2016`, `1974 Dec 1974-Jan`, `1974 Apr 1974, 4 p
+/// 3`) or, once, a two-digit one (`1971 Oct 70-Jan`), and none of them a
+/// day (2026-09-24).
 fn take_day(s: &str) -> Result<(Day, &str), MedlineError> {
     let digits = s.bytes().take_while(u8::is_ascii_digit).count();
-    if digits == 0 {
+    if digits == 0 || digits > 2 {
         return Err(MedlineError::Unrecognized);
     }
     let day = Day::parse(&s[..digits])?;
@@ -792,6 +834,83 @@ fn bound(year: Year, month: Option<Month>, day: Option<Day>) -> Result<Bound, Me
         Date::new(year, month, day)?;
     }
     Ok(Bound { year, month, day })
+}
+
+/// A [`PartialDate::Span`] from `start` to `end`, unless it ends before
+/// it starts ([`MedlineError::Backwards`]).
+fn span(start: Bound, end: Bound) -> Result<PartialDate, MedlineError> {
+    if ends_before(end, start) {
+        Err(MedlineError::Backwards)
+    } else {
+        Ok(PartialDate::Span(Span { start, end }))
+    }
+}
+
+/// Whether `end` comes before `start` on the parts both of them give: a
+/// month or a day that one bound leaves out says nothing either way.
+fn ends_before(end: Bound, start: Bound) -> bool {
+    if end.year != start.year {
+        return end.year < start.year;
+    }
+    match (end.month, start.month) {
+        (Some(e), Some(s)) if e != s => e < s,
+        (Some(_), Some(_)) => matches!((end.day, start.day), (Some(e), Some(s)) if e < s),
+        _ => false,
+    }
+}
+
+/// The rest of a range that starts `YYYY Mon` and a separator: `Mon` or
+/// `YYYY Mon`, either with an optional ` DD` on the end month
+/// (`2026 Jan-Feb 01`, 56 records of one journal in pubmed26n1333).
+fn month_span(year: Year, month: Month, rest: &str) -> Result<PartialDate, MedlineError> {
+    let (end_year, end_month, rest) = if let Ok((end_year, rest)) = take_year(rest) {
+        let rest = rest.strip_prefix(' ').ok_or(MedlineError::Unrecognized)?;
+        let (end_month, rest) = take_month(rest)?;
+        (end_year, end_month, rest)
+    } else {
+        let (end_month, rest) = take_month(rest)?;
+        (implied_end_year(year, month, end_month)?, end_month, rest)
+    };
+    let (end_day, rest) = if let Some(rest) = rest.strip_prefix(' ') {
+        // `2016 Nov-Dec 2016` (`Ann Hepatol`, PMID 27740513), `2020
+        // Sep/Oct 2020` (`J Opioid Manag`, PMID 33226088): the end's year
+        // written again after it. It says nothing new when it is the year
+        // the end already has, and contradicts the front when it is not,
+        // which no reading here settles.
+        if let Ok((again, rest)) = take_year(rest) {
+            if again != end_year {
+                return Err(MedlineError::Unrecognized);
+            }
+            (None, rest)
+        } else {
+            let (day, rest) = take_day(rest)?;
+            (Some(day), rest)
+        }
+    } else {
+        (None, rest)
+    };
+    done(rest)?;
+    span(
+        bound(year, Some(month), None)?,
+        bound(end_year, Some(end_month), end_day)?,
+    )
+}
+
+/// The year of a range's end month when the source wrote none: the
+/// start's, or the one after when the end month comes before the start
+/// month — `1990 Dec 21-Jan 10`, `Nursing (Lond)` (PMIDs 2320314,
+/// 2320315), ends on 10 January 1991. Before model version 6 it was read
+/// as ending in the January before its own December. `MedlineDate` puts
+/// the first month's year in front (`2015 Nov-Dec`, one of NLM's two
+/// examples), and the other example, `1998 Dec-1999 Jan`, is this reading
+/// with its second year written out; a range whose end month comes round
+/// before its start has only the year after to end in.
+fn implied_end_year(year: Year, start: Month, end: Month) -> Result<Year, MedlineError> {
+    if end < start {
+        Year::new(year.get() + 1).ok_or(MedlineError::Part(Error::YearRange))
+    } else {
+        Ok(year)
+    }
 }
 
 fn done(rest: &str) -> Result<(), MedlineError> {
@@ -825,9 +944,12 @@ impl PartialDate {
     /// | `YYYY Mon - Mon`         | `2020 May - Jun`         |
     /// | `YYYY Mon/Mon`           | `2021 Mar/Apr`           |
     /// | `YYYY Mon & Mon`         | `2020 Feb & Mar`         |
+    /// | `YYYY Mon-Mon YYYY`      | `2016 Nov-Dec 2016`      |
     /// | `YYYY Mon-YYYY Mon`      | `1998 Dec-1999 Jan`      |
+    /// | `YYYY Mon YYYY-Mon`      | `2017 Dec 2016 - Jan`    |
     /// | `YYYY Mon DD-DD`         | `1999 Dec 20-27`         |
     /// | `YYYY Mon DD-Mon DD`     | `2001 Mar 30-Apr 1`      |
+    /// | `YYYY Mon DD-Mon`        | `1992 Aug 15-Sep`        |
     /// | `YYYY Mon DD-YYYY Mon DD`| `2000 Dec 8-2001 Jan 10` |
     /// | `YYYY-YYYY`              | `1976-1977`              |
     /// | `YYYY Season`            | `2000 Spring`            |
@@ -839,12 +961,17 @@ impl PartialDate {
     /// The last three are [`PartialDate::Seasons`].
     ///
     /// A range that starts with a month takes any of its four separators
-    /// wherever the plain `-` is allowed, and a month may be spelled out in
-    /// full (`2019 May/June`).
+    /// wherever the plain `-` is allowed, a month may be spelled out in
+    /// full (`2019 May/June`), and months and seasons are read in any case
+    /// (`1975 MAR-APR`, `1976 WINTER`). An end month with no year of its
+    /// own ends in the year after when it comes before the start month
+    /// (`1990 Dec 21-Jan 10` ends in 1991).
     ///
     /// # Errors
     ///
-    /// [`MedlineError::Unrecognized`] for any other shape, or a bad part.
+    /// [`MedlineError::Unrecognized`] for any other shape,
+    /// [`MedlineError::Part`] for a bad part, [`MedlineError::Backwards`]
+    /// for a range that ends before it starts.
     pub fn parse_medline(s: &str) -> Result<Self, MedlineError> {
         let (year, rest) = take_year(s)?;
         if rest.is_empty() {
@@ -864,6 +991,12 @@ impl PartialDate {
                     done(rest)?;
                     from
                 };
+                // A volume over two years that runs backwards is refused
+                // for the reason a span that does is (`Backwards`); within
+                // one year the seasons are the source's own order.
+                if end < year {
+                    return Err(MedlineError::Backwards);
+                }
                 return Ok(Self::Seasons(Seasons {
                     from_year: year,
                     to_year: end,
@@ -872,10 +1005,7 @@ impl PartialDate {
                 }));
             }
             done(rest)?;
-            return Ok(Self::Span(Span {
-                start: bound(year, None, None)?,
-                end: bound(end, None, None)?,
-            }));
+            return span(bound(year, None, None)?, bound(end, None, None)?);
         }
         let rest = rest.strip_prefix(' ').ok_or(MedlineError::Unrecognized)?;
         if let Some(quarter) = Quarter::from_name(rest) {
@@ -903,54 +1033,61 @@ impl PartialDate {
             return Ok(Self::YearMonth(year, month));
         }
         if let Some(rest) = month_range(rest) {
-            // `-Mon` or `-YYYY Mon`, either with an optional ` DD` on the
-            // end month: `2026 Jan-Feb 01`, 56 records of one journal in
-            // pubmed26n1333.
-            let (end_year, end_month, rest) = if let Ok((end_year, rest)) = take_year(rest) {
-                let rest = rest.strip_prefix(' ').ok_or(MedlineError::Unrecognized)?;
-                let (end_month, rest) = take_month(rest)?;
-                (end_year, end_month, rest)
-            } else {
-                let (end_month, rest) = take_month(rest)?;
-                (year, end_month, rest)
-            };
-            let (end_day, rest) = match rest.strip_prefix(' ') {
-                Some(rest) => {
-                    let (day, rest) = take_day(rest)?;
-                    (Some(day), rest)
-                }
-                None => (None, rest),
-            };
-            done(rest)?;
-            return Ok(Self::Span(Span {
-                start: bound(year, Some(month), None)?,
-                end: bound(end_year, Some(end_month), end_day)?,
-            }));
+            return month_span(year, month, rest);
         }
         let rest = rest.strip_prefix(' ').ok_or(MedlineError::Unrecognized)?;
+        // `YYYY Mon YYYY-Mon`: the first month's own year written after it,
+        // and the front year then naming either end — `2017 Dec 2016 - Jan`
+        // (`Nurs Womens Health` 20(6), PMID 27938794) puts the end's year in
+        // front, `1974 Dec 1974-Jan` (`Edcentric`, PMID 11661407) the
+        // start's. The start takes the year written beside its month, the
+        // end follows by `implied_end_year`, and a front year that is
+        // neither of theirs is a contradiction, refused.
+        if let Ok((start_year, after)) = take_year(rest)
+            && let Some(after) = month_range(after)
+        {
+            let (end_month, after) = take_month(after)?;
+            done(after)?;
+            let end_year = implied_end_year(start_year, month, end_month)?;
+            if year != start_year && year != end_year {
+                return Err(MedlineError::Unrecognized);
+            }
+            return span(
+                bound(start_year, Some(month), None)?,
+                bound(end_year, Some(end_month), None)?,
+            );
+        }
         let (day, rest) = take_day(rest)?;
         let rest = rest.strip_prefix('-').ok_or(MedlineError::Unrecognized)?;
-        // `-DD`, `-Mon DD`, or `-YYYY Mon DD` (`2000 Dec 8-2001 Jan 10`,
-        // pubmed26n1339): a year is four digits and a day at most two.
+        // `-DD`, `-Mon DD`, `-Mon`, or `-YYYY Mon DD` (`2000 Dec 8-2001 Jan
+        // 10`, pubmed26n1339): a year is four digits and a day at most two.
         let (end_year, end_month, end_day, rest) = if let Ok((end_year, rest)) = take_year(rest) {
             let rest = rest.strip_prefix(' ').ok_or(MedlineError::Unrecognized)?;
             let (end_month, rest) = take_month(rest)?;
             let rest = rest.strip_prefix(' ').ok_or(MedlineError::Unrecognized)?;
             let (end_day, rest) = take_day(rest)?;
-            (end_year, end_month, end_day, rest)
+            (end_year, end_month, Some(end_day), rest)
         } else if let Ok((end_month, rest)) = take_month(rest) {
-            let rest = rest.strip_prefix(' ').ok_or(MedlineError::Unrecognized)?;
-            let (end_day, rest) = take_day(rest)?;
-            (year, end_month, end_day, rest)
+            let end_year = implied_end_year(year, month, end_month)?;
+            match rest.strip_prefix(' ') {
+                Some(rest) => {
+                    let (end_day, rest) = take_day(rest)?;
+                    (end_year, end_month, Some(end_day), rest)
+                }
+                // `1992 Aug 15-Sep`, `J Inorg Biochem` 47(3-4) (PMIDs
+                // 1431877, 1431883): a start day and an end month without
+                // one, which `Bound` has always allowed.
+                None => (end_year, end_month, None, rest),
+            }
         } else {
             let (end_day, rest) = take_day(rest)?;
-            (year, month, end_day, rest)
+            (year, month, Some(end_day), rest)
         };
         done(rest)?;
-        Ok(Self::Span(Span {
-            start: bound(year, Some(month), Some(day))?,
-            end: bound(end_year, Some(end_month), Some(end_day))?,
-        }))
+        span(
+            bound(year, Some(month), Some(day))?,
+            bound(end_year, Some(end_month), end_day)?,
+        )
     }
 
     /// From integers as JSON sources write them: a year, optionally a
@@ -1399,6 +1536,172 @@ mod tests {
                 "{bad:?}"
             );
         }
+    }
+
+    /// What the survey of the whole 2026 baseline on model version 5 could
+    /// not read, and the ranges across a new year it had been reading
+    /// wrong (2026-09-24).
+    #[test]
+    fn medline_forms_of_model_version_6() {
+        let span = |a: Bound, b: Bound| Ok(PartialDate::Span(Span { start: a, end: b }));
+        let b = |year: u16, month: Option<Month>, day: Option<u8>| Bound {
+            year: y(year),
+            month,
+            day: day.map(d),
+        };
+        for (s, season) in [
+            ("1976 WINTER", Season::Winter),
+            ("1979 SPRING", Season::Spring),
+            ("1976 SUMMER", Season::Summer),
+            ("1975 AUTUMN", Season::Fall),
+            ("1975 fall", Season::Fall),
+        ] {
+            assert_eq!(
+                PartialDate::parse_medline(s),
+                Ok(PartialDate::YearSeason(y(s[..4].parse().unwrap()), season)),
+                "{s:?}"
+            );
+        }
+        assert_eq!(
+            PartialDate::parse_medline("1976-1977 WINTER"),
+            Ok(PartialDate::Seasons(Seasons {
+                from_year: y(1976),
+                to_year: y(1977),
+                from: Season::Winter,
+                to: Season::Winter,
+            }))
+        );
+        assert_eq!(Season::parse("WINTER"), Ok(Season::Winter));
+        assert_eq!(
+            PartialDate::parse_medline("1992 Aug 15-Sep"),
+            span(
+                b(1992, Some(Month::August), Some(15)),
+                b(1992, Some(Month::September), None)
+            )
+        );
+        assert_eq!(
+            PartialDate::parse_medline("2016 Nov-Dec 2016"),
+            span(
+                b(2016, Some(Month::November), None),
+                b(2016, Some(Month::December), None)
+            )
+        );
+        assert_eq!(
+            PartialDate::parse_medline("2020 Sep/Oct 2020"),
+            span(
+                b(2020, Some(Month::September), None),
+                b(2020, Some(Month::October), None)
+            )
+        );
+        // The trailing year is the end's, so it follows the end across the
+        // new year; any other is a contradiction.
+        assert_eq!(
+            PartialDate::parse_medline("2016 Dec-Jan 2017"),
+            span(
+                b(2016, Some(Month::December), None),
+                b(2017, Some(Month::January), None)
+            )
+        );
+        assert_eq!(
+            PartialDate::parse_medline("2016 Nov-Dec 2017"),
+            Err(MedlineError::Unrecognized)
+        );
+        assert_eq!(
+            PartialDate::parse_medline("2017 Dec 2016 - Jan"),
+            span(
+                b(2016, Some(Month::December), None),
+                b(2017, Some(Month::January), None)
+            )
+        );
+        assert_eq!(
+            PartialDate::parse_medline("1974 Dec 1974-Jan"),
+            span(
+                b(1974, Some(Month::December), None),
+                b(1975, Some(Month::January), None)
+            )
+        );
+        assert_eq!(
+            PartialDate::parse_medline("1980 Dec 1974-Jan"),
+            Err(MedlineError::Unrecognized)
+        );
+    }
+
+    /// Across the new year with no second year written, and what model
+    /// version 6 still does not read and now says why.
+    #[test]
+    fn medline_ranges_across_the_new_year() {
+        let span = |a: Bound, b: Bound| Ok(PartialDate::Span(Span { start: a, end: b }));
+        let b = |year: u16, month: Option<Month>, day: Option<u8>| Bound {
+            year: y(year),
+            month,
+            day: day.map(d),
+        };
+        assert_eq!(
+            PartialDate::parse_medline("1990 Dec 21-Jan 10"),
+            span(
+                b(1990, Some(Month::December), Some(21)),
+                b(1991, Some(Month::January), Some(10))
+            )
+        );
+        assert_eq!(
+            PartialDate::parse_medline("1990 Dec-Jan"),
+            span(
+                b(1990, Some(Month::December), None),
+                b(1991, Some(Month::January), None)
+            )
+        );
+        assert_eq!(
+            PartialDate::parse_medline("2999 Dec-Jan"),
+            Err(MedlineError::Part(Error::YearRange))
+        );
+        // What still is not read, and now says why.
+        for s in [
+            "1974 Apr 1974, 4 p 3",
+            "1973 Dec 1973, 3 p 2",
+            "1990 Nov C-Dec",
+            "1975 Jan 1-100",
+        ] {
+            assert_eq!(
+                PartialDate::parse_medline(s),
+                Err(MedlineError::Unrecognized),
+                "{s:?}"
+            );
+        }
+        assert_eq!(
+            PartialDate::parse_medline("1971 Oct 70-Jan"),
+            Err(MedlineError::Part(Error::Day))
+        );
+        assert_eq!(
+            PartialDate::parse_medline("1956 Oct 7-Nov 31"),
+            Err(MedlineError::Part(Error::Calendar))
+        );
+    }
+
+    /// A range that ends before it starts is refused wherever it is
+    /// written, not read as a span that runs backwards (model version 6).
+    #[test]
+    fn medline_ranges_do_not_run_backwards() {
+        for s in [
+            "1990 Dec 12-8",
+            "1999 Dec-1998 Jan",
+            "2000 Dec 8-1999 Jan 10",
+            "1977-1976",
+            "1977-1976 Winter",
+        ] {
+            assert_eq!(
+                PartialDate::parse_medline(s),
+                Err(MedlineError::Backwards),
+                "{s:?}"
+            );
+        }
+        // One day, and a range whose end leaves out the part that would
+        // decide, are not backwards.
+        assert!(PartialDate::parse_medline("1990 Dec 12-12").is_ok());
+        assert!(PartialDate::parse_medline("2026 Jan-Jan 01").is_ok());
+        assert_eq!(
+            MedlineError::Backwards.to_string(),
+            "MedlineDate range ends before it starts"
+        );
     }
 
     #[test]

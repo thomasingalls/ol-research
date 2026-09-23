@@ -1576,6 +1576,41 @@ cross-IDs and a second edge namespace early.
   publisher's id, 1 reference carrying an id of another kind. The sample
   was normalized again under `normalized/v2/`, set for set the same 2,012
   sets as v1 at 727 MiB, and the seven records are in.
+- 2026-09-24, dates — model version 6, from
+  [the date note](inbox/date-policy.md) reviewed against evidence it did
+  not have. The survey of the whole 2026 baseline on model version 5, run
+  on the box, found 10,164 records it could not read, all but 106 of them
+  (PMC ids given twice, handled apart in f0a93d7) on a date; its examples
+  — three per signature per share, 24 per signature — showed most of them
+  to be shapes, not false values. The grammar gained `MedlineDate`
+  seasons in any case (`1976 WINTER`, 19 of the 24 examples of the 9,662
+  "not a recognized form"), a start day with an end month only
+  (`1992 Aug 15-Sep`), the end's year written again after it
+  (`2016 Nov-Dec 2016`) and the first month's year written after it
+  (`2017 Dec 2016 - Jan`); and more than two digits where a day goes is
+  now reported as the shape it is, because the 24 examples of the 140
+  "day is not 1..31" each put a year there, once a two-digit one, and
+  none a day. Two readings of forms already accepted changed: a range
+  whose end month comes before its start, with no second year written,
+  ends the year after (`1990 Dec 21-Jan 10` ends in 1991), and a range
+  that still ends before it starts is refused (`MedlineError::Backwards`,
+  `1990 Dec 12-8`, which was being kept wrong; reading it as the 12th to
+  the 18th waits on a source that states the convention). The user's
+  decision: a PubMed history date or time that names none is kept as
+  written beside why (`HistoryDate`, `HistoryTime`) and its record
+  normalizes — 200 records with a day that never was, and all 12 of them
+  fetched from `efetch` carry it on a date the publisher supplied
+  (`received` 7, `accepted` 4, `revised` 1), never on one NLM stamps; and
+  48 with `null` for an hour or a minute, now `DateError::TimeDigits`
+  apart from a time out of range. The stats report counts both by
+  `PubStatus`, and a structured `PubDate` whose day does not exist
+  reports the whole date. Still refused, to be decided together once a
+  survey on version 6 shows what is left: issue dates that cannot be true
+  (`1956 Oct 7-Nov 31`, 8 records) and ones nothing reads
+  (`1990 Nov C-Dec`, `1974 Apr 1974, 4 p 3`) — whether to keep a coarser
+  date beside the raw text, or to list the records for exclusion. The
+  142,172 PubMed records on this machine normalize under version 6 with
+  none failing.
 
 ## 11. Dependencies
 

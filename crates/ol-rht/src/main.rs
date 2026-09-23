@@ -107,7 +107,7 @@ use source_crossref::Crossref;
 use source_openalex::OpenAlex;
 use source_openalex::normalize::LocationId;
 use source_pubmed::Pubmed;
-use source_pubmed::normalize::{Citation, Reference};
+use source_pubmed::normalize::{Citation, HistoryDate, HistoryTime, Reference};
 
 /// Allocations per record are part of every report (plan §5, rule 13).
 #[global_allocator]
@@ -3946,6 +3946,12 @@ struct PubmedStats {
     grants_with_country: u64,
     data_banks: u64,
     history: BTreeMap<&'static str, u64>,
+    /// History dates, and times, that name none and are kept as written
+    /// (model version 6), by `PubStatus`: which one says whether it
+    /// matters — a publisher's `received` is provenance, NLM's `entrez`
+    /// would be an arrival time.
+    history_date_malformed: BTreeMap<&'static str, u64>,
+    history_time_malformed: BTreeMap<&'static str, u64>,
     publication_status: BTreeMap<&'static str, u64>,
     relations: BTreeMap<&'static str, u64>,
     references: u64,
@@ -4056,6 +4062,12 @@ impl StatsReport for PubmedStats {
             self.data_banks
         );
         eprintln!("  history {:?}", self.history);
+        if !self.history_date_malformed.is_empty() || !self.history_time_malformed.is_empty() {
+            eprintln!(
+                "  history kept as written: dates {:?}  times {:?}",
+                self.history_date_malformed, self.history_time_malformed
+            );
+        }
         eprintln!("  publication status {:?}", self.publication_status);
         eprintln!("  relations {:?}", self.relations);
         eprintln!("references {}", self.references);
@@ -4192,7 +4204,16 @@ impl<'n> Sink<'n, Pubmed> for PubmedStats {
         self.grants_with_country += c.grants.iter().filter(|g| g.country.is_some()).count() as u64;
         self.data_banks += c.data_banks.len() as u64;
         for h in &c.history {
-            *self.history.entry(h.status.token()).or_default() += 1;
+            let status = h.status.token();
+            *self.history.entry(status).or_default() += 1;
+            if let HistoryDate::Malformed { error, .. } = &h.date {
+                *self.history_date_malformed.entry(status).or_default() += 1;
+                sample(&mut self.malformed_samples, &h.date.to_string(), error);
+            }
+            if let Some(time @ HistoryTime::Malformed { error, .. }) = &h.time {
+                *self.history_time_malformed.entry(status).or_default() += 1;
+                sample(&mut self.malformed_samples, &time.to_string(), error);
+            }
         }
         if let Some(ps) = c.publication_status {
             *self.publication_status.entry(ps.token()).or_default() += 1;
@@ -4656,7 +4677,7 @@ impl<'n> Sink<'n, OpenAlex> for OpenAlexStats {
 
 impl Merge for PubmedStats {
     fn merge(&mut self, other: Self) {
-        absorb_all!(self, other: PubmedStats { citations, deletions, excluded, doi, elocation_doi, doi_lowercased, doi_disagree, pii, pii_extra, publisher, pmc, pmc_malformed, published, electronic, revised, completed, status, languages, publication_types, unplaced_types, title, abstracts, sections, sections_markup, sections_math, other_abstracts, journal_issn, journal_issn_linking, journal_issn_malformed, persons, collectives, orcid, affiliations, affiliation_ids, investigators, mesh_headings, mesh_major, chemicals, keywords, grants, grants_with_country, data_banks, history, publication_status, relations, references, reference_ids, reference_loose, reference_doi_malformed, reference_pmid_malformed, reference_pmc_malformed, malformed_samples });
+        absorb_all!(self, other: PubmedStats { citations, deletions, excluded, doi, elocation_doi, doi_lowercased, doi_disagree, pii, pii_extra, publisher, pmc, pmc_malformed, published, electronic, revised, completed, status, languages, publication_types, unplaced_types, title, abstracts, sections, sections_markup, sections_math, other_abstracts, journal_issn, journal_issn_linking, journal_issn_malformed, persons, collectives, orcid, affiliations, affiliation_ids, investigators, mesh_headings, mesh_major, chemicals, keywords, grants, grants_with_country, data_banks, history, history_date_malformed, history_time_malformed, publication_status, relations, references, reference_ids, reference_loose, reference_doi_malformed, reference_pmid_malformed, reference_pmc_malformed, malformed_samples });
     }
 }
 

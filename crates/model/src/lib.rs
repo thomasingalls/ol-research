@@ -51,7 +51,25 @@
 /// Only the first group changes the layout; the rest change which records
 /// exist. Normalized output under version 4 is rebuilt, not patched,
 /// because it is both misdescribed and short of those records.
-pub const VERSION: u32 = 5;
+///
+/// Version 6 (2026-09-24): dates. The survey of the whole 2026 baseline
+/// on version 5 found 10,164 records it could not read, all but 106 of
+/// them on a date (`docs/inbox/date-policy.md`). Most were shapes, not
+/// false values: `MedlineDate` seasons in capitals (`1976 WINTER`),
+/// `1992 Aug 15-Sep`, a year written again after the months
+/// (`2016 Nov-Dec 2016`) or after the first of them
+/// (`2017 Dec 2016 - Jan`), and a four-digit number where a day goes
+/// now reports as the shape it is rather than as a day out of range. Two
+/// changes read what was already accepted differently: a range whose end
+/// month comes before its start month, with no second year written, ends
+/// the year after (`1990 Dec 21-Jan 10` ends in 1991, not in the January
+/// before it), and a range that still ends before it starts is refused
+/// (`1990 Dec 12-8`), where it used to be kept, wrong. And a PubMed
+/// history date or time that names none — `2011-09-31`, `null:null` — is
+/// kept as written beside why, and its record normalizes (the user's
+/// decision, 2026-09-24), which changes the layout. Normalized output
+/// under version 5 is rebuilt, not patched.
+pub const VERSION: u32 = 6;
 
 pub mod claim;
 pub mod code;

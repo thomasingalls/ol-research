@@ -634,6 +634,7 @@ mod normalized {
         normalize(&article, &mut out).unwrap();
         let time = out.citations[0].history[0]
             .time
+            .and_then(|t| t.valid())
             .expect("an hour is a time of day");
         assert_eq!(time.hour(), 12);
         assert_eq!(time.minute(), None);
@@ -653,6 +654,123 @@ mod normalized {
                 .is_err(),
             "a Minute with no Hour is still refused"
         );
+    }
+
+    /// A history date that names no day, and a history time that names no
+    /// time, are kept as the record wrote them and the record normalizes
+    /// (model version 6). The values are the survey's, of the whole 2026
+    /// baseline on model version 5 (2026-09-24): `2011-09-31` on PMID
+    /// 22143702's `accepted`, `null:null` on eleven records of the late
+    /// 1990s, `5:null` on PMIDs 15272930 and 15345059. NLM's own copies
+    /// through `efetch` no longer carry the `null`s, so the fixture is
+    /// edited to them rather than quoted.
+    #[test]
+    fn a_history_date_that_is_none_is_kept_as_written() {
+        use model::DateError;
+        use source_pubmed::normalize::{HistoryDate, HistoryTime};
+
+        let input = fixture("shortest")
+            .replace("<Month>1</Month>", "<Month>9</Month>")
+            .replace(
+                "<Day>29</Day>\n          <Hour>",
+                "<Day>31</Day>\n          <Hour>",
+            );
+        let article = only_article(&input);
+        let mut out = Collect::default();
+        normalize(&article, &mut out).expect("a history day that never was keeps its record");
+        let h = &out.citations[0].history[0];
+        assert_eq!(h.status, PubStatus::Entrez);
+        assert_eq!(
+            h.date,
+            HistoryDate::Malformed {
+                year: "2026",
+                month: "9",
+                day: "31",
+                error: DateError::Calendar,
+            }
+        );
+        assert_eq!(h.date.valid(), None);
+        assert_eq!(h.date.to_string(), "2026-9-31");
+        assert_eq!(
+            h.time
+                .and_then(|t| t.valid())
+                .map(|t| t.to_string())
+                .as_deref(),
+            Some("12:36")
+        );
+
+        for (hour, minute, error, written) in [
+            ("null", Some("null"), DateError::TimeDigits, "null:null"),
+            ("5", Some("null"), DateError::TimeDigits, "5:null"),
+            ("null", None, DateError::TimeDigits, "null"),
+            ("25", Some("00"), DateError::Time, "25:00"),
+            ("12", Some("60"), DateError::Time, "12:60"),
+        ] {
+            let time = match minute {
+                Some(minute) => format!("<Hour>{hour}</Hour>\n          <Minute>{minute}</Minute>"),
+                None => format!("<Hour>{hour}</Hour>"),
+            };
+            let input = fixture("shortest")
+                .replace("<Hour>12</Hour>\n          <Minute>36</Minute>", &time);
+            let article = only_article(&input);
+            let mut out = Collect::default();
+            normalize(&article, &mut out).expect("a time that is none keeps its record");
+            let h = &out.citations[0].history[0];
+            assert_eq!(
+                h.date.valid().map(|d| d.to_string()).as_deref(),
+                Some("2026-01-29")
+            );
+            assert_eq!(
+                h.time,
+                Some(HistoryTime::Malformed {
+                    hour,
+                    minute,
+                    error,
+                }),
+                "{written}"
+            );
+            assert_eq!(h.time.unwrap().to_string(), written);
+        }
+    }
+
+    /// Seasons in capitals, as the records of the 1970s write them, in the
+    /// structured `Season` as in `MedlineDate`; and a structured `PubDate`
+    /// whose day does not exist reports the whole date, not its year alone
+    /// (model version 6).
+    #[test]
+    fn pub_date_seasons_in_any_case_and_the_whole_date_reported() {
+        let input = fixture("shortest").replace(
+            "<PubDate>\n              <Year>2026</Year>\n              <Month>Jan</Month>\n              <Day>29</Day>\n            </PubDate>",
+            "<PubDate>\n              <Year>1976</Year>\n              <Season>WINTER</Season>\n            </PubDate>",
+        );
+        let article = only_article(&input);
+        let mut out = Collect::default();
+        normalize(&article, &mut out).unwrap();
+        assert_eq!(
+            out.citations[0].dates.published,
+            PartialDate::YearSeason(model::Year::new(1976).unwrap(), model::Season::Winter)
+        );
+
+        let input = fixture("shortest").replace(
+            "<PubDate>\n              <Year>2026</Year>\n              <Month>Jan</Month>\n              <Day>29</Day>\n            </PubDate>",
+            "<PubDate>\n              <MedlineDate>1976 WINTER</MedlineDate>\n            </PubDate>",
+        );
+        let article = only_article(&input);
+        let mut out = Collect::default();
+        normalize(&article, &mut out).unwrap();
+        assert_eq!(
+            out.citations[0].dates.published,
+            PartialDate::YearSeason(model::Year::new(1976).unwrap(), model::Season::Winter)
+        );
+
+        let input = fixture("shortest").replace(
+            "<Month>Jan</Month>\n              <Day>29</Day>",
+            "<Month>Feb</Month>\n              <Day>30</Day>",
+        );
+        let article = only_article(&input);
+        let err = normalize(&article, &mut Collect::default()).unwrap_err();
+        assert_eq!(err.field, "JournalIssue/PubDate", "{err}");
+        assert_eq!(err.raw, "2026-Feb-30", "{err}");
     }
 
     /// `ValidYN="N"` is NLM saying the identifier is the wrong one: the
