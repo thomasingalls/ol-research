@@ -61,7 +61,11 @@ pub const PATH_VISITS: u64 = graph::Bounds::DEFAULT.visits;
 
 /// The server.
 pub struct Service<A: Answers> {
-    answers: RwLock<Arc<A>>,
+    /// The epoch answering, or none while the server waits for an epoch
+    /// this build can read (2026-09-24): a server built for a new model
+    /// or merge version starts before the store has been rebuilt for it,
+    /// and waits, not ready, while the one it replaces keeps answering.
+    answers: RwLock<Option<Arc<A>>>,
     terms: Arc<Terms>,
 }
 
@@ -75,7 +79,17 @@ impl<A: Answers> Service<A> {
     /// Serves `answers` under `terms`.
     pub fn new(answers: A, terms: Terms) -> Self {
         Self {
-            answers: RwLock::new(Arc::new(answers)),
+            answers: RwLock::new(Some(Arc::new(answers))),
+            terms: Arc::new(terms),
+        }
+    }
+
+    /// A server with no epoch yet: every call is refused `UNAVAILABLE`
+    /// until [`swap`](Self::swap) gives it one.
+    #[must_use]
+    pub fn waiting(terms: Terms) -> Self {
+        Self {
+            answers: RwLock::new(None),
             terms: Arc::new(terms),
         }
     }
@@ -86,7 +100,7 @@ impl<A: Answers> Service<A> {
             .answers
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        *guard = Arc::new(answers);
+        *guard = Some(Arc::new(answers));
     }
 
     /// The terms every answer it sends is stamped with.
@@ -94,13 +108,22 @@ impl<A: Answers> Service<A> {
         &self.terms
     }
 
-    /// The epoch answering now.
-    #[must_use]
-    pub fn current(&self) -> Arc<A> {
+    /// The epoch answering now, or `UNAVAILABLE` while there is none.
+    ///
+    /// # Errors
+    ///
+    /// `UNAVAILABLE` while the server waits for an epoch it can read.
+    pub fn current(&self) -> Result<Arc<A>, Status> {
         self.answers
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
+            .ok_or_else(|| {
+                Status::unavailable(
+                    "no epoch this server can read is published yet: the store is being \
+                     rebuilt for the version it runs",
+                )
+            })
     }
 }
 
@@ -537,7 +560,7 @@ impl<A: Answers> Service<A> {
         req: &pb::ListRequest,
         direction: Direction,
     ) -> Result<Response<PageStream>, Status> {
-        let a = self.current();
+        let a = self.current()?;
         let terms = self.terms.clone();
         let id = work_id(&*a, &req.work)?;
         let page = bounded(req.page, PAGE_DEFAULT, PAGE_MAX, "page")?;
@@ -579,7 +602,7 @@ impl<A: Answers> Service<A> {
 #[tonic::async_trait]
 impl<A: Answers> Serving for Service<A> {
     async fn epoch(&self, _: Request<pb::EpochRequest>) -> Result<Response<pb::EpochInfo>, Status> {
-        let a = self.current();
+        let a = self.current()?;
         Ok(Response::new(epoch_info(&*a, &self.terms)))
     }
 
@@ -587,7 +610,7 @@ impl<A: Answers> Serving for Service<A> {
         &self,
         req: Request<pb::ResolveRequest>,
     ) -> Result<Response<pb::ResolveResponse>, Status> {
-        let a = self.current();
+        let a = self.current()?;
         Ok(Response::new(resolved(
             &*a,
             &self.terms,
@@ -599,7 +622,7 @@ impl<A: Answers> Serving for Service<A> {
         &self,
         req: Request<pb::GetWorkRequest>,
     ) -> Result<Response<pb::GetWorkResponse>, Status> {
-        let a = self.current();
+        let a = self.current()?;
         Ok(Response::new(one_work(
             &*a,
             &self.terms,
@@ -626,7 +649,7 @@ impl<A: Answers> Serving for Service<A> {
         &self,
         req: Request<pb::SearchRequest>,
     ) -> Result<Response<pb::SearchResponse>, Status> {
-        let a = self.current();
+        let a = self.current()?;
         let req = req.into_inner();
         Ok(Response::new(searched(
             &*a,
@@ -641,7 +664,7 @@ impl<A: Answers> Serving for Service<A> {
         &self,
         req: Request<pb::ExpandRequest>,
     ) -> Result<Response<pb::ExpandResponse>, Status> {
-        let a = self.current();
+        let a = self.current()?;
         let req = req.into_inner();
         Ok(Response::new(expanded(
             &*a,
@@ -657,7 +680,7 @@ impl<A: Answers> Serving for Service<A> {
         &self,
         req: Request<pb::RelatedRequest>,
     ) -> Result<Response<pb::RelatedResponse>, Status> {
-        let a = self.current();
+        let a = self.current()?;
         let req = req.into_inner();
         Ok(Response::new(related(
             &*a,
@@ -673,7 +696,7 @@ impl<A: Answers> Serving for Service<A> {
         &self,
         req: Request<pb::PathRequest>,
     ) -> Result<Response<pb::PathResponse>, Status> {
-        let a = self.current();
+        let a = self.current()?;
         let req = req.into_inner();
         Ok(Response::new(pathed(
             &*a,

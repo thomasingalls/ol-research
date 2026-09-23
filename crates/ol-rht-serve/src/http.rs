@@ -162,9 +162,9 @@ pub(crate) struct EpochParams {}
 async fn epoch<A: Answers>(
     State(service): State<Arc<Service<A>>>,
     _: Params<EpochParams>,
-) -> Json<pb::EpochInfo> {
-    let a = service.current();
-    Json(service::epoch_info(&*a, service.terms()))
+) -> Result<Json<pb::EpochInfo>, Refusal> {
+    let a = service.current()?;
+    Ok(Json(service::epoch_info(&*a, service.terms())))
 }
 
 /// What `/v1/resolve` takes.
@@ -180,7 +180,7 @@ async fn resolve<A: Answers>(
     State(service): State<Arc<Service<A>>>,
     Params(params): Params<ResolveParams>,
 ) -> Result<Json<pb::ResolveResponse>, Refusal> {
-    let a = service.current();
+    let a = service.current()?;
     Ok(Json(service::resolved(&*a, service.terms(), &params.text)?))
 }
 
@@ -197,7 +197,7 @@ async fn work<A: Answers>(
     State(service): State<Arc<Service<A>>>,
     Params(params): Params<WorkParams>,
 ) -> Result<Json<pb::GetWorkResponse>, Refusal> {
-    let a = service.current();
+    let a = service.current()?;
     Ok(Json(service::one_work(&*a, service.terms(), &params.work)?))
 }
 
@@ -259,7 +259,7 @@ fn list<A: Answers>(
     params: &ListParams,
     direction: Direction,
 ) -> Result<Json<pb::WorkPage>, Refusal> {
-    let a = service.current();
+    let a = service.current()?;
     let id = service::work_id(&*a, &params.work)?;
     let page_size = service::bounded(
         count(params.page_size),
@@ -314,7 +314,7 @@ async fn search<A: Answers>(
     State(service): State<Arc<Service<A>>>,
     Params(params): Params<SearchParams>,
 ) -> Result<Json<pb::SearchResponse>, Refusal> {
-    let a = service.current();
+    let a = service.current()?;
     let limit = service::bounded(
         count(params.limit),
         service::SEARCH_DEFAULT,
@@ -389,7 +389,7 @@ async fn expand<A: Answers>(
     State(service): State<Arc<Service<A>>>,
     Params(params): Params<ExpandParams>,
 ) -> Result<Json<pb::ExpandResponse>, Refusal> {
-    let a = service.current();
+    let a = service.current()?;
     Ok(Json(service::expanded(
         &*a,
         service.terms(),
@@ -451,7 +451,7 @@ async fn related<A: Answers>(
     State(service): State<Arc<Service<A>>>,
     Params(params): Params<RelatedParams>,
 ) -> Result<Json<pb::RelatedResponse>, Refusal> {
-    let a = service.current();
+    let a = service.current()?;
     Ok(Json(service::related(
         &*a,
         service.terms(),
@@ -492,7 +492,7 @@ async fn path<A: Answers>(
     State(service): State<Arc<Service<A>>>,
     Params(params): Params<PathParams>,
 ) -> Result<Json<pb::PathResponse>, Refusal> {
-    let a = service.current();
+    let a = service.current()?;
     Ok(Json(service::pathed(
         &*a,
         service.terms(),

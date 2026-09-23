@@ -4,6 +4,15 @@
 //! the epoch `current` names, serves it, folds every batch the journal
 //! gains (§5) on each poll, and switches to a new epoch when `current`
 //! changes, requests in flight finishing on the old.
+//!
+//! A server built for another model or merge version than the store's
+//! does not exit (2026-09-24). While `current` names an epoch built from
+//! another merged layer it answers from the newest epoch built from its
+//! own, and while there is none it waits: listening, refusing every call
+//! `UNAVAILABLE`, its `olrht.v1.Serving` health `NOT_SERVING`, until an
+//! epoch it can read is published. So a new build can be deployed before
+//! the store is rebuilt for it: the one it replaces keeps answering, and
+//! the new one is ready the moment the rebuild publishes.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -16,6 +25,11 @@ use ol_rht_serve::{Origins, Service, Terms};
 use serve::Serving;
 use tonic::transport::Server;
 use tonic::transport::server::TcpIncoming;
+
+/// The health service's name for the query service: what a readiness
+/// probe asks about. The server as a whole, `""`, is serving while the
+/// process is, which is what a liveness probe asks.
+type Named = ServingServer<Service<Serving>>;
 
 const USAGE: &str = "usage: ol-rht-serve [--store <root>] [--listen <addr>] [--http <addr>|off] [--allow-origin <origin>]... [--poll <seconds>]";
 
@@ -77,14 +91,17 @@ async fn main() -> ExitCode {
         }
     };
     let store = Store::new(args.store.clone());
-    let serving = match Serving::open(&store) {
-        Ok(serving) => serving,
-        Err(e) => {
-            eprintln!("ol-rht-serve: {e}");
-            return ExitCode::FAILURE;
+    let serving = match opening(&store) {
+        Ok(serving) => Some(serving),
+        Err(why) => {
+            eprintln!("ol-rht-serve: waiting: {why}");
+            None
         }
     };
-    let mut epoch = serving.epoch().epoch;
+    // The epoch `current` named when the server last looked, which it has
+    // opened or tried to: a poll opens an epoch once, when `current`
+    // moves to it, rather than every second while it cannot.
+    let mut seen = serve::epoch::current(&store).ok().flatten();
     let addr: std::net::SocketAddr = match args.listen.parse() {
         Ok(addr) => addr,
         Err(e) => {
@@ -115,12 +132,19 @@ async fn main() -> ExitCode {
             }
         }
     };
-    eprintln!(
-        "ol-rht-serve: epoch {epoch}, batch {}, folded to {}, listening on {}",
-        serving.epoch().batch,
-        serving.watermark().batch,
-        args.listen
-    );
+    match &serving {
+        Some(serving) => eprintln!(
+            "ol-rht-serve: epoch {}, batch {}, folded to {}, listening on {}",
+            serving.epoch().epoch,
+            serving.epoch().batch,
+            serving.watermark().batch,
+            args.listen
+        ),
+        None => eprintln!(
+            "ol-rht-serve: no epoch to answer from yet, listening on {} and not ready",
+            args.listen
+        ),
+    }
     if json.is_some() {
         eprintln!(
             "ol-rht-serve: JSON on {}, readable from {}",
@@ -128,7 +152,16 @@ async fn main() -> ExitCode {
             origins.listed().join(", ")
         );
     }
-    let service = Arc::new(Service::new(serving, Terms::stub()));
+    let service = Arc::new(match serving {
+        Some(serving) => Service::new(serving, Terms::stub()),
+        None => Service::waiting(Terms::stub()),
+    });
+    let (reporter, health) = tonic_health::server::health_reporter();
+    if service.current().is_ok() {
+        reporter.set_serving::<Named>().await;
+    } else {
+        reporter.set_not_serving::<Named>().await;
+    }
     let json = json.map(|listener| {
         let service = service.clone();
         tokio::spawn(async move {
@@ -139,6 +172,7 @@ async fn main() -> ExitCode {
     });
     let poller = {
         let service = service.clone();
+        let reporter = reporter.clone();
         let root = args.store.clone();
         let every = Duration::from_secs(args.poll.max(1));
         tokio::spawn(async move {
@@ -147,44 +181,51 @@ async fn main() -> ExitCode {
                 tokio::time::sleep(every).await;
                 let store = Store::new(root.clone());
                 // The deltas first: what the journal gained since the
-                // last poll, folded on a blocking thread.
-                let current = service.current();
-                let folded = tokio::task::spawn_blocking(move || {
-                    let before = current.watermark().batch;
-                    current
-                        .refresh()
-                        .map(|a| (before, current.watermark().batch, a))
-                })
-                .await;
-                match folded {
-                    Ok(Ok((before, after, advanced))) => {
-                        if after > before {
-                            eprintln!(
-                                "ol-rht-serve: folded to batch {after} at {}",
-                                ingest::time::now()
-                            );
-                        }
-                        let now = advanced.stopped.map(|s| s.to_string());
-                        if now != stalled {
-                            if let Some(why) = &now {
-                                eprintln!("ol-rht-serve: {why}");
+                // last poll, folded on a blocking thread — when there is
+                // an epoch to fold them onto.
+                if let Ok(current) = service.current() {
+                    let folded = tokio::task::spawn_blocking(move || {
+                        let before = current.watermark().batch;
+                        current
+                            .refresh()
+                            .map(|a| (before, current.watermark().batch, a))
+                    })
+                    .await;
+                    match folded {
+                        Ok(Ok((before, after, advanced))) => {
+                            if after > before {
+                                eprintln!(
+                                    "ol-rht-serve: folded to batch {after} at {}",
+                                    ingest::time::now()
+                                );
                             }
-                            stalled = now;
+                            let now = advanced.stopped.map(|s| s.to_string());
+                            if now != stalled {
+                                if let Some(why) = &now {
+                                    eprintln!("ol-rht-serve: {why}");
+                                }
+                                stalled = now;
+                            }
                         }
+                        Ok(Err(e)) => eprintln!("ol-rht-serve: fold: {e}"),
+                        Err(e) => eprintln!("ol-rht-serve: {e}"),
                     }
-                    Ok(Err(e)) => eprintln!("ol-rht-serve: fold: {e}"),
-                    Err(e) => eprintln!("ol-rht-serve: {e}"),
                 }
                 match serve::epoch::current(&store) {
-                    Ok(Some(n)) if n != epoch => {
+                    Ok(Some(n)) if Some(n) != seen => {
+                        seen = Some(n);
                         let opened =
-                            tokio::task::spawn_blocking(move || Serving::open(&store)).await;
+                            tokio::task::spawn_blocking(move || Serving::open_epoch(&store, n))
+                                .await;
                         match opened {
                             Ok(Ok(new)) => {
                                 service.swap(new);
-                                epoch = n;
+                                reporter.set_serving::<Named>().await;
                                 eprintln!("ol-rht-serve: switched to epoch {n}");
                             }
+                            // What was answering goes on answering: an
+                            // epoch built by another version is the next
+                            // build's to serve, not this one's.
                             Ok(Err(e)) => eprintln!("ol-rht-serve: epoch {n} not opened: {e}"),
                             Err(e) => eprintln!("ol-rht-serve: {e}"),
                         }
@@ -208,10 +249,6 @@ async fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let (reporter, health) = tonic_health::server::health_reporter();
-    reporter
-        .set_serving::<ServingServer<Service<Serving>>>()
-        .await;
     let served = Server::builder()
         .add_service(health)
         .add_service(reflection_v1)
@@ -233,4 +270,51 @@ async fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// What the server answers from at start: the epoch `current` names, or,
+/// when that one was built from another merged layer than this build's —
+/// another model or merge version, a store not yet rebuilt for this
+/// build, or rebuilt for a later one this build was rolled back from —
+/// the newest epoch built from this build's own.
+///
+/// Only the version decides it. An epoch of this build's own version that
+/// does not open is broken rather than foreign, and answering from an
+/// older one in its place would hide that; so is the newest epoch of this
+/// build's version when it does not open, and nothing older is tried.
+///
+/// # Errors
+///
+/// Why there is nothing to answer from, for the log; the server waits.
+fn opening(store: &Store) -> Result<Serving, String> {
+    let Some(n) = serve::epoch::current(store).map_err(|e| e.to_string())? else {
+        return Err("no epoch is published".to_owned());
+    };
+    let refused = match Serving::open_epoch(store, n) {
+        Ok(serving) => return Ok(serving),
+        Err(e) => e,
+    };
+    let ours = merge::layout::version();
+    let theirs = serve::epoch::read(store, n)
+        .map_err(|e| format!("epoch {n}: {e}"))?
+        .merged;
+    if theirs == ours {
+        return Err(format!("epoch {n}: {refused}"));
+    }
+    let Some(k) = (1..n)
+        .rev()
+        .find(|&k| serve::epoch::read(store, k).is_ok_and(|m| m.merged == ours))
+    else {
+        return Err(format!(
+            "epoch {n} was built from merged {theirs}, and no epoch built from {ours}, \
+             which this build reads, is published yet"
+        ));
+    };
+    let serving =
+        Serving::open_epoch(store, k).map_err(|e| format!("epoch {k}, built from {ours}: {e}"))?;
+    eprintln!(
+        "ol-rht-serve: answering from epoch {k}: epoch {n} was built from merged {theirs}, \
+         and this build reads {ours}"
+    );
+    Ok(serving)
 }

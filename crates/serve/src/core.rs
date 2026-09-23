@@ -201,6 +201,17 @@ impl Serving {
     /// epoch's batch as a full merge.
     pub fn open(store: &Store) -> Result<Self, Error> {
         let n = epoch::current(store)?.ok_or(Error::NoEpoch)?;
+        Self::open_epoch(store, n)
+    }
+
+    /// Opens epoch `n` as [`open`](Self::open) opens the current one: how
+    /// a server built for one version keeps answering from the last epoch
+    /// it can read while `current` names one built by another.
+    ///
+    /// # Errors
+    ///
+    /// As [`open`](Self::open), and an epoch `n` that was never published.
+    pub fn open_epoch(store: &Store, n: u64) -> Result<Self, Error> {
         let epoch = epoch::read(store, n)?;
         let dir_of = |name: &str, manifest: &str| -> Result<std::path::PathBuf, Error> {
             let artifact = epoch

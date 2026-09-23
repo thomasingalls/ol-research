@@ -1058,3 +1058,20 @@ impl Bindings {
         }
     }
 }
+
+/// The JSON surface of a server that has no epoch it can read yet: `503`
+/// with the code `unavailable`, on every route, until one is swapped in
+/// (2026-09-24).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_server_with_no_epoch_answers_unavailable_until_it_has_one() {
+    let service = Arc::new(Service::<Fake>::waiting(Terms::stub()));
+    let base = start(service.clone()).await;
+    let agent = agent();
+    for route in ["/v1/epoch", "/v1/resolve?text=doi:10.1000/one"] {
+        let (status, code) = refused(&agent, &format!("{base}{route}"));
+        assert_eq!((status, code.as_str()), (503, "unavailable"), "{route}");
+    }
+    service.swap(Fake::new(1));
+    let (status, body) = get(&agent, &format!("{base}/v1/epoch"));
+    assert_eq!(status, 200, "{body}");
+}

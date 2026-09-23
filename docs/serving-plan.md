@@ -1148,6 +1148,22 @@ state kept outside the store, and a limit per principal on calls and on
   the display text SP2 assembles, stubs with their names only; the
   public id reads `ol:` plus thirteen base32 characters and a check
   character.
+- 2026-09-24, a server waits for an epoch it can read — the user's
+  "yes, build both", after the image automation moved `ol-rht-serve` onto
+  builds of model versions 4 and 5 and each exited on a store built under
+  3, leaving the site answering nothing. `ol-rht-serve` no longer exits
+  when it cannot open the store. When `current` names an epoch built from
+  another merged layer (another model or merge version) it answers from
+  the newest epoch built from its own; when there is none it listens,
+  refuses every call `UNAVAILABLE` (503 on JSON), reports
+  `olrht.v1.Serving` `NOT_SERVING` to health checks, and switches the
+  moment an epoch it can read is published. Only the version decides the
+  fallback: an epoch of the server's own version that does not open is
+  broken, not foreign, and is not papered over with an older one. The
+  poll now opens an epoch once, when `current` moves to it, rather than
+  every second while it cannot. `Serving::open_epoch` opens one by
+  number. The deployment half — a rolling handover gated on that health —
+  is the deployment plan's (D5, 2026-09-24).
 
 ## 11. Open items
 

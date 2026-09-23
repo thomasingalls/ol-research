@@ -509,6 +509,18 @@ image.
   fresh releases. The two lanes are path-gated so a backend push never
   pays for pnpm, nor a frontend push for cargo. Left: the web Deployment
   and Service, the HTTPRoute, and deleting the placeholder.
+
+  Changed 2026-09-24: the serve Deployment hands over rather than
+  recreating. The image automation moved it onto builds of model versions
+  4 and 5 on 2026-09-23, each exited on a store built under 3, and under
+  `Recreate` nothing answered until the store was rebuilt. Now a server
+  with no epoch it can read waits, listening and not ready (serving plan
+  §10, 2026-09-24), a rolling update with no pod unavailable keeps the old
+  one answering, and readiness asks after `olrht.v1.Serving` while
+  liveness asks after the process. `Recreate`'s reason did not hold:
+  ReadWriteOnce is one node, not one pod, and the bulk claim was already
+  mounted by the server and eight survey pods at once. A handover runs
+  two servers, so the tower carries both memory limits for its length.
 - **D6 — the corpus.** The downloads, then the full run at scale — where
   graph plan G3, the ARC's ceiling and the serving dataset's record size
   are measured rather than guessed.

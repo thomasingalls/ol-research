@@ -522,3 +522,30 @@ async fn a_path_is_directed_bounded_and_says_so_when_there_is_none() {
         assert_eq!(over.code(), Code::InvalidArgument);
     }
 }
+
+/// A server with no epoch it can read — one built for a version the
+/// store has not been rebuilt for yet — refuses every call `UNAVAILABLE`
+/// rather than exiting, and answers the moment an epoch is swapped in
+/// (2026-09-24).
+#[tokio::test]
+async fn a_server_with_no_epoch_waits_and_then_answers() {
+    let service = Arc::new(Service::<Fake>::waiting(Terms::stub()));
+    let mut client = start(service.clone()).await;
+    let status = client.epoch(pb::EpochRequest {}).await.unwrap_err();
+    assert_eq!(status.code(), Code::Unavailable, "{status:?}");
+    let status = client
+        .resolve(pb::ResolveRequest {
+            text: "doi:10.1000/one".into(),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(status.code(), Code::Unavailable, "{status:?}");
+
+    service.swap(Fake::new(2));
+    let info = client
+        .epoch(pb::EpochRequest {})
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(info.answered.unwrap().epoch, 2);
+}
