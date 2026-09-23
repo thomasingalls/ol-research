@@ -84,11 +84,14 @@ move, the server takes a repeatable `--allow-origin`.
 
 One environment variable:
 
-| var            | meaning                         | default                    |
-| -------------- | ------------------------------- | -------------------------- |
-| `VITE_API_URL` | base URL of the ol-rht HTTP API | `http://127.0.0.1:50052`   |
+| var            | meaning                         | default                          |
+| -------------- | ------------------------------- | -------------------------------- |
+| `VITE_API_URL` | base URL of the ol-rht HTTP API | `pnpm dev`: `http://127.0.0.1:50052`; a built bundle: the page's own origin |
 
-That is the JSON API's own port, not the gRPC one.
+That is the JSON API's own port, not the gRPC one. A built bundle defaults to
+its own origin because it is served beside the API: the public route sends
+`/v1` to `ol-rht-serve` and everything else to these files, so the image
+carries no hostname.
 
 Copy `.env.example` to `.env.local` and edit it to change the port. The URL the
 app is actually talking to is printed in the page footer, so it is never a

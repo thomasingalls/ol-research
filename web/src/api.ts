@@ -80,8 +80,17 @@ export type {
   WorkParams,
 } from "@/generated/serving"
 
+/**
+ * Where the JSON facade is. In a built bundle the app and the API share an
+ * origin — the public route sends `/v1` to the server and everything else
+ * to these files — so the page's own origin is the default and the bundle
+ * carries no hostname. `pnpm dev` is the exception: Vite serves the app and
+ * the server is a separate process, which is what the dev origins in
+ * `ol-rht-serve` are for. `VITE_API_URL` overrides either.
+ */
 export const API_BASE: string =
-  import.meta.env.VITE_API_URL ?? "http://127.0.0.1:50052"
+  import.meta.env.VITE_API_URL ??
+  (import.meta.env.DEV ? "http://127.0.0.1:50052" : window.location.origin)
 
 /** A public id, e.g. "ol:…". Opaque to the UI — never parse it. */
 export type PublicId = string

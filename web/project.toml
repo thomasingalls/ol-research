@@ -1,0 +1,23 @@
+# The Cloud Native Buildpacks project descriptor for the frontend's image.
+# The homelab's Tekton builds `dist/` with this repository's own pnpm first
+# (deployment plan §2), then the Paketo nginx buildpack wraps it: Paketo's
+# web-server lane knows npm and yarn only, and building here with npm would
+# lose the two-week hold pnpm-workspace.yaml puts on fresh releases.
+[_]
+schema-version = "0.2"
+
+# Serve the built files, with no nginx.conf of our own: the buildpack
+# generates one. This is also what makes it detect at all.
+[[io.buildpacks.build.env]]
+name = "BP_WEB_SERVER"
+value = "nginx"
+
+[[io.buildpacks.build.env]]
+name = "BP_WEB_SERVER_ROOT"
+value = "dist"
+
+# Unknown paths serve index.html: the routes are real paths, not hashes
+# (README.md), so /work/ol:… must reach the app rather than 404.
+[[io.buildpacks.build.env]]
+name = "BP_WEB_SERVER_ENABLE_PUSH_STATE"
+value = "true"
