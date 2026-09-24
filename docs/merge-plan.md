@@ -1186,6 +1186,18 @@ stays.
   `Display` and `Display` still renders canonical, and the registry holds
   no punctuated value under either registrant on the list — so no merge
   version. 10.1006 and 10.1074 stay off until the user puts them back.
+- 2026-09-24, the merged directory is replaced whole or not at all
+  (`layout::write`). The rows go into a sibling, `.v<…>.part`, which takes
+  the directory's name only once every shard is written; the old one is
+  moved aside and removed after. Until now the old directory was removed
+  before the first shard was written, so a run that died while writing —
+  at corpus scale, hours in, with the epoch the site serves naming that
+  directory — would have left it naming nothing whole. A run that died
+  between the two renames leaves `.v<…>.old`, which the next write puts
+  back first. Asked before the first corpus merge, with the user's
+  question of what a failure mid-run leaves: the registry was already
+  safe (staged, promoted last, recovered on the next start); this was the
+  one gap. No byte of what is written changes, so no merge version.
 
 ## 11. Open items
 

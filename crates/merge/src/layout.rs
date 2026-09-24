@@ -75,12 +75,13 @@ pub struct Summary {
     pub bytes: u64,
 }
 
-/// Writes every row of `merged` under `dir`, replacing what was there.
+/// Writes every row of `merged` under `dir`, replacing what was there —
+/// whole, or not at all ([`replace_whole`]).
 ///
 /// # Errors
 ///
-/// `dir` is not named for this binary's versions, or I/O; a shard that
-/// failed is removed, earlier shards stay.
+/// `dir` is not named for this binary's versions, or I/O; either way
+/// `dir` is as the run found it.
 pub fn write(dir: &Path, merged: &Merged) -> io::Result<Summary> {
     if dir.file_name().and_then(|n| n.to_str()) != Some(version().as_str()) {
         return Err(io::Error::new(
@@ -88,10 +89,59 @@ pub fn write(dir: &Path, merged: &Merged) -> io::Result<Summary> {
             format!("{} is not this binary's {}", dir.display(), version()),
         ));
     }
-    if dir.exists() {
-        fs::remove_dir_all(dir)?;
+    replace_whole(dir, |part| write_shards(part, merged))
+}
+
+/// A sibling of `dir` that no reader looks for: `.<name>.<what>`.
+fn sibling(dir: &Path, what: &str) -> PathBuf {
+    let name = dir.file_name().and_then(|n| n.to_str()).unwrap_or("merged");
+    dir.with_file_name(format!(".{name}.{what}"))
+}
+
+/// Fills a fresh sibling of `dir` with `fill`, and gives it `dir`'s name
+/// only once `fill` has finished: the directory it replaces is moved aside
+/// to `.<name>.old`, the new one renamed into place, and the old one
+/// removed. A `fill` that fails leaves `dir` untouched and its sibling
+/// removed.
+///
+/// Until 2026-09-24 the old directory was removed before the first shard
+/// was written, so a run that died while writing — at corpus scale, after
+/// hours of work and with every row in memory — left the epoch that named
+/// this directory naming nothing whole. Now what can be lost is the
+/// moment between two renames, and a run that died in it left the old
+/// directory aside, which the next one puts back before it starts: a
+/// missing `dir` beside an `.old` is always the whole old one.
+fn replace_whole<T>(dir: &Path, fill: impl FnOnce(&Path) -> io::Result<T>) -> io::Result<T> {
+    let part = sibling(dir, "part");
+    let old = sibling(dir, "old");
+    if !dir.exists() && old.exists() {
+        fs::rename(&old, dir)?;
     }
-    fs::create_dir_all(dir)?;
+    for stale in [&part, &old] {
+        if stale.exists() {
+            fs::remove_dir_all(stale)?;
+        }
+    }
+    fs::create_dir_all(&part)?;
+    let filled = match fill(&part) {
+        Ok(filled) => filled,
+        Err(e) => {
+            let _ = fs::remove_dir_all(&part);
+            return Err(e);
+        }
+    };
+    if dir.exists() {
+        fs::rename(dir, &old)?;
+    }
+    fs::rename(&part, dir)?;
+    if old.exists() {
+        fs::remove_dir_all(&old)?;
+    }
+    Ok(filled)
+}
+
+/// Every row of `merged`, sharded, under `dir`.
+fn write_shards(dir: &Path, merged: &Merged) -> io::Result<Summary> {
     let shards = merged.works.last().map_or(0, |w| shard(w.id) + 1);
     let mut summary = Summary {
         shards,
@@ -264,5 +314,61 @@ mod tests {
         drop(held);
         assert!(super::Lock::acquire(&store).is_ok());
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// The merged directory is replaced whole or not at all: a fill that
+    /// fails leaves the old one as it was, and a run that died between the
+    /// two renames is repaired by the next (2026-09-24).
+    #[test]
+    fn the_merged_directory_is_replaced_whole_or_not_at_all() {
+        use std::fs;
+        use std::io;
+
+        let root =
+            std::env::temp_dir().join(format!("ol-rht-merge-replace-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let dir = root.join("merged").join("v1.1");
+        let read = |p: &std::path::Path| fs::read_to_string(p.join("shard")).ok();
+        let fill = |text: &'static str| {
+            move |part: &std::path::Path| -> io::Result<()> { fs::write(part.join("shard"), text) }
+        };
+        let siblings = || {
+            let mut names: Vec<String> = fs::read_dir(root.join("merged"))
+                .unwrap()
+                .map(|e| e.unwrap().file_name().into_string().unwrap())
+                .collect();
+            names.sort();
+            names
+        };
+
+        super::replace_whole(&dir, fill("first")).unwrap();
+        assert_eq!(read(&dir).as_deref(), Some("first"));
+        super::replace_whole(&dir, fill("second")).unwrap();
+        assert_eq!(read(&dir).as_deref(), Some("second"));
+        assert_eq!(siblings(), ["v1.1"]);
+
+        // A fill that fails: the old directory stands, nothing is left beside it.
+        let failed = super::replace_whole(&dir, |part| {
+            fs::write(part.join("shard"), "half")?;
+            Err::<(), _>(io::Error::other("died writing"))
+        });
+        assert!(failed.is_err());
+        assert_eq!(read(&dir).as_deref(), Some("second"));
+        assert_eq!(siblings(), ["v1.1"]);
+
+        // A run that died between the renames: the old one aside, a whole
+        // new one never renamed in. The next run puts the old one back, then
+        // replaces it.
+        fs::rename(&dir, super::sibling(&dir, "old")).unwrap();
+        fs::create_dir_all(super::sibling(&dir, "part")).unwrap();
+        fs::write(super::sibling(&dir, "part").join("shard"), "stale").unwrap();
+        let failed = super::replace_whole(&dir, |_| Err::<(), _>(io::Error::other("died")));
+        assert!(failed.is_err());
+        assert_eq!(read(&dir).as_deref(), Some("second"), "the old one is back");
+        super::replace_whole(&dir, fill("third")).unwrap();
+        assert_eq!(read(&dir).as_deref(), Some("third"));
+        assert_eq!(siblings(), ["v1.1"]);
+
+        fs::remove_dir_all(&root).unwrap();
     }
 }
