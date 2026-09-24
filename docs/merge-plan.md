@@ -1198,6 +1198,16 @@ stays.
   question of what a failure mid-run leaves: the registry was already
   safe (staged, promoted last, recovered on the next start); this was the
   one gap. No byte of what is written changes, so no merge version.
+- 2026-09-24, pass 2 spilled by work id and finished a range at a time
+  — step 1 of [the merge's memory](inbox/merge-memory.md), after the corpus
+  rehearsal was killed for memory in pass 2. Every row pass 2 makes
+  belongs to one work, and nothing `finish` does needs another work's rows
+  beyond whether an id is a work at all, so the rows go to disk by the
+  range their work's id falls in (`merge::spill`) and `finish_spilled`
+  finishes and writes one range of shards at a time, by the one
+  `finish_range` the in-memory `finish` also uses. Byte-identical output,
+  so no merge version; on the sample the pass's peak heap went from 5.38
+  to 2.32 GiB at the default width.
 
 ## 11. Open items
 

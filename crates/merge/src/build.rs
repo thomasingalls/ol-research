@@ -25,6 +25,7 @@ use crate::contributor::Contributor;
 use crate::copies::{self, Copies, Fate};
 use crate::identity::{Reason, RecordIx, Resolution, Standing, Work as Identified};
 use crate::kind::{Form, Genre};
+use crate::layout;
 use crate::name::{Name, OwnedName};
 use crate::record::{
     Assert, Citation, CitedAs, Citer, Edge, Field, Fields, Flags, NameRow, Named, Other, Record,
@@ -32,6 +33,7 @@ use crate::record::{
 };
 use crate::relation::{self, Related};
 use crate::sets;
+use crate::spill::{Row, Spill};
 use crate::title::{self, Agreement};
 use crate::view::{self, Owned, OwnedVenue, Unmapped, Venue};
 use crate::work::{SourceId, Sources, WorkId};
@@ -566,7 +568,9 @@ impl OwnedUnresolved {
 }
 
 /// What the pass leaves: every row of every merged set, sorted as the
-/// layout writes them, and the counts the report prints.
+/// layout writes them, and the counts the report prints. A pass finished
+/// a range at a time ([`Builder::finish_spilled`]) leaves the counts and
+/// no rows: those went to disk as each range was finished.
 #[derive(Debug)]
 pub struct Merged {
     /// Held works and stubs, by id.
@@ -602,6 +606,14 @@ pub struct Merged {
     pub held: u64,
     #[allow(missing_docs)]
     pub stubs: u64,
+    /// Distinct edges: `edges.len()` when the rows are held, and the
+    /// count of what was written when they were finished a range at a
+    /// time ([`Builder::finish_spilled`]), whose rows are not.
+    pub edge_count: u64,
+    /// Relations kept, likewise.
+    pub relation_count: u64,
+    /// Unresolved rows by why, likewise.
+    pub unresolved_by: BTreeMap<&'static str, u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -920,6 +932,17 @@ pub struct Builder {
     /// Per stub name, the works whose references or relations gave it,
     /// with the source of the record that did.
     stub_citers: HashMap<NameIx, Vec<Citer>>,
+    /// Under [`spill_to`](Self::spill_to): every row above goes to disk by
+    /// work id as it is made, and `views`, `edges`, `relations`,
+    /// `unresolved`, `cited_as` and `stub_citers` stay empty.
+    spill: Option<Spill>,
+    /// Under a spill, which records have had a view, a bit each: what
+    /// `views` answered for [`Stats::viewed`] and [`Stats::filled`].
+    viewed: Vec<u64>,
+    /// The first spill that failed. The rows are made in methods that
+    /// return nothing, so it is kept, and every reading method and the
+    /// finish stop on it.
+    spill_error: Option<io::Error>,
     survey: bool,
     /// Counts so far.
     pub stats: Stats,
@@ -986,9 +1009,131 @@ impl Builder {
             cited_as: Vec::new(),
             unresolved: Vec::new(),
             stub_citers: HashMap::new(),
+            spill: None,
+            viewed: Vec::new(),
+            spill_error: None,
             survey: false,
             stats: Stats::default(),
         })
+    }
+
+    /// Sends pass 2's rows to disk under `dir` as they are made, a range
+    /// of `width` ids to a file, instead of holding them; the pass then
+    /// ends in [`finish_spilled`](Self::finish_spilled), which finishes a
+    /// range at a time. `width` is a whole number of shards. Before any
+    /// set is read (the merge's memory, step 1, 2026-09-24).
+    ///
+    /// # Errors
+    ///
+    /// Rows already read, a width that is not a whole number of shards,
+    /// no work at all, or I/O.
+    pub fn spill_to(&mut self, dir: &Path, width: u32) -> Result<(), Error> {
+        let read = self
+            .stats
+            .viewed
+            .values()
+            .chain(self.stats.filled.values())
+            .sum::<u64>()
+            + self.stats.references.values().sum::<u64>()
+            + self.stats.relations.values().sum::<u64>();
+        if read > 0 || self.spill.is_some() {
+            return Err(Error::Invariant(
+                "a pass spills from its first row or not at all".to_owned(),
+            ));
+        }
+        if width == 0 || !width.is_multiple_of(layout::SHARD) {
+            return Err(Error::Invariant(format!(
+                "a spill range of {width} ids is not a whole number of shards of {}",
+                layout::SHARD
+            )));
+        }
+        let max = self
+            .ids
+            .held
+            .iter()
+            .chain(&self.ids.stubs)
+            .max()
+            .copied()
+            .ok_or_else(|| Error::Invariant("no works at all".to_owned()))?;
+        let spill = Spill::create(dir, width, max).map_err(|source| Error::Io {
+            path: dir.to_path_buf(),
+            source,
+        })?;
+        self.spill = Some(spill);
+        self.views = Vec::new();
+        self.viewed = vec![0; self.res.records.len().div_ceil(64)];
+        Ok(())
+    }
+
+    /// The spill, when there is one: its rows and bytes so far.
+    #[must_use]
+    pub fn spilled(&self) -> Option<(u64, u64)> {
+        self.spill.as_ref().map(|s| (s.rows(), s.bytes()))
+    }
+
+    /// Puts a row where the pass keeps rows of its kind: in memory, or in
+    /// the spill under the work it belongs to.
+    fn keep(&mut self, id: WorkId, row: Row) {
+        let Some(spill) = self.spill.as_mut() else {
+            match row {
+                Row::View(..) => unreachable!("views are kept by keep_view"),
+                Row::Edge(from, to, by) => self.edges.push((from, to, by)),
+                Row::Relation(r) => self.relations.push(r),
+                Row::CitedAs(r) => self.cited_as.push(r),
+                Row::Unresolved(r) => self.unresolved.push(r),
+                Row::StubCiter(ix, citer) => self.stub_citers.entry(ix).or_default().push(citer),
+            }
+            return;
+        };
+        if self.spill_error.is_none()
+            && let Err(e) = spill.put(id, &row)
+        {
+            self.spill_error = Some(e);
+        }
+    }
+
+    /// A record's view: joined with the record's copies read before it, in
+    /// memory now or from the spill when its range is finished.
+    fn keep_view(&mut self, source: SourceId, rix: RecordIx, from: WorkId, owned: Owned) {
+        if self.spill.is_some() {
+            let (word, bit) = (rix as usize / 64, 1u64 << (rix % 64));
+            let seen = self.viewed[word] & bit != 0;
+            self.viewed[word] |= bit;
+            let counts = if seen {
+                &mut self.stats.filled
+            } else {
+                &mut self.stats.viewed
+            };
+            *counts.entry(source).or_default() += 1;
+            self.keep(from, Row::View(rix, owned));
+            return;
+        }
+        let slot = &mut self.views[rix as usize];
+        *slot = Some(match slot.take() {
+            None => {
+                *self.stats.viewed.entry(source).or_default() += 1;
+                owned
+            }
+            Some(seen) => {
+                *self.stats.filled.entry(source).or_default() += 1;
+                owned.joined(seen)
+            }
+        });
+    }
+
+    /// The first spill that failed, as the pass's error.
+    fn spill_failed(&mut self) -> Result<(), Error> {
+        match (self.spill_error.take(), &self.spill) {
+            (Some(source), Some(spill)) => Err(Error::Io {
+                path: spill.dir().to_path_buf(),
+                source,
+            }),
+            (Some(source), None) => Err(Error::Io {
+                path: PathBuf::new(),
+                source,
+            }),
+            (None, _) => Ok(()),
+        }
     }
     /// Under `--survey`, a value outside the merge's tables is counted
     /// in [`Stats::unmapped`] instead of stopping the run.
@@ -1091,17 +1236,7 @@ impl Builder {
                     Ok(view) => {
                         let mut owned = Owned::resolve(&view, table);
                         owned.set = set.into();
-                        let slot = &mut self.views[rix as usize];
-                        *slot = Some(match slot.take() {
-                            None => {
-                                *self.stats.viewed.entry(S::SOURCE).or_default() += 1;
-                                owned
-                            }
-                            Some(seen) => {
-                                *self.stats.filled.entry(S::SOURCE).or_default() += 1;
-                                owned.joined(seen)
-                            }
-                        });
+                        self.keep_view(S::SOURCE, rix, from, owned);
                     }
                     Err(source) if self.survey => {
                         *self
@@ -1129,6 +1264,7 @@ impl Builder {
             }
             Ok(())
         })?;
+        self.spill_failed()?;
         Ok(read)
     }
 
@@ -1161,12 +1297,23 @@ impl Builder {
         held_beside: bool,
     ) {
         if let Some(ix) = self.res.stubs.find(name) {
-            self.stub_citers.entry(ix).or_default().push(Citer {
-                from,
-                by: source,
-                in_text,
-                held_beside,
-            });
+            // Every stub name is one stub's (`new` checks), and a citer is
+            // the stub's row's: it goes where the stub's id falls.
+            let Some(stub) = self.stub_name_work[ix as usize] else {
+                return;
+            };
+            self.keep(
+                stub,
+                Row::StubCiter(
+                    ix,
+                    Citer {
+                        from,
+                        by: source,
+                        in_text,
+                        held_beside,
+                    },
+                ),
+            );
         }
     }
 
@@ -1176,19 +1323,22 @@ impl Builder {
         let what = match r.target.as_ref().map(|t| self.resolve(t.as_name())) {
             None => "not a name",
             Some(Target::Work(to, stub)) => {
-                self.relations.push(Relation {
+                self.keep(
                     from,
-                    to,
-                    kind: r.kind,
-                    by: source,
-                });
+                    Row::Relation(Relation {
+                        from,
+                        to,
+                        kind: r.kind,
+                        by: source,
+                    }),
+                );
                 *self.stats.relation_kinds.entry(r.kind).or_default() += 1;
                 if !stub && let Some(name) = r.target.as_ref() {
                     // A relation names a held work by one of its names:
                     // kept beside the work like a reference's names, so
                     // that a batch knows the name is still named if it
                     // leaves the work (serving plan §11, item 28).
-                    self.cited_as.push(OwnedCitedAs {
+                    let row = OwnedCitedAs {
                         from,
                         by: source,
                         name: name.clone(),
@@ -1201,7 +1351,8 @@ impl Builder {
                         in_text: false,
                         // A relation names one work and nothing beside it.
                         beside_held: false,
-                    });
+                    };
+                    self.keep(from, Row::CitedAs(row));
                 }
                 if stub { "stub" } else { "held" }
             }
@@ -1260,6 +1411,7 @@ impl Builder {
             }
             Ok(())
         })?;
+        self.spill_failed()?;
         Ok(read)
     }
 
@@ -1281,7 +1433,7 @@ impl Builder {
             Referenced::NoName => self.unresolved(from, source, Why::NoName, names, citation),
             Referenced::SharedOnly => self.unresolved(from, source, Why::Shared, names, citation),
             Referenced::Edge { to, settled, stub } => {
-                self.edges.push((from, to, source));
+                self.keep(from, Row::Edge(from, to, source));
                 // Whether the citation text repeats a name: what §6 asks
                 // first when names disagree, and so what a later reader
                 // needs to ask it again. A stub's names carry it per
@@ -1333,7 +1485,7 @@ impl Builder {
                         .iter()
                         .any(|n| matches!(self.resolve(*n), Target::Work(w, false) if w != to));
                     for &name in names {
-                        self.cited_as.push(OwnedCitedAs {
+                        let row = OwnedCitedAs {
                             from,
                             by: source,
                             name: name.to_owned(),
@@ -1347,7 +1499,8 @@ impl Builder {
                             by_text,
                             in_text: backs(name),
                             beside_held,
-                        });
+                        };
+                        self.keep(from, Row::CitedAs(row));
                     }
                 }
                 if settled != Settled::Agreed {
@@ -1368,22 +1521,24 @@ impl Builder {
         names: &[Name<'_>],
         citation: &Citation<'_>,
     ) {
-        self.unresolved.push(OwnedUnresolved {
+        let row = OwnedUnresolved {
             from,
             by,
             why,
             names: names.iter().map(Name::to_owned).collect(),
             citation: OwnedCitation::of(citation, None),
-        });
+        };
+        self.keep(from, Row::Unresolved(row));
     }
 
     /// Promotes every work's fields, settles the edges and checks the
-    /// invariants of merge plan §8 that need every row.
+    /// invariants of merge plan §8 that need every row, holding every row
+    /// at once.
     ///
     /// # Errors
     ///
-    /// An invariant broken.
-    #[allow(clippy::too_many_lines)]
+    /// An invariant broken, or a pass that spilled, which ends in
+    /// [`finish_spilled`](Self::finish_spilled).
     pub fn finish(self) -> Result<Merged, Error> {
         let Self {
             res,
@@ -1392,140 +1547,466 @@ impl Builder {
             views,
             edges,
             relations,
-            mut unresolved,
-            mut cited_as,
-            stats,
-            mut stub_citers,
-            ..
-        } = self;
-        let mut tallies = Tallies::default();
-        let mut works: Vec<OwnedWork> = Vec::with_capacity(res.works.len() + stub_works.len());
-        for (w, work) in res.works.iter().enumerate() {
-            works.push(held(&res, work, ids.held[w], &views, &mut tallies));
-        }
-        for (s, names) in stub_works.iter().enumerate() {
-            let citers: Vec<Vec<Citer>> = names
-                .iter()
-                .map(|name| {
-                    let mut list = res
-                        .stubs
-                        .find(name.as_name())
-                        .and_then(|ix| stub_citers.remove(&ix))
-                        .unwrap_or_default();
-                    join_citers(&mut list);
-                    list
-                })
-                .collect();
-            works.push(stub(names, &citers, ids.stubs[s]));
-        }
-        works.sort_by_key(|w| w.id);
-        let max = works
-            .last()
-            .map(|w| w.id.get())
-            .ok_or_else(|| Error::Invariant("no works at all".to_owned()))?;
-        let mut holds: Vec<Option<Sources>> = vec![None; max as usize + 1];
-        for w in &works {
-            holds[w.id.get() as usize] = Some(w.records.iter().map(|r| r.source).collect());
-        }
-        let live = |id: WorkId| holds.get(id.get() as usize).is_some_and(Option::is_some);
-        let is_stub = |id: WorkId| holds[id.get() as usize].is_some_and(Sources::is_empty);
-        // Edges: one per pair, the sources joined.
-        let mut raw = edges;
-        raw.sort_unstable();
-        // A `cited_as` row's arc moves whole only if one reference made
-        // it: how many did is what the raw list says (2026-09-18).
-        if !cited_as.is_empty() {
-            let mut twice: HashSet<(WorkId, WorkId, SourceId)> = HashSet::new();
-            for pair in raw.windows(2) {
-                if pair[0] == pair[1] {
-                    twice.insert(pair[0]);
-                }
-            }
-            for row in &mut cited_as {
-                row.sole = !twice.contains(&(row.from, row.to, row.by));
-            }
-        }
-        let mut edges: Vec<Edge> = Vec::with_capacity(raw.len());
-        for (from, to, source) in raw {
-            if let Some(last) = edges.last_mut()
-                && last.from == from
-                && last.to == to
-            {
-                last.by.insert(source);
-                continue;
-            }
-            edges.push(Edge {
-                from,
-                to,
-                by: [source].into_iter().collect(),
-            });
-        }
-        let mut self_citations = 0u64;
-        let mut edges_by: BTreeMap<Sources, u64> = BTreeMap::new();
-        let mut agreement: BTreeMap<(SourceId, SourceId), [u64; 3]> = BTreeMap::new();
-        let pairs = [
-            (SourceId::Pubmed, SourceId::Crossref),
-            (SourceId::Pubmed, SourceId::OpenAlex),
-            (SourceId::Crossref, SourceId::OpenAlex),
-        ];
-        for e in &edges {
-            if !live(e.from) || !live(e.to) {
-                return Err(Error::Invariant(format!(
-                    "edge {} -> {} has an end that is no work",
-                    e.from, e.to
-                )));
-            }
-            if e.from == e.to {
-                self_citations += 1;
-            }
-            *edges_by.entry(e.by).or_default() += 1;
-            let citing = holds[e.from.get() as usize].unwrap_or(Sources::NONE);
-            if is_stub(e.to) {
-                continue;
-            }
-            for (a, b) in pairs {
-                if citing.contains(a) && citing.contains(b) {
-                    let slot = agreement.entry((a, b)).or_default();
-                    match (e.by.contains(a), e.by.contains(b)) {
-                        (true, true) => slot[0] += 1,
-                        (true, false) => slot[1] += 1,
-                        (false, true) => slot[2] += 1,
-                        (false, false) => {}
-                    }
-                }
-            }
-        }
-        let mut relations = relations;
-        relations.sort_unstable();
-        relations.dedup();
-        for r in &relations {
-            if !live(r.from) || !live(r.to) {
-                return Err(Error::Invariant(format!(
-                    "relation {} -> {} has an end that is no work",
-                    r.from, r.to
-                )));
-            }
-        }
-        unresolved.sort_by_key(|u| u.from);
-        cited_as.sort_by(|a, b| (a.from, &a.name, a.by).cmp(&(b.from, &b.name, b.by)));
-        cited_as.dedup();
-        Ok(Merged {
-            held: res.works.len() as u64,
-            stubs: stub_works.len() as u64,
-            works,
-            edges,
-            relations,
             unresolved,
             cited_as,
             stats,
-            fields: tallies.fields,
-            kinds: tallies.kinds,
-            kind_conflicts: tallies.kind_conflicts,
-            status: tallies.status,
-            edges_by,
-            agreement,
-            self_citations,
+            stub_citers,
+            spill,
+            ..
+        } = self;
+        if spill.is_some() {
+            return Err(Error::Invariant(
+                "a pass that spilled ends in finish_spilled".to_owned(),
+            ));
+        }
+        let whole = Whole::new(&res, &ids, &stub_works)?;
+        let mut counted = Counted::default();
+        let finished = finish_range(
+            &whole,
+            views.as_slice(),
+            Gathered {
+                held: (0..res.works.len()).collect(),
+                stubs: (0..stub_works.len()).collect(),
+                edges,
+                relations,
+                unresolved,
+                cited_as,
+                stub_citers,
+            },
+            &mut counted,
+        )?;
+        Ok(merged_of(&whole, counted, stats, Some(finished)))
+    }
+
+    /// [`finish`](Self::finish) for a pass that spilled
+    /// ([`spill_to`](Self::spill_to)): the ranges one at a time, in id
+    /// order, each read back, finished by the same rules and — with `out`
+    /// — written to its shards before the next is read, so no more than
+    /// one range's rows are held. The merged sets under `out` are
+    /// replaced whole, or not at all ([`layout::write_with`]). The
+    /// [`Merged`] it returns has the counts and none of the rows, which
+    /// are on disk, or with no `out` (`--survey`, `--limit`) nowhere.
+    ///
+    /// # Errors
+    ///
+    /// An invariant broken, I/O, or a pass that did not spill.
+    pub fn finish_spilled(
+        mut self,
+        out: Option<&Path>,
+    ) -> Result<(Merged, Option<layout::Summary>), Error> {
+        self.spill_failed()?;
+        let Self {
+            res,
+            ids,
+            stub_works,
+            stats,
+            spill,
+            ..
+        } = self;
+        let mut spill = spill.ok_or_else(|| {
+            Error::Invariant("finish_spilled on a pass that did not spill".to_owned())
+        })?;
+        let whole = Whole::new(&res, &ids, &stub_works)?;
+        let ranges = spill.ranges();
+        let mut held_in = by_range(&ids.held, &spill)?;
+        let mut stubs_in = by_range(&ids.stubs, &spill)?;
+        let shards = layout::shard(whole.max) + 1;
+        let per_range = spill.width() / layout::SHARD;
+        let mut counted = Counted::default();
+        let spilled = spill.dir().to_path_buf();
+        let io = |source| Error::Io {
+            path: spilled.clone(),
+            source,
+        };
+        let mut run = |mut out: Option<&mut layout::Shards>| -> Result<(), Error> {
+            for range in 0..ranges {
+                let (views, gathered) = gather(
+                    spill.take(range).map_err(io)?,
+                    std::mem::take(&mut held_in[range as usize]),
+                    std::mem::take(&mut stubs_in[range as usize]),
+                );
+                let finished = finish_range(&whole, &views, gathered, &mut counted)?;
+                if let Some(out) = out.as_deref_mut() {
+                    out.write((range + 1) * per_range, &finished.rows())
+                        .map_err(io)?;
+                }
+            }
+            Ok(())
+        };
+        let written = if let Some(dir) = out {
+            let mut failed = None;
+            let summary = layout::write_with(dir, |part| {
+                let mut shards_out = layout::Shards::new(part, shards);
+                if let Err(e) = run(Some(&mut shards_out)) {
+                    failed = Some(e);
+                    return Err(io::Error::other("a range did not finish"));
+                }
+                shards_out.finish()
+            });
+            if let Some(e) = failed {
+                return Err(e);
+            }
+            Some(summary.map_err(|source| Error::Io {
+                path: dir.to_path_buf(),
+                source,
+            })?)
+        } else {
+            run(None)?;
+            None
+        };
+        Ok((merged_of(&whole, counted, stats, None), written))
+    }
+}
+
+/// Per range of a spill, the indices of the works whose ids fall in it,
+/// in index order.
+fn by_range(ids: &[WorkId], spill: &Spill) -> Result<Vec<Vec<u32>>, Error> {
+    let mut by: Vec<Vec<u32>> = vec![Vec::new(); spill.ranges() as usize];
+    for (w, id) in ids.iter().enumerate() {
+        let w =
+            u32::try_from(w).map_err(|_| Error::Invariant("more than 2^32 works".to_owned()))?;
+        by[spill.range_of(*id) as usize].push(w);
+    }
+    Ok(by)
+}
+
+/// One range's rows, read back from its spill, sorted into their kinds in
+/// the order they were made; its views joined, each record's copies in
+/// the order they were read, as `keep_view` joins them in memory. The
+/// views are returned apart, for the [`Gathered`] to borrow.
+fn gather(rows: Vec<Row>, held: Vec<u32>, stubs: Vec<u32>) -> (HashMap<RecordIx, Owned>, Gathered) {
+    let mut views: HashMap<RecordIx, Owned> = HashMap::new();
+    let mut gathered = Gathered {
+        held: held.into_iter().map(|w| w as usize).collect(),
+        stubs: stubs.into_iter().map(|s| s as usize).collect(),
+        edges: Vec::new(),
+        relations: Vec::new(),
+        unresolved: Vec::new(),
+        cited_as: Vec::new(),
+        stub_citers: HashMap::new(),
+    };
+    for row in rows {
+        match row {
+            Row::View(rix, owned) => {
+                let joined = match views.remove(&rix) {
+                    None => owned,
+                    Some(seen) => owned.joined(seen),
+                };
+                views.insert(rix, joined);
+            }
+            Row::Edge(from, to, by) => gathered.edges.push((from, to, by)),
+            Row::Relation(r) => gathered.relations.push(r),
+            Row::CitedAs(r) => gathered.cited_as.push(r),
+            Row::Unresolved(r) => gathered.unresolved.push(r),
+            Row::StubCiter(ix, citer) => gathered.stub_citers.entry(ix).or_default().push(citer),
+        }
+    }
+    (views, gathered)
+}
+
+/// Where [`held`] finds a record's view: every record's, by index, in a
+/// pass that holds them all; one range's, in a pass that spilled.
+pub trait Views {
+    /// The view of record `rix`, if it has one.
+    fn view(&self, rix: RecordIx) -> Option<&Owned>;
+}
+
+impl Views for [Option<Owned>] {
+    fn view(&self, rix: RecordIx) -> Option<&Owned> {
+        self.get(rix as usize)?.as_ref()
+    }
+}
+
+impl Views for Vec<Option<Owned>> {
+    fn view(&self, rix: RecordIx) -> Option<&Owned> {
+        self.as_slice().view(rix)
+    }
+}
+
+impl<S: std::hash::BuildHasher> Views for HashMap<RecordIx, Owned, S> {
+    fn view(&self, rix: RecordIx) -> Option<&Owned> {
+        self.get(&rix)
+    }
+}
+
+/// What finishing any range of works needs from the whole pass.
+struct Whole<'p> {
+    res: &'p Resolution,
+    ids: &'p Ids,
+    stub_works: &'p [Vec<OwnedName>],
+    /// Per id: its records' sources, [`Sources::NONE`] for a stub, `None`
+    /// where no work is. What an edge or a relation asks of the work at
+    /// its other end, which may be in any range: two bytes an id.
+    holds: Vec<Option<Sources>>,
+    max: WorkId,
+}
+
+impl<'p> Whole<'p> {
+    fn new(
+        res: &'p Resolution,
+        ids: &'p Ids,
+        stub_works: &'p [Vec<OwnedName>],
+    ) -> Result<Self, Error> {
+        let max = ids
+            .held
+            .iter()
+            .chain(&ids.stubs)
+            .max()
+            .copied()
+            .ok_or_else(|| Error::Invariant("no works at all".to_owned()))?;
+        let mut holds: Vec<Option<Sources>> = vec![None; max.get() as usize + 1];
+        for (w, work) in res.works.iter().enumerate() {
+            holds[ids.held[w].get() as usize] = Some(
+                work.records
+                    .iter()
+                    .map(|&rix| res.records[rix as usize].source)
+                    .collect(),
+            );
+        }
+        for id in &ids.stubs {
+            holds[id.get() as usize] = Some(Sources::NONE);
+        }
+        Ok(Self {
+            res,
+            ids,
+            stub_works,
+            holds,
+            max,
         })
+    }
+
+    fn live(&self, id: WorkId) -> bool {
+        self.holds
+            .get(id.get() as usize)
+            .is_some_and(Option::is_some)
+    }
+
+    fn is_stub(&self, id: WorkId) -> bool {
+        self.holds[id.get() as usize].is_some_and(Sources::is_empty)
+    }
+}
+
+/// One range's rows, as pass 2 made them, and the works they belong to;
+/// its views are apart, for they are held differently in the two passes.
+struct Gathered {
+    /// Indices into [`Resolution::works`].
+    held: Vec<usize>,
+    /// Indices into the stubs' works.
+    stubs: Vec<usize>,
+    edges: Vec<(WorkId, WorkId, SourceId)>,
+    relations: Vec<Relation>,
+    unresolved: Vec<OwnedUnresolved>,
+    cited_as: Vec<OwnedCitedAs>,
+    stub_citers: HashMap<NameIx, Vec<Citer>>,
+}
+
+/// One range's rows, finished and sorted as the layout writes them.
+struct Finished {
+    works: Vec<OwnedWork>,
+    edges: Vec<Edge>,
+    relations: Vec<Relation>,
+    unresolved: Vec<OwnedUnresolved>,
+    cited_as: Vec<OwnedCitedAs>,
+}
+
+impl Finished {
+    fn rows(&self) -> layout::Rows<'_> {
+        layout::Rows {
+            works: &self.works,
+            edges: &self.edges,
+            relations: &self.relations,
+            unresolved: &self.unresolved,
+            cited_as: &self.cited_as,
+        }
+    }
+}
+
+/// What finishing counts, summed over the ranges.
+#[derive(Default)]
+struct Counted {
+    tallies: Tallies,
+    edges: u64,
+    relations: u64,
+    unresolved_by: BTreeMap<&'static str, u64>,
+    self_citations: u64,
+    edges_by: BTreeMap<Sources, u64>,
+    agreement: BTreeMap<(SourceId, SourceId), [u64; 3]>,
+}
+
+/// Finishes one range of works: every work's row with its fields
+/// promoted, the edges settled and joined by source, the invariants of
+/// merge plan §8 checked. Every row a range holds belongs to one of its
+/// works, and every sort here is by that work first, so ranges finished
+/// in id order and put end to end are the whole pass finished at once.
+#[allow(clippy::too_many_lines)]
+fn finish_range<V: Views + ?Sized>(
+    whole: &Whole<'_>,
+    views: &V,
+    gathered: Gathered,
+    counted: &mut Counted,
+) -> Result<Finished, Error> {
+    let Gathered {
+        held: held_works,
+        stubs,
+        edges,
+        relations,
+        mut unresolved,
+        mut cited_as,
+        mut stub_citers,
+    } = gathered;
+    let res = whole.res;
+    let mut works: Vec<OwnedWork> = Vec::with_capacity(held_works.len() + stubs.len());
+    for w in held_works {
+        works.push(held(
+            res,
+            &res.works[w],
+            whole.ids.held[w],
+            views,
+            &mut counted.tallies,
+        ));
+    }
+    for s in stubs {
+        let names = &whole.stub_works[s];
+        let citers: Vec<Vec<Citer>> = names
+            .iter()
+            .map(|name| {
+                let mut list = res
+                    .stubs
+                    .find(name.as_name())
+                    .and_then(|ix| stub_citers.remove(&ix))
+                    .unwrap_or_default();
+                join_citers(&mut list);
+                list
+            })
+            .collect();
+        works.push(stub(names, &citers, whole.ids.stubs[s]));
+    }
+    works.sort_by_key(|w| w.id);
+    // Edges: one per pair, the sources joined.
+    let mut raw = edges;
+    raw.sort_unstable();
+    // A `cited_as` row's arc moves whole only if one reference made
+    // it: how many did is what the raw list says (2026-09-18).
+    if !cited_as.is_empty() {
+        let mut twice: HashSet<(WorkId, WorkId, SourceId)> = HashSet::new();
+        for pair in raw.windows(2) {
+            if pair[0] == pair[1] {
+                twice.insert(pair[0]);
+            }
+        }
+        for row in &mut cited_as {
+            row.sole = !twice.contains(&(row.from, row.to, row.by));
+        }
+    }
+    let mut edges: Vec<Edge> = Vec::with_capacity(raw.len());
+    for (from, to, source) in raw {
+        if let Some(last) = edges.last_mut()
+            && last.from == from
+            && last.to == to
+        {
+            last.by.insert(source);
+            continue;
+        }
+        edges.push(Edge {
+            from,
+            to,
+            by: [source].into_iter().collect(),
+        });
+    }
+    let pairs = [
+        (SourceId::Pubmed, SourceId::Crossref),
+        (SourceId::Pubmed, SourceId::OpenAlex),
+        (SourceId::Crossref, SourceId::OpenAlex),
+    ];
+    for e in &edges {
+        if !whole.live(e.from) || !whole.live(e.to) {
+            return Err(Error::Invariant(format!(
+                "edge {} -> {} has an end that is no work",
+                e.from, e.to
+            )));
+        }
+        if e.from == e.to {
+            counted.self_citations += 1;
+        }
+        *counted.edges_by.entry(e.by).or_default() += 1;
+        let citing = whole.holds[e.from.get() as usize].unwrap_or(Sources::NONE);
+        if whole.is_stub(e.to) {
+            continue;
+        }
+        for (a, b) in pairs {
+            if citing.contains(a) && citing.contains(b) {
+                let slot = counted.agreement.entry((a, b)).or_default();
+                match (e.by.contains(a), e.by.contains(b)) {
+                    (true, true) => slot[0] += 1,
+                    (true, false) => slot[1] += 1,
+                    (false, true) => slot[2] += 1,
+                    (false, false) => {}
+                }
+            }
+        }
+    }
+    let mut relations = relations;
+    relations.sort_unstable();
+    relations.dedup();
+    for r in &relations {
+        if !whole.live(r.from) || !whole.live(r.to) {
+            return Err(Error::Invariant(format!(
+                "relation {} -> {} has an end that is no work",
+                r.from, r.to
+            )));
+        }
+    }
+    unresolved.sort_by_key(|u| u.from);
+    cited_as.sort_by(|a, b| (a.from, &a.name, a.by).cmp(&(b.from, &b.name, b.by)));
+    cited_as.dedup();
+    counted.edges += edges.len() as u64;
+    counted.relations += relations.len() as u64;
+    for u in &unresolved {
+        *counted.unresolved_by.entry(u.why.name()).or_default() += 1;
+    }
+    Ok(Finished {
+        works,
+        edges,
+        relations,
+        unresolved,
+        cited_as,
+    })
+}
+
+/// A pass's [`Merged`]: its counts, and its rows when they are held.
+fn merged_of(whole: &Whole<'_>, counted: Counted, stats: Stats, rows: Option<Finished>) -> Merged {
+    let Finished {
+        works,
+        edges,
+        relations,
+        unresolved,
+        cited_as,
+    } = rows.unwrap_or(Finished {
+        works: Vec::new(),
+        edges: Vec::new(),
+        relations: Vec::new(),
+        unresolved: Vec::new(),
+        cited_as: Vec::new(),
+    });
+    Merged {
+        held: whole.res.works.len() as u64,
+        stubs: whole.stub_works.len() as u64,
+        works,
+        edges,
+        relations,
+        unresolved,
+        cited_as,
+        stats,
+        fields: counted.tallies.fields,
+        kinds: counted.tallies.kinds,
+        kind_conflicts: counted.tallies.kind_conflicts,
+        status: counted.tallies.status,
+        edges_by: counted.edges_by,
+        agreement: counted.agreement,
+        self_citations: counted.self_citations,
+        edge_count: counted.edges,
+        relation_count: counted.relations,
+        unresolved_by: counted.unresolved_by,
     }
 }
 
@@ -1678,11 +2159,11 @@ fn issns_disjoint(a: &[Issn], b: &[Issn]) -> bool {
 /// each list in its canonical order so that a row does not depend on
 /// the order its records arrived in.
 #[allow(clippy::too_many_lines)]
-pub fn held(
+pub fn held<V: Views + ?Sized>(
     res: &Resolution,
     work: &Identified,
     id: WorkId,
-    views: &[Option<Owned>],
+    views: &V,
     tallies: &mut Tallies,
 ) -> OwnedWork {
     let arena = &res.arena;
@@ -1710,7 +2191,7 @@ pub fn held(
                         native: a.native,
                     })
                     .collect(),
-                view: views[rix as usize].clone().unwrap_or_default(),
+                view: views.view(rix).cloned().unwrap_or_default(),
             }
         })
         .collect();
@@ -1719,7 +2200,7 @@ pub fn held(
         .records
         .iter()
         .filter_map(|&rix| {
-            views[rix as usize].as_ref().map(|view| Cand {
+            views.view(rix).map(|view| Cand {
                 source: res.records[rix as usize].source,
                 promoted: is_promoted(rix),
                 native: res.arena.get(res.records[rix as usize].native),

@@ -306,8 +306,7 @@ pub fn merge(out: &mut impl Write, m: &Merged, written: Option<&Summary>) -> io:
     writeln!(
         out,
         "  edges: {} distinct, {} of them self-citations",
-        m.edges.len(),
-        m.self_citations
+        m.edge_count, m.self_citations
     )?;
     for (by, n) in &m.edges_by {
         writeln!(out, "    {n:>9}  by {by}")?;
@@ -325,7 +324,7 @@ pub fn merge(out: &mut impl Write, m: &Merged, written: Option<&Summary>) -> io:
     writeln!(
         out,
         "  relations: {} kept; targets by source: held, stub, not a name, shared, unknown",
-        m.relations.len()
+        m.relation_count
     )?;
     for source in SourceId::ALL {
         if !s.relations.keys().any(|(src, _)| *src == source) {
@@ -347,15 +346,12 @@ pub fn merge(out: &mut impl Write, m: &Merged, written: Option<&Summary>) -> io:
     for (kind, n) in kinds.iter().take(30) {
         writeln!(out, "    {n:>9}  {kind}")?;
     }
-    let mut whys: BTreeMap<&'static str, u64> = BTreeMap::new();
-    for u in &m.unresolved {
-        *whys.entry(u.why.name()).or_default() += 1;
-    }
     writeln!(
         out,
         "  unresolved: {} rows ({})",
-        m.unresolved.len(),
-        whys.iter()
+        m.unresolved_by.values().sum::<u64>(),
+        m.unresolved_by
+            .iter()
             .map(|(why, n)| format!("{why} {n}"))
             .collect::<Vec<_>>()
             .join(", ")

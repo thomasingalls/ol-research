@@ -1144,6 +1144,18 @@ impl Sets {
     }
 }
 
+/// Shards a spilled pass 2 finishes at a time: `OL_RHT_SPILL_SHARDS`, or 8
+/// — 524,288 ids, about 80 ranges for the PubMed baseline. More holds more
+/// of pass 2 at once; fewer opens more files and writes more, smaller
+/// ones. The output is the same whatever it is.
+fn spill_shards() -> u32 {
+    std::env::var("OL_RHT_SPILL_SHARDS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(8)
+}
+
 /// The heap now and at its worst so far, for a merge phase's progress
 /// line: where a merge's memory goes, phase by phase, is what says how to
 /// split it (2026-09-24, the corpus survey killed at 80 GiB in pass 2).
@@ -1616,7 +1628,21 @@ fn merge_all(opts: &Options, public_key: Option<&Path>) -> ExitCode {
         }
     };
     builder.set_survey(opts.survey);
-    eprintln!("{what}: names table built; {}", heap());
+    // Pass 2's rows go to disk by work id as they are made, and `finish`
+    // takes them a range at a time (the merge's memory, step 1,
+    // 2026-09-24): under the system's temporary directory, which on the
+    // box is the pod's own scratch, not the store.
+    let spill = std::env::temp_dir().join(format!("ol-rht-spill-{}", std::process::id()));
+    let width = spill_shards() * merge::layout::SHARD;
+    if let Err(e) = builder.spill_to(&spill, width) {
+        eprintln!("{what}: {e}");
+        return ExitCode::FAILURE;
+    }
+    eprintln!(
+        "{what}: names table built; spilling pass 2 under {} in ranges of {width} ids; {}",
+        spill.display(),
+        heap()
+    );
     let phases = (|| -> Result<(), merge::build::Error> {
         for (path, set) in &pubmed.works {
             builder.works::<Pubmed>(path, set, limit, &copies)?;
@@ -1652,31 +1678,30 @@ fn merge_all(opts: &Options, public_key: Option<&Path>) -> ExitCode {
         started.elapsed().as_secs_f64(),
         heap()
     );
-    let merged = match builder.finish() {
-        Ok(merged) => merged,
+    if let Some((rows, bytes)) = builder.spilled() {
+        eprintln!("{what}: {rows} rows spilled, {} MiB", bytes >> 20);
+    }
+    let dir = merge::layout::dir(&store);
+    let (merged, written) = match builder.finish_spilled(complete.then_some(dir.as_path())) {
+        Ok(finished) => finished,
         Err(e) => {
             eprintln!("{what}: {e}");
             return ExitCode::FAILURE;
         }
     };
     eprintln!(
-        "{what}: merged rows built in {:.1} s; {}",
+        "{what}: merged rows finished{} in {:.1} s; {}",
+        if written.is_some() {
+            " and written"
+        } else {
+            ""
+        },
         started.elapsed().as_secs_f64(),
         heap()
     );
-    let written = if complete {
-        let dir = merge::layout::dir(&store);
-        match merge::layout::write(&dir, &merged) {
-            Ok(summary) => Some(summary),
-            Err(e) => {
-                eprintln!("{what}: {}: {e}", dir.display());
-                return ExitCode::FAILURE;
-            }
-        }
-    } else {
+    if written.is_none() {
         eprintln!("{what}: merged sets computed, none written (--limit or --survey)");
-        None
-    };
+    }
     // The point of no return: the merged sets on disk name this run's
     // ids, so from here the registry has to agree with them. Everything
     // still to come — the report, the public ids, the journal line — can

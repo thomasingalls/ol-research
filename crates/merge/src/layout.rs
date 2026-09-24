@@ -14,7 +14,8 @@ use std::path::{Path, PathBuf};
 
 use ingest::{Kind, Reader, Store, Writer};
 
-use crate::build::Merged;
+use crate::build::{Merged, OwnedCitedAs, OwnedUnresolved, OwnedWork};
+use crate::record::{Edge, Relation};
 use crate::work::WorkId;
 
 /// Works per shard.
@@ -92,6 +93,24 @@ pub fn write(dir: &Path, merged: &Merged) -> io::Result<Summary> {
     replace_whole(dir, |part| write_shards(part, merged))
 }
 
+/// Writes the merged sets under `dir` through `fill`, which writes into a
+/// directory of its own that takes `dir`'s name only once `fill` has
+/// finished — as [`write`] does, for a pass finished a range at a time.
+///
+/// # Errors
+///
+/// `dir` is not named for this binary's versions, or what `fill` or the
+/// renames return; either way `dir` is as the run found it.
+pub fn write_with<T>(dir: &Path, fill: impl FnOnce(&Path) -> io::Result<T>) -> io::Result<T> {
+    if dir.file_name().and_then(|n| n.to_str()) != Some(version().as_str()) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{} is not this binary's {}", dir.display(), version()),
+        ));
+    }
+    replace_whole(dir, fill)
+}
+
 /// A sibling of `dir` that no reader looks for: `.<name>.<what>`.
 fn sibling(dir: &Path, what: &str) -> PathBuf {
     let name = dir.file_name().and_then(|n| n.to_str()).unwrap_or("merged");
@@ -111,7 +130,10 @@ fn sibling(dir: &Path, what: &str) -> PathBuf {
 /// moment between two renames, and a run that died in it left the old
 /// directory aside, which the next one puts back before it starts: a
 /// missing `dir` beside an `.old` is always the whole old one.
-fn replace_whole<T>(dir: &Path, fill: impl FnOnce(&Path) -> io::Result<T>) -> io::Result<T> {
+pub(crate) fn replace_whole<T>(
+    dir: &Path,
+    fill: impl FnOnce(&Path) -> io::Result<T>,
+) -> io::Result<T> {
     let part = sibling(dir, "part");
     let old = sibling(dir, "old");
     if !dir.exists() && old.exists() {
@@ -143,47 +165,138 @@ fn replace_whole<T>(dir: &Path, fill: impl FnOnce(&Path) -> io::Result<T>) -> io
 /// Every row of `merged`, sharded, under `dir`.
 fn write_shards(dir: &Path, merged: &Merged) -> io::Result<Summary> {
     let shards = merged.works.last().map_or(0, |w| shard(w.id) + 1);
-    let mut summary = Summary {
+    let mut out = Shards::new(dir, shards);
+    out.write(
         shards,
-        ..Summary::default()
-    };
-    // One cursor per kind, in the order the loop writes them.
-    let (mut work, mut edge, mut relation, mut unresolved, mut cited) = (0, 0, 0, 0, 0usize);
-    for s in 0..shards {
-        let end = first(s) + SHARD;
-        let in_shard = |id: WorkId| id.get() < end;
-        let mut writer = Writer::create(&prefix(dir, s), SOURCE, model::VERSION, &KINDS)?;
-        while work < merged.works.len() && in_shard(merged.works[work].id) {
-            let row = &merged.works[work];
-            writer.put(Kind::Works, &row.borrow())?;
-            for name in row.name_rows() {
-                writer.put(Kind::Names, &name)?;
-            }
-            work += 1;
+        &Rows {
+            works: &merged.works,
+            edges: &merged.edges,
+            relations: &merged.relations,
+            unresolved: &merged.unresolved,
+            cited_as: &merged.cited_as,
+        },
+    )?;
+    out.finish()
+}
+
+/// One range of shards' rows, each kind sorted by the work it belongs to,
+/// as [`Shards::write`] takes them.
+#[derive(Debug, Clone, Copy)]
+pub struct Rows<'a> {
+    #[allow(missing_docs)]
+    pub works: &'a [OwnedWork],
+    #[allow(missing_docs)]
+    pub edges: &'a [Edge],
+    #[allow(missing_docs)]
+    pub relations: &'a [Relation],
+    #[allow(missing_docs)]
+    pub unresolved: &'a [OwnedUnresolved],
+    #[allow(missing_docs)]
+    pub cited_as: &'a [OwnedCitedAs],
+}
+
+/// Shards written in id order, a range of them at a time: the whole of a
+/// merge's rows at once ([`write`]), or one range's as a spilled pass
+/// finishes it (`Builder::finish_spilled`). Both go through the one loop,
+/// so both write the same bytes.
+#[derive(Debug)]
+pub struct Shards {
+    dir: PathBuf,
+    next: u32,
+    summary: Summary,
+}
+
+impl Shards {
+    /// Shards `0..total` to be written under `dir`, none yet.
+    #[must_use]
+    pub fn new(dir: &Path, total: u32) -> Self {
+        Self {
+            dir: dir.to_path_buf(),
+            next: 0,
+            summary: Summary {
+                shards: total,
+                ..Summary::default()
+            },
         }
-        while edge < merged.edges.len() && in_shard(merged.edges[edge].from) {
-            writer.put(Kind::Edges, &merged.edges[edge])?;
-            edge += 1;
-        }
-        while relation < merged.relations.len() && in_shard(merged.relations[relation].from) {
-            writer.put(Kind::Relations, &merged.relations[relation])?;
-            relation += 1;
-        }
-        while unresolved < merged.unresolved.len() && in_shard(merged.unresolved[unresolved].from) {
-            writer.put(Kind::Unresolved, &merged.unresolved[unresolved].borrow())?;
-            unresolved += 1;
-        }
-        while cited < merged.cited_as.len() && in_shard(merged.cited_as[cited].from) {
-            writer.put(Kind::CitedAs, &merged.cited_as[cited].borrow())?;
-            cited += 1;
-        }
-        let finished = writer.finish()?;
-        for (kind, n) in finished.records {
-            *summary.records.entry(kind).or_default() += n;
-        }
-        summary.bytes += finished.bytes;
     }
-    Ok(summary)
+
+    /// Writes the shards from the next unwritten one up to `end`, from
+    /// `rows`, which hold exactly those shards' rows. A shard with no
+    /// rows is written empty, as every shard up to the last work's is.
+    ///
+    /// # Errors
+    ///
+    /// I/O, or rows left over past `end`.
+    pub fn write(&mut self, end: u32, rows: &Rows<'_>) -> io::Result<()> {
+        let end = end.min(self.summary.shards);
+        // One cursor per kind, in the order the loop writes them.
+        let (mut work, mut edge, mut relation, mut unresolved, mut cited) = (0, 0, 0, 0, 0usize);
+        for s in self.next..end {
+            let last = first(s) + SHARD;
+            let in_shard = |id: WorkId| id.get() < last;
+            let mut writer = Writer::create(&prefix(&self.dir, s), SOURCE, model::VERSION, &KINDS)?;
+            while work < rows.works.len() && in_shard(rows.works[work].id) {
+                let row = &rows.works[work];
+                writer.put(Kind::Works, &row.borrow())?;
+                for name in row.name_rows() {
+                    writer.put(Kind::Names, &name)?;
+                }
+                work += 1;
+            }
+            while edge < rows.edges.len() && in_shard(rows.edges[edge].from) {
+                writer.put(Kind::Edges, &rows.edges[edge])?;
+                edge += 1;
+            }
+            while relation < rows.relations.len() && in_shard(rows.relations[relation].from) {
+                writer.put(Kind::Relations, &rows.relations[relation])?;
+                relation += 1;
+            }
+            while unresolved < rows.unresolved.len() && in_shard(rows.unresolved[unresolved].from) {
+                writer.put(Kind::Unresolved, &rows.unresolved[unresolved].borrow())?;
+                unresolved += 1;
+            }
+            while cited < rows.cited_as.len() && in_shard(rows.cited_as[cited].from) {
+                writer.put(Kind::CitedAs, &rows.cited_as[cited].borrow())?;
+                cited += 1;
+            }
+            let finished = writer.finish()?;
+            for (kind, n) in finished.records {
+                *self.summary.records.entry(kind).or_default() += n;
+            }
+            self.summary.bytes += finished.bytes;
+        }
+        self.next = self.next.max(end);
+        let left = (rows.works.len() - work)
+            + (rows.edges.len() - edge)
+            + (rows.relations.len() - relation)
+            + (rows.unresolved.len() - unresolved)
+            + (rows.cited_as.len() - cited);
+        if left > 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("{left} rows past shard {end} or out of order"),
+            ));
+        }
+        Ok(())
+    }
+
+    /// What was written.
+    ///
+    /// # Errors
+    ///
+    /// Shards left unwritten.
+    pub fn finish(self) -> io::Result<Summary> {
+        if self.next < self.summary.shards {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "shards {}..{} were never written",
+                    self.next, self.summary.shards
+                ),
+            ));
+        }
+        Ok(self.summary)
+    }
 }
 
 /// The one merge at a time: a file under `merged/` that a run creates on

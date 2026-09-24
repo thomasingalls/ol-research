@@ -44,6 +44,7 @@ pub mod registry;
 pub mod relation;
 pub mod report;
 pub mod sets;
+pub mod spill;
 pub mod title;
 pub mod view;
 pub mod work;

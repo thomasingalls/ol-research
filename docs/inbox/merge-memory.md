@@ -184,6 +184,39 @@ shard files byte for byte and the same reports as the build before, and
 `--survey` and `merge identity` still leave the registry and journal
 untouched. The corpus figure waits for the next survey on the box.
 
+## Step 1, built 2026-09-24
+
+Pass 2's rows go to disk as they are made (`merge::spill`): each to the
+file of the range its work's id falls in — a view by its record's work, an
+edge, relation, `cited_as` row and unresolved reference by the citing work,
+a stub's citer by the stub — a range being a whole number of shards
+(`OL_RHT_SPILL_SHARDS`, 8 by default: 524,288 ids). `Builder::spill_to`
+turns it on before a set is read; `Builder::finish_spilled` then reads the
+ranges back in id order, joins each record's views in the order they were
+read, and finishes each range by the same rules the in-memory `finish`
+uses — the two now share one `finish_range` — writing the range's shards
+(`layout::Shards`) before it reads the next, into a directory that takes
+the merged sets' name only when every range is written. `ol-rht merge`
+spills under the system's temporary directory, which on the box is the
+pod's own scratch. The report's counts that were read off the rows
+(`edges`, `relations`, unresolved rows by why) are counted as ranges finish.
+The in-memory `finish` stays for the serving fixtures and the tests.
+
+Measured on the scratch store (M), against the build before:
+
+| | peak heap | resident |
+|---|---|---|
+| everything held | 5.38 GiB | 4.72 GB |
+| spilled, 8 shards a range (3 ranges) | 2.32 GiB | 3.00 GB |
+| spilled, 1 shard a range (24 ranges) | 1.30 GiB | 1.76 GB |
+
+About 5.4 M rows, 0.24 GiB, spilled; the run takes the time it took. At
+both widths the registry, the journal, all 175 shard files and the reports
+were the same as the build before, byte for byte, on a first merge and on a
+second, and `--survey` leaves `merged/` untouched. The full/incremental
+harness was not run: its store is normalized at an older model, and the
+full merge's output is unchanged. The corpus figure is the next survey's.
+
 ## Walls behind this one
 
 - **Time.** Pass 1 decodes on one thread: 26 minutes for 36.5 GiB. The
