@@ -1089,6 +1089,29 @@ in your environment, never in the repo or in this conversation.
    for the seed, 42 to refetch the short pages, 200 of the 309 the second
    hop needs, and four probes; the rest of that hop resumes through the
    receipts on a later day, `fetch` on the same listing.
+9. **Publisher ids with markup in their value — to fix soon.** Found
+   2026-09-24 in the corpus merge survey (`ol-rht-merge-survey-v1`, among
+   the components "resolved without a rule"): publisher-id names such as
+   `reg1111:IdType="pii">JEU342`. The value is not ours to blame: NLM ships
+   it so. PMID 19017063, fetched from `efetch` the same day, carries
+   `<ArticleId IdType="pii">IdType="pii"&gt;JEU342</ArticleId>` — the
+   element's text is the attribute and a `>` leaked in front of the real
+   id, most likely in the publisher's deposit (19017056 likewise, `JEU335`,
+   both Wiley, `J Eukaryot Microbiol`). The normalizer keeps `ids.pii` as
+   written and the merge makes it a name, so today it is a publisher id
+   that no reference will ever repeat, and a second spelling of a work's
+   id where the clean one (`JEU342`) also arrives from elsewhere. The same
+   report shows a second publisher id on that record,
+   `reg1111:IdType="doi">10.1111/…`, which NLM's copy of today does not
+   carry, so the baseline's copy differs from it and the leaked prefix is
+   not always `pii`. Nothing it touches stops a run, which is why it would
+   go unnoticed. What is not known yet: how many values carry it, in which
+   slots (`pii`, `doi`, reference ids), and whether one publisher or many. To settle first by counting (a survey tally of id
+   values containing `IdType=` or `>`), then decide with the user between
+   the two honest answers: keep such a value as a malformed claim, never a
+   name, as a `pmc` slot holding something else is kept (§6); or read the
+   id after the leaked prefix as a modelled repair of a known shape. Not a
+   silent strip.
 
 ## 9. Milestones
 

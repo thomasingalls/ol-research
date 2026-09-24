@@ -1537,6 +1537,17 @@ stays.
     --survey` and record the peak, the `unresolved` and `cited_as` counts
     and the stubs-per-held ratio here, since none of the three is
     measured today.
+
+    **Corrected 2026-09-24, on the corpus.** The ratio this item rests on
+    was the sample's. The corpus rehearsal (`ol-rht-merge-survey-v1`,
+    killed for memory at 80 GiB in pass 2) measured 39,983,721 held works
+    and 2,006,039 stubs: **0.05 stubs per held work**, not 34.3, because
+    at full coverage almost every cited PMID is held. Option 1 saves
+    2.0 M × 1,680 B = 3.4 GB there, and the ranking above does not hold.
+    What does is in [the merge's memory](inbox/merge-memory.md): stop the
+    copies nothing needs, then spill pass 2 by work id and finish it a
+    bucket at a time, then a sorted name dictionary for pass 1 — the
+    order the user chose.
 17. **Journal-issue DOIs on articles.** 12 PubMed articles carry a DOI
     Crossref registered as a `journal-issue`: the publisher deposited the
     issue's DOI on every article. Flagged as a kind conflict; whether the

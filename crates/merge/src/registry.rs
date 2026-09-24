@@ -323,16 +323,16 @@ impl Registry {
     /// that no work here has is dropped, so `complete` is only for a run
     /// over the whole store.
     #[must_use]
-    pub fn assign(
+    pub fn assign<W: AsRef<[OwnedName]>>(
         &mut self,
-        works: &[Vec<OwnedName>],
+        works: &[W],
         held: usize,
         at: &str,
         complete: bool,
     ) -> Assignment {
         let mut out = assign(self, works, held, at);
         if complete {
-            let seen: HashSet<&OwnedName> = works.iter().flatten().collect();
+            let seen: HashSet<&OwnedName> = works.iter().flat_map(AsRef::as_ref).collect();
             let dropped = self.drop_unseen(|n| seen.contains(n), at);
             out.dropped += dropped.len() as u64;
             out.lines.extend(dropped);
@@ -379,19 +379,51 @@ impl Table for Registry {
 /// Never: every line it applies is one the fold accepts by
 /// construction.
 #[must_use]
-#[allow(clippy::too_many_lines)]
-pub fn assign<T: Table>(
+pub fn assign<T: Table, W: AsRef<[OwnedName]>>(
     table: &mut T,
-    works: &[Vec<OwnedName>],
+    works: &[W],
     held: usize,
     at: &str,
 ) -> Assignment {
+    let mut lines = Vec::new();
+    let mut out = assign_each(table, works, held, at, &mut |line| {
+        lines.push(line);
+        Ok(())
+    })
+    .expect("collecting a line cannot fail");
+    out.lines = lines;
+    out
+}
+
+/// [`assign`], handing each line to `emit` as it is made instead of
+/// collecting them, so a run that mints a line per work can stage them as
+/// it goes ([`Stager`]); the [`Assignment`] it returns has no `lines`.
+///
+/// # Errors
+///
+/// What `emit` returns.
+///
+/// # Panics
+///
+/// As [`assign`]: never.
+#[allow(clippy::too_many_lines)]
+pub fn assign_each<T: Table, W: AsRef<[OwnedName]>>(
+    table: &mut T,
+    works: &[W],
+    held: usize,
+    at: &str,
+    emit: &mut dyn FnMut(Line) -> io::Result<()>,
+) -> io::Result<Assignment> {
     {
         let mut out = Assignment::default();
         let claims: Vec<Vec<WorkId>> = works
             .iter()
             .map(|names| {
-                let mut ids: Vec<WorkId> = names.iter().filter_map(|n| table.lookup(n)).collect();
+                let mut ids: Vec<WorkId> = names
+                    .as_ref()
+                    .iter()
+                    .filter_map(|n| table.lookup(n))
+                    .collect();
                 ids.sort_unstable();
                 ids.dedup();
                 ids
@@ -420,6 +452,7 @@ pub fn assign<T: Table>(
         };
         let mut split_into: HashMap<WorkId, Vec<WorkId>> = HashMap::new();
         for (w, names) in works.iter().enumerate() {
+            let names = names.as_ref();
             let unique: Vec<WorkId> = claims[w]
                 .iter()
                 .copied()
@@ -430,11 +463,11 @@ pub fn assign<T: Table>(
                     let id = WorkId::new(table.minted() + 1).expect("ids fit u32");
                     let line = Line::Mint {
                         id,
-                        names: names.clone(),
+                        names: names.to_vec(),
                         at: at.to_owned(),
                     };
                     table.apply(&line).expect("a mint after the last id");
-                    out.lines.push(line);
+                    emit(line)?;
                     out.minted += 1;
                     id
                 }
@@ -450,7 +483,7 @@ pub fn assign<T: Table>(
                             at: at.to_owned(),
                         };
                         table.apply(&line).expect("both live, winner older");
-                        out.lines.push(line);
+                        emit(line)?;
                         out.merged += 1;
                     }
                     out.reused += 1;
@@ -465,7 +498,7 @@ pub fn assign<T: Table>(
                         at: at.to_owned(),
                     };
                     table.apply(&line).expect("the id is live");
-                    out.lines.push(line);
+                    emit(line)?;
                     out.attached += 1;
                 }
             }
@@ -487,10 +520,10 @@ pub fn assign<T: Table>(
                 at: at.to_owned(),
             };
             table.apply(&line).expect("the parts are live");
-            out.lines.push(line);
+            emit(line)?;
             out.split += 1;
         }
-        out
+        Ok(out)
     }
 }
 
@@ -617,16 +650,45 @@ pub struct Pending {
     done: bool,
 }
 
-impl Pending {
-    /// Stages `lines` beside the registry at `path`, creating the
+/// A sidecar's head is written first and padded to this width, because
+/// what it says — how many lines follow — is known only once they have
+/// all been written, and it is then written over the padding in place.
+/// [`recover`] reads the head with its trailing spaces trimmed, and the
+/// payload begins past the padding, so a padded head and a tight one read
+/// the same.
+const HEAD_WIDTH: usize = 160;
+
+/// A run's registry lines, written to the sidecar one at a time as the run
+/// makes them, and a [`Pending`] once they are all there.
+///
+/// A first merge of the corpus mints a line per work — 41,929,739 of them
+/// for the PubMed baseline, about 140 bytes each held in memory — and a
+/// run that collected them before staging held all of them through the
+/// rest of the identity pass (2026-09-24, the merge's memory note). Staged
+/// as they are made they cost the file and nothing more. The sidecar is
+/// the same one [`Pending::stage`] writes, and it is under the staging
+/// name until [`finish`](Stager::finish) renames it, so a run that dies
+/// half way leaves only what [`recover`] already throws away; dropping a
+/// `Stager` unfinished removes it.
+#[derive(Debug)]
+pub struct Stager {
+    registry: PathBuf,
+    staging: PathBuf,
+    file: Option<io::BufWriter<fs::File>>,
+    base: u64,
+    lines: u64,
+    bytes: u64,
+}
+
+impl Stager {
+    /// Opens the sidecar beside the registry at `path`, creating the
     /// directory if needed. Nothing of the registry is touched.
     ///
     /// # Errors
     ///
     /// I/O, or a sidecar already there — an earlier run's lines that
-    /// [`recover`] has not settled yet, which a second run must not
-    /// bury.
-    pub fn stage(path: &Path, lines: &[Line]) -> io::Result<Self> {
+    /// [`recover`] has not settled yet, which a second run must not bury.
+    pub fn begin(path: &Path) -> io::Result<Self> {
         if let Some(dir) = path.parent() {
             fs::create_dir_all(dir)?;
         }
@@ -640,40 +702,116 @@ impl Pending {
                 ),
             ));
         }
-        let head = Head {
-            base: length(path)?,
-            lines: lines.len() as u64,
-            at: ingest::time::now(),
-        };
+        let base = length(path)?;
         let staging = sibling(path, STAGING);
-        let mut head_text = serde_json::to_string(&head)?;
-        head_text.push('\n');
-        let mut bytes = 0u64;
-        {
-            let mut file = io::BufWriter::new(fs::File::create(&staging)?);
-            file.write_all(head_text.as_bytes())?;
-            for line in lines {
-                let mut text = serde_json::to_string(line)?;
-                text.push('\n');
-                file.write_all(text.as_bytes())?;
-                bytes += text.len() as u64;
-            }
-            file.flush()?;
-            file.get_ref().sync_all()?;
-        }
-        // The rename is what says the staging finished: a sidecar under
-        // the pending name is whole, or it is not there at all.
-        fs::rename(&staging, &pending)?;
-        sync_dir(path)?;
+        let mut file = io::BufWriter::new(fs::File::create(&staging)?);
+        file.write_all(&[b' '; HEAD_WIDTH])?;
+        file.write_all(b"\n")?;
         Ok(Self {
             registry: path.to_path_buf(),
+            staging,
+            file: Some(file),
+            base,
+            lines: 0,
+            bytes: 0,
+        })
+    }
+
+    /// Writes one line.
+    ///
+    /// # Errors
+    ///
+    /// I/O.
+    pub fn push(&mut self, line: &Line) -> io::Result<()> {
+        let file = self
+            .file
+            .as_mut()
+            .ok_or_else(|| io::Error::other("the sidecar is already finished"))?;
+        let mut text = serde_json::to_string(line)?;
+        text.push('\n');
+        file.write_all(text.as_bytes())?;
+        self.lines += 1;
+        self.bytes += text.len() as u64;
+        Ok(())
+    }
+
+    /// Lines written so far.
+    #[must_use]
+    pub const fn lines(&self) -> u64 {
+        self.lines
+    }
+
+    /// Writes the head over its padding, makes the sidecar durable and
+    /// gives it the pending name: from here it is whole, and
+    /// [`Pending::commit`] puts it in the registry.
+    ///
+    /// # Errors
+    ///
+    /// I/O, or a head wider than its room, which a `u64` count and a
+    /// timestamp cannot be.
+    pub fn finish(mut self) -> io::Result<Pending> {
+        let mut file = self
+            .file
+            .take()
+            .ok_or_else(|| io::Error::other("the sidecar is already finished"))?
+            .into_inner()
+            .map_err(io::IntoInnerError::into_error)?;
+        let head = Head {
+            base: self.base,
+            lines: self.lines,
+            at: ingest::time::now(),
+        };
+        let text = serde_json::to_string(&head)?;
+        if text.len() > HEAD_WIDTH {
+            return Err(io::Error::other(format!(
+                "a sidecar head of {} bytes has room for {HEAD_WIDTH}",
+                text.len()
+            )));
+        }
+        file.seek(SeekFrom::Start(0))?;
+        file.write_all(text.as_bytes())?;
+        file.sync_all()?;
+        drop(file);
+        let pending = sibling(&self.registry, PENDING);
+        // The rename is what says the staging finished: a sidecar under
+        // the pending name is whole, or it is not there at all.
+        fs::rename(&self.staging, &pending)?;
+        sync_dir(&self.registry)?;
+        Ok(Pending {
+            registry: self.registry.clone(),
             path: pending,
-            from: head_text.len() as u64,
-            bytes,
+            from: HEAD_WIDTH as u64 + 1,
+            bytes: self.bytes,
             head,
             promoting: false,
             done: false,
         })
+    }
+}
+
+impl Drop for Stager {
+    fn drop(&mut self) {
+        if self.file.take().is_some() {
+            let _ = remove(&self.staging);
+        }
+    }
+}
+
+impl Pending {
+    /// Stages `lines` beside the registry at `path`, creating the
+    /// directory if needed. Nothing of the registry is touched.
+    ///
+    /// # Errors
+    ///
+    /// I/O, or a sidecar already there — an earlier run's lines that
+    /// [`recover`] has not settled yet, which a second run must not
+    /// bury.
+    pub fn stage(path: &Path, lines: &[Line]) -> io::Result<Self> {
+        let mut stager = Stager::begin(path)?;
+        for line in lines {
+            stager.push(line)?;
+        }
+        stager.finish()
     }
 
     /// The sidecar's path.

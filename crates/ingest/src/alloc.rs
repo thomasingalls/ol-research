@@ -10,6 +10,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static ALLOCATIONS: AtomicU64 = AtomicU64::new(0);
 static BYTES: AtomicU64 = AtomicU64::new(0);
+static LIVE: AtomicU64 = AtomicU64::new(0);
+static PEAK: AtomicU64 = AtomicU64::new(0);
 
 /// The system allocator, counting every allocation and reallocation.
 #[derive(Debug, Default, Clone, Copy)]
@@ -27,9 +29,36 @@ pub fn allocated_bytes() -> u64 {
     BYTES.load(Ordering::Relaxed)
 }
 
+/// Bytes allocated and not yet freed, now: the heap the process holds, as
+/// it asked for it — the allocator's own overhead and pages it keeps from
+/// freed blocks are not in it, so the resident set is larger.
+#[must_use]
+pub fn live_bytes() -> u64 {
+    LIVE.load(Ordering::Relaxed)
+}
+
+/// The most [`live_bytes`] has been, in this process. Read at a phase's
+/// end it says what the phase needed at its worst, which a reading of
+/// [`live_bytes`] at the same moment does not (2026-09-24: the corpus
+/// merge was killed for memory, and where it goes is the question).
+#[must_use]
+pub fn peak_bytes() -> u64 {
+    PEAK.load(Ordering::Relaxed)
+}
+
 fn count(bytes: usize) {
     ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
     BYTES.fetch_add(bytes as u64, Ordering::Relaxed);
+    grow(bytes);
+}
+
+fn grow(bytes: usize) {
+    let live = LIVE.fetch_add(bytes as u64, Ordering::Relaxed) + bytes as u64;
+    PEAK.fetch_max(live, Ordering::Relaxed);
+}
+
+fn shrink(bytes: usize) {
+    LIVE.fetch_sub(bytes as u64, Ordering::Relaxed);
 }
 
 // SAFETY: every call is forwarded to `System` unchanged; the counters are
@@ -48,14 +77,23 @@ unsafe impl GlobalAlloc for Counting {
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        shrink(layout.size());
         // SAFETY: `ptr` came from `System` through this allocator.
         unsafe { System.dealloc(ptr, layout) }
     }
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        count(new_size);
+        // Counted as an allocation of the new size, as before; the live
+        // bytes move by the difference, and only if the move succeeded.
+        ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
+        BYTES.fetch_add(new_size as u64, Ordering::Relaxed);
         // SAFETY: `ptr` came from `System` through this allocator, and the
         // caller upholds `GlobalAlloc::realloc`'s contract.
-        unsafe { System.realloc(ptr, layout, new_size) }
+        let moved = unsafe { System.realloc(ptr, layout, new_size) };
+        if !moved.is_null() {
+            grow(new_size);
+            shrink(layout.size());
+        }
+        moved
     }
 }

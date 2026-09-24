@@ -1144,6 +1144,19 @@ impl Sets {
     }
 }
 
+/// The heap now and at its worst so far, for a merge phase's progress
+/// line: where a merge's memory goes, phase by phase, is what says how to
+/// split it (2026-09-24, the corpus survey killed at 80 GiB in pass 2).
+#[allow(clippy::cast_precision_loss)] // reporting only
+fn heap() -> String {
+    let gib = |bytes: u64| bytes as f64 / f64::from(1u32 << 30);
+    format!(
+        "heap {:.2} GiB, peak {:.2} GiB",
+        gib(ingest::alloc::live_bytes()),
+        gib(ingest::alloc::peak_bytes())
+    )
+}
+
 /// The identity pass over the store (merge plan §3, §8): the phases in
 /// the plan's order, ending in the verdicts.
 fn merge_pass1(
@@ -1173,10 +1186,11 @@ fn merge_pass1(
         ExitCode::FAILURE
     })?;
     eprintln!(
-        "{what}: {} records, {} names read in {:.1} s",
+        "{what}: {} records, {} names read in {:.1} s; {}",
         identity.records(),
         identity.names(),
-        started.elapsed().as_secs_f64()
+        started.elapsed().as_secs_f64(),
+        heap()
     );
     for (source, n) in &copies.stats.within_one_set {
         eprintln!(
@@ -1184,7 +1198,11 @@ fn merge_pass1(
         );
     }
     identity.mark();
-    eprintln!("{what}: {} conflict components", identity.conflicts());
+    eprintln!(
+        "{what}: {} conflict components; {}",
+        identity.conflicts(),
+        heap()
+    );
     let phases = (|| -> Result<(), merge::identity::Error> {
         merge_titles::<Pubmed>(&mut identity, &pubmed, limit, &copies)?;
         merge_titles::<Crossref>(&mut identity, &crossref, limit, &copies)?;
@@ -1203,6 +1221,11 @@ fn merge_pass1(
         eprintln!("{what}: {e}");
         ExitCode::FAILURE
     })?;
+    eprintln!(
+        "{what}: identity resolved in {:.1} s; {}",
+        started.elapsed().as_secs_f64(),
+        heap()
+    );
     Ok(Pass1 {
         res,
         pubmed,
@@ -1212,23 +1235,29 @@ fn merge_pass1(
     })
 }
 
-/// The registry's answer for one resolution.
+/// The registry's answer for one resolution: an id for every work, the
+/// run's lines staged beside the registry, and what the rest of the run
+/// needs of the registry — which is two numbers, so the registry itself
+/// goes before pass 2 begins.
 struct Assigned {
     ids: merge::Ids,
+    /// The counts; its `lines` are empty, having been staged as made.
     assignment: merge::registry::Assignment,
     stub_works: Vec<Vec<OwnedName>>,
-    dropped: Vec<merge::registry::Line>,
+    dropped: u64,
+    /// `None` on a partial run.
+    pending: Option<merge::registry::Pending>,
+    totals: Totals,
 }
 
-impl Assigned {
-    /// The lines to append, in order.
-    fn lines(self) -> Vec<merge::registry::Line> {
-        self.assignment
-            .lines
-            .into_iter()
-            .chain(self.dropped)
-            .collect()
-    }
+/// The registry's size once this run's lines are in it: what the journal
+/// line and the public ids need of it. Taken so the registry's fold — a
+/// map of every name ever minted, 6.5 GB on the corpus — need not be held
+/// through pass 2 for two integers (2026-09-24).
+#[derive(Debug, Clone, Copy)]
+struct Totals {
+    minted: u32,
+    lines: u64,
 }
 
 /// Gives every work its id through the registry (merge plan §4): held
@@ -1239,22 +1268,54 @@ impl Assigned {
 /// minted anew (merge plan §11, item 3, 2026-09-19), which is why the
 /// held count is what [`merge::registry::assign`] is told. On a
 /// complete run, names no longer seen are dropped.
-fn merge_assign(registry: &mut Registry, res: &Resolution, complete: bool) -> Assigned {
+///
+/// The works' names are lent to the registry, not copied, and its lines
+/// are staged as it makes them, not collected: on the corpus's first merge
+/// the copy was about 5 GB and the lines 5.9 GB, both held at the identity
+/// pass's peak (2026-09-24).
+fn merge_assign(
+    what: &str,
+    path: &Path,
+    mut registry: Registry,
+    res: &Resolution,
+    complete: bool,
+) -> Result<Assigned, ExitCode> {
     let order = res.held_order();
     let stub_works = res.stub_works();
-    let all: Vec<Vec<OwnedName>> = order
+    let all: Vec<&[OwnedName]> = order
         .iter()
-        .map(|(_, n)| n.clone())
-        .chain(stub_works.iter().cloned())
+        .map(|(_, names)| names.as_slice())
+        .chain(stub_works.iter().map(Vec::as_slice))
         .collect();
     let at = ingest::time::now();
-    let assignment = registry.assign(&all, order.len(), &at, false);
-    let dropped = if complete {
-        let seen: HashSet<&OwnedName> = all.iter().flatten().collect();
-        registry.drop_unseen(|n| seen.contains(n), &at)
-    } else {
-        Vec::new()
+    let fail = |e: io::Error| {
+        eprintln!("{what}: {}: {e}", path.display());
+        ExitCode::FAILURE
     };
+    let mut stager = merge_stager(what, path, complete)?;
+    let mut computed = 0u64;
+    let (assignment, dropped) = {
+        let mut emit = |line: merge::registry::Line| -> io::Result<()> {
+            computed += 1;
+            stager.as_mut().map_or(Ok(()), |s| s.push(&line))
+        };
+        let assignment =
+            merge::registry::assign_each(&mut registry, &all, order.len(), &at, &mut emit)
+                .map_err(fail)?;
+        let dropped = if complete {
+            let seen: HashSet<&OwnedName> = all.iter().flat_map(|names| names.iter()).collect();
+            let lines = registry.drop_unseen(|n| seen.contains(n), &at);
+            let n = lines.len() as u64;
+            for line in lines {
+                emit(line).map_err(fail)?;
+            }
+            n
+        } else {
+            0
+        };
+        (assignment, dropped)
+    };
+    let pending = merge_staged(what, path, stager, computed)?;
     let (held_ids, stub_ids) = assignment.ids.split_at(order.len());
     let mut ids = merge::Ids {
         held: vec![WorkId::FIRST; res.works.len()],
@@ -1263,12 +1324,18 @@ fn merge_assign(registry: &mut Registry, res: &Resolution, complete: bool) -> As
     for ((w, _), id) in order.iter().zip(held_ids) {
         ids.held[*w] = *id;
     }
-    Assigned {
+    let totals = Totals {
+        minted: registry.minted(),
+        lines: registry.lines(),
+    };
+    Ok(Assigned {
         ids,
         assignment,
         stub_works,
         dropped,
-    }
+        pending,
+        totals,
+    })
 }
 
 /// Bytes of the registry the last journal line already told readers
@@ -1301,26 +1368,39 @@ fn merge_recover(what: &str, store: &Store) -> Result<(), ExitCode> {
     Ok(())
 }
 
-/// Stages the registry's new lines beside it — not yet of record —
-/// unless the run was partial. The run promotes them with
-/// [`merge_promote`] once everything else it had to do is done; dropping
-/// what this returns throws them away, so every failure between here and
-/// there leaves the registry exactly as the run found it (the user,
-/// 2026-09-19).
-fn merge_stage(
+/// Begins staging the registry's new lines beside it — not yet of
+/// record — unless the run is partial; [`merge_staged`] ends it. The run
+/// promotes them with [`merge_promote`] once everything else it had to do
+/// is done; dropping what these return throws them away, so every failure
+/// between here and there leaves the registry exactly as the run found it
+/// (the user, 2026-09-19).
+fn merge_stager(
     what: &str,
     path: &Path,
-    lines: &[merge::registry::Line],
     complete: bool,
-) -> Result<Option<merge::registry::Pending>, ExitCode> {
+) -> Result<Option<merge::registry::Stager>, ExitCode> {
     if !complete {
-        eprintln!(
-            "{what}: {} registry lines computed, none written (--limit or --survey)",
-            lines.len()
-        );
         return Ok(None);
     }
-    let pending = merge::registry::Pending::stage(path, lines).map_err(|e| {
+    merge::registry::Stager::begin(path).map(Some).map_err(|e| {
+        eprintln!("{what}: {}: {e}", path.display());
+        ExitCode::FAILURE
+    })
+}
+
+/// Ends what [`merge_stager`] began: the sidecar whole under its pending
+/// name, or, on a partial run, only the count of lines computed.
+fn merge_staged(
+    what: &str,
+    path: &Path,
+    stager: Option<merge::registry::Stager>,
+    computed: u64,
+) -> Result<Option<merge::registry::Pending>, ExitCode> {
+    let Some(stager) = stager else {
+        eprintln!("{what}: {computed} registry lines computed, none written (--limit or --survey)");
+        return Ok(None);
+    };
+    let pending = stager.finish().map_err(|e| {
         eprintln!("{what}: {}: {e}", path.display());
         ExitCode::FAILURE
     })?;
@@ -1332,12 +1412,33 @@ fn merge_stage(
     Ok(Some(pending))
 }
 
+/// Stages a list of lines already made, through the same two steps a run
+/// takes: what the driver's tests stage.
+#[cfg(test)]
+fn merge_stage(
+    what: &str,
+    path: &Path,
+    lines: &[merge::registry::Line],
+    complete: bool,
+) -> Result<Option<merge::registry::Pending>, ExitCode> {
+    let mut stager = merge_stager(what, path, complete)?;
+    if let Some(s) = stager.as_mut() {
+        for line in lines {
+            s.push(line).map_err(|e| {
+                eprintln!("{what}: {}: {e}", path.display());
+                ExitCode::FAILURE
+            })?;
+        }
+    }
+    merge_staged(what, path, stager, lines.len() as u64)
+}
+
 /// Appends the staged lines to the registry — the one thing of record.
 /// Nothing that can fail may come after this but the clock.
 fn merge_promote(
     what: &str,
     path: &Path,
-    registry: &Registry,
+    minted: u32,
     pending: Option<merge::registry::Pending>,
 ) -> Result<(), ExitCode> {
     let Some(pending) = pending else {
@@ -1348,9 +1449,8 @@ fn merge_promote(
         ExitCode::FAILURE
     })?;
     eprintln!(
-        "{what}: {n} lines appended to {}; {} ids minted in all",
-        path.display(),
-        registry.minted()
+        "{what}: {n} lines appended to {}; {minted} ids minted in all",
+        path.display()
     );
     Ok(())
 }
@@ -1381,7 +1481,7 @@ fn merge_identity(opts: &Options) -> ExitCode {
         Err(code) => return code,
     };
     let registry_path = store.registry();
-    let mut registry = match Registry::read(&registry_path) {
+    let registry = match Registry::read(&registry_path) {
         Ok(registry) => registry,
         Err(e) => {
             eprintln!("{what}: {}: {e}", registry_path.display());
@@ -1389,7 +1489,10 @@ fn merge_identity(opts: &Options) -> ExitCode {
         }
     };
     let complete = limit.is_none() && !opts.survey;
-    let assigned = merge_assign(&mut registry, &pass.res, complete);
+    let assigned = match merge_assign(what, &registry_path, registry, &pass.res, complete) {
+        Ok(assigned) => assigned,
+        Err(code) => return code,
+    };
     let mut out = io::stdout().lock();
     if let Err(e) = merge::report::identity(
         &mut out,
@@ -1400,11 +1503,12 @@ fn merge_identity(opts: &Options) -> ExitCode {
         eprintln!("{what}: {e}");
         return ExitCode::FAILURE;
     }
-    let pending = match merge_stage(what, &registry_path, &assigned.lines(), complete) {
-        Ok(pending) => pending,
-        Err(code) => return code,
-    };
-    if let Err(code) = merge_promote(what, &registry_path, &registry, pending) {
+    if let Err(code) = merge_promote(
+        what,
+        &registry_path,
+        assigned.totals.minted,
+        assigned.pending,
+    ) {
         return code;
     }
     eprintln!(
@@ -1453,7 +1557,7 @@ fn merge_all(opts: &Options, public_key: Option<&Path>) -> ExitCode {
         Err(code) => return code,
     };
     let registry_path = store.registry();
-    let mut registry = match Registry::read(&registry_path) {
+    let registry = match Registry::read(&registry_path) {
         Ok(registry) => registry,
         Err(e) => {
             eprintln!("{what}: {}: {e}", registry_path.display());
@@ -1461,7 +1565,18 @@ fn merge_all(opts: &Options, public_key: Option<&Path>) -> ExitCode {
         }
     };
     let complete = limit.is_none() && !opts.survey;
-    let assigned = merge_assign(&mut registry, &res, complete);
+    // Staged, not appended, and staged as made (`merge_assign`). The
+    // registry is of record and pass 2 below runs for hours, so its lines
+    // wait in a sidecar until the run has nothing left that can fail:
+    // every `return` between here and the promotion drops `pending`,
+    // which throws the sidecar away and leaves the registry exactly as
+    // this run found it (the user, 2026-09-19 — a run that died in pass 2
+    // left 39,907 lines of record that no run had concluded, and an
+    // append-only log cannot take them back).
+    let assigned = match merge_assign(what, &registry_path, registry, &res, complete) {
+        Ok(assigned) => assigned,
+        Err(code) => return code,
+    };
     let mut out = io::stdout().lock();
     if let Err(e) = merge::report::identity(
         &mut out,
@@ -1473,30 +1588,25 @@ fn merge_all(opts: &Options, public_key: Option<&Path>) -> ExitCode {
         return ExitCode::FAILURE;
     }
     let pass1_clean = res.components.unresolved.is_empty() && res.stats.unmapped.is_empty();
-    let ids = assigned.ids.clone();
+    let Assigned {
+        ids,
+        assignment,
+        stub_works,
+        dropped,
+        pending,
+        totals,
+    } = assigned;
+    drop(stub_works);
     let counts = Counts {
-        minted: assigned.assignment.minted,
-        merged: assigned.assignment.merged,
-        split: assigned.assignment.split,
-        dropped: assigned.dropped.len() as u64,
+        minted: assignment.minted,
+        merged: assignment.merged,
+        split: assignment.split,
+        dropped,
     };
-    let lines = assigned.lines();
-    // Staged, not appended. The registry is of record and pass 2 below
-    // runs for hours, so its lines wait in a sidecar until the run has
-    // nothing left that can fail: every `return` between here and the
-    // promotion drops `pending`, which throws the sidecar away and
-    // leaves the registry exactly as this run found it (the user,
-    // 2026-09-19 — a run that died in pass 2 left 39,907 lines of record
-    // that no run had concluded, and an append-only log cannot take
-    // them back).
-    let pending = match merge_stage(what, &registry_path, &lines, complete) {
-        Ok(pending) => pending,
-        Err(code) => return code,
-    };
-    drop(lines);
     eprintln!(
-        "{what}: identity and registry done in {:.1} s",
-        started.elapsed().as_secs_f64()
+        "{what}: identity and registry done in {:.1} s; {}",
+        started.elapsed().as_secs_f64(),
+        heap()
     );
     let mut builder = match Builder::new(res, ids) {
         Ok(builder) => builder,
@@ -1506,6 +1616,7 @@ fn merge_all(opts: &Options, public_key: Option<&Path>) -> ExitCode {
         }
     };
     builder.set_survey(opts.survey);
+    eprintln!("{what}: names table built; {}", heap());
     let phases = (|| -> Result<(), merge::build::Error> {
         for (path, set) in &pubmed.works {
             builder.works::<Pubmed>(path, set, limit, &copies)?;
@@ -1516,6 +1627,11 @@ fn merge_all(opts: &Options, public_key: Option<&Path>) -> ExitCode {
         for (path, set) in &openalex.works {
             builder.works::<OpenAlex>(path, set, limit, &copies)?;
         }
+        eprintln!(
+            "{what}: views read in {:.1} s; {}",
+            started.elapsed().as_secs_f64(),
+            heap()
+        );
         for (path, set) in &pubmed.references {
             builder.references::<Pubmed>(path, set, limit, &copies)?;
         }
@@ -1532,8 +1648,9 @@ fn merge_all(opts: &Options, public_key: Option<&Path>) -> ExitCode {
         return ExitCode::FAILURE;
     }
     eprintln!(
-        "{what}: views and references read in {:.1} s",
-        started.elapsed().as_secs_f64()
+        "{what}: views and references read in {:.1} s; {}",
+        started.elapsed().as_secs_f64(),
+        heap()
     );
     let merged = match builder.finish() {
         Ok(merged) => merged,
@@ -1542,6 +1659,11 @@ fn merge_all(opts: &Options, public_key: Option<&Path>) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    eprintln!(
+        "{what}: merged rows built in {:.1} s; {}",
+        started.elapsed().as_secs_f64(),
+        heap()
+    );
     let written = if complete {
         let dir = merge::layout::dir(&store);
         match merge::layout::write(&dir, &merged) {
@@ -1560,15 +1682,14 @@ fn merge_all(opts: &Options, public_key: Option<&Path>) -> ExitCode {
     // still to come — the report, the public ids, the journal line — can
     // be redone by another run from a registry that holds these lines,
     // but not by one whose ids the sets on disk contradict.
-    if let Err(code) = merge_promote(what, &registry_path, &registry, pending) {
+    if let Err(code) = merge_promote(what, &registry_path, totals.minted, pending) {
         return code;
     }
     if let Err(e) = merge::report::merge(&mut out, &merged, written.as_ref()) {
         eprintln!("{what}: {e}");
         return ExitCode::FAILURE;
     }
-    if complete && let Err(code) = merge_clock(what, &store, &registry, counts, &merged, public_key)
-    {
+    if complete && let Err(code) = merge_clock(what, &store, totals, counts, &merged, public_key) {
         return code;
     }
     eprintln!(
@@ -1598,7 +1719,7 @@ struct Counts {
 fn merge_clock(
     what: &str,
     store: &Store,
-    registry: &Registry,
+    registry: Totals,
     counts: Counts,
     merged: &merge::Merged,
     public_key: Option<&Path>,
@@ -1615,7 +1736,7 @@ fn merge_clock(
         Some(path) => {
             let key = merge::public::Key::read(path)
                 .map_err(|e| fail(format!("{}: {e}", path.display())))?;
-            let ids = (1..=registry.minted()).filter_map(WorkId::new);
+            let ids = (1..=registry.minted).filter_map(WorkId::new);
             let lines = public.mint(ids, &key, &at);
             merge::public::Public::append(&public_path, &lines)
                 .map_err(|e| fail(format!("{}: {e}", public_path.display())))?;
@@ -1640,7 +1761,7 @@ fn merge_clock(
         batch: last.map_or(1, |l| l.batch + 1),
         at,
         kind: merge::journal::Kind::Full,
-        registry: registry.lines(),
+        registry: registry.lines,
         public: public.lines(),
         delta: BTreeMap::new(),
         bytes: [
@@ -4795,7 +4916,7 @@ mod tests {
         let (registry, lines) = a_run(&store);
         // A first run that concluded.
         let pending = merge_stage("t", &path, &lines, true).unwrap();
-        merge_promote("t", &path, &registry, pending).unwrap();
+        merge_promote("t", &path, registry.minted(), pending).unwrap();
         let before = fs::read(&path).unwrap();
         assert_eq!(before.split(|b| *b == b'\n').count() - 1, 2);
 
@@ -4832,7 +4953,7 @@ mod tests {
 
         // And the same run, finishing, does put them of record.
         let pending = merge_stage("t", &path, &lines, true).unwrap();
-        merge_promote("t", &path, &registry, pending).unwrap();
+        merge_promote("t", &path, registry.minted(), pending).unwrap();
         let read = Registry::read(&path).unwrap();
         assert_eq!(read.live(WorkId::new(2).unwrap()), WorkId::new(1));
         assert_eq!(read, registry);
@@ -4849,7 +4970,7 @@ mod tests {
             "--limit or --survey"
         );
         assert!(!path.exists(), "not even a sidecar");
-        merge_promote("t", &path, &registry, None).unwrap();
+        merge_promote("t", &path, registry.minted(), None).unwrap();
         assert!(!path.exists());
         fs::remove_dir_all(store.root()).unwrap();
     }
@@ -4861,7 +4982,7 @@ mod tests {
         assert_eq!(registry_sealed(&store).unwrap(), 0, "no journal");
         let (registry, lines) = a_run(&store);
         let pending = merge_stage("t", &path, &lines, true).unwrap();
-        merge_promote("t", &path, &registry, pending).unwrap();
+        merge_promote("t", &path, registry.minted(), pending).unwrap();
         let len = fs::metadata(&path).unwrap().len();
 
         // A line that records the offset outright.
@@ -4889,7 +5010,7 @@ mod tests {
         let path = store.registry();
         let (registry, lines) = a_run(&store);
         let pending = merge_stage("t", &path, &lines, true).unwrap();
-        merge_promote("t", &path, &registry, pending).unwrap();
+        merge_promote("t", &path, registry.minted(), pending).unwrap();
         let len = fs::metadata(&path).unwrap().len();
         merge::journal::append(&store.journal(), &journal_line(1, Some(len), 2)).unwrap();
 
