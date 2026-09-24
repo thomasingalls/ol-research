@@ -205,6 +205,13 @@ pub struct Stats {
     pub collided_assertions: u64,
     #[allow(missing_docs)]
     pub collided_examples: Vec<String>,
+    /// Names a container carries on its parts, taken off them
+    /// ([`Reason::ContainerId`]), and the assertions that took.
+    pub containers: u64,
+    #[allow(missing_docs)]
+    pub container_assertions: u64,
+    /// The largest, written out, for the report.
+    pub container_examples: Vec<String>,
 }
 
 /// The identity pass, accumulating over every set of every source.
@@ -227,13 +234,16 @@ pub struct Identity {
     /// Publisher-id claims, held back from the union until every record
     /// is in: see [`Identity::settle`].
     deferred: Vec<(RecordIx, NameIx, &'static str)>,
-    /// The claims `settle` rejected, each on the record that made it.
-    collisions: Vec<(RecordIx, NameIx)>,
+    /// The claims `settle` and `cut_containers` rejected, each on the
+    /// record that made it.
+    collisions: Vec<(RecordIx, Refusal)>,
     /// The names those rejections leave in no component.
     refused: HashSet<NameIx>,
     /// Refused values written out, largest first, for the report.
     refusals: Vec<(usize, String)>,
     settled: bool,
+    /// [`Identity::cut_containers`] has run.
+    containers_cut: bool,
     survey: bool,
     /// Counts so far.
     pub stats: Stats,
@@ -556,9 +566,9 @@ impl Identity {
         if self.collisions.is_empty() {
             return;
         }
-        let mut by_record: HashMap<RecordIx, SmallVec<[NameIx; 1]>> = HashMap::new();
-        for &(rix, ix) in &self.collisions {
-            by_record.entry(rix).or_default().push(ix);
+        let mut by_record: HashMap<RecordIx, SmallVec<[Refusal; 1]>> = HashMap::new();
+        for &(rix, refusal) in &self.collisions {
+            by_record.entry(rix).or_default().push(refusal);
         }
         for work in works {
             let refused: SmallVec<[Rejection; 1]> = work
@@ -566,11 +576,11 @@ impl Identity {
                 .iter()
                 .filter_map(|rix| by_record.get(rix).map(|names| (*rix, names)))
                 .flat_map(|(rix, names)| {
-                    names.iter().map(move |&name| Rejection {
+                    names.iter().map(move |&(name, why, holder)| Rejection {
                         name,
                         record: rix,
-                        holder: None,
-                        why: Reason::NotAnArticleId,
+                        holder,
+                        why,
                     })
                 })
                 .collect();
@@ -649,7 +659,8 @@ impl Identity {
                     self.refusals.truncate(EXAMPLES);
                 }
                 for &(rix, _) in &by {
-                    self.collisions.push((rix, ix));
+                    self.collisions
+                        .push((rix, (ix, Reason::NotAnArticleId, None)));
                 }
                 continue;
             }
@@ -671,9 +682,17 @@ impl Identity {
     /// Finds the conflict components (merge plan §3.2): more than one name
     /// in a namespace, or more than one record of a source. Call after
     /// the last [`Identity::add`].
-    #[allow(clippy::cast_possible_truncation)] // fewer than 2^32 names in a run
     pub fn mark(&mut self) {
         self.settle();
+        self.components();
+    }
+
+    /// The components and which of them are conflicts, from the joins as
+    /// they stand: after [`Identity::settle`], and again after
+    /// [`Identity::cut_containers`] takes a container's names off its
+    /// parts.
+    #[allow(clippy::cast_possible_truncation)] // fewer than 2^32 names in a run
+    fn components(&mut self) {
         let n = self.arena.len();
         self.roots = (0..n as NameIx).map(|i| self.find(i)).collect();
         let mut tallies: HashMap<NameIx, Tally> = HashMap::new();
@@ -710,6 +729,147 @@ impl Identity {
             .filter(|(c, _)| **c)
             .map(|(_, set)| *set)
             .collect();
+    }
+
+    /// Takes a container's names off its parts (merge plan §3.3, the
+    /// user's decision of 2026-09-24). Once, after the titles are read and
+    /// before anything is cited: by [`Identity::targets`],
+    /// [`Identity::cite`] or [`Identity::resolve`], whichever comes first.
+    ///
+    /// A container is a proceedings, a block of abstracts, a supplement, a
+    /// set of letters on one article, published as one item with one DOI,
+    /// whose parts PubMed indexes one by one, each with its own PMID and
+    /// the container's DOI beside it: the Physiological Society's
+    /// proceedings of 1955 on 42 records, the Marine Biological
+    /// Laboratory's abstracts of 1950 on 96, a Journal of Neurosurgery
+    /// supplement on 48. The survey of the whole PubMed baseline found
+    /// eight, each a component larger than the rules were tested on
+    /// (`HAIRBALL_RECORDS`), and Crossref registers five of the eight DOIs
+    /// as one article over many pages (`Proceedings of the Physiological
+    /// Society`, pp. 33–82). The DOI names the container, not any part, so
+    /// it is no part's name: it comes off each part with its reason
+    /// ([`Reason::ContainerId`]), the parts become works of their own,
+    /// and a reference citing the DOI lands on a stub that stands for the
+    /// container. Where a record of the container itself is present — a
+    /// Crossref record whose own DOI it is — that record keeps it, and a
+    /// reference lands there. Modelling the container and its parts as
+    /// such is merge plan §11 item 25.
+    ///
+    /// What makes a component a container's, from its shape alone and
+    /// never from its size alone: larger than the rules take, every name
+    /// either one record's alone or every record's, and every two
+    /// records' titles tested and different — so no two parts are copies
+    /// of one article, which a shared DOI and a shared title would say
+    /// instead, and which still stops the run. Anything else that large
+    /// is a hairball still.
+    fn cut_containers(&mut self) {
+        if self.containers_cut {
+            return;
+        }
+        self.containers_cut = true;
+        // The records of each conflict component, by root: conflicts are
+        // few, and only a conflict can be larger than the rules take.
+        let mut components: BTreeMap<NameIx, Vec<RecordIx>> = BTreeMap::new();
+        for (rix, r) in self.records.iter().enumerate() {
+            let root = self.roots[r.native as usize];
+            if self.conflict_roots.contains(&root) {
+                components
+                    .entry(root)
+                    .or_default()
+                    .push(RecordIx::try_from(rix).expect("records fit u32"));
+            }
+        }
+        let mut examples: Vec<(usize, String)> = Vec::new();
+        let mut cut = false;
+        for recs in components.into_values() {
+            let mut by: BTreeMap<NameIx, SmallVec<[RecordIx; 1]>> = BTreeMap::new();
+            for &rix in &recs {
+                let r = &self.records[rix as usize];
+                let mut own: SmallVec<[NameIx; 4]> = SmallVec::new();
+                own.push(r.native);
+                for a in &r.asserts {
+                    if !own.contains(&a.name) {
+                        own.push(a.name);
+                    }
+                }
+                for name in own {
+                    by.entry(name).or_default().push(rix);
+                }
+            }
+            let all = recs.len();
+            if all <= HAIRBALL_RECORDS && by.len() <= HAIRBALL_NAMES {
+                continue;
+            }
+            if !by.values().all(|v| v.len() == 1 || v.len() == all) {
+                continue;
+            }
+            let apart = {
+                let default = OwnedTitles::default();
+                let title_of = |rix: RecordIx| self.titles.get(&rix).unwrap_or(&default);
+                (0..all).all(|i| {
+                    (i + 1..all).all(|j| {
+                        let agreement = title::agree(title_of(recs[i]), title_of(recs[j]));
+                        !agreement.is_agreement() && agreement != Agreement::Untestable
+                    })
+                })
+            };
+            if !apart {
+                continue;
+            }
+            let shared: Vec<NameIx> = by
+                .iter()
+                .filter(|(_, v)| v.len() == all)
+                .map(|(name, _)| *name)
+                .collect();
+            for &name in &shared {
+                let holder = recs
+                    .iter()
+                    .copied()
+                    .find(|&rix| self.records[rix as usize].native == name);
+                for &rix in &recs {
+                    if Some(rix) == holder {
+                        continue;
+                    }
+                    self.records[rix as usize]
+                        .asserts
+                        .retain(|a| a.name != name);
+                    self.collisions
+                        .push((rix, (name, Reason::ContainerId, holder)));
+                    self.stats.container_assertions += 1;
+                }
+                if holder.is_none() {
+                    // No record holds it now: a name in no component, as a
+                    // refused publisher id is, and a stub's where cited.
+                    self.refused.insert(name);
+                }
+                self.stats.containers += 1;
+                examples.push((all, format!("{} on {all} records", self.arena.get(name))));
+            }
+            // The component joined again without them: its names each
+            // their own again, then each record's remaining names joined
+            // to its native name, as `add` joins them.
+            for &name in by.keys() {
+                self.parent[name as usize] = name;
+            }
+            for &rix in &recs {
+                let native = self.records[rix as usize].native;
+                let names: SmallVec<[NameIx; 4]> = self.records[rix as usize]
+                    .asserts
+                    .iter()
+                    .map(|a| a.name)
+                    .collect();
+                for name in names {
+                    self.union(native, name);
+                }
+            }
+            cut = true;
+        }
+        examples.sort_by_key(|(n, e)| (Reverse(*n), e.clone()));
+        examples.truncate(EXAMPLES);
+        self.stats.container_examples = examples.into_iter().map(|(_, e)| e).collect();
+        if cut {
+            self.components();
+        }
     }
 
     /// How many components are conflicts, after [`Identity::mark`].
@@ -847,12 +1007,16 @@ impl Identity {
     /// [`Identity::cite`], counted among references or among relation
     /// targets.
     fn cite_in(&mut self, source: SourceId, names: &[Name<'_>], related: bool) -> &'static str {
+        self.cut_containers();
         let mut held: SmallVec<[NameIx; 2]> = SmallVec::new();
         let mut unheld: SmallVec<[Name<'_>; 2]> = SmallVec::new();
         for &name in names {
+            // A name every record's assertion of it was refused — a
+            // container's, or a publisher id one source gave several
+            // records — is held by no work, and a stub's where cited.
             match self.arena.find(name) {
-                Some(ix) => held.push(ix),
-                None => unheld.push(name),
+                Some(ix) if !self.refused.contains(&ix) => held.push(ix),
+                _ => unheld.push(name),
             }
         }
         let outcome = if held.is_empty() {
@@ -912,6 +1076,7 @@ impl Identity {
         if self.roots.len() != self.arena.len() {
             self.mark();
         }
+        self.cut_containers();
         let mut names_by_root: HashMap<NameIx, Vec<NameIx>> = HashMap::new();
         for (i, &root) in self.roots.iter().enumerate() {
             if self.refused.contains(&(i as NameIx)) {
@@ -1295,6 +1460,9 @@ enum Kept {
 }
 
 /// Names per namespace and records per source in one component.
+/// A rejected name, why, and the record that holds it, if one does.
+type Refusal = (NameIx, Reason, Option<RecordIx>);
+
 #[derive(Default)]
 struct Tally {
     keys: [u8; Key::ALL.len()],
@@ -1395,6 +1563,11 @@ pub enum Reason {
     /// records, and so no article's identifier (§3.1, 2026-09-19): an
     /// issue's id, a volume's, a journal's title in the slot.
     NotAnArticleId,
+    /// A container's name on one of its parts: a proceedings', a block
+    /// of abstracts', a supplement's DOI on each item PubMed indexes in it
+    /// (§3.3, 2026-09-24). The container's own record holds it, where
+    /// there is one.
+    ContainerId,
 }
 
 impl fmt::Display for Reason {
@@ -1402,6 +1575,7 @@ impl fmt::Display for Reason {
         f.write_str(match self {
             Self::WrongLink => "wrong link",
             Self::NotAnArticleId => "not an article's id",
+            Self::ContainerId => "a container's id on its parts",
         })
     }
 }
@@ -2200,6 +2374,187 @@ mod tests {
                 1
             )]
         );
+    }
+
+    /// Forty of the 42 titles the Physiological Society's proceedings of
+    /// 1955 carry in PubMed, all under `10.1113/jphysiol.1955.sp005387`.
+    const PROCEEDINGS: [&str; 40] = [
+        "Measurement of oxidation-reduction potentials and pH of tissues in vivo",
+        "The righting movements of the freely falling cat (filmed at 1500 f.p.s.)",
+        "A vectorgraph of extracellular currents in grey matter",
+        "A time marker for use with sweep expanders",
+        "The action of drugs on central cholinergic synapses",
+        "Foveal photopigments in normal and colour-blind",
+        "Giant nerve fibers in Protopterus",
+        "The early metabolic effects of single injections of 'thyroid hormone'",
+        "Control of brain potentials by pseudo-cholinesterase",
+        "Thresholds of taste for phenylthiocarbamide in various ethnic groups",
+        "Vagal effects on the sinus venosus of the frog's heart",
+        "Effects of vagal and sympathetic nerve impulses on the membrane potential of the frog's heart",
+        "Effects of lesions in the posterior parietal lobe in trained monkeys",
+        "The effect of chlorpromazine on the electrical activity of the brain of the conscious cat",
+        "The after effects of impulses in giant nerve fibres",
+        "The unidirectional d.c. element of e.e.g. abnormalities",
+        "The effect of zinc deficiency on the male genital system",
+        "Vago-vagal reflex effects on gastric and pancreatic secretion in cats",
+        "Reflex secretion by the parotid gland of the sheep",
+        "The absorption of radioactive B12 in normal and gastrectomized rats",
+        "Observations on the cerebellar responses to afferent and cerebellar cortical stimulation",
+        "Action currents within the central nervous system",
+        "The absorption spectrum of rhodopsin in solution and in intact rods",
+        "Some central effects of lysergic acid diethylamide on vasomotor responses",
+        "Effects of vitamin E deficiency and of methylene blue on oxygen toxicity in the rat",
+        "Temperature responses in rat liver and abdomen following cold exposure",
+        "Irin, a smooth-muscle contracting substance present in rabbit iris",
+        "Occlusion of the ductus venosus in the mature foetal lamb",
+        "Changes in composition of the foetal fluids of the sheep during gestation",
+        "Acetate uptake by the foetal sheep",
+        "Placental glycogen in the rabbit",
+        "The cat's nictitating membrane as an isolated preparation",
+        "The effect of different environmental and cold-bath temperatures on the cold pressor response in man",
+        "Thermal balance in man",
+        "Changes in the foetal membranes during pregnancy in the rat",
+        "A method for continuously indicating blood pressure",
+        "Hyperpnoea and renal water excretion",
+        "Bromsulphthalein abstraction by perfused canine livers",
+        "Preliminary observations on the protein requirements of kittens receiving a mixed diet",
+        "General pharmacology of oenanthotoxin",
+    ];
+
+    /// A container's DOI on each of its parts (§3.3, 2026-09-24): forty
+    /// abstracts of one proceedings, each its own PubMed record, all under
+    /// one DOI and every title different. The DOI comes off every part
+    /// with its reason, the parts are forty works, and a reference citing
+    /// the DOI makes a stub for the proceedings.
+    #[test]
+    fn a_containers_doi_comes_off_its_parts() {
+        const DOI: &str = "10.1113/jphysiol.1955.sp005387";
+        let mut id = Identity::new();
+        for (n, title) in (1u32..).zip(PROCEEDINGS) {
+            pubmed(&mut id, 13_264_100 + n, Some(DOI), None, title);
+        }
+        pubmed(&mut id, 1, Some("10.1/cites"), None, "A citing paper");
+        id.mark();
+        assert_eq!(id.cite(SourceId::Pubmed, &[Name::Doi(DOI)]), "stub");
+        let res = id.resolve(false).expect("a container is no hairball");
+        assert_eq!(res.works.len(), 41);
+        assert_eq!(res.stats.containers, 1);
+        assert_eq!(res.stats.container_assertions, 40);
+        assert_eq!(
+            res.stats.container_examples,
+            [format!("doi:{DOI} on 40 records")]
+        );
+        for work in res
+            .works
+            .iter()
+            .filter(|w| w.records.len() == 1 && !w.rejected.is_empty())
+        {
+            assert_eq!(work.names.len(), 1, "its PMID alone");
+            assert_eq!(work.rejected.len(), 1);
+            assert_eq!(work.rejected[0].why, Reason::ContainerId);
+            assert_eq!(work.rejected[0].holder, None);
+            assert_eq!(
+                res.arena.get(work.rejected[0].name).to_string(),
+                format!("doi:{DOI}")
+            );
+        }
+        assert_eq!(
+            res.works.iter().filter(|w| !w.rejected.is_empty()).count(),
+            40
+        );
+        let stubs = res.stub_works();
+        assert_eq!(stubs.len(), 1);
+        assert_eq!(stubs[0][0].to_string(), format!("doi:{DOI}"));
+    }
+
+    /// Where the container's own record is present — a Crossref record
+    /// whose DOI it is — that record keeps the DOI and only the parts lose
+    /// it, with that record as the holder.
+    #[test]
+    fn a_containers_own_record_keeps_its_doi() {
+        const DOI: &str = "10.1113/jphysiol.1955.sp005387";
+        let mut id = Identity::new();
+        for (n, title) in (1u32..).zip(PROCEEDINGS) {
+            pubmed(&mut id, 13_264_100 + n, Some(DOI), None, title);
+        }
+        crossref(&mut id, DOI, "Proceedings of the Physiological Society");
+        id.mark();
+        assert_eq!(id.cite(SourceId::Pubmed, &[Name::Doi(DOI)]), "held");
+        let res = id.resolve(false).expect("a container is no hairball");
+        assert_eq!(res.works.len(), 41);
+        let container = res
+            .works
+            .iter()
+            .find(|w| {
+                w.names
+                    .iter()
+                    .any(|n| res.arena.get(n.name).to_string() == format!("doi:{DOI}"))
+            })
+            .expect("the container's record holds its DOI");
+        assert_eq!(container.records.len(), 1);
+        let parts: Vec<_> = res
+            .works
+            .iter()
+            .filter(|w| !w.rejected.is_empty())
+            .collect();
+        assert_eq!(parts.len(), 40);
+        assert!(
+            parts
+                .iter()
+                .all(|w| w.rejected[0].why == Reason::ContainerId
+                    && w.rejected[0].holder == Some(container.records[0]))
+        );
+        assert!(res.stub_works().is_empty());
+    }
+
+    /// Below the cap the rules decide, not the container rule: twelve
+    /// parts of the same proceedings are twelve works that share its DOI,
+    /// none promoting it, and a reference citing it is ambiguous. The
+    /// line B draws is the cap's; merge plan §11 item 25 asks whether it
+    /// should be.
+    #[test]
+    fn a_container_under_the_cap_is_a_shared_name() {
+        const DOI: &str = "10.1113/jphysiol.1955.sp005387";
+        let mut id = Identity::new();
+        for (n, title) in (1u32..).zip(&PROCEEDINGS[..12]) {
+            pubmed(&mut id, 13_264_100 + n, Some(DOI), None, title);
+        }
+        id.mark();
+        assert_eq!(id.cite(SourceId::Pubmed, &[Name::Doi(DOI)]), "held");
+        let res = id
+            .resolve(false)
+            .expect("twelve records are within the rules");
+        assert_eq!(res.stats.containers, 0);
+        assert_eq!(res.works.len(), 12);
+        let standings: Vec<Standing> = res
+            .works
+            .iter()
+            .flat_map(|w| &w.names)
+            .filter(|n| res.arena.get(n.name).to_string() == format!("doi:{DOI}"))
+            .map(|n| n.standing)
+            .collect();
+        assert_eq!(standings, [Standing::Shared; 12]);
+        assert!(res.works.iter().all(|w| w.rejected.is_empty()));
+        assert!(res.stub_works().is_empty());
+    }
+
+    /// The same shape with titles that agree — forty copies of one article
+    /// under one DOI — is no container's, and is a hairball still.
+    #[test]
+    fn a_star_whose_titles_agree_is_no_container() {
+        let mut id = Identity::new();
+        for n in 1..=40 {
+            pubmed(
+                &mut id,
+                n,
+                Some("10.1/same"),
+                None,
+                "The same title everywhere",
+            );
+        }
+        id.mark();
+        let err = id.resolve(false).unwrap_err();
+        assert!(matches!(err, Error::Hairball { records: 40, .. }), "{err}");
     }
 
     #[test]

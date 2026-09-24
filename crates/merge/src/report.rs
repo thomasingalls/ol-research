@@ -64,6 +64,16 @@ pub fn identity(
             writeln!(out, "              {example}")?;
         }
     }
+    if s.containers > 0 {
+        writeln!(
+            out,
+            "  names a container carries on its parts, and so no part's id: {} values, {} assertions rejected",
+            s.containers, s.container_assertions
+        )?;
+        for example in &s.container_examples {
+            writeln!(out, "              {example}")?;
+        }
+    }
     let c = &res.components;
     writeln!(
         out,

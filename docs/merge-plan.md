@@ -274,6 +274,22 @@ work with its verdict, nothing is deleted (§3.4) — so a rejected
 assertion now carries which rule rejected it, `wrong-link` or
 `not-an-article-id`, and a holder only where a record holds the name.
 
+A third looks at a component's shape, once its size has put it past the
+rules (`HAIRBALL_RECORDS`, `HAIRBALL_NAMES`). If every name in it is
+either one record's alone or every record's, and no two of its titles
+agree, it is a container's: a proceedings, a block of abstracts, a
+supplement, published as one item under one DOI, whose parts PubMed
+indexes one by one with that DOI beside each. The names every record
+carries are the container's, so they are refused on each part —
+`container-id`, with the container's own record as the holder where one
+is read — and the parts are works of their own; a reference citing the
+DOI lands on the container's record, or on a stub that stands for the
+container (`Identity::cut_containers`, 2026-09-24, §10). Any other shape
+that large still stops the run: forty copies of one article under one
+DOI agree on their titles. Below the cap the same star is still the
+rules' to decide, and they make the DOI a shared name of every part
+(§11, item 25).
+
 Order: duplicates and spellings first (they merge nothing across sources),
 then the title test on every bridge, rejecting what fails it, then §3.4's
 promotion on what remains. As built (§8): records sharing a name are one
@@ -1208,6 +1224,43 @@ stays.
   `finish_range` the in-memory `finish` also uses. Byte-identical output,
   so no merge version; on the sample the pass's peak heap went from 5.38
   to 2.32 GiB at the default width.
+- 2026-09-24, a container's DOI on its parts is the container's — merge
+  version 11. The corpus rehearsal found eight components beyond the
+  rules, of 34 to 96 PubMed records each, and every one a star: one DOI —
+  in one case a DOI and a publisher id — on every record, every other name
+  one record's alone. The records are the parts of one published item,
+  each with its own PMID and title and the item's DOI beside it: the
+  Physiological Society's proceedings of 1955, the Marine Biological
+  Laboratory's abstracts of 1950, a Journal of Neurosurgery supplement of
+  2000. Crossref, asked about six of the DOIs (six requests), registers
+  five as one `journal-article` over many pages — "Proceedings of the
+  Physiological Society", pp. 33–82; "Joint meeting of the British and
+  Dutch Endocrine Societies", pp. i–xliv — and does not know the Journal
+  of Neurosurgery's. In the four groups whose titles were read, 224
+  records, no two titles were the same.
+
+  Four answers were put to the user: A, the DOI shared by every part,
+  which is what the rules already do for a star of 2 to 32 records, so a
+  reference citing it resolves to nothing; B, the DOI refused on every
+  part as the container's, so a reference citing it lands on the
+  container; C, the container and its parts modelled, the `part` relation
+  §2 reserves; D, keep stopping, with the eight DOIs listed by hand. The
+  user chose B, "and make a note about how to transform it into C later"
+  (§11, item 25).
+
+  The rule reads the shape, and the size only as the gate the hairball
+  guard already is (§3.3). It runs once, after the titles are read and
+  before anything is cited, takes the shared names off each part's
+  assertions with a rejection that says why, and builds the components
+  again; a name no record holds natively is refused outright, like a
+  refused publisher id, so a reference naming it is a stub. A part's row
+  now carries the rejection instead of the assertion, which is a change to
+  what is written, so a merge version. On the sample, which has no
+  component past the cap, the merged sets, registry, journal and reports
+  are byte for byte version 10's under the new version's directory.
+  Whether all eight of the corpus's stars pass the title test, and not
+  only the four that were read, is the next survey's to say: one that
+  does not stops the run as before.
 
 ## 11. Open items
 
@@ -1618,6 +1671,51 @@ stays.
     records of §11 item 18. Whether the refused values should instead be
     carried forward as a checked-in list, so a batch decides as the full
     merge did, is a question for the first daily update files.
+25. **Containers and parts.** B, built 2026-09-24 (§3.3, §10), refuses a
+    container's DOI on its parts and leaves the container a stub, or the
+    record Crossref holds of it. C, the answer the user set aside for
+    later, models the container as a work and each part as related to it
+    — §2's `part`, a relation and not a grouping. B was built to grow
+    into it, and the path is short:
+    - **The container is already a work.** The stub a citing reference
+      lands on under B has a registry id, and C keeps it: the stub
+      becomes the container, and nothing moves in the registry. Where a
+      Crossref record of the container is read, its work is the
+      container, and each part's rejection already names that record as
+      the holder.
+    - **The link is already written.** Every part's row carries
+      `container-id` on the container's DOI. C turns each into a relation
+      in pass 2: `is-part-of` from the part's work to the work the DOI
+      resolves to, and `has-part` back, both kinds already in
+      `relation::Kind` from Crossref's vocabulary. `by` is the source
+      whose record put the DOI on the part, as it is for an edge. A new
+      relation in every part's row is a merge version and a full merge,
+      but no id changes.
+    - **A stub container has no title.** Its parts share a journal, a
+      volume, an issue and a year, and a container with no record could
+      borrow them, marked as borrowed; or stay a stub with parts. The
+      serving plan decides what a container's page shows.
+    - **The cap.** B reaches only components past `HAIRBALL_RECORDS`.
+      Below it the same star is decided by the ordinary rules, which make
+      the DOI a shared name of every part — answer A. The rehearsal's
+      report counted 4,290 conflict components with a shared name among
+      their verdicts, of every namespace and size, and how many are
+      containers is not known. C should read the shape at any size, but
+      two or three records sharing a DOI with different titles are as
+      likely a publisher's deposit error as a container, so how small a
+      container can be is a count to take first: the shared-name
+      components by namespace and size, and Crossref's type and page
+      range for a sample of their DOIs.
+    - **The incremental merge** (serving plan §5) sees only the works a
+      batch touches. A new copy of one part arrives with the container's
+      DOI among its names and, as far as the code reads, nothing beside
+      it but its own work: one record, under the cap, so the rule does not
+      fire and the part takes the DOI — and the registry, finding the
+      stub's id on the same work, merges the stub into the part. The next
+      full merge splits them again. The fix is the same under B and C: a
+      batch keeps a rejection the record's own row already carries, and
+      under C a name whose work has parts is a container's wherever it
+      turns up. Needed before daily update files, with items 23 and 24.
 21. ~~**The public id.**~~ Built 2026-09-16 (serving plan SP3):
     `merge::public` mints one for every id lacking it when `merge` is
     given `--public-key <file>` — a keyed BLAKE3 hash of the id, `ol:`

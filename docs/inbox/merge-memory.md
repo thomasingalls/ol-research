@@ -224,5 +224,8 @@ full merge's output is unchanged. The corpus figure is the next survey's.
 - **The public-id fold** (`public.rs:85-89`, two hash maps) comes to about
   70 GB at the target (E). It needs a watermark and a compact set.
 - **The data.** Pass 1 found 8 components beyond the rules, all journal
-  supplements sharing one DOI. A real merge stops on the first. And some
-  publisher ids carry markup NLM shipped in them (ingestion plan §8 item 9).
+  supplements sharing one DOI. A real merge stopped on the first; since
+  merge version 11 (2026-09-24) a component of that shape is a container's
+  and its DOI comes off its parts (merge plan §3.3, §11 item 25), and any
+  other shape still stops the run. And some publisher ids carry markup NLM
+  shipped in them (ingestion plan §8 item 9).

@@ -113,4 +113,15 @@ pub use work::{SourceId, Sources, WorkId};
 /// not pair them; it carries the mark so a later pass can. Only the
 /// shape under `merged/` changes, not a rule, and the model's own
 /// version moves with it, but the shape is what this number is for.
-pub const VERSION: u32 = 10;
+/// Version 11 (2026-09-24): a container's DOI on its parts is the
+/// container's. When a component beyond the rules is a star — one name,
+/// or a few, carried by every record of it, every other name held by one
+/// record, and no two of its titles agreeing — the shared names are the
+/// DOI of the supplement or proceedings the records were printed in, not
+/// of any one of them ([`identity::Reason::ContainerId`]). Each part keeps
+/// its own names and is refused the container's, with the container's
+/// own record as the holder where one is read; a reference naming it
+/// lands on that record, or on a stub for the container where none is.
+/// The parts and the container are not yet linked: merge plan §11 item
+/// 25 is how they will be.
+pub const VERSION: u32 = 11;

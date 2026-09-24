@@ -1156,11 +1156,14 @@ impl Builder {
     /// The work a name belongs to.
     fn resolve(&self, name: Name<'_>) -> Target {
         if let Some(ix) = self.res.arena.find(name) {
-            return match self.name_work[ix as usize] {
-                Slot::Work(id) => Target::Work(id, false),
-                Slot::Shared => Target::Shared,
-                Slot::Free => Target::Unknown,
-            };
+            match self.name_work[ix as usize] {
+                Slot::Work(id) => return Target::Work(id, false),
+                Slot::Shared => return Target::Shared,
+                // A name no work holds: refused wherever it was asserted —
+                // a container's DOI, taken off its parts — and a stub's if
+                // anything cited it, which the stubs say.
+                Slot::Free => {}
+            }
         }
         if let Some(ix) = self.res.stubs.find(name) {
             return match self.stub_name_work[ix as usize] {
