@@ -118,3 +118,18 @@ impl Sink {
         })
     }
 }
+
+/// So that a builder that writes a stream — the cited-as transducer — can
+/// write straight into a digested file.
+impl Write for Sink {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.file.write_all(bytes)?;
+        self.hasher.update(bytes);
+        self.bytes += bytes.len() as u64;
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.file.flush()
+    }
+}

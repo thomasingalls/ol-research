@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex};
 use ingest::Kind;
 use merge::public::Public;
 use merge::record::Work;
-use merge::{Document, WorkId};
+use merge::{Documents, WorkId};
 use serde::{Deserialize, Serialize};
 
 use crate::digest::{FileInfo, Sink};
@@ -204,7 +204,7 @@ impl Writer {
         &mut self,
         work: &Work<'_>,
         table: &model::symbol::Table,
-        documents: &[Document],
+        documents: &mut dyn Documents,
         public: &Public,
     ) -> Result<(), Error> {
         if work.id.get() < self.next {
@@ -214,9 +214,8 @@ impl Writer {
             self.slot(self.empty.clone())?;
         }
         let document = documents
-            .binary_search_by_key(&work.id, |d| d.id)
-            .ok()
-            .map(|i| &documents[i]);
+            .document(work.id)
+            .map_err(|e| Error::Mismatch(e.to_string()))?;
         let public_id = public.of(work.id);
         let row = Row::of(work, table, public_id, document);
         self.works += 1;
@@ -238,8 +237,9 @@ impl Writer {
 }
 
 /// Builds the index into `dir` from the works sets under `merged`, the
-/// documents (sorted by id) for their text and the public log for the
-/// ids, replacing what was there.
+/// documents for their text — asked for by increasing id, so an assembly
+/// can give them a range at a time — and the public log for the ids,
+/// replacing what was there.
 ///
 /// # Errors
 ///
@@ -247,7 +247,7 @@ impl Writer {
 pub fn build(
     dir: &Path,
     merged: &Path,
-    documents: &[Document],
+    documents: &mut dyn Documents,
     public: &Public,
     batch: u64,
 ) -> Result<Built, Error> {

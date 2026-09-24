@@ -142,47 +142,113 @@ fn commit(writer: &mut IndexWriter, batch: u64) -> Result<(), Error> {
 ///
 /// I/O, the engine, or a facet path that is not one.
 pub fn build(dir: &Path, documents: &[Document], batch: u64) -> Result<Built, Error> {
-    let io = |path: &Path, e| Error::Io {
-        path: path.to_path_buf(),
-        source: e,
-    };
-    let part = part_of(dir);
-    if part.exists() {
-        fs::remove_dir_all(&part).map_err(|e| io(&part, e))?;
+    let mut build = Build::start(dir)?;
+    build.add(documents)?;
+    build.finish(batch)
+}
+
+/// A build of the index taken a batch of documents at a time, so that an
+/// assembly given out a range of ids at a time never has to hold them all
+/// (the serving layer's memory, 2026-09-24): [`build`], in three steps.
+pub struct Build {
+    dir: PathBuf,
+    part: PathBuf,
+    index: Index,
+    writer: IndexWriter,
+    fields: Fields,
+    documents: u64,
+}
+
+impl std::fmt::Debug for Build {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Build")
+            .field("dir", &self.dir)
+            .field("documents", &self.documents)
+            .finish_non_exhaustive()
     }
-    fs::create_dir_all(&part).map_err(|e| io(&part, e))?;
-    let (schema, fields) = schema::provisional();
-    let index = Index::create_in_dir(&part, schema)?;
-    let mut writer: IndexWriter = index.writer(256 << 20)?;
-    for d in documents {
-        writer.add_document(document(&fields, d)?)?;
+}
+
+impl Build {
+    /// An empty index beside `dir`, which takes its place at
+    /// [`Build::finish`].
+    ///
+    /// # Errors
+    ///
+    /// I/O, or the engine.
+    pub fn start(dir: &Path) -> Result<Self, Error> {
+        let io = |path: &Path, e| Error::Io {
+            path: path.to_path_buf(),
+            source: e,
+        };
+        let part = part_of(dir);
+        if part.exists() {
+            fs::remove_dir_all(&part).map_err(|e| io(&part, e))?;
+        }
+        fs::create_dir_all(&part).map_err(|e| io(&part, e))?;
+        let (schema, fields) = schema::provisional();
+        let index = Index::create_in_dir(&part, schema)?;
+        let writer: IndexWriter = index.writer(256 << 20)?;
+        Ok(Self {
+            dir: dir.to_path_buf(),
+            part,
+            index,
+            writer,
+            fields,
+            documents: 0,
+        })
     }
-    commit(&mut writer, batch)?;
-    writer.wait_merging_threads()?;
-    let segments = index.searchable_segment_metas()?.len();
-    let bytes = bytes_under(&part).map_err(|e| io(&part, e))?;
-    let manifest = Manifest {
-        search: crate::VERSION,
-        model: model::VERSION,
-        merge: merge::VERSION,
-        engine: crate::ENGINE.to_owned(),
-        built_at: ingest::time::now(),
-        batch,
-        documents: documents.len() as u64,
-        mapping: schema::DESCRIPTION.to_owned(),
-        segments,
-        bytes,
-    };
-    manifest.write(&part)?;
-    drop(index);
-    if dir.exists() {
-        fs::remove_dir_all(dir).map_err(|e| io(dir, e))?;
+
+    /// Indexes `documents`.
+    ///
+    /// # Errors
+    ///
+    /// The engine, or a facet path that is not one.
+    pub fn add(&mut self, documents: &[Document]) -> Result<(), Error> {
+        for d in documents {
+            self.writer.add_document(document(&self.fields, d)?)?;
+            self.documents += 1;
+        }
+        Ok(())
     }
-    fs::rename(&part, dir).map_err(|e| io(dir, e))?;
-    Ok(Built {
-        dir: dir.to_path_buf(),
-        manifest,
-    })
+
+    /// Commits at `batch`, writes the manifest, and puts the index in its
+    /// place.
+    ///
+    /// # Errors
+    ///
+    /// I/O, or the engine.
+    pub fn finish(mut self, batch: u64) -> Result<Built, Error> {
+        let io = |path: &Path, e| Error::Io {
+            path: path.to_path_buf(),
+            source: e,
+        };
+        commit(&mut self.writer, batch)?;
+        self.writer.wait_merging_threads()?;
+        let segments = self.index.searchable_segment_metas()?.len();
+        let bytes = bytes_under(&self.part).map_err(|e| io(&self.part, e))?;
+        let manifest = Manifest {
+            search: crate::VERSION,
+            model: model::VERSION,
+            merge: merge::VERSION,
+            engine: crate::ENGINE.to_owned(),
+            built_at: ingest::time::now(),
+            batch,
+            documents: self.documents,
+            mapping: schema::DESCRIPTION.to_owned(),
+            segments,
+            bytes,
+        };
+        manifest.write(&self.part)?;
+        drop(self.index);
+        if self.dir.exists() {
+            fs::remove_dir_all(&self.dir).map_err(|e| io(&self.dir, e))?;
+        }
+        fs::rename(&self.part, &self.dir).map_err(|e| io(&self.dir, e))?;
+        Ok(Built {
+            dir: self.dir,
+            manifest,
+        })
+    }
 }
 
 fn part_of(dir: &Path) -> PathBuf {

@@ -101,7 +101,7 @@ use ingest::{
 };
 use merge::identity::Resolution;
 use merge::record::{Edge, NameRow};
-use merge::{Builder, Contributor, Identity, OwnedName, Registry, WorkId};
+use merge::{Builder, Contributor, Identity, OwnedName, WorkId};
 use model::{Claim, Doi, OpenAlexId, ParseError, Pmid};
 use source_crossref::Crossref;
 use source_openalex::OpenAlex;
@@ -2796,30 +2796,58 @@ fn search_add<S: Contributor>(
 }
 
 /// Every held work's document, from the merged and normalized sets.
-fn assemble(
-    what: &str,
-    store: &Store,
-) -> Result<(Vec<merge::Document>, merge::document::Stats), ExitCode> {
+fn assemble(what: &str, store: &Store) -> Result<merge::Assembly, ExitCode> {
+    static RUNS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let merged = merge::layout::dir(store);
+    // The documents and their text go to disk by id range as the join
+    // makes them and come back a range at a time (the serving layer's
+    // memory, 2026-09-24): under the system's temporary directory, the
+    // pod's own scratch on the box, as the merge's spill does.
+    let dir = std::env::temp_dir().join(format!(
+        "ol-rht-documents-{}-{}",
+        std::process::id(),
+        RUNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    let width = spill_shards() * merge::layout::SHARD;
     let assembled = (|| -> Result<_, merge::document::Error> {
-        let mut assembler = merge::Assembler::read(&merged)?;
+        let mut assembler = merge::Assembler::read_in(&merged, &dir, width)?;
         search_add::<Pubmed>(&mut assembler, store)?;
         search_add::<Crossref>(&mut assembler, store)?;
         search_add::<OpenAlex>(&mut assembler, store)?;
-        Ok(assembler.finish())
+        Ok(assembler.ranged())
     })();
-    let (documents, stats) = assembled.map_err(|e| {
+    let assembly = assembled.map_err(|e| {
         eprintln!("{what}: {e}");
         ExitCode::FAILURE
     })?;
-    if documents.is_empty() {
+    if assembly.stats().documents == 0 {
         eprintln!(
             "{what}: no held works under {}; run merge first",
             merged.display()
         );
         return Err(ExitCode::FAILURE);
     }
-    Ok((documents, stats))
+    Ok(assembly)
+}
+
+/// Builds the works index into `dir` from an assembly taken a range at a
+/// time, handing each range to `observe` as well — the lexical index,
+/// when one is being built in the same pass.
+fn works_ranged(
+    what: &str,
+    store: &Store,
+    dir: &Path,
+    assembly: &mut merge::Assembly,
+    observe: impl FnMut(&[merge::Document]) -> Result<(), merge::document::Error>,
+    batch: u64,
+) -> Result<serve::works::Built, ExitCode> {
+    let mut ranged = merge::document::Ranged::new(assembly, observe);
+    let built = works_write(what, store, dir, &mut ranged, batch)?;
+    ranged.finish().map_err(|e| {
+        eprintln!("{what}: {e}");
+        ExitCode::FAILURE
+    })?;
+    Ok(built)
 }
 
 /// The batch the merged sets are at: the journal's last line.
@@ -2849,12 +2877,14 @@ fn names_write(
         eprintln!("{what}: {e}");
         ExitCode::FAILURE
     };
-    let registry = Registry::read(&store.registry())
-        .map_err(|e| fail(format!("{}: {e}", store.registry().display())))?;
-    let public = merge::public::Public::read(&store.public())
-        .map_err(|e| fail(format!("{}: {e}", store.public().display())))?;
-    serve::names::build(dir, &merge::layout::dir(store), &public, &registry, batch)
-        .map_err(|e| fail(e.to_string()))
+    serve::names::build(
+        dir,
+        &merge::layout::dir(store),
+        &store.registry(),
+        &store.public(),
+        batch,
+    )
+    .map_err(|e| fail(e.to_string()))
 }
 
 /// Builds the works index into `dir` for a batch.
@@ -2862,7 +2892,7 @@ fn works_write(
     what: &str,
     store: &Store,
     dir: &Path,
-    documents: &[merge::Document],
+    documents: &mut dyn merge::Documents,
     batch: u64,
 ) -> Result<serve::works::Built, ExitCode> {
     let fail = |e: String| {
@@ -2930,17 +2960,17 @@ fn works_build(opts: &Options) -> ExitCode {
         Ok(line) => line,
         Err(code) => return code,
     };
-    let (documents, _) = match assemble(what, &store) {
+    let mut assembly = match assemble(what, &store) {
         Ok(assembled) => assembled,
         Err(code) => return code,
     };
     eprintln!(
         "{what}: {} documents assembled in {:.1} s",
-        documents.len(),
+        assembly.stats().documents,
         started.elapsed().as_secs_f64()
     );
     let dir = store.works(model::VERSION, merge::VERSION, serve::VERSION);
-    let built = match works_write(what, &store, &dir, &documents, batch.batch) {
+    let built = match works_ranged(what, &store, &dir, &mut assembly, |_| Ok(()), batch.batch) {
         Ok(built) => built,
         Err(code) => return code,
     };
@@ -2963,6 +2993,56 @@ fn works_build(opts: &Options) -> ExitCode {
 }
 
 /// Builds what is missing for the current batch and publishes an epoch.
+/// For `epoch publish`: the works index and the lexical index from one
+/// assembly, taken a range at a time and given to both, and let go before
+/// the cited-as lookup and the graph are built — the documents held whole
+/// were most of what the corpus's epoch would need (the serving layer's
+/// memory, 2026-09-24). Either is skipped when it is already at the batch.
+fn publish_documents(
+    what: &str,
+    store: &Store,
+    batch: &merge::journal::Line,
+    works_dir: &Path,
+    search_dir: &Path,
+) -> Result<(), ExitCode> {
+    let fail = |e: String| {
+        eprintln!("{what}: {e}");
+        ExitCode::FAILURE
+    };
+    let works_wanted =
+        !serve::works::Manifest::read(works_dir).is_ok_and(|m| m.batch == batch.batch);
+    let search_wanted = !search::Manifest::read(search_dir).is_ok_and(|m| m.built_at >= batch.at);
+    if !(works_wanted || search_wanted) {
+        return Ok(());
+    }
+    let mut assembly = assemble(what, store)?;
+    let mut lexical = if search_wanted {
+        eprintln!("{what}: building the lexical index");
+        Some(search::index::Build::start(search_dir).map_err(|e| fail(e.to_string()))?)
+    } else {
+        None
+    };
+    let observe = |docs: &[merge::Document]| match lexical.as_mut() {
+        Some(build) => build
+            .add(docs)
+            .map_err(|e| merge::document::Error::Consumer(e.to_string())),
+        None => Ok(()),
+    };
+    if works_wanted {
+        eprintln!("{what}: building works for batch {}", batch.batch);
+        works_ranged(what, store, works_dir, &mut assembly, observe, batch.batch)?;
+    } else {
+        merge::document::Ranged::new(&mut assembly, observe)
+            .finish()
+            .map_err(|e| fail(e.to_string()))?;
+    }
+    drop(assembly);
+    if let Some(build) = lexical {
+        build.finish(batch.batch).map_err(|e| fail(e.to_string()))?;
+    }
+    Ok(())
+}
+
 fn epoch_publish(opts: &Options) -> ExitCode {
     if !graph_options_ok(opts, 0, false) {
         return usage();
@@ -2991,13 +3071,8 @@ fn epoch_publish(opts: &Options) -> ExitCode {
             names_write(what, &store, &names_dir, batch.batch)?;
         }
         let works_dir = store.works(model::VERSION, merge::VERSION, serve::VERSION);
-        let mut documents = None;
-        if !serve::works::Manifest::read(&works_dir).is_ok_and(|m| m.batch == batch.batch) {
-            eprintln!("{what}: building works for batch {}", batch.batch);
-            let (docs, _) = assemble(what, &store)?;
-            works_write(what, &store, &works_dir, &docs, batch.batch)?;
-            documents = Some(docs);
-        }
+        let search_dir = search::dir(&store);
+        publish_documents(what, &store, &batch, &works_dir, &search_dir)?;
         let cited_dir = store.cited(model::VERSION, merge::VERSION, serve::VERSION);
         if !serve::cited::Manifest::read(&cited_dir).is_ok_and(|m| m.batch == batch.batch) {
             eprintln!(
@@ -3011,16 +3086,6 @@ fn epoch_publish(opts: &Options) -> ExitCode {
         if !graph::Manifest::read(&graph_dir).is_ok_and(|m| m.built_at >= batch.at) {
             eprintln!("{what}: building the graph");
             graph_write(what, &store, &graph_dir, false)?;
-        }
-        let search_dir = search::dir(&store);
-        if !search::Manifest::read(&search_dir).is_ok_and(|m| m.built_at >= batch.at) {
-            eprintln!("{what}: building the lexical index");
-            let docs = match documents {
-                Some(docs) => docs,
-                None => assemble(what, &store)?.0,
-            };
-            search::index::build(&search_dir, &docs, batch.batch)
-                .map_err(|e| fail(e.to_string()))?;
         }
         let n = serve::epoch::current(&store)
             .map_err(|e| fail(e.to_string()))?
@@ -3102,8 +3167,15 @@ fn epoch_check(opts: &Options) -> ExitCode {
         println!("  names: a rebuild is byte-identical");
         let works_dir = store.root().join(&epoch.artifacts["works"].dir);
         let scratch = works_dir.with_file_name(format!("{}.check", serve::version()));
-        let (documents, _) = assemble(what, &store)?;
-        let rebuilt = works_write(what, &store, &scratch, &documents, epoch.batch)?;
+        let mut assembly = assemble(what, &store)?;
+        let rebuilt = works_ranged(
+            what,
+            &store,
+            &scratch,
+            &mut assembly,
+            |_| Ok(()),
+            epoch.batch,
+        )?;
         let same = [serve::works::BLOCKS, serve::works::OFFSETS]
             .iter()
             .all(|f| rebuilt.manifest.files[*f] == serving.works().manifest().files[*f]);
@@ -3758,13 +3830,13 @@ fn search_build(opts: &Options) -> ExitCode {
     let store = opts.store();
     let started = std::time::Instant::now();
     let allocations = ingest::alloc::allocations();
-    let (documents, stats) = match assemble(what, &store) {
+    let mut assembly = match assemble(what, &store) {
         Ok(assembled) => assembled,
         Err(code) => return code,
     };
     eprintln!(
         "{what}: {} documents assembled in {:.1} s",
-        documents.len(),
+        assembly.stats().documents,
         started.elapsed().as_secs_f64()
     );
     let batch = match current_batch(what, &store) {
@@ -3772,13 +3844,25 @@ fn search_build(opts: &Options) -> ExitCode {
         Err(code) => return code,
     };
     let dir = search::dir(&store);
-    let built = match search::index::build(&dir, &documents, batch.batch) {
+    let built = (|| -> Result<search::index::Built, String> {
+        let mut build = search::index::Build::start(&dir).map_err(|e| e.to_string())?;
+        merge::document::Ranged::new(&mut assembly, |docs| {
+            build
+                .add(docs)
+                .map_err(|e| merge::document::Error::Consumer(e.to_string()))
+        })
+        .finish()
+        .map_err(|e| e.to_string())?;
+        build.finish(batch.batch).map_err(|e| e.to_string())
+    })();
+    let built = match built {
         Ok(built) => built,
         Err(e) => {
             eprintln!("{what}: {e}");
             return ExitCode::FAILURE;
         }
     };
+    let stats = assembly.stats().clone();
     eprintln!(
         "{what}: {} documents indexed in {:.1} s",
         built.manifest.documents,

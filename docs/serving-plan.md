@@ -1165,6 +1165,30 @@ state kept outside the store, and a limit per principal on calls and on
   every second while it cannot. `Serving::open_epoch` opens one by
   number. The deployment half — a rolling handover gated on that health —
   is the deployment plan's (D5, 2026-09-24).
+- 2026-09-24, the artifacts built without holding the corpus — the
+  user's "start on the serving memory fixes", after a measurement put the
+  corpus's `epoch publish` at 135–185 GB (`docs/inbox/serving-memory.md`).
+  Three changes, every artifact byte for byte what it was:
+  - The documents are assembled by id range. `merge::Assembler` spills
+    each held work's document without its text, and each copy's text as
+    it is read, to disk by the range its id falls in, keeping in memory
+    only a compact entry per source record; an `Assembly` gives the
+    documents back a range at a time, text filled in the order it was
+    read, which is the order the copy rule needs. The works index asks for
+    documents by increasing id (`merge::Documents`) and the lexical index
+    takes them a range at a time (`search::index::Build`), so
+    `epoch publish` builds both in one pass and lets the documents go
+    before the cited-as lookup and the graph.
+  - The cited-as lookup and the names lookup sort their pairs on disk
+    (`merge::runs`) and write their transducers as the pairs come back.
+  - The names lookup reads the registry for its ids alone
+    (`registry::IdFold`) and the public log as a stream.
+  On the sample the four artifacts and the lexical index's answers are the
+  same, `epoch check` passes, and the whole publish's peak went from 998 MB
+  to 808 MB; the sample's held works all fall in one range, so the saving
+  there is small, and the corpus's figure is its first run. The works
+  index still reads the public log into its two maps (about 4 GB on the
+  corpus, E).
 
 ## 11. Open items
 

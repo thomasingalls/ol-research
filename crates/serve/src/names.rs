@@ -12,9 +12,9 @@ use std::path::{Path, PathBuf};
 use fst::{Map, MapBuilder};
 use ingest::Kind;
 use memmap2::Mmap;
-use merge::public::Public;
+use merge::WorkId;
 use merge::record::{NameRow, Work};
-use merge::{Registry, WorkId};
+use merge::registry::IdFold;
 use serde::{Deserialize, Serialize};
 
 use crate::digest::{FileInfo, Sink};
@@ -140,27 +140,47 @@ pub(crate) fn part_of(dir: &Path) -> PathBuf {
     dir.with_file_name(format!("{name}.part"))
 }
 
+/// Bytes of pairs a sorted run holds before it is written.
+const RUN: usize = 256 << 20;
+
 /// Builds the lookup into `dir` from the names sets under `merged`, the
-/// public log and the registry's retirements, replacing what was there.
+/// public log at `public` and the registry's retirements, replacing what
+/// was there. The names and public ids are sorted on disk and the
+/// transducer written as they come back; the registry is read for its ids
+/// and the public log as a stream (the serving layer's memory,
+/// 2026-09-24): on the corpus the pairs sorted in one `Vec`, the registry
+/// folded by name and the public log in two maps came to about 26 GB.
 ///
 /// # Errors
 ///
-/// I/O, a set that is not a merge's, or the transducer refusing a key.
+/// I/O, a set that is not a merge's, a public log that gives an id or a
+/// public id twice, or the transducer refusing a key.
 #[allow(clippy::too_many_lines)]
 pub fn build(
     dir: &Path,
     merged: &Path,
-    public: &Public,
-    registry: &Registry,
+    registry: &Path,
+    public: &Path,
     batch: u64,
 ) -> Result<Built, Error> {
-    let mut pairs: Vec<(String, WorkId)> = Vec::new();
+    static RUNS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let scratch = std::env::temp_dir().join(format!(
+        "ol-rht-names-{}-{}",
+        std::process::id(),
+        RUNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    let registry = IdFold::read(registry).map_err(|e| Error::io(registry, e))?;
+    let mut runs: merge::runs::Runs<(String, WorkId)> =
+        merge::runs::Runs::create(&scratch, RUN).map_err(|e| Error::io(&scratch, e))?;
     for path in merge::sets::find(merged, Kind::Names).map_err(|e| Error::io(merged, e))? {
         let reader = merge::layout::open(&path).map_err(|e| Error::io(&path, e))?;
         reader.with_table(|| -> Result<(), Error> {
             for row in reader.records::<NameRow<'_>>() {
                 let row = row.map_err(|e| Error::io(&path, e))?;
-                pairs.push((row.name.to_string(), row.work));
+                let name = row.name.to_string();
+                let bytes = name.len();
+                runs.push((name, row.work), bytes)
+                    .map_err(|e| Error::io(&scratch, e))?;
             }
             Ok(())
         })?;
@@ -182,40 +202,81 @@ pub fn build(
             Ok(())
         })?;
     }
+    // The public log read as a stream: each id's public id into the
+    // transducer and its value into `public.u64`, the two things this
+    // lookup keeps of it, and each id once, as `Public::read` has it.
+    let slots = usize::try_from(nodes).unwrap_or(usize::MAX);
+    let mut public_bits = vec![0u64; slots];
+    let mut minted = vec![0u64; slots.div_ceil(64)];
     let mut public_keys = 0u64;
-    for (id, text) in public.iter() {
-        pairs.push((text.to_owned(), id));
+    for line in merge::public::lines(public).map_err(|e| Error::io(public, e))? {
+        let (id, text) = line.map_err(|e| Error::io(public, e))?;
+        let slot = usize::try_from(id.get() - 1).unwrap_or(usize::MAX);
+        if let Some(word) = minted.get_mut(slot / 64) {
+            if *word & (1 << (slot % 64)) != 0 {
+                return Err(Error::Mismatch(format!(
+                    "{}: {id} minted twice",
+                    public.display()
+                )));
+            }
+            *word |= 1 << (slot % 64);
+        }
+        if let (Some(value), Ok(decoded)) =
+            (public_bits.get_mut(slot), merge::public::decode(&text))
+        {
+            *value = decoded;
+        }
+        let bytes = text.len();
+        runs.push((text, id), bytes)
+            .map_err(|e| Error::io(&scratch, e))?;
         public_keys += 1;
     }
-    pairs.sort_unstable();
-    pairs.dedup();
-    let mut builder = MapBuilder::memory();
+    let sorted = runs.sorted().map_err(|e| Error::io(&scratch, e))?;
+    let part = part_of(dir);
+    if part.exists() {
+        fs::remove_dir_all(&part).map_err(|e| Error::io(&part, e))?;
+    }
+    fs::create_dir_all(&part).map_err(|e| Error::io(&part, e))?;
+    let mut builder = MapBuilder::new(Sink::create(&part.join(FST))?)?;
     let mut shared: Vec<u32> = Vec::new();
     let (mut keys, mut shared_keys) = (0u64, 0u64);
-    let mut i = 0;
-    while i < pairs.len() {
-        let key = pairs[i].0.as_str();
-        let mut j = i;
-        while j < pairs.len() && pairs[j].0 == key {
-            j += 1;
-        }
-        let group = &pairs[i..j];
-        let value = if let [(_, id)] = group {
-            u64::from(id.get())
-        } else {
-            let offset = u32::try_from(shared.len()).map_err(|_| {
-                Error::Mismatch("more shared names than the side list holds".into())
-            })?;
-            shared.push(u32::try_from(group.len()).unwrap_or(u32::MAX));
-            shared.extend(group.iter().map(|(_, id)| id.get()));
-            shared_keys += 1;
-            SHARED_BIT | u64::from(offset)
+    let mut group: Vec<WorkId> = Vec::new();
+    let mut key: Option<String> = None;
+    let mut close =
+        |builder: &mut MapBuilder<Sink>, key: &str, group: &[WorkId]| -> Result<(), Error> {
+            let value = if let [id] = group {
+                u64::from(id.get())
+            } else {
+                if key.starts_with(merge::public::PREFIX) {
+                    return Err(Error::Mismatch(format!("{key} given twice")));
+                }
+                let offset = u32::try_from(shared.len()).map_err(|_| {
+                    Error::Mismatch("more shared names than the side list holds".into())
+                })?;
+                shared.push(u32::try_from(group.len()).unwrap_or(u32::MAX));
+                shared.extend(group.iter().map(|id| id.get()));
+                shared_keys += 1;
+                SHARED_BIT | u64::from(offset)
+            };
+            builder.insert(key, value)?;
+            keys += 1;
+            Ok(())
         };
-        builder.insert(key, value)?;
-        keys += 1;
-        i = j;
+    for item in sorted {
+        let (name, id) = item.map_err(|e| Error::io(&scratch, e))?;
+        if key.as_deref() != Some(name.as_str()) {
+            if let Some(done) = key.take() {
+                close(&mut builder, &done, &group)?;
+            }
+            group.clear();
+            key = Some(name);
+        }
+        group.push(id);
     }
-    let fst_bytes = builder.into_inner()?;
+    if let Some(done) = key.take() {
+        close(&mut builder, &done, &group)?;
+    }
+    let fst = builder.into_inner()?.finish()?;
     let mut retirements: Vec<(u32, u32)> = registry
         .retirements()
         .map(|(id, into)| (id.get(), into.map_or(0, WorkId::get)))
@@ -229,18 +290,8 @@ pub fn build(
         .collect();
     split.sort_unstable();
     let split_ids = registry.splits().count() as u64;
-
-    let part = part_of(dir);
-    let files = write_files(
-        &part,
-        &fst_bytes,
-        &shared,
-        &retirements,
-        &split,
-        public,
-        nodes,
-        &stubs,
-    )?;
+    let mut files = write_files(&part, &shared, &retirements, &split, &public_bits, &stubs)?;
+    files.insert(FST.to_owned(), fst);
     let manifest = Manifest {
         serve: crate::VERSION,
         model: model::VERSION,
@@ -266,26 +317,16 @@ pub fn build(
     })
 }
 
-/// Writes the six files into a fresh part directory.
-#[allow(clippy::too_many_arguments)] // one per file, and the sizes
+/// Writes every file but the transducer into the part directory.
 fn write_files(
     part: &Path,
-    fst_bytes: &[u8],
     shared: &[u32],
     retirements: &[(u32, u32)],
     split: &[(u32, u32)],
-    public: &Public,
-    nodes: u32,
+    public: &[u64],
     stubs: &[u8],
 ) -> Result<BTreeMap<String, FileInfo>, Error> {
-    if part.exists() {
-        fs::remove_dir_all(part).map_err(|e| Error::io(part, e))?;
-    }
-    fs::create_dir_all(part).map_err(|e| Error::io(part, e))?;
     let mut files = BTreeMap::new();
-    let mut sink = Sink::create(&part.join(FST))?;
-    sink.put(fst_bytes)?;
-    files.insert(FST.to_owned(), sink.finish()?);
     let mut sink = Sink::create(&part.join(SHARED))?;
     for v in shared {
         sink.put(&v.to_le_bytes())?;
@@ -303,17 +344,8 @@ fn write_files(
         sink.put(&into.to_le_bytes())?;
     }
     files.insert(SPLIT.to_owned(), sink.finish()?);
-    let mut bits = vec![0u64; usize::try_from(nodes).unwrap_or(usize::MAX)];
-    for (id, text) in public.iter() {
-        if let (Some(slot), Ok(value)) = (
-            bits.get_mut(usize::try_from(id.get() - 1).unwrap_or(usize::MAX)),
-            merge::public::decode(text),
-        ) {
-            *slot = value;
-        }
-    }
     let mut sink = Sink::create(&part.join(PUBLIC))?;
-    for v in &bits {
+    for v in public {
         sink.put(&v.to_le_bytes())?;
     }
     files.insert(PUBLIC.to_owned(), sink.finish()?);

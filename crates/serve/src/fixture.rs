@@ -303,10 +303,9 @@ pub(crate) fn full_merge(
     )
     .unwrap();
     // The artifacts.
-    let registry = Registry::read(&registry_path).unwrap();
     let public = Public::read(&public_path).unwrap();
     let names_dir = store.names(model::VERSION, merge::VERSION, crate::VERSION);
-    crate::names::build(&names_dir, &merged_dir, &public, &registry, batch).unwrap();
+    crate::names::build(&names_dir, &merged_dir, &registry_path, &public_path, batch).unwrap();
     let owned_records: Vec<Incoming> = alive.clone();
     let documents: Vec<Document> = merged
         .works
@@ -318,7 +317,14 @@ pub(crate) fn full_merge(
         })
         .collect();
     let works_dir = store.works(model::VERSION, merge::VERSION, crate::VERSION);
-    crate::works::build(&works_dir, &merged_dir, &documents, &public, batch).unwrap();
+    crate::works::build(
+        &works_dir,
+        &merged_dir,
+        &mut merge::document::Sorted(&documents),
+        &public,
+        batch,
+    )
+    .unwrap();
     let cited_dir = store.cited(model::VERSION, merge::VERSION, crate::VERSION);
     crate::cited::build(&cited_dir, &merged_dir, batch).unwrap();
     let graph_dir = graph::layout::dir(store, false);

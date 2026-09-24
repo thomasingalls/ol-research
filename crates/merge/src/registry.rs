@@ -535,6 +535,87 @@ impl Works<u32> for Flat {
     }
 }
 
+/// The log folded for its ids alone: how many were minted, which are
+/// retired and into what, and the parts of every split — what the serving
+/// layer's names lookup needs of it — without the map of every name,
+/// which on the corpus is 6.5 GB (the serving layer's memory,
+/// 2026-09-24). The ids are checked as [`Registry`] checks them; the
+/// names are not read, so a `drop` of a name never mapped passes here and
+/// is the merge's fold to refuse.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct IdFold {
+    ids: Ids,
+}
+
+impl IdFold {
+    /// The log at `path`, folded for its ids; empty when there is no file.
+    ///
+    /// # Errors
+    ///
+    /// I/O, a line that is not an event, or an event whose ids do not fit
+    /// what came before.
+    pub fn read(path: &Path) -> io::Result<Self> {
+        let mut fold = Self::default();
+        let file = match fs::File::open(path) {
+            Ok(file) => file,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(fold),
+            Err(e) => return Err(e),
+        };
+        let bad = |number: usize, what: String| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("{}: line {number}: {what}", path.display()),
+            )
+        };
+        for (number, line) in BufReader::new(file).lines().enumerate() {
+            let line = line?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            let event: Line =
+                serde_json::from_str(&line).map_err(|e| bad(number + 1, e.to_string()))?;
+            let folded = match &event {
+                Line::Mint { id, .. } => fold.ids.mint(*id),
+                Line::Name { id, .. } => fold.ids.check_live(*id),
+                Line::Drop { .. } => Ok(()),
+                Line::Merge { id, into, .. } => fold.ids.merge(*id, *into),
+                Line::Split { id, into, .. } => fold.ids.split(*id, into),
+            };
+            folded.map_err(|what| bad(number + 1, what))?;
+            fold.ids.lines += 1;
+        }
+        Ok(fold)
+    }
+
+    /// The ids of a registry already folded whole.
+    #[must_use]
+    pub fn of(registry: &Registry) -> Self {
+        Self {
+            ids: registry.ids.clone(),
+        }
+    }
+
+    /// Ids minted.
+    #[must_use]
+    pub const fn minted(&self) -> u32 {
+        self.ids.minted
+    }
+
+    /// Every retired id and what it was retired into, as
+    /// [`Registry::retirements`].
+    pub fn retirements(&self) -> impl Iterator<Item = (WorkId, Option<WorkId>)> + '_ {
+        self.ids.retired.iter().map(|(id, into)| (*id, *into))
+    }
+
+    /// Every split id with its parts, as [`Registry::splits`].
+    pub fn splits(&self) -> impl Iterator<Item = (WorkId, &[WorkId])> + '_ {
+        self.ids
+            .split
+            .iter()
+            .map(|(id, into)| (*id, into.as_slice()))
+    }
+}
+
 /// A run's names by number, for [`Ranked`]: every name a full merge's works
 /// can give, each with one index, and back.
 pub trait NameIndex {

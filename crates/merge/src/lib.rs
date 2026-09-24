@@ -44,6 +44,7 @@ pub mod record;
 pub mod registry;
 pub mod relation;
 pub mod report;
+pub mod runs;
 pub mod sets;
 pub mod spill;
 pub mod title;
@@ -52,7 +53,7 @@ pub mod work;
 
 pub use build::{Builder, Ids, Merged, OwnedWork};
 pub use contributor::Contributor;
-pub use document::{Assembler, Document};
+pub use document::{Assembler, Assembly, Document, Documents};
 pub use identity::Identity;
 pub use kind::{Form, Genre};
 pub use name::{Assertion, Name, OwnedName};

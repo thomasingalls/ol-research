@@ -21,6 +21,44 @@ use crate::work::WorkId;
 /// The namespace, in the names vocabulary's text form.
 pub const PREFIX: &str = "ol:";
 
+/// Every line of the log at `path` as (id, public id), in the log's order,
+/// read as a stream: for a reader that keeps less of the log than
+/// [`Public`]'s two maps. Empty when there is no file.
+///
+/// # Errors
+///
+/// I/O, opening the file; each item, I/O or a line that is not a mint,
+/// with its line number.
+pub fn lines(path: &Path) -> io::Result<impl Iterator<Item = io::Result<(WorkId, String)>>> {
+    let file = match File::open(path) {
+        Ok(file) => Some(BufReader::new(file)),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+        Err(e) => return Err(e),
+    };
+    let path = path.to_path_buf();
+    Ok(file
+        .into_iter()
+        .flat_map(BufRead::lines)
+        .enumerate()
+        .filter_map(move |(i, text)| {
+            let bad = |what: String| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("{}: line {}: {what}", path.display(), i + 1),
+                )
+            };
+            match text {
+                Err(e) => Some(Err(e)),
+                Ok(text) if text.trim().is_empty() => None,
+                Ok(text) => Some(
+                    serde_json::from_str::<Line>(&text)
+                        .map(|line| (line.id, line.public))
+                        .map_err(|e| bad(e.to_string())),
+                ),
+            }
+        }))
+}
+
 /// Crockford's alphabet: no I, L, O or U.
 const ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 

@@ -219,58 +219,83 @@ pub struct Built {
     pub manifest: Manifest,
 }
 
+/// Bytes of rows a sorted run holds before it is written.
+const RUN: usize = 256 << 20;
+
 /// Builds the lookup into `dir` from the `cited_as` sets under `merged`,
-/// replacing what was there.
+/// replacing what was there. The rows are sorted on disk and the
+/// transducer and the rows file written as the sorted rows come back
+/// (the serving layer's memory, 2026-09-24): on the corpus one sorted
+/// `Vec` of them was 55–65 GB.
 ///
 /// # Errors
 ///
 /// I/O, a set that is not a merge's, or the transducer refusing a key.
 pub fn build(dir: &Path, merged: &Path, batch: u64) -> Result<Built, Error> {
-    let mut pairs: Vec<(String, Row)> = Vec::new();
+    static RUNS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let scratch = std::env::temp_dir().join(format!(
+        "ol-rht-cited-{}-{}",
+        std::process::id(),
+        RUNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    let mut runs: merge::runs::Runs<(String, Row)> =
+        merge::runs::Runs::create(&scratch, RUN).map_err(|e| Error::io(&scratch, e))?;
     for path in merge::sets::find(merged, Kind::CitedAs).map_err(|e| Error::io(merged, e))? {
         let reader = merge::layout::open(&path).map_err(|e| Error::io(&path, e))?;
         reader.with_table(|| -> Result<(), Error> {
             for row in reader.records::<CitedAs<'_>>() {
                 let row = row.map_err(|e| Error::io(&path, e))?;
-                pairs.push((row.name.to_string(), Row::of(&row)));
+                let name = row.name.to_string();
+                let bytes = name.len();
+                runs.push((name, Row::of(&row)), bytes)
+                    .map_err(|e| Error::io(&scratch, e))?;
             }
             Ok(())
         })?;
     }
-    pairs.sort_unstable();
-    pairs.dedup();
-    let mut builder = MapBuilder::memory();
-    let mut rows: Vec<u8> = Vec::with_capacity(pairs.len() * ROW);
-    let (mut keys, mut i) = (0u64, 0usize);
-    while i < pairs.len() {
-        let key = pairs[i].0.as_str();
-        let mut j = i;
-        while j < pairs.len() && pairs[j].0 == key {
-            j += 1;
-        }
-        let offset =
-            u32::try_from(i).map_err(|_| Error::Mismatch("too many cited-as rows".into()))?;
-        let len = u32::try_from(j - i).unwrap_or(u32::MAX);
-        builder.insert(key, (u64::from(offset) << 32) | u64::from(len))?;
-        for (_, row) in &pairs[i..j] {
-            row.write(&mut rows);
-        }
-        keys += 1;
-        i = j;
-    }
-    let fst_bytes = builder.into_inner()?;
+    let sorted = runs.sorted().map_err(|e| Error::io(&scratch, e))?;
     let part = crate::names::part_of(dir);
     if part.exists() {
         fs::remove_dir_all(&part).map_err(|e| Error::io(&part, e))?;
     }
     fs::create_dir_all(&part).map_err(|e| Error::io(&part, e))?;
+    let mut builder = MapBuilder::new(Sink::create(&part.join(FST))?)?;
+    let mut rows = Sink::create(&part.join(ROWS))?;
+    let mut bytes: Vec<u8> = Vec::with_capacity(ROW);
+    let (mut keys, mut written) = (0u64, 0u64);
+    // The key being written, the row it starts at, and how many it has.
+    let mut run: Option<(String, u64, u64)> = None;
+    let mut close =
+        |builder: &mut MapBuilder<Sink>, run: (String, u64, u64)| -> Result<(), Error> {
+            let (key, start, len) = run;
+            let offset = u32::try_from(start)
+                .map_err(|_| Error::Mismatch("too many cited-as rows".into()))?;
+            let len = u32::try_from(len).unwrap_or(u32::MAX);
+            builder.insert(key, (u64::from(offset) << 32) | u64::from(len))?;
+            keys += 1;
+            Ok(())
+        };
+    for item in sorted {
+        let (name, row) = item.map_err(|e| Error::io(&scratch, e))?;
+        run = match run.take() {
+            Some((key, start, len)) if key == name => Some((key, start, len + 1)),
+            Some(done) => {
+                close(&mut builder, done)?;
+                Some((name, written, 1))
+            }
+            None => Some((name, written, 1)),
+        };
+        bytes.clear();
+        row.write(&mut bytes);
+        rows.put(&bytes)?;
+        written += 1;
+    }
+    if let Some(done) = run {
+        close(&mut builder, done)?;
+    }
     let mut files = BTreeMap::new();
-    let mut sink = Sink::create(&part.join(FST))?;
-    sink.put(&fst_bytes)?;
-    files.insert(FST.to_owned(), sink.finish()?);
-    let mut sink = Sink::create(&part.join(ROWS))?;
-    sink.put(&rows)?;
-    files.insert(ROWS.to_owned(), sink.finish()?);
+    files.insert(FST.to_owned(), builder.into_inner()?.finish()?);
+    files.insert(ROWS.to_owned(), rows.finish()?);
     let manifest = Manifest {
         serve: crate::VERSION,
         model: model::VERSION,
@@ -278,7 +303,7 @@ pub fn build(dir: &Path, merged: &Path, batch: u64) -> Result<Built, Error> {
         batch,
         built_at: ingest::time::now(),
         keys,
-        rows: pairs.len() as u64,
+        rows: written,
         files,
     };
     manifest.write(&part)?;

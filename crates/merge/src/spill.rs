@@ -25,6 +25,9 @@ use std::fs;
 use std::io::{self, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 
+use std::marker::PhantomData;
+
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use crate::arena::NameIx;
@@ -57,21 +60,27 @@ pub enum Row {
 /// open at once are one, however many ranges there are.
 const FLUSH: usize = 1 << 20;
 
-/// Pass 2's rows, spilled by work id.
+/// Rows spilled by work id: pass 2's [`Row`]s, or any other kind of row
+/// something wants back a range of ids at a time (the serving layer's
+/// documents, `crate::document`).
 ///
 /// The directory is the spill's own: made empty when the spill begins and
 /// removed when it is dropped, so a run that fails leaves nothing behind,
 /// and one killed outright leaves a directory the next run replaces.
 #[derive(Debug)]
-pub struct Spill {
+pub struct Spill<R = Row> {
     dir: PathBuf,
     width: u32,
     buffers: Vec<Vec<u8>>,
     rows: u64,
     bytes: u64,
+    /// A spill that adds ranges as ids past its last arrive, for a writer
+    /// that does not know its last id before it starts.
+    grows: bool,
+    kind: PhantomData<fn() -> R>,
 }
 
-impl Spill {
+impl<R: Serialize + DeserializeOwned> Spill<R> {
     /// A spill under `dir` of ranges `width` ids wide, for ids up to
     /// `max`.
     ///
@@ -96,7 +105,21 @@ impl Spill {
             buffers: vec![Vec::new(); ranges as usize],
             rows: 0,
             bytes: 0,
+            grows: false,
+            kind: PhantomData,
         })
+    }
+
+    /// A spill under `dir` of ranges `width` ids wide that grows to the
+    /// ids it is given.
+    ///
+    /// # Errors
+    ///
+    /// I/O, or a width of zero.
+    pub fn growing(dir: &Path, width: u32) -> io::Result<Self> {
+        let mut spill = Self::create(dir, width, WorkId::FIRST)?;
+        spill.grows = true;
+        Ok(spill)
     }
 
     /// Ranges, in id order.
@@ -144,8 +167,11 @@ impl Spill {
     /// # Errors
     ///
     /// I/O, or an id past the spill's last range.
-    pub fn put(&mut self, id: WorkId, row: &Row) -> io::Result<()> {
+    pub fn put(&mut self, id: WorkId, row: &R) -> io::Result<()> {
         let range = self.range_of(id);
+        if self.grows && range as usize >= self.buffers.len() {
+            self.buffers.resize(range as usize + 1, Vec::new());
+        }
         let slot = self.buffers.get_mut(range as usize).ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -191,7 +217,7 @@ impl Spill {
     /// # Errors
     ///
     /// I/O, or a row that does not decode.
-    pub fn take(&mut self, range: u32) -> io::Result<Vec<Row>> {
+    pub fn take(&mut self, range: u32) -> io::Result<Vec<R>> {
         self.flush(range)?;
         self.buffers[range as usize] = Vec::new();
         let path = self.path(range);
@@ -225,7 +251,7 @@ impl Spill {
     }
 }
 
-impl Drop for Spill {
+impl<R> Drop for Spill<R> {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.dir);
     }
