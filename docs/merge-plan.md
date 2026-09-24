@@ -1698,21 +1698,39 @@ stays.
     carried forward as a checked-in list, so a batch decides as the full
     merge did, is a question for the first daily update files.
 
-    Seen 2026-09-24, and the other way round. The full/incremental
-    harness over the scratch store at model 8, `pubmed26n1334` held out,
-    fails on it — the same way before and after step 2a of the merge's
-    memory, so neither caused it. Eight articles of one issue of a
-    Shiraz journal, cited-only stubs until the batch brings their
-    records, each carry the issue's id `reg30476:IJCBNM-14-1`. The batch
-    accepted it and joined all eight into one work: a `name` line and
-    seven `merge` lines. The full merge after it refused it, as it
-    refuses `JAMP-14-1` (§3.3), and split the work into eight: eight
-    `mint`s, a `split` and a `drop`. So a value a full merge refuses was
-    accepted by a batch that held *every* record claiming it, which the
-    batch's closure over shared names should have put in one identity
-    pass, where `settle` refuses it. Why it did not is not yet known. The
-    next full merge does tidy it, but the tidying is permanent: 18 lines
-    of an append-only registry, eight ids retired, for one issue.
+    Seen 2026-09-24, and not only as this item expected. The
+    full/incremental harness over the scratch store at model 8,
+    `pubmed26n1334` held out, failed on it — the same way before and after
+    step 2a of the merge's memory, so neither caused it. Eight articles of
+    one issue of a Shiraz journal each carry the issue's id
+    `reg30476:IJCBNM-14-1`. Newer copies of all eight are in update files
+    that were not held out, so the first full merge held all eight as works
+    and refused the id; the held-out baseline file brings older copies,
+    which the batch reads for what they add (§8). The batch cut one
+    component per work, because its closure follows the names a row holds
+    and not the names an older copy adds to the row's record — the refused
+    id among them. Each identity pass saw one claim and accepted it, and
+    the registry, assigning component after component, fused the eight
+    works: a `name` line and seven `merge` lines. The full merge after it
+    split them again: eight `mint`s, a `split` and a `drop`. The same gap
+    lets a wrong link return: a record's rejected claim on a name another
+    work holds is pushed without that work, and the registry merges two
+    articles. Fixed the same day (the user: "yes"): `components` closes each
+    component over every name its records will assert — their own and
+    their older copies' — with a test for each case, and the batch now
+    stops, asking for a full merge, when a name of a component's works
+    belongs in the live table to a work outside it, rather than let
+    `assign` close the gap with `merge` lines the registry keeps for ever.
+    Without the closure fix both tests stop on that check instead of
+    merging. With both, the 1334 harness passes. What remains is this
+    item's own case: the update-files harness still ends one `drop` apart
+    — `pubmed26n1338` brings one of the eight alone, and the other seven
+    claimants of the refused id are recorded only in their rows'
+    `rejected` lists, which no lookup indexes, so the batch accepts it.
+    The user's decision: leave it for now, and answer it later by
+    indexing refused names and giving their claims back to the identity
+    pass, which means a rejection recording which record made the claim —
+    a merge version.
 25. **Containers and parts.** B, built 2026-09-24 (§3.3, §10), refuses a
     container's DOI on its parts and leaves the container a stub, or the
     record Crossref holds of it. C, the answer the user set aside for

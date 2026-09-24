@@ -884,6 +884,7 @@ impl Engine<'_> {
             }
             queue.extend(touched);
         }
+        let batch = self.batch;
         let mut seen: HashSet<WorkId> = HashSet::new();
         while let Some(id) = queue.pop() {
             if !seen.insert(id) {
@@ -894,8 +895,40 @@ impl Engine<'_> {
             };
             let item = comps.push(Item::Work(id));
             for (j, record) in row.records.iter().enumerate() {
-                self.previous
-                    .insert((record.source, record.native.clone()), (id, j));
+                let key = (record.source, record.native.clone());
+                self.previous.insert(key.clone(), (id, j));
+                // The component is closed over the names the identity
+                // pass will see its records assert, not only the names
+                // its rows hold. A row's record asserts what the row need
+                // not name — a wrong link, rejected in favour of the
+                // record that holds the name (merge plan §3.3) — and an
+                // older copy in the batch adds its names to the record,
+                // which `joined` gives the pass (§8), a publisher id the
+                // full merge refused among them. A claim whose other
+                // claimants the component leaves out is accepted: the
+                // refused id or the wrong link returns, and the registry
+                // fuses the works that hold it one component after
+                // another (§11, item 24, 2026-09-24). The records
+                // `resolve_component` leaves out — the batch's own, whose
+                // copies speak here with these names absorbed, and the
+                // ones it deletes — are left out here too.
+                if self.deleted_in.contains_key(&key)
+                    || self.index.contains(record.source, &record.native)
+                {
+                    continue;
+                }
+                let older = self
+                    .older
+                    .get(record.source, &record.native)
+                    .map_or(&[][..], |i| &batch.cited_only[i].asserts[..]);
+                for a in record.asserts.iter().chain(older) {
+                    comps.join(item, &a.name);
+                    for other in self.touch(&a.name) {
+                        if !seen.contains(&other) {
+                            queue.push(other);
+                        }
+                    }
+                }
             }
             for n in &row.names {
                 comps.join(item, &n.name);
@@ -976,6 +1009,21 @@ impl Engine<'_> {
         let res = identity.resolve(false)?;
         let order = res.held_order();
         let all: Vec<Vec<OwnedName>> = order.iter().map(|(_, n)| n.clone()).collect();
+        // The batch answers as the full merge does only if every claimant
+        // of a name was in the identity pass that judged it (merge plan
+        // §3.3), so a component must hold every live work its names are
+        // in. One that does not is a gap in `components`, and `assign`
+        // would close it with `merge` lines, which the registry keeps for
+        // ever; the batch stops instead (§11, item 24, 2026-09-24).
+        for name in all.iter().flatten() {
+            if let Some(Resolved::One(id)) = self.live.resolved(name)
+                && !existing.contains_key(&id)
+            {
+                return Err(Error::FullMerge(format!(
+                    "{name} is {id}'s, a work outside the batch's component for it"
+                )));
+            }
+        }
         // Every work here holds records, so a contested id has no one
         // part to continue it and is retired: the incremental half of
         // the split rule (merge plan §11, item 3). Where a held work and

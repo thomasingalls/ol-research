@@ -1563,3 +1563,116 @@ fn the_divisions_a_row_cannot_settle_stop_the_batch() {
     drop(serving);
     std::fs::remove_dir_all(store.root()).unwrap();
 }
+
+#[test]
+fn an_older_copys_names_join_the_component_its_record_is_in() {
+    use SourceId::Pubmed;
+    // Merge plan §11, item 24, the case seen 2026-09-24 on `pubmed26n1334`:
+    // eight articles of one issue, each with the issue's id in PubMed's
+    // PII slot, whose newer copies the store already merged — so the id
+    // was refused (§3.3) and no row names it — and whose older copies a
+    // batch brings. An older copy's names join its record (§8, absence is
+    // not an assertion), and so they join the component its record is in:
+    // the batch sees every record claiming the id in one identity pass,
+    // refuses it as the full merge does, and joins nothing.
+    let issue = |k: u32| {
+        record(
+            Pubmed,
+            &[
+                &format!("pmid:90{k}"),
+                &format!("doi:10.30476/ijcbnm.2025.{k}"),
+                "reg30476:IJCBNM-14-1",
+            ],
+            &format!("Article {k} of the issue"),
+            view(false, 1, None),
+            text(None, &["X"], None),
+        )
+    };
+    // The batch's copies are in a set before the store's, so older.
+    let older = |k: u32| {
+        let mut r = issue(k);
+        r.view.set = "archive".into();
+        r
+    };
+    let (store, serving) = batches_equal_the_full_merge(
+        "older-copies-of-an-issue",
+        base_and((1..=3).map(issue).collect()),
+        &[],
+        vec![Batch {
+            records: (1..=3).map(older).collect(),
+            ..Batch::default()
+        }],
+    );
+    let ids: Vec<Option<WorkId>> = (1..=3)
+        .map(|k| resolve(&serving, &format!("pmid:90{k}")))
+        .collect();
+    assert!(ids.iter().all(Option::is_some), "{ids:?}");
+    assert!(
+        ids[0] != ids[1] && ids[1] != ids[2] && ids[0] != ids[2],
+        "three works, as before the batch: {ids:?}"
+    );
+    assert_eq!(resolve(&serving, "reg30476:IJCBNM-14-1"), None);
+    drop(serving);
+    std::fs::remove_dir_all(store.root()).unwrap();
+}
+
+#[test]
+fn a_wrong_links_holder_joins_the_component_of_the_record_that_claims_it() {
+    use SourceId::{Crossref, OpenAlex, Pubmed};
+    // The same gap as above, found looking for it 2026-09-24: an OpenAlex
+    // record's PMID is a wrong link (merge plan §3.3), rejected in favour
+    // of the PubMed record that holds it, so the OpenAlex record's work
+    // does not name the PMID while its record still asserts it. A batch
+    // that touches that work through the Crossref record beside it alone
+    // pushed the assertion into an identity pass without the holder,
+    // where the PMID is no conflict; the work took it, and the registry,
+    // finding the holder's id on it, merged two articles into one.
+    const HELD: &str =
+        "Neuropathology in an alpha-synuclein preformed fibril mouse model occurs independent of";
+    const CLAIMS: &str =
+        "Preparation of functional coatings for display glass applications by sol-gel";
+    let holder = record(
+        Pubmed,
+        &["pmid:750", "doi:10.1000/n75"],
+        HELD,
+        view(false, 1, None),
+        text(None, &["N"], None),
+    );
+    let holder_crossref = record(
+        Crossref,
+        &["doi:10.1000/n75"],
+        HELD,
+        view(false, 1, None),
+        text(None, &["N"], None),
+    );
+    let claims = record(
+        OpenAlex,
+        &["openalex:W750", "pmid:750", "doi:10.1000/g75"],
+        CLAIMS,
+        view(false, 1, None),
+        text(None, &["G"], None),
+    );
+    let beside = record(
+        Crossref,
+        &["doi:10.1000/g75"],
+        CLAIMS,
+        view(false, 1, None),
+        text(None, &["G"], None),
+    );
+    let beside_again = delivered(beside.clone());
+    let (store, serving) = batches_equal_the_full_merge(
+        "wrong-link-holder",
+        base_and(vec![holder, holder_crossref, claims, beside]),
+        &[],
+        vec![Batch {
+            records: vec![beside_again],
+            ..Batch::default()
+        }],
+    );
+    let held = resolve(&serving, "pmid:750").unwrap();
+    let claiming = resolve(&serving, "doi:10.1000/g75").unwrap();
+    assert_ne!(held, claiming, "two works, as before the batch");
+    assert_eq!(resolve(&serving, "openalex:W750"), Some(claiming));
+    drop(serving);
+    std::fs::remove_dir_all(store.root()).unwrap();
+}
