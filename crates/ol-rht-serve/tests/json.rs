@@ -163,6 +163,7 @@ async fn the_routes_answer_the_shapes_a_client_is_written_against() {
         (&2.into(), &1.into())
     );
     assert_eq!(work["stub"], false);
+    assert_eq!(work["retracted_by"], serde_json::json!(["crossref"]));
     // A field absent is null, not missing: the shape never varies.
     assert!(work["published"].is_null() && work["open_access"].is_null());
     assert_eq!(
@@ -191,8 +192,31 @@ async fn the_routes_answer_the_shapes_a_client_is_written_against() {
     assert_eq!(status, 200);
     assert_eq!(keys(&found), ["answered", "facets", "hits", "total"]);
     assert_eq!(found["total"], 1);
-    assert_eq!(keys(&found["hits"][0]), ["public_id", "score", "title"]);
+    assert_eq!(
+        keys(&found["hits"][0]),
+        ["public_id", "score", "summary", "title"]
+    );
     assert_eq!(found["hits"][0]["public_id"], public_text(1));
+    assert_eq!(found["hits"][0]["title"], "A titled work");
+    assert!(
+        found["hits"][0]["summary"].is_null(),
+        "hydrate was not asked for, and the index's title is all there is"
+    );
+    // Hydrated, a hit is a row as a list's is, and says what the work
+    // itself says about its standing.
+    let (status, hydrated) = get(
+        &agent,
+        &format!("{base}/v1/search?query=titled&hydrate=true"),
+    );
+    assert_eq!(status, 200);
+    let summary = &hydrated["hits"][0]["summary"];
+    assert_eq!(summary["public_id"], public_text(1));
+    assert_eq!(summary["title"], work["title"]);
+    assert_eq!(summary["authors"], work["authors"]);
+    assert_eq!(summary["venue"], "Journal of Tests");
+    assert_eq!(summary["retracted_by"], work["retracted_by"]);
+    assert_eq!(summary["corrected_by"], serde_json::json!([]));
+    assert_eq!(summary["concern_by"], serde_json::json!([]));
     assert_eq!(keys(&found["facets"][0]), ["root", "values"]);
     assert_eq!(found["facets"][0]["root"], "/year");
     assert_eq!(keys(&found["facets"][0]["values"][0]), ["count", "value"]);
@@ -223,9 +247,12 @@ async fn the_routes_answer_the_shapes_a_client_is_written_against() {
         keys(&expanded["neighbours"][0]["summary"]),
         [
             "authors",
+            "concern_by",
+            "corrected_by",
             "names",
             "public_id",
             "published",
+            "retracted_by",
             "stub",
             "title",
             "venue"
@@ -782,6 +809,7 @@ async fn the_generated_typescript_describes_these_bodies() {
         ("WorkPage", "/v1/references?work=pmid:1"),
         ("WorkPage", "/v1/citers?work=pmid:2"),
         ("SearchResponse", "/v1/search?query=titled"),
+        ("SearchResponse", "/v1/search?query=titled&hydrate=true"),
         (
             "ExpandResponse",
             "/v1/expand?seeds=pmid:1&hydrate=true&walk=both",

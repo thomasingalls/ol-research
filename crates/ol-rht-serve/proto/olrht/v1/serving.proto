@@ -185,6 +185,12 @@ message Summary {
   repeated string authors = 5;
   string venue = 6;
   Date published = 7;
+  // Which sources say the work was retracted, corrected, or published
+  // with an expression of concern: the work's own, so a row can warn
+  // before anyone opens it.
+  repeated string retracted_by = 8;
+  repeated string corrected_by = 9;
+  repeated string concern_by = 10;
 }
 
 message Arc {
@@ -213,12 +219,18 @@ message SearchRequest {
   uint32 limit = 2;
   // Facet values per root, at most 20; 5 when zero.
   uint32 facets = 3;
+  // Carry each hit's Summary.
+  bool hydrate = 4;
 }
 
 message Hit {
   string public_id = 1;
   float score = 2;
+  // The title the index stores, there whether or not the hit is
+  // hydrated.
   string title = 3;
+  // As on Arc: present when hydrated and the work has a row.
+  Summary summary = 4;
 }
 
 message FacetValue {

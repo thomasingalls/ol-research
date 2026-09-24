@@ -125,12 +125,19 @@ async fn the_sample_store_answers() {
             query: "prisma".into(),
             limit: 3,
             facets: 3,
+            hydrate: true,
         })
         .await
         .unwrap()
         .into_inner();
     assert!(found.total >= 600, "{}", found.total);
     assert_eq!(found.hits.len(), 3);
+    // A hit is found by its text, so there is a record behind it.
+    assert!(found.hits.iter().all(|h| {
+        h.summary
+            .as_ref()
+            .is_some_and(|s| !s.stub && !s.title.is_empty())
+    }));
     // Co-citation: seed with the work's citers and walk their references.
     let seeds: Vec<String> = client
         .citers(pb::ListRequest {

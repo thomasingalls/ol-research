@@ -2,7 +2,7 @@ import { useEffect, useState } from "react"
 import { useQuery } from "@tanstack/react-query"
 import { useNavigate, useSearch } from "@tanstack/react-router"
 import { SearchIcon } from "lucide-react"
-import { api } from "@/api"
+import { api, summaryOf } from "@/api"
 import { cn } from "@/lib/utils"
 import {
   InputGroup,
@@ -107,13 +107,12 @@ export function SearchPanel({ focused }: { focused: boolean }) {
                 ` · showing the first ${search.data.hits.length}`}
             </p>
 
-            {/* A hit carries a title and an id; year and venue live on the
-                work itself, one click away. */}
+            {/* A hit is a row as a list's is: the same summary, so the
+                same byline and the same warnings. Results are read by
+                title, so they leave the identifiers to the work's page. */}
             <WorkList
-              rows={search.data.hits.map((hit) => ({
-                public_id: hit.public_id,
-                title: hit.title,
-              }))}
+              rows={search.data.hits.map(summaryOf)}
+              identifiers={false}
             />
           </>
         ))}

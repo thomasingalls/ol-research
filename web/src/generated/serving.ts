@@ -138,7 +138,15 @@ export type GetWorkResponse = {
 export type Hit = {
   public_id: string,
   score: number,
+  /**
+   * The title the index stores, there whether or not the hit is
+   * hydrated.
+   */
   title: string,
+  /**
+   * As on Arc: present when hydrated and the work has a row.
+   */
+  summary: Summary | null,
 };
 
 /**
@@ -405,6 +413,11 @@ export type SearchParams = {
    * asked.
    */
   facet_values?: number,
+  /**
+   * Whether each hit carries the summary of its work. Off unless
+   * asked, in either literal `true` or `false`.
+   */
+  hydrate?: boolean,
 };
 
 export type SearchResponse = {
@@ -469,6 +482,14 @@ export type Summary = {
   authors: Array<string>,
   venue: string,
   published: PubDate | null,
+  /**
+   * Which sources say the work was retracted, corrected, or published
+   * with an expression of concern: the work's own, so a row can warn
+   * before anyone opens it.
+   */
+  retracted_by: Array<string>,
+  corrected_by: Array<string>,
+  concern_by: Array<string>,
 };
 
 /**

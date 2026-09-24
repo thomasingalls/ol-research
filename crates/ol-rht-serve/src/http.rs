@@ -306,10 +306,13 @@ pub(crate) struct SearchParams {
     /// Values kept per facet root, to a cap of 20; 5 when it is not
     /// asked.
     facet_values: Option<u32>,
+    /// Whether each hit carries the summary of its work. Off unless
+    /// asked, in either literal `true` or `false`.
+    hydrate: Option<bool>,
 }
 
-/// `GET /v1/search?query=&limit=&facet_values=` — works matching a
-/// query, with facet counts over the matches.
+/// `GET /v1/search?query=&limit=&facet_values=&hydrate=` — works
+/// matching a query, with facet counts over the matches.
 async fn search<A: Answers>(
     State(service): State<Arc<Service<A>>>,
     Params(params): Params<SearchParams>,
@@ -333,6 +336,7 @@ async fn search<A: Answers>(
         &params.query,
         limit,
         facet_values,
+        params.hydrate.unwrap_or(false),
     )?))
 }
 

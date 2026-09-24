@@ -318,16 +318,17 @@ pub(crate) fn one_page<A: Answers>(
 ///
 /// # Errors
 ///
-/// A query the engine refuses. The two counts arrive already bounded,
-/// because the transports spell them differently: gRPC's `facets` field
-/// is JSON's `facet_values`, which is what the number is (the user,
-/// 2026-09-19).
+/// A query the engine refuses, a row that does not decode. The two
+/// counts arrive already bounded, because the transports spell them
+/// differently: gRPC's `facets` field is JSON's `facet_values`, which is
+/// what the number is (the user, 2026-09-19).
 pub(crate) fn searched<A: Answers>(
     a: &A,
     terms: &Terms,
     query: &str,
     limit: usize,
     facet_values: usize,
+    hydrate: bool,
 ) -> Result<pb::SearchResponse, Status> {
     let hits = a
         .search(query, limit, facet_values)
@@ -335,17 +336,7 @@ pub(crate) fn searched<A: Answers>(
     Ok(pb::SearchResponse {
         answered: Some(answered(a, terms, Terms::all())),
         total: hits.total as u64,
-        hits: hits
-            .hits
-            .into_iter()
-            .map(|h| {
-                Ok(pb::Hit {
-                    public_id: convert::public(a, h.id)?,
-                    score: h.score,
-                    title: h.title.unwrap_or_default(),
-                })
-            })
-            .collect::<Result<_, Status>>()?,
+        hits: convert::hits(a, &hits.hits, hydrate)?,
         facets: hits
             .facets
             .into_iter()
@@ -657,6 +648,7 @@ impl<A: Answers> Serving for Service<A> {
             &req.query,
             bounded(req.limit, SEARCH_DEFAULT, SEARCH_MAX, "limit")?,
             bounded(req.facets, FACETS_DEFAULT, FACETS_MAX, "facets")?,
+            req.hydrate,
         )?))
     }
 

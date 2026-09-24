@@ -1,6 +1,6 @@
 //! The fake both transports are tested over: works 1 (held, cites 2 and
-//! 3, cited by 3) and 2 and 3 (stubs), a shared DOI on 2 and 3, and id 9
-//! retired by a split. Everything the query core answers, answered from
+//! 3, cited by 3, retracted by Crossref's say) and 2 and 3 (stubs), a
+//! shared DOI on 2 and 3, and id 9 retired by a split. Everything the query core answers, answered from
 //! memory, so the transports are tested without a store.
 //!
 //! Its three arcs are 1 → 2, 1 → 3 and 3 → 1, and every list it answers
@@ -79,7 +79,16 @@ fn row(n: u32, names: &[&str], stub: bool) -> Row {
             } else {
                 [SourceId::Pubmed].into_iter().collect()
             },
-            status: StatusBy::default(),
+            // The held work is retracted, so what carries a status can
+            // be seen to carry it; a stub has nothing to say.
+            status: StatusBy {
+                retracted: if stub {
+                    Sources::NONE
+                } else {
+                    [SourceId::Crossref].into_iter().collect()
+                },
+                ..StatusBy::default()
+            },
             ..Fields::default()
         },
         flags: Flags::default(),

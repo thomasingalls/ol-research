@@ -286,6 +286,8 @@ fn hydrated<A: Answers>(
 /// summary never disagrees with the work it summarises.
 fn summary(public_id: String, row: &Row) -> pb::Summary {
     let text = row.text.as_ref();
+    let status = &row.fields.status;
+    let sources = |s: Sources| s.iter().map(|x| x.name().to_owned()).collect::<Vec<_>>();
     pb::Summary {
         public_id,
         stub: row.stub,
@@ -299,6 +301,9 @@ fn summary(public_id: String, row: &Row) -> pb::Summary {
         authors: text.map(|t| t.authors.clone()).unwrap_or_default(),
         venue: text.and_then(|t| t.venue.clone()).unwrap_or_default(),
         published: row.fields.published.as_ref().map(|p| date(p.value)),
+        retracted_by: sources(status.retracted),
+        corrected_by: sources(status.corrected),
+        concern_by: sources(status.concern),
     }
 }
 
@@ -349,6 +354,32 @@ pub fn neighbours<A: Answers>(
                 degree: n.degree,
                 score: n.score,
                 summary: rows.get(&n.work).map(|row| summary(public_id.clone(), row)),
+                public_id,
+            })
+        })
+        .collect()
+}
+
+/// Search hits as wire hits, hydrated when asked. The title is the
+/// index's own and travels either way; the summary is the one every
+/// hydrated list carries, so a result renders as a row of any list does.
+///
+/// # Errors
+///
+/// No public id for a work, or a row that does not decode.
+pub fn hits<A: Answers>(
+    a: &A,
+    hits: &[search::Hit],
+    hydrate: bool,
+) -> Result<Vec<pb::Hit>, Status> {
+    let rows = hydrated(a, hits.iter().map(|h| h.id), hydrate)?;
+    hits.iter()
+        .map(|h| {
+            let public_id = public(a, h.id)?;
+            Ok(pb::Hit {
+                score: h.score,
+                title: h.title.clone().unwrap_or_default(),
+                summary: rows.get(&h.id).map(|row| summary(public_id.clone(), row)),
                 public_id,
             })
         })

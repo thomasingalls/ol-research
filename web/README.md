@@ -3,9 +3,11 @@
 A small query interface over the citation graph. Three screens, one person, no
 product ambitions:
 
-- **Search** — text box, list of results. A search hit carries only a title
-  and an id: year and venue live on the work itself, one click away, so the
-  list does not show fields the server did not send.
+- **Search** — text box, list of results. A result is the same row as any
+  list's, less the identifiers: title, authors, venue and year, and a badge
+  for a retraction or an expression of concern, so a reader is warned before
+  they open it. The ids and names are on the work's page. Counts of references and citers are left off the row until they
+  are shown to be cheap on the full collection.
 - **Work detail** — a work's metadata and its **names**, and beside them four
   lists, one tab each: **References** (works it cites), *Cites the same
   sources*, **Citers** (works citing it), *Cited alongside*. References and
@@ -203,7 +205,7 @@ GET /v1/resolve    ?text=                             -> { answered, outcome }
 GET /v1/work       ?work=                             -> { answered, work }
 GET /v1/references ?work=&page_size=&cursor=&hydrate= -> { answered, arcs, cursor, total }
 GET /v1/citers     ?work=&page_size=&cursor=&hydrate= -> { answered, arcs, cursor, total }
-GET /v1/search     ?query=&limit=&facet_values=       -> { answered, total, hits, facets }
+GET /v1/search     ?query=&limit=&facet_values=&hydrate= -> { answered, total, hits, facets }
 GET /v1/related    ?work=&by=&limit=&hydrate=         -> { answered, related, seeds_used, total, seeds_total }
 ```
 
@@ -220,15 +222,24 @@ whatever the caller passes it, so a client that seeds from the page of citers
 it happens to hold gets an answer no other client would get. The seeding is the
 server's to do.
 
-Every row of every list — references, citers, related works — is an id, the
-fields its own context adds, and one **`summary`**:
+Every row of every list — search hits, references, citers, related works — is
+an id, the fields its own context adds, and one **`summary`**:
 
 ```
-{ public_id, stub, title, names[], authors[], venue, published }
+{ public_id, stub, title, names[], authors[], venue, published,
+  retracted_by[], corrected_by[], concern_by[] }
 ```
 
-plus `by` on an arc, and `touches`, `degree`, `score` on a related row. One
-shape, so `WorkRow` renders a row from any list without knowing which.
+plus `score` and the index's own `title` on a hit, `by` on an arc, and
+`touches`, `degree`, `score` on a related row. One shape, so `WorkRow` renders
+a row from any list without knowing which. The three `_by` lists are the
+sources that say so, as on the work; a row badges the first and the last, as
+the work's page does.
+
+A server from before search took `hydrate` refuses it as an unknown parameter,
+so the server goes out before a client that sends it. An older client against
+a newer server is fine: it sends no `hydrate`, and its hits come back as they
+did, with a `summary: null` it never reads.
 
 `summary` is **`null` unless the request asks to `hydrate`**, and null for an
 id nothing behind it has a row — `null` on the wire and not a missing key, so

@@ -244,6 +244,7 @@ async fn lists_page_and_cursors_survive_only_their_epoch() {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn search_and_expand_are_bounded() {
     let service = Arc::new(Service::new(Fake::new(1), Terms::stub()));
     let mut client = start(service).await;
@@ -252,18 +253,24 @@ async fn search_and_expand_are_bounded() {
             query: "titled".into(),
             limit: 0,
             facets: 0,
+            hydrate: true,
         })
         .await
         .unwrap()
         .into_inner();
     assert_eq!(found.total, 1);
     assert_eq!(found.hits[0].public_id, public_text(1));
+    // Hydrated: the summary a list's row carries, statuses and all.
+    let summary = found.hits[0].summary.as_ref().expect("hydrated");
+    assert_eq!(summary.title, found.hits[0].title);
+    assert_eq!(summary.retracted_by, ["crossref"]);
     assert_eq!(found.facets[0].root, "/year");
     let over = client
         .search(pb::SearchRequest {
             query: "x".into(),
             limit: 101,
             facets: 0,
+            hydrate: false,
         })
         .await
         .unwrap_err();

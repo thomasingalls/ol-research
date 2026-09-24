@@ -640,11 +640,12 @@ state kept outside the store, and a limit per principal on calls and on
   shown. Now all three carry one `Summary` message, in its own field, so
   the drift cannot recur and a client renders any of them with one
   function: `public_id`, `stub`, `title`, `names`, `authors`, `venue`,
-  `published`. Present when the request asked to hydrate and the work has
-  a row; absent (null) when it did not or has none, rather than an empty
-  summary, which would read as a work we know nothing about. `Arc.title`
-  and `Arc.names` and `Neighbour.title` are gone and their field numbers
-  reserved. Every field is read exactly where `Work` reads it, so a
+  `published`, and since 2026-09-24 `retracted_by`, `corrected_by` and
+  `concern_by` (§11, item 34). Present when the request asked to hydrate
+  and the work has a row; absent (null) when it did not or has none,
+  rather than an empty summary, which would read as a work we know
+  nothing about. `Arc.title` and `Arc.names` and `Neighbour.title` are
+  gone and their field numbers reserved. Every field is read exactly where `Work` reads it, so a
   summary cannot disagree with the work it summarises.
 
   **`related`.** `GET /v1/related?work=&by=&limit=&hydrate=` and the
@@ -1668,6 +1669,27 @@ state kept outside the store, and a limit per principal on calls and on
     Then a names base rebuilt and an epoch published, both the user's.
     Until then the stamp stays empty, and the reason is written where
     the empty stamp is set and not only here.
+
+34. **Search hits hydrate, and a summary carries a work's standing.**
+    Built 2026-09-24. `SearchRequest.hydrate` and `hydrate=` on
+    `/v1/search`, off unless asked like every other list's, put the one
+    `Summary` on each `Hit` through the same `Serving::rows` walk (item
+    31), so a result renders as a row of any list does. The summary gains
+    `retracted_by`, `corrected_by` and `concern_by`, read where `Work`
+    reads them, so a row can warn of a retraction before anyone opens the
+    work (the user chose the flags, 2026-09-24). A work's reference and
+    citer counts were left off it on purpose: `out_degree` is two offsets
+    on the base, but that is not yet shown to hold on the full collection
+    (the user, 2026-09-24).
+
+    Measured on epoch 8 of the local store (model v2), best of five: a
+    fifty-hit search is about 1 ms unhydrated and 14–23 ms hydrated, and
+    the body grows from about 10 KB to about 50 KB, most of it names.
+    Hits arrive ranked and so scattered, which is item 31's worst case,
+    and a summary sidecar would answer this list as it would the others.
+    An older server refuses `hydrate` on search as an unknown parameter,
+    so the server that reads it is deployed before a client that sends
+    it.
 
 ## 12. Sources consulted
 

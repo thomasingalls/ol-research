@@ -45,12 +45,23 @@ export type Row = Rendered & {
   by?: string[]
 }
 
-export function WorkList({ rows }: { rows: Row[] }) {
+/**
+ * `identifiers` off leaves out the public id and the names under a row, for a
+ * list read by title, as search results are. A row with no title still leads
+ * with an identifier, since that is all it has.
+ */
+export function WorkList({
+  rows,
+  identifiers = true,
+}: {
+  rows: Row[]
+  identifiers?: boolean
+}) {
   return (
     <ul className="divide-border divide-y">
       {rows.map((row) => (
         <li key={row.public_id}>
-          <WorkRow row={row} />
+          <WorkRow row={row} identifiers={identifiers} />
         </li>
       ))}
     </ul>
@@ -70,9 +81,11 @@ export function WorkList({ rows }: { rows: Row[] }) {
  */
 export function WorkRow({
   row,
+  identifiers = true,
   children,
 }: {
   row: Row
+  identifiers?: boolean
   children?: React.ReactNode
 }) {
   const wide = useWide()
@@ -87,6 +100,12 @@ export function WorkRow({
     row.venue,
     year(row.published)?.toString(),
   ].filter(Boolean)
+  // What the work's sources say of its standing, warned of as the work's own
+  // page warns of it, so a reader knows before opening it.
+  const warnings = [
+    { label: "retracted", by: row.retracted_by ?? [] },
+    { label: "expression of concern", by: row.concern_by ?? [] },
+  ].filter((w) => w.by.length > 0)
 
   // A real link, not a button: middle-click, open-in-new-tab and copy-link
   // all work, which is the point of the work detail having a URL at all.
@@ -130,14 +149,28 @@ export function WorkRow({
           <span className="font-mono text-sm font-medium">{row.public_id}</span>
         )}
 
-        {row.stub && (
-          <Badge
-            variant="outline"
-            className="shrink-0 text-[10px]"
-            title="A stub: known only from a citation. We hold its identifiers, not a record — so there is no title or venue to show."
-          >
-            stub
-          </Badge>
+        {(row.stub || warnings.length > 0) && (
+          <div className="flex shrink-0 flex-col items-end gap-1">
+            {row.stub && (
+              <Badge
+                variant="outline"
+                className="text-[10px]"
+                title="A stub: known only from a citation. We hold its identifiers, not a record — so there is no title or venue to show."
+              >
+                stub
+              </Badge>
+            )}
+            {warnings.map((w) => (
+              <Badge
+                key={w.label}
+                variant="destructive"
+                className="text-[10px]"
+                title={`${w.label}, according to ${w.by.join(", ")}`}
+              >
+                {w.label}
+              </Badge>
+            ))}
+          </div>
         )}
       </div>
 
@@ -149,12 +182,14 @@ export function WorkRow({
 
       {children}
 
-      <div className="text-muted-foreground mt-1 flex flex-wrap gap-x-3 text-xs">
-        <span className="font-mono">{row.public_id}</span>
-        {row.by && row.by.length > 0 && <span>asserted by {row.by.join(", ")}</span>}
-      </div>
+      {(identifiers || (row.by && row.by.length > 0)) && (
+        <div className="text-muted-foreground mt-1 flex flex-wrap gap-x-3 text-xs">
+          {identifiers && <span className="font-mono">{row.public_id}</span>}
+          {row.by && row.by.length > 0 && <span>asserted by {row.by.join(", ")}</span>}
+        </div>
+      )}
 
-      {names.length > 0 && (
+      {identifiers && names.length > 0 && (
         <div className="mt-2">
           <Names names={names} omit={lead} />
         </div>

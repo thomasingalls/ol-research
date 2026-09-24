@@ -265,8 +265,14 @@ export const api = {
   citers: (work: string, cursor = "") =>
     get("/v1/citers", { work, page_size: PAGE_SIZE, cursor: cursor || undefined, hydrate: true }),
 
-  /** Works matching a query. Hits carry a title and a score, nothing more. */
-  search: (query: string, limit = 50) => get("/v1/search", { query, limit }),
+  /**
+   * Works matching a query, each hit carrying the same summary a list's row
+   * does. A server from before search took `hydrate` refuses the call — the
+   * JSON surface refuses any parameter it does not read — so the server that
+   * takes it goes out before this does.
+   */
+  search: (query: string, limit = 50) =>
+    get("/v1/search", { query, limit, hydrate: true }),
 
   /**
    * Works one hop away through the graph, ordered by overlap. One call per
