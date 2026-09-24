@@ -1,6 +1,5 @@
 import { useState } from "react"
 import { useQuery } from "@tanstack/react-query"
-import { Link } from "@tanstack/react-router"
 import {
   api,
   ApiError,
@@ -14,34 +13,15 @@ import {
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
 import { WorkRow } from "@/components/work-list"
-import { Empty, ErrorBox, LoadingRows } from "@/components/states"
+import { ErrorBox, LoadingRows, NoWorks } from "@/components/states"
 
 /**
- * The two questions, in the order they are offered. `cites-same` leads: on
- * this corpus it comes back mostly as whole papers, where `cited-alongside`
- * comes back mostly as stubs — both are real answers, but the one with titles
- * is the better first impression of what the list is for.
- *
- * `by` is both the API's parameter and the URL's, so a tab is a link.
+ * One of the two questions `/v1/related` answers, as a tab's contents: what
+ * came back, what it was measured from, and each row's overlap in words. The
+ * tabs, and the note saying which question this is, are `CitationLists`'.
  */
-export const RELATED_TABS = [
-  {
-    by: "cites-same",
-    tab: "Cites the same sources",
-    note: "Papers that cite the same sources as this one.",
-  },
-  {
-    by: "cited-alongside",
-    tab: "Cited alongside",
-    note: "Papers cited alongside this one.",
-  },
-] as const
-
-export const RELATED_DEFAULT: RelatedBy = RELATED_TABS[0].by
-
 export function RelatedWorks({ id, by }: { id: PublicId; by: RelatedBy }) {
   const [limit, setLimit] = useState<number>(RELATED)
-  const tab = RELATED_TABS.find((t) => t.by === by) ?? RELATED_TABS[0]
 
   const query = useQuery({
     queryKey: ["related", id, by, limit],
@@ -57,36 +37,7 @@ export function RelatedWorks({ id, by }: { id: PublicId; by: RelatedBy }) {
   const rows = data?.related ?? []
 
   return (
-    <section className="space-y-3">
-      <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <h2 className="font-medium">Related works</h2>
-        <nav aria-label="Which related works to show" className="flex gap-1">
-          {RELATED_TABS.map((t) => (
-            <Button
-              key={t.by}
-              asChild
-              size="sm"
-              variant={t.by === by ? "secondary" : "ghost"}
-            >
-              {/* A tab is a link, so the open one is in the URL and the page
-                  can be pasted to someone else as it stands. `replace` keeps
-                  Back meaning the list you arrived from, not the other tab. */}
-              <Link
-                to="/work/$workId"
-                params={{ workId: id }}
-                search={t.by === RELATED_DEFAULT ? {} : { related: t.by }}
-                replace
-                aria-current={t.by === by ? "page" : undefined}
-              >
-                {t.tab}
-              </Link>
-            </Button>
-          ))}
-        </nav>
-      </div>
-
-      <p className="text-muted-foreground text-xs">{tab.note}</p>
-
+    <div className="space-y-3">
       {query.isPending && <LoadingRows rows={3} />}
       {query.isError && <RelatedError error={query.error} />}
 
@@ -95,7 +46,7 @@ export function RelatedWorks({ id, by }: { id: PublicId; by: RelatedBy }) {
           <Caption by={by} data={data} shown={rows.length} />
 
           {rows.length === 0 ? (
-            <Empty>{nothing(by, data.seeds_used)}</Empty>
+            <NoWorks>{nothing(by, data.seeds_used)}</NoWorks>
           ) : (
             <ul className="divide-border divide-y">
               {rows.map((row) => (
@@ -131,7 +82,7 @@ export function RelatedWorks({ id, by }: { id: PublicId; by: RelatedBy }) {
           )}
         </>
       )}
-    </section>
+    </div>
   )
 }
 
@@ -165,7 +116,9 @@ function Caption({
   ].filter(Boolean)
 
   if (parts.length === 0) return null
-  return <p className="text-muted-foreground text-xs">{parts.join(" · ")}</p>
+  return (
+    <p className="text-muted-foreground px-2 text-xs">{parts.join(" · ")}</p>
+  )
 }
 
 /**

@@ -1,5 +1,13 @@
+import { QuoteIcon } from "lucide-react"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Skeleton } from "@/components/ui/skeleton"
+import {
+  Empty as EmptyFrame,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from "@/components/ui/empty"
 import { ApiError } from "@/api"
 
 export function LoadingRows({ rows = 4 }: { rows?: number }) {
@@ -40,4 +48,23 @@ export function ErrorBox({ error }: { error: unknown }) {
 
 export function Empty({ children }: { children: React.ReactNode }) {
   return <p className="text-muted-foreground text-sm">{children}</p>
+}
+
+/**
+ * A list of works with nothing in it, and why. An empty list is an answer,
+ * so it gets the same weight the search gives "No matches", not a line of
+ * grey text where the rows would be. `children` says why.
+ */
+export function NoWorks({ children }: { children: React.ReactNode }) {
+  return (
+    <EmptyFrame>
+      <EmptyHeader>
+        <EmptyMedia variant="icon">
+          <QuoteIcon />
+        </EmptyMedia>
+        <EmptyTitle>No works</EmptyTitle>
+        <EmptyDescription>{children}</EmptyDescription>
+      </EmptyHeader>
+    </EmptyFrame>
+  )
 }

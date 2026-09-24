@@ -1,6 +1,17 @@
+import { useRef } from "react"
+import { useQueryClient } from "@tanstack/react-query"
 import { Link } from "@tanstack/react-router"
 import { Badge } from "@/components/ui/badge"
 import { nameText, primaryName, year, type Name, type Rendered } from "@/api"
+import { useWide } from "@/lib/wide"
+import { workQuery } from "@/queries"
+
+/**
+ * How long the pointer has to rest on a row before its work is fetched: the
+ * router's own measure of intent. Long enough that sweeping down a list does
+ * not ask for every row on the way past.
+ */
+const INTENT_MS = 50
 
 /** Render the names that point at a work, e.g. doi:10.1234/x, pmid:12345678. */
 export function Names({ names, omit }: { names: Name[]; omit?: Name | null }) {
@@ -64,6 +75,10 @@ export function WorkRow({
   row: Row
   children?: React.ReactNode
 }) {
+  const wide = useWide()
+  const queryClient = useQueryClient()
+  const intent = useRef<number | undefined>(undefined)
+  const warm = () => void queryClient.prefetchQuery(workQuery(row.public_id))
   const names = row.names ?? []
   const lead = row.title ? null : primaryName(names)
   const authors = row.authors ?? []
@@ -75,11 +90,33 @@ export function WorkRow({
 
   // A real link, not a button: middle-click, open-in-new-tab and copy-link
   // all work, which is the point of the work detail having a URL at all.
+  //
+  // It takes the search and the open tab with it, so the results stay beside
+  // the next work and the same list opens on it. On a wide screen the page's
+  // scroll is the results' scroll, so it is left where it is; on a narrow one
+  // the work is a new page and starts at the top. The open work is the row
+  // marked active, wherever it appears, whatever its query string.
+  //
+  // Pointing at a row, focusing it or touching it fetches its work, so the
+  // page usually has it by the time the click lands and opens on the work
+  // rather than on a placeholder.
+  //
+  // Hover darkens whatever the row sits on, the page or the canvas. The open
+  // work's row is raised as a card is, so it stands out on either.
   return (
     <Link
       to="/work/$workId"
       params={{ workId: row.public_id }}
-      className="hover:bg-muted/50 block w-full rounded px-2 py-3 text-left"
+      search={(prev) => ({ q: prev.q, list: prev.list })}
+      resetScroll={!wide}
+      activeOptions={{ includeSearch: false }}
+      onMouseEnter={() => {
+        intent.current = window.setTimeout(warm, INTENT_MS)
+      }}
+      onMouseLeave={() => window.clearTimeout(intent.current)}
+      onFocus={warm}
+      onTouchStart={warm}
+      className="hover:bg-foreground/4 data-[status=active]:bg-card data-[status=active]:ring-foreground/10 block w-full rounded-lg px-2 py-3 text-left data-[status=active]:shadow-sm data-[status=active]:ring-1"
     >
       <div className="flex items-start justify-between gap-2">
         {row.title ? (

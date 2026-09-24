@@ -1,15 +1,6 @@
-import { useEffect } from "react"
-import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query"
+import { useQuery } from "@tanstack/react-query"
 import { Link, createRoute } from "@tanstack/react-router"
-import {
-  api,
-  ApiError,
-  nameText,
-  primaryName,
-  summaryOf,
-  year,
-  type RelatedBy,
-} from "@/api"
+import { nameText, primaryName, year } from "@/api"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
@@ -19,14 +10,17 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card"
-import { Names, WorkList } from "@/components/work-list"
+import { Names } from "@/components/work-list"
 import {
-  RELATED_DEFAULT,
-  RELATED_TABS,
-  RelatedWorks,
-} from "@/components/related-works"
+  CitationLists,
+  LIST_DEFAULT,
+  LISTS,
+  type List,
+} from "@/components/citation-lists"
+import { Footer } from "@/components/shell"
 import { Empty, ErrorBox, LoadingRows } from "@/components/states"
-import { rootRoute } from "@/routes/root"
+import { browseRoute } from "@/routes/browse"
+import { workQuery } from "@/queries"
 
 /**
  * `/work/$workId`, where `workId` is a public id such as `ol:71D1MFYWNG8KEK`.
@@ -34,25 +28,68 @@ import { rootRoute } from "@/routes/root"
  * a name like `doi:10.1000/xyz` would not be. Names are resolved on /resolve.
  */
 export const workRoute = createRoute({
-  getParentRoute: () => rootRoute,
+  getParentRoute: () => browseRoute,
   path: "/work/$workId",
   /**
-   * Which related-works question is open lives in the URL, like the search
-   * query does, so the page you are looking at is the page you can send to
-   * someone. The default one normalises to no parameter at all, and anything
-   * that is not one of the two is dropped rather than passed to the API.
+   * Which list is open lives in the URL, like the search query does, so the
+   * page you are looking at is the page you can send to someone. The default
+   * one normalises to no parameter at all, and anything that is not one of
+   * the four is dropped rather than passed to the API.
    */
-  validateSearch: (search: Record<string, unknown>): { related?: RelatedBy } => {
-    const related = RELATED_TABS.find((t) => t.by === search.related)?.by
-    return related && related !== RELATED_DEFAULT ? { related } : {}
+  validateSearch: (search: Record<string, unknown>): { list?: List } => {
+    const list = LISTS.find((l) => l.list === search.list)?.list
+    return list && list !== LIST_DEFAULT ? { list } : {}
   },
+  /**
+   * Another work is another page, not this one with new props: its columns
+   * start at the top, and nothing ("Show more", say) carries over from the
+   * work before. Back still returns each column to where you left it.
+   */
+  remountDeps: ({ params }) => params.workId,
   component: WorkDetail,
 })
 
+/**
+ * The work, and its lists beside it. On a wide screen the two are the middle
+ * and right columns of the page, each scrolling on its own and held in view
+ * while the search results to their left scroll with the page. Below that
+ * width they are one column, work above lists, as a page of their own.
+ */
 function WorkDetail() {
   const { workId: id } = workRoute.useParams()
-  const { related = RELATED_DEFAULT } = workRoute.useSearch()
-  const work = useQuery({ queryKey: ["work", id], queryFn: () => api.work(id) })
+  const { list = LIST_DEFAULT } = workRoute.useSearch()
+
+  return (
+    // Held just under the header's bar (see Shell) and a margin above the
+    // bottom of the screen, so both columns are whole on screen at once.
+    <div className="space-y-8 xl:sticky xl:top-(--bar) xl:grid xl:h-[calc(100dvh-var(--bar)-1rem)] xl:grid-cols-[minmax(0,1fr)_24rem] xl:gap-8 xl:space-y-0 xl:self-start 2xl:grid-cols-[minmax(0,1fr)_32rem]">
+      {/* The card's edge is a ring and a shadow drawn outside its box,
+          which a scrolling column would cut off; the padding makes room for
+          them and the negative margin gives it back to the layout. */}
+      <div
+        data-vt="paper"
+        data-scroll-restoration-id="paper"
+        className="xl:-m-1 xl:overflow-y-auto xl:p-1"
+      >
+        <Paper id={id} />
+        <Footer className="hidden xl:block" />
+      </div>
+
+      {/* On a wide screen the lists are a surface like the work's card,
+          and scroll inside it. */}
+      <aside
+        data-vt="lists"
+        data-scroll-restoration-id="lists"
+        className="xl:bg-card xl:overflow-y-auto xl:rounded-[min(var(--radius-4xl),24px)] xl:px-3 xl:pb-3 xl:shadow-sm xl:ring-1 xl:ring-foreground/5"
+      >
+        <CitationLists id={id} list={list} />
+      </aside>
+    </div>
+  )
+}
+
+function Paper({ id }: { id: string }) {
+  const work = useQuery(workQuery(id))
   const w = work.data?.work ?? null
 
   // With no title — a stub always, anything else only when its record has
@@ -61,8 +98,11 @@ function WorkDetail() {
 
   return (
     <div className="space-y-6">
-      <Button asChild variant="ghost" size="sm">
-        <Link to="/">← Search</Link>
+      {/* Beside the results there is nothing to go back to: they are there. */}
+      <Button asChild variant="ghost" size="sm" className="xl:hidden">
+        <Link to="/" search={(prev) => ({ q: prev.q })}>
+          ← Search
+        </Link>
       </Button>
 
       {work.isPending && <LoadingRows rows={2} />}
@@ -136,88 +176,6 @@ function WorkDetail() {
           </CardContent>
         </Card>
       )}
-
-      <RelatedWorks id={id} by={related} />
-
-      <div className="grid gap-6 md:grid-cols-2">
-        <Edges kind="references" id={id} />
-        <Edges kind="citers" id={id} />
-      </div>
     </div>
-  )
-}
-
-const HEADINGS = {
-  references: { heading: "References", note: "works this one cites" },
-  citers: { heading: "Citers", note: "works citing this one" },
-} as const
-
-function Edges({ kind, id }: { kind: "references" | "citers"; id: string }) {
-  const queryClient = useQueryClient()
-  const { heading, note } = HEADINGS[kind]
-
-  const query = useInfiniteQuery({
-    queryKey: [kind, id],
-    queryFn: ({ pageParam }) => api[kind](id, pageParam),
-    initialPageParam: "",
-    getNextPageParam: (last) => last.cursor || undefined,
-  })
-
-  const pages = query.data?.pages.length ?? 0
-  const stale = query.error instanceof ApiError && query.error.staleCursor
-
-  // The epoch moved under the list, so the cursor we hold is from an older
-  // one. Start the list again instead of retrying a cursor that can never
-  // work. Guarded on pages > 0 so a first-page failure cannot loop.
-  useEffect(() => {
-    if (stale && pages > 0) {
-      void queryClient.resetQueries({ queryKey: [kind, id] })
-    }
-  }, [stale, pages, queryClient, kind, id])
-
-  const arcs = query.data?.pages.flatMap((page) => page.arcs) ?? []
-  const total = query.data?.pages[0]?.total ?? 0
-
-  return (
-    <section className="space-y-3">
-      <div>
-        <h2 className="font-medium">
-          {heading}
-          {query.isSuccess && (
-            <span className="text-muted-foreground ml-2 text-sm font-normal">
-              {total}
-            </span>
-          )}
-        </h2>
-        <p className="text-muted-foreground text-xs">{note}</p>
-      </div>
-
-      {query.isPending && <LoadingRows rows={3} />}
-      {query.isError && <ErrorBox error={query.error} />}
-
-      {arcs.length > 0 && (
-        <>
-          {/* One summary shape, one row component, whichever list it is in;
-              the arc adds only who asserted it. */}
-          <WorkList
-            rows={arcs.map((arc) => ({ ...summaryOf(arc), by: arc.by }))}
-          />
-          {query.hasNextPage && (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => void query.fetchNextPage()}
-              disabled={query.isFetchingNextPage}
-            >
-              {query.isFetchingNextPage
-                ? "Loading…"
-                : `Load more (${arcs.length} of ${total})`}
-            </Button>
-          )}
-        </>
-      )}
-
-      {query.isSuccess && arcs.length === 0 && <Empty>None.</Empty>}
-    </section>
   )
 }

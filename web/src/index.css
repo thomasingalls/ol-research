@@ -14,7 +14,9 @@
     src: url("./assets/fonts/love-ya-like-a-sister-400-subset.woff2") format("woff2");
 }
 
-@custom-variant dark (&:is(.dark *));
+/* Dark follows the system setting: `dark:` utilities, and the palette below,
+   apply when the OS asks for dark. No class, no script, no toggle. */
+@custom-variant dark (@media (prefers-color-scheme: dark));
 
 @theme inline {
     --font-heading: var(--font-sans);
@@ -51,6 +53,7 @@
     --color-card: var(--card);
     --color-foreground: var(--foreground);
     --color-background: var(--background);
+    --color-canvas: var(--canvas);
     --radius-sm: calc(var(--radius) * 0.6);
     --radius-md: calc(var(--radius) * 0.8);
     --radius-lg: var(--radius);
@@ -63,6 +66,9 @@
 :root {
     --background: oklch(1 0 0);
     --foreground: oklch(0.141 0.005 285.823);
+    /* What the three-column layout sits on: a shade under the cards, so
+       they stand off it. */
+    --canvas: oklch(0.975 0.002 286);
     --card: oklch(1 0 0);
     --card-foreground: oklch(0.141 0.005 285.823);
     --popover: oklch(1 0 0);
@@ -95,38 +101,43 @@
     --sidebar-ring: oklch(0.705 0.015 286.067);
 }
 
-.dark {
-    --background: oklch(0.141 0.005 285.823);
-    --foreground: oklch(0.985 0 0);
-    --card: oklch(0.21 0.006 285.885);
-    --card-foreground: oklch(0.985 0 0);
-    --popover: oklch(0.21 0.006 285.885);
-    --popover-foreground: oklch(0.985 0 0);
-    --primary: oklch(0.443 0.11 240.79);
-    --primary-foreground: oklch(0.977 0.013 236.62);
-    --secondary: oklch(0.274 0.006 286.033);
-    --secondary-foreground: oklch(0.985 0 0);
-    --muted: oklch(0.274 0.006 286.033);
-    --muted-foreground: oklch(0.705 0.015 286.067);
-    --accent: oklch(0.274 0.006 286.033);
-    --accent-foreground: oklch(0.985 0 0);
-    --destructive: oklch(0.704 0.191 22.216);
-    --border: oklch(1 0 0 / 10%);
-    --input: oklch(1 0 0 / 15%);
-    --ring: oklch(0.552 0.016 285.938);
-    --chart-1: oklch(0.865 0.127 207.078);
-    --chart-2: oklch(0.715 0.143 215.221);
-    --chart-3: oklch(0.609 0.126 221.723);
-    --chart-4: oklch(0.52 0.105 223.128);
-    --chart-5: oklch(0.45 0.085 224.283);
-    --sidebar: oklch(0.21 0.006 285.885);
-    --sidebar-foreground: oklch(0.985 0 0);
-    --sidebar-primary: oklch(0.685 0.169 237.323);
-    --sidebar-primary-foreground: oklch(0.293 0.066 243.157);
-    --sidebar-accent: oklch(0.274 0.006 286.033);
-    --sidebar-accent-foreground: oklch(0.985 0 0);
-    --sidebar-border: oklch(1 0 0 / 10%);
-    --sidebar-ring: oklch(0.552 0.016 285.938);
+@media (prefers-color-scheme: dark) {
+    :root {
+        /* Scrollbars and native form controls go dark too. */
+        color-scheme: dark;
+        --background: oklch(0.141 0.005 285.823);
+        --foreground: oklch(0.985 0 0);
+        --canvas: oklch(0.141 0.005 285.823);
+        --card: oklch(0.21 0.006 285.885);
+        --card-foreground: oklch(0.985 0 0);
+        --popover: oklch(0.21 0.006 285.885);
+        --popover-foreground: oklch(0.985 0 0);
+        --primary: oklch(0.443 0.11 240.79);
+        --primary-foreground: oklch(0.977 0.013 236.62);
+        --secondary: oklch(0.274 0.006 286.033);
+        --secondary-foreground: oklch(0.985 0 0);
+        --muted: oklch(0.274 0.006 286.033);
+        --muted-foreground: oklch(0.705 0.015 286.067);
+        --accent: oklch(0.274 0.006 286.033);
+        --accent-foreground: oklch(0.985 0 0);
+        --destructive: oklch(0.704 0.191 22.216);
+        --border: oklch(1 0 0 / 10%);
+        --input: oklch(1 0 0 / 15%);
+        --ring: oklch(0.552 0.016 285.938);
+        --chart-1: oklch(0.865 0.127 207.078);
+        --chart-2: oklch(0.715 0.143 215.221);
+        --chart-3: oklch(0.609 0.126 221.723);
+        --chart-4: oklch(0.52 0.105 223.128);
+        --chart-5: oklch(0.45 0.085 224.283);
+        --sidebar: oklch(0.21 0.006 285.885);
+        --sidebar-foreground: oklch(0.985 0 0);
+        --sidebar-primary: oklch(0.685 0.169 237.323);
+        --sidebar-primary-foreground: oklch(0.293 0.066 243.157);
+        --sidebar-accent: oklch(0.274 0.006 286.033);
+        --sidebar-accent-foreground: oklch(0.985 0 0);
+        --sidebar-border: oklch(1 0 0 / 10%);
+        --sidebar-ring: oklch(0.552 0.016 285.938);
+    }
 }
 
 @layer base {
@@ -139,4 +150,128 @@
   html {
     @apply font-sans;
     }
+}
+/*
+ * Opening a work from the centred search, and going back (router.ts decides
+ * when). The browser pictures the page before and after, and animates from
+ * one picture to the other; these rules say how.
+ *
+ * The names exist only while one of the two runs. A named element is moved
+ * from where it was to where it is — so the header and the search panel
+ * slide to the left edge, or back to the middle — rather than cross-faded
+ * with the rest of the page, which is all the root does.
+ */
+:root:active-view-transition-type(open-work, close-work) {
+  [data-vt="header"] {
+    view-transition-name: header;
+  }
+  [data-vt="search"] {
+    view-transition-name: search;
+  }
+  [data-vt="paper"] {
+    view-transition-name: paper;
+  }
+  [data-vt="lists"] {
+    view-transition-name: lists;
+  }
+}
+
+::view-transition-group(header),
+::view-transition-group(search) {
+  animation-duration: 450ms;
+  animation-timing-function: cubic-bezier(0.2, 0, 0, 1);
+  overflow: clip;
+}
+
+/* The page's own colour changes too, white to the canvas and back, and the
+   header's picture carries the colour of its bar. Fading the page over the
+   same time keeps the two in step, so the bar is never a band of the old
+   colour on the new page. */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: 450ms;
+}
+
+/* The panel is narrower beside a work than it is centred. Stretched to fit,
+   the pictures would make its text seem to shrink as it moves; drawn at their
+   own size from the top left, the narrowing box cuts them off instead, and
+   the old wrapping fades into the new. */
+::view-transition-old(header),
+::view-transition-new(header),
+::view-transition-old(search),
+::view-transition-new(search) {
+  width: 100%;
+  height: 100%;
+  object-fit: none;
+  object-position: left top;
+}
+
+/* The panel's box also moves up or down, by --vt-shift (Browse measures it):
+   its top edge is somewhere else on screen after the rows rewrap, or after
+   Back restores the list's scroll. Each picture is slid the other way, on the
+   same curve, so the rows in it stay put and only travel sideways. The old
+   picture holds its place as it fades; the new one is already where it will
+   land. Writing out the animations replaces the browser's own cross-fade, so
+   it is written out here too. */
+::view-transition-old(search) {
+  animation-name: vt-fade-out, vt-hold-old;
+  mix-blend-mode: plus-lighter;
+}
+::view-transition-new(search) {
+  animation-name: vt-fade-in, vt-hold-new;
+  mix-blend-mode: plus-lighter;
+}
+
+@keyframes vt-fade-out {
+  to {
+    opacity: 0;
+  }
+}
+@keyframes vt-fade-in {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes vt-hold-old {
+  to {
+    translate: 0 var(--vt-shift, 0px);
+  }
+}
+@keyframes vt-hold-new {
+  from {
+    translate: 0 calc(-1 * var(--vt-shift, 0px));
+  }
+}
+
+/* The work and its lists are only on one side of either transition, and
+   neither is drawn over the search while it is moving. Opening, they wait
+   until it has mostly slid out of their way, then come in from the right a
+   beat apart. Closing, they leave first, and the search waits for them. */
+::view-transition-new(paper),
+::view-transition-new(lists) {
+  animation: vt-arrive 300ms cubic-bezier(0.2, 0, 0, 1) 200ms both;
+}
+::view-transition-new(lists) {
+  animation-delay: 260ms;
+}
+::view-transition-old(paper),
+::view-transition-old(lists) {
+  animation: vt-leave 160ms cubic-bezier(0.4, 0, 1, 1) both;
+}
+:root:active-view-transition-type(close-work)::view-transition-group(header),
+:root:active-view-transition-type(close-work)::view-transition-group(search) {
+  animation-delay: 100ms;
+}
+
+@keyframes vt-arrive {
+  from {
+    opacity: 0;
+    transform: translateX(4rem);
+  }
+}
+@keyframes vt-leave {
+  to {
+    opacity: 0;
+    transform: translateX(4rem);
+  }
 }
