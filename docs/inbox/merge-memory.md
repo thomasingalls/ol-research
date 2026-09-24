@@ -215,7 +215,136 @@ both widths the registry, the journal, all 175 shard files and the reports
 were the same as the build before, byte for byte, on a first merge and on a
 second, and `--survey` leaves `merged/` untouched. The full/incremental
 harness was not run: its store is normalized at an older model, and the
-full merge's output is unchanged. The corpus figure is the next survey's.
+full merge's output is unchanged. On the corpus, the whole run's resident
+high-water was 40.6 GB (step 2's section below).
+
+## Step 2, proposed 2026-09-24
+
+The second rehearsal (`ol-rht-merge-survey-v2`, steps 0 and 1 in its
+image) printed the heap at each phase (M):
+
+| phase | heap | peak so far |
+|---|---|---|
+| 91.1 M names read | 20.4 GiB | 21.7 GiB |
+| 50,776 conflict components | 20.7 GiB | 21.9 GiB |
+| identity resolved | 26.9 GiB | 37.9 GiB |
+| registry assigned | 27.3 GiB | 41.3 GiB |
+| pass 2 begins | 29.1 GiB | 41.3 GiB |
+| views read (1,925 s) | 29.2 GiB | 41.3 GiB |
+| references read (2,312 s) | 29.2 GiB | 41.3 GiB |
+| rows finished (2,935 s) | 5.1 GiB | 49.3 GiB |
+
+The run finished: the first merge of the whole baseline, 49 minutes —
+39,983,721 held works and 2,006,039 stubs, 405,845,919 edges, 2,961,423
+relations, 40,162,522 unresolved rows, 916,101,984 rows spilled in
+34.7 GB. It exited 1, as a survey does when anything was left unresolved:
+the 8 containers, its image being from before merge version 11.
+
+Resident high-water, read as the first rehearsal read it: 39.6 GB by the
+end of registry assignment against 50.4 GB, and 40.6 GB for the whole run.
+The container's own peak, 67.8 GB, counts the page cache of the spill's
+writes and reads as well, which the kernel takes back before it kills
+anything. The finish's heap peak, 8 GiB over pass 1's, is mostly memory
+asked for and never touched: a range's rows are read into one array of
+208-byte rows whatever their kind (M, `size_of::<Row>()`) against 38 bytes
+a row on disk, and a growing array reserves ahead of what it fills.
+Reading a range straight into its typed lists would remove it; so would
+narrower ranges (`OL_RHT_SPILL_SHARDS=1`). Neither is pressing while the
+resident peak is pass 1's.
+
+The views no longer add anything; pass 2 runs on the 29 GiB pass 1 leaves
+it, which is what bounds the run now. By the per-item costs above (D), that 29 GiB holds the
+identity pass's names and records, about 15.5 GB, of which the records are
+about 4 and the name arena most of the rest; `Copies`, 4.4 GB; the works,
+4.2 GB; and pass 2's own tables, about 2 GB — some 26 GB of the 31 GB the
+heap counts, the rest not yet accounted for. The peak at `resolve` is about
+11 GiB over the heap either side of it (M), most likely the two maps
+`resolve` groups names and records by component in (`names_by_root`,
+`recs_by_root`: a list per component, 40 M of them); at assignment, the
+held works' registry names (about 6 GB) and the registry's fold (6.5 GB).
+
+Four pieces, each landing with the merged sets byte for byte the same and
+measured by a survey before the next:
+
+**2a. Nothing depends on how names are numbered.** Step 2 numbers names in
+name order, not in the order they were read. Two things see the numbering
+today, neither written under `merged/`: `held_order`'s tie-break, which
+only works with no registry names reach (under `--survey`, a hairball's
+names are all marked shared), and the report's examples — which
+components are shown, and the order of the names in each. Both are made
+to follow the names instead, so the report's examples change once, here.
+With it, `resolve` groups by sorting (component, name) and (component,
+record) pairs, one array each, instead of the two maps: about 11 GiB off
+the peak (D). Small.
+
+*Built 2026-09-24* (the user: "yeah go ahead"). `resolve` groups each
+component's names and records by a counting sort into one array of
+starts and one of items (`Groups`), and takes the components in the
+order of their first record; `held_order` breaks its tie by the works'
+records' native names; `settle` takes publisher-id claims in the order
+their names were first claimed, which is what the name index meant
+before, so the rows keep every byte; the conflict rules visit names in
+name order, and the report's examples write them so. A test numbers the
+same records' names in name order and in reverse and finds nothing
+different (`nothing_follows_how_names_are_numbered`), and fails on the
+build before. On the scratch store: the 175 shard files, the registry and
+the journal byte for byte, on a first merge and a second; the reports'
+22 examples show the same components in the same order, each with its
+names now in name order, and no other line moves. The sample's peak at
+`resolve` stays 0.37 GiB — its lists were small — and 206,131 fewer
+allocations are the lists gone; the corpus figure is the next survey's.
+The full/incremental harness over the scratch store (`pubmed26n1334`
+held out) leaves the same store before and after — merged sets,
+registry, journal, delta logs, public ids and serving artifacts, build
+times and the search index's own file names aside — and fails the same
+way on both, on a divergence older than either (merge plan §11 item 24).
+
+**2b. The dictionary.** The copies read already opens every works set
+before the identity pass. It also writes every asserted name — encoded so
+that byte order is name order: the namespace, then a number big-endian or
+the canonical text — to sorted runs on the scratch disk, where the spill
+goes. Merging the runs gives each distinct name once, in order, streamed
+into two files: an FST from name to rank (the `fst` crate, already in the
+lockfile) and a front-coded list from rank to name. A name's rank is its
+index. `Arena` keeps its methods with a second, read-only form backed by
+the two files; the full merge uses it, and the incremental merge and the
+tests keep the hash form, which runs the same rules. On the sample the FST
+was 5.0 B a name (M); with the list, perhaps 15 B (E): about 1.4 GB for
+the corpus's 91 M names, against the arena's share of the 15.5 GB,
+perhaps 9 GB (E). What its survey measures:
+the files' sizes, the time to build them, and lookups a second, since
+every name of every reference is looked up in both passes — about 5 × 10⁸
+lookups (E), so each microsecond a lookup costs is about 8 minutes a pass.
+If the FST is too slow, 2b of the ranking above (a hash-compacted arena)
+fits behind the same methods.
+
+**2c. Records, natives and copies, compact.** A record's assertions in one
+flat array by offset — name index, field as a small integer, native as a
+bit — instead of a list of 24-byte entries; `natives` a vector by name
+index instead of a hash map, and pass 2's `by_native` the same vector, not
+a second map; `Copies` keyed by (source, native index) in a sorted vector,
+with a delivery's set an index into the list of sets instead of its own
+string. `Copies` is read before the dictionary exists, so it is built as
+today and converted once the dictionary is ready. About 9 GB → 2.5 GB (E).
+
+**2d. Works and the registry.** Works as flat arrays by offset, like the
+records. `held_order` as a sort of work indices comparing registry names
+as lists of ranks — rank order is name order, so it is the same sort —
+instead of a copy of every work's names (about 6 GB → 0.2 GB). The
+registry's fold as a vector of ids by name index and one by stub, filled by
+reading the registry through the dictionary; names neither held nor cited
+this run matter only to `drop_unseen`, which reads the log again; lines are
+rendered through the dictionary as they are written (6.5 GB → 0.4 GB).
+Pass 2's names table in four bytes a name instead of eight. `registry::assign`
+is handed the fold it works through, so the incremental merge keeps the map
+it has.
+
+For PubMed, all four come to about 6–8 GB for pass 1 and 8–10 GB for the
+run, one spill range included (E). For verification, as with steps 0 and 1:
+the scratch store's merged sets, registry, journal and reports byte for
+byte (the reports' examples excepted at 2a), a second merge that reuses
+every id, and the full/incremental harness, whose store has to be
+normalized again at model 8 first.
 
 ## Walls behind this one
 

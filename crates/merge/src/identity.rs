@@ -616,15 +616,23 @@ impl Identity {
         }
         self.settled = true;
         let deferred = std::mem::take(&mut self.deferred);
-        // By name index, so that the order records gain names — and so
-        // the merged rows — does not depend on a hash map's iteration.
-        let mut claims: BTreeMap<NameIx, SmallVec<[(RecordIx, &'static str); 2]>> = BTreeMap::new();
+        // In the order each name was first claimed, which is the order the
+        // sets were read in, so that the order records gain names — and so
+        // the merged rows — follows neither a hash map's iteration nor how
+        // names are numbered.
+        let mut first: HashMap<NameIx, usize> = HashMap::new();
+        let mut claims: Vec<(NameIx, Claimants)> = Vec::new();
         for (rix, ix, field) in deferred {
-            let by = claims.entry(ix).or_default();
+            let at = *first.entry(ix).or_insert_with(|| {
+                claims.push((ix, SmallVec::new()));
+                claims.len() - 1
+            });
+            let by = &mut claims[at].1;
             if !by.iter().any(|(r, _)| *r == rix) {
                 by.push((rix, field));
             }
         }
+        drop(first);
         for (ix, mut by) in claims {
             by.sort_unstable_by_key(|(rix, _)| *rix);
             let mut per_source = [0u32; SourceId::ALL.len()];
@@ -1077,27 +1085,12 @@ impl Identity {
             self.mark();
         }
         self.cut_containers();
-        let mut names_by_root: HashMap<NameIx, Vec<NameIx>> = HashMap::new();
-        for (i, &root) in self.roots.iter().enumerate() {
-            if self.refused.contains(&(i as NameIx)) {
-                continue;
-            }
-            names_by_root.entry(root).or_default().push(i as NameIx);
-        }
-        let mut recs_by_root: HashMap<NameIx, Vec<RecordIx>> = HashMap::new();
-        for (rix, rec) in self.records.iter().enumerate() {
-            recs_by_root
-                .entry(self.roots[rec.native as usize])
-                .or_default()
-                .push(rix as RecordIx);
-        }
-        let mut roots: Vec<NameIx> = names_by_root.keys().copied().collect();
-        roots.sort_unstable();
+        let (names_of, recs_of, roots) = self.grouped()?;
         let mut works = Vec::with_capacity(roots.len());
         let mut components = Components::default();
         for root in roots {
-            let names = &names_by_root[&root];
-            let recs = recs_by_root.get(&root).map_or(&[][..], Vec::as_slice);
+            let names = names_of.get(root as usize);
+            let recs = recs_of.get(root as usize);
             components.total += 1;
             if !self.conflict_roots.contains(&root) {
                 works.push(self.trivial(names, recs));
@@ -1133,6 +1126,7 @@ impl Identity {
             }
             works.extend(resolved);
         }
+        drop((names_of, recs_of));
         self.refusals_onto(&mut works);
         for work in &works {
             components.accepted += work.names.len() as u64;
@@ -1161,6 +1155,49 @@ impl Identity {
             stats: self.stats,
             components,
         })
+    }
+
+    /// Each component's names and records, grouped by its root in one
+    /// array apiece rather than a list per component — on the corpus the
+    /// lists were about 11 GiB of the pass's peak (the merge's memory,
+    /// step 2a, 2026-09-24) — and the roots in the order of each
+    /// component's first record, which is the order the sets were read in
+    /// and not how the names are numbered. Every name that is not refused
+    /// is some record's, so every component has one.
+    #[allow(clippy::cast_possible_truncation)] // fewer than 2^32 names or records in a run
+    fn grouped(&self) -> Result<(Groups, Groups, Vec<NameIx>), Error> {
+        let n = self.arena.len();
+        let names_of = Groups::of(n, || {
+            self.roots
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| !self.refused.contains(&(*i as NameIx)))
+                .map(|(i, &root)| (root, i as NameIx))
+        });
+        let recs_of = Groups::of(n, || {
+            self.records
+                .iter()
+                .enumerate()
+                .map(|(rix, rec)| (self.roots[rec.native as usize], rix as RecordIx))
+        });
+        let mut seen = vec![0u64; n.div_ceil(64)];
+        let mut roots: Vec<NameIx> = Vec::new();
+        for rec in &self.records {
+            let root = self.roots[rec.native as usize] as usize;
+            if seen[root / 64] & (1 << (root % 64)) == 0 {
+                seen[root / 64] |= 1 << (root % 64);
+                roots.push(root as NameIx);
+            }
+        }
+        if let Some(stray) =
+            (0..n).find(|&r| !names_of.get(r).is_empty() && recs_of.get(r).is_empty())
+        {
+            return Err(Error::Unmodelled(format!(
+                "{} is in a component with no record",
+                self.arena.get(names_of.get(stray)[0])
+            )));
+        }
+        Ok((names_of, recs_of, roots))
     }
 
     /// A component with at most one name per namespace and one record per
@@ -1202,18 +1239,22 @@ impl Identity {
             });
         }
         let mut labels = Labels::default();
-        // Who asserts each name, as positions into `recs`.
-        let mut asserters: BTreeMap<NameIx, SmallVec<[(usize, bool); 4]>> = BTreeMap::new();
+        // Who asserts each name, as positions into `recs`, the names in
+        // name order: what a verdict or an error names first follows the
+        // names, not how they were numbered.
+        let mut found: BTreeMap<NameIx, Asserting> = BTreeMap::new();
         for (pos, &rix) in recs.iter().enumerate() {
             for a in &self.records[rix as usize].asserts {
-                asserters.entry(a.name).or_default().push((pos, a.native));
+                found.entry(a.name).or_default().push((pos, a.native));
             }
         }
+        let mut asserters: Vec<(NameIx, Asserting)> = found.into_iter().collect();
+        asserters.sort_by(|a, b| self.arena.get(a.0).cmp(self.arena.get(b.0)));
         // Records sharing a name are one work when their titles agree.
         let mut uf: Vec<usize> = (0..recs.len()).collect();
         let default = OwnedTitles::default();
         let title_of = |pos: usize| self.titles.get(&recs[pos]).unwrap_or(&default);
-        for list in asserters.values() {
+        for (_, list) in &asserters {
             for i in 0..list.len() {
                 for j in i + 1..list.len() {
                     let (a, b) = (list[i].0, list[j].0);
@@ -1249,7 +1290,7 @@ impl Identity {
             w.uncorroborated = labels.uncorroborated;
         }
         // Verdicts, name by name.
-        for (&name, list) in &asserters {
+        for &(name, ref list) in &asserters {
             let mut asserting: SmallVec<[usize; 4]> = SmallVec::new();
             let mut natives: SmallVec<[usize; 2]> = SmallVec::new();
             for &(pos, native) in list {
@@ -1426,19 +1467,32 @@ impl Identity {
                 let _ = write!(out, "{}={}", rec.source, self.arena.get(rec.native));
             }
             out.push_str(" |");
-            for n in &w.names {
-                let _ = write!(out, " {}({})", self.arena.get(n.name), n.standing);
-            }
-            for r in &w.rejected {
-                let _ = match r.holder {
-                    Some(holder) => write!(
-                        out,
+            // Names in name order, as the rows write them, not in the
+            // order they were numbered.
+            let mut names: Vec<(&OwnedName, String)> = w
+                .names
+                .iter()
+                .map(|n| {
+                    (
+                        self.arena.get(n.name),
+                        format!(" {}({})", self.arena.get(n.name), n.standing),
+                    )
+                })
+                .collect();
+            names.extend(w.rejected.iter().map(|r| {
+                let text = match r.holder {
+                    Some(holder) => format!(
                         " {}(rejected: {} holds it)",
                         self.arena.get(r.name),
                         self.arena.get(self.records[holder as usize].native)
                     ),
-                    None => write!(out, " {}(rejected: {})", self.arena.get(r.name), r.why),
+                    None => format!(" {}(rejected: {})", self.arena.get(r.name), r.why),
                 };
+                (self.arena.get(r.name), text)
+            }));
+            names.sort();
+            for (_, text) in names {
+                out.push_str(&text);
             }
             out.push('}');
         }
@@ -1462,6 +1516,51 @@ enum Kept {
 /// Names per namespace and records per source in one component.
 /// A rejected name, why, and the record that holds it, if one does.
 type Refusal = (NameIx, Reason, Option<RecordIx>);
+
+/// The records claiming one publisher id, each once, with the field.
+type Claimants = SmallVec<[(RecordIx, &'static str); 2]>;
+
+/// The records asserting one name in a component, as positions into its
+/// records, and whether as their native name.
+type Asserting = SmallVec<[(usize, bool); 4]>;
+
+/// Items grouped by a key below a bound, each group's items in the order
+/// they were given: a counting sort into one array of starts and one of
+/// items, where a map of lists would hold a list per key.
+struct Groups {
+    starts: Vec<u32>,
+    items: Vec<u32>,
+}
+
+impl Groups {
+    /// `pairs` is called twice, and must give the same (key, item) pairs
+    /// both times.
+    #[allow(clippy::cast_possible_truncation)] // fewer than 2^32 names or records in a run
+    fn of<I: Iterator<Item = (u32, u32)>>(keys: usize, pairs: impl Fn() -> I) -> Self {
+        let mut starts = vec![0u32; keys + 1];
+        for (key, _) in pairs() {
+            starts[key as usize + 1] += 1;
+        }
+        for k in 1..=keys {
+            starts[k] += starts[k - 1];
+        }
+        let mut items = vec![0u32; starts[keys] as usize];
+        // Each start serves as its group's cursor, which leaves it at the
+        // next group's start; shifting them back restores them.
+        for (key, item) in pairs() {
+            let at = &mut starts[key as usize];
+            items[*at as usize] = item;
+            *at += 1;
+        }
+        starts.copy_within(0..keys, 1);
+        starts[0] = 0;
+        Self { starts, items }
+    }
+
+    fn get(&self, key: usize) -> &[u32] {
+        &self.items[self.starts[key] as usize..self.starts[key + 1] as usize]
+    }
+}
 
 #[derive(Default)]
 struct Tally {
@@ -1725,7 +1824,10 @@ pub struct Resolution {
 impl Resolution {
     /// The held works in the registry's order (merge plan §4): each
     /// work's index into [`Resolution::works`] with its registry names,
-    /// sorted by the names, then by index for the works that have none.
+    /// sorted by the names, then, for the works that have none — a
+    /// hairball under `--survey`, whose names are all shared — by their
+    /// records' native names. Nothing in it follows how names are
+    /// numbered or the order works were made in.
     #[must_use]
     pub fn held_order(&self) -> Vec<(usize, Vec<OwnedName>)> {
         let mut held: Vec<(usize, Vec<OwnedName>)> = self
@@ -1734,7 +1836,16 @@ impl Resolution {
             .enumerate()
             .map(|(i, w)| (i, w.registry_names(&self.arena)))
             .collect();
-        held.sort_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0)));
+        let natives = |w: usize| -> Vec<&OwnedName> {
+            let mut n: Vec<&OwnedName> = self.works[w]
+                .records
+                .iter()
+                .map(|&rix| self.arena.get(self.records[rix as usize].native))
+                .collect();
+            n.sort();
+            n
+        };
+        held.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| natives(a.0).cmp(&natives(b.0))));
         held
     }
 
@@ -2641,6 +2752,138 @@ mod tests {
         ka.sort();
         kb.sort();
         assert_eq!(ka, kb);
+    }
+
+    /// The merge's memory, step 2a (2026-09-24): numbering the names in
+    /// another order — as a dictionary in name order will — changes
+    /// nothing the pass gives. Not the works, not the order they are in,
+    /// not the order a record keeps its names in (which the rows write),
+    /// not the registry's order, and not a word of the report's examples.
+    #[test]
+    fn nothing_follows_how_names_are_numbered() {
+        let registrant = model::Registrant::parse("10.30476").unwrap();
+        let build = |first: &[OwnedName]| {
+            let mut id = Identity::new();
+            for name in first {
+                let ix = id.arena.intern(name.as_name());
+                if id.parent.len() <= ix as usize {
+                    id.parent.push(ix);
+                }
+            }
+            pubmed(&mut id, 1, Some("10.1/a"), Some(7), "Alpha");
+            crossref(&mut id, "10.1/a", "Alpha");
+            openalex(&mut id, 10, Some("10.1/a"), Some(1), "Alpha");
+            openalex(&mut id, 11, Some("10.1/a"), Some(1), "Alpha");
+            pubmed(&mut id, 2, Some("10.1/b"), None, "Beta");
+            openalex(&mut id, 12, Some("10.1/b"), Some(2), "Gamma, not beta");
+            pubmed(&mut id, 3, Some("10.1/shared"), None, "One letter");
+            pubmed(&mut id, 4, Some("10.1/shared"), None, "Another letter");
+            // Two publisher ids on one record, claimed out of name order,
+            // and one that two records claim, which is refused.
+            for (p, piis) in [
+                (5u32, &["X-2", "X-1"][..]),
+                (6, &["JAMP-14-1"][..]),
+                (8, &["JAMP-14-1"][..]),
+            ] {
+                let mut a = vec![Assertion {
+                    name: Name::Pmid(pmid(p)),
+                    field: "pmid",
+                    native: true,
+                }];
+                a.extend(piis.iter().map(|v| Assertion {
+                    name: Name::Publisher(registrant, v),
+                    field: "ids.pii",
+                    native: false,
+                }));
+                let title = format!("Paper {p}");
+                id.push(
+                    SourceId::Pubmed,
+                    &a,
+                    Titles {
+                        title: Some(&title),
+                        vernacular: None,
+                    },
+                )
+                .unwrap();
+            }
+            for (n, title) in (1u32..).zip(PROCEEDINGS) {
+                pubmed(&mut id, 13_264_100 + n, Some("10.1113/jp"), None, title);
+            }
+            for n in 100..140 {
+                openalex(
+                    &mut id,
+                    n,
+                    Some("10.1/hair"),
+                    None,
+                    "The same title everywhere",
+                );
+            }
+            id.mark();
+            id.cite(
+                SourceId::Pubmed,
+                &[Name::Doi("10.1/unheld"), Name::Doi("10.1/b2")],
+            );
+            id.resolve(true).unwrap()
+        };
+        let plain = build(&[]);
+        let mut names: Vec<OwnedName> = plain.arena.iter().cloned().collect();
+        names.sort();
+        // In name order, as the dictionary will number them, and the
+        // reverse: `X-1` and `X-2` above are read in neither.
+        for names in [names.clone(), names.into_iter().rev().collect()] {
+            let renumbered = build(&names);
+            assert_ne!(
+                plain.arena.get(0),
+                renumbered.arena.get(0),
+                "numbered differently"
+            );
+            assert_eq!(works(&plain), works(&renumbered));
+            assert_eq!(in_order(&plain), in_order(&renumbered), "the works' order");
+            assert_eq!(
+                kept(&plain),
+                kept(&renumbered),
+                "a record's names, in order"
+            );
+            assert_eq!(plain.held_order(), renumbered.held_order());
+            assert_eq!(plain.stub_works(), renumbered.stub_works());
+            assert_eq!(
+                plain.components, renumbered.components,
+                "the report's examples"
+            );
+            assert_eq!(plain.stats, renumbered.stats);
+        }
+        assert_eq!(plain.components.unresolved.get("hairball"), Some(&1));
+        assert_eq!(plain.stats.containers, 1);
+        assert_eq!(plain.stats.collided, 1);
+    }
+
+    /// Each work's names, the works in the order the pass made them.
+    fn in_order(res: &Resolution) -> Vec<Vec<String>> {
+        res.works
+            .iter()
+            .map(|w| {
+                let mut names: Vec<String> = w
+                    .names
+                    .iter()
+                    .map(|n| format!("{}={}", res.arena.get(n.name), n.standing))
+                    .collect();
+                names.sort();
+                names
+            })
+            .collect()
+    }
+
+    /// Each record's names in the order it keeps them, which the rows write.
+    fn kept(res: &Resolution) -> Vec<Vec<String>> {
+        res.records
+            .iter()
+            .map(|r| {
+                r.asserts
+                    .iter()
+                    .map(|a| format!("{} {} {}", res.arena.get(a.name), a.field, a.native))
+                    .collect()
+            })
+            .collect()
     }
 
     #[test]

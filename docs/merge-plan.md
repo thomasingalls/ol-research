@@ -1261,6 +1261,20 @@ stays.
   Whether all eight of the corpus's stars pass the title test, and not
   only the four that were read, is the next survey's to say: one that
   does not stops the run as before.
+- 2026-09-24, nothing in the identity pass follows how names are
+  numbered — step 2a of [the merge's memory](inbox/merge-memory.md). A
+  name's index was the order it was first read; step 2b numbers names in
+  name order, from a dictionary, so everything that followed the index
+  now follows something else: components come in the order of their
+  first record, `held_order`'s tie (works with no registry names, which
+  only `--survey` makes) goes by the works' records, `settle` takes
+  publisher-id claims in the order they were first made — what the index
+  order was, so a record's names keep their order in the rows — and the
+  report's examples write each work's names in name order. `resolve`
+  groups components by a counting sort instead of a list per component,
+  which on the corpus was about 11 GiB of the identity pass's peak (D).
+  No byte under `merged/` changes, so no merge version; the report's
+  examples change once.
 
 ## 11. Open items
 
@@ -1671,6 +1685,22 @@ stays.
     records of §11 item 18. Whether the refused values should instead be
     carried forward as a checked-in list, so a batch decides as the full
     merge did, is a question for the first daily update files.
+
+    Seen 2026-09-24, and the other way round. The full/incremental
+    harness over the scratch store at model 8, `pubmed26n1334` held out,
+    fails on it — the same way before and after step 2a of the merge's
+    memory, so neither caused it. Eight articles of one issue of a
+    Shiraz journal, cited-only stubs until the batch brings their
+    records, each carry the issue's id `reg30476:IJCBNM-14-1`. The batch
+    accepted it and joined all eight into one work: a `name` line and
+    seven `merge` lines. The full merge after it refused it, as it
+    refuses `JAMP-14-1` (§3.3), and split the work into eight: eight
+    `mint`s, a `split` and a `drop`. So a value a full merge refuses was
+    accepted by a batch that held *every* record claiming it, which the
+    batch's closure over shared names should have put in one identity
+    pass, where `settle` refuses it. Why it did not is not yet known. The
+    next full merge does tidy it, but the tidying is permanent: 18 lines
+    of an append-only registry, eight ids retired, for one issue.
 25. **Containers and parts.** B, built 2026-09-24 (§3.3, §10), refuses a
     container's DOI on its parts and leaves the container a stub, or the
     record Crossref holds of it. C, the answer the user set aside for
