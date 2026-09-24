@@ -81,32 +81,185 @@ pub enum Line {
 }
 
 /// A names table the assignment can run over: the whole log folded
-/// ([`Registry`]), or a names base with the log's tail past it (the
-/// serving layer's live table, serving plan §5).
+/// ([`Registry`]), a names base with the log's tail past it (the serving
+/// layer's live table, serving plan §5), or a full merge's table by name
+/// index ([`Ranked`]). Each keeps names its own way, [`Table::Name`], and
+/// the assignment asks it about names only in that form, so the rules of
+/// [`assign`] are one piece of code whichever table they run over.
 pub trait Table {
+    /// A name as the table's works give it.
+    type Name;
     /// The live id a name maps to.
-    fn lookup(&self, name: &OwnedName) -> Option<WorkId>;
+    fn lookup(&self, name: &Self::Name) -> Option<WorkId>;
     /// Ids minted so far: the next mint is one more.
     fn minted(&self) -> u32;
-    /// Folds one event.
+    /// Folds one event of an assignment, and returns it as the log writes
+    /// it.
     ///
     /// # Errors
     ///
     /// The event does not fit what came before; see [`Registry::apply`].
-    fn apply(&mut self, line: &Line) -> Result<(), String>;
+    fn fold(&mut self, event: Event<'_, Self::Name>, at: &str) -> Result<Line, String>;
+}
+
+/// One event of an assignment, its names as a [`Table`] keeps them.
+#[derive(Debug)]
+pub enum Event<'a, N> {
+    /// [`Line::Mint`].
+    Mint {
+        #[allow(missing_docs)]
+        id: WorkId,
+        #[allow(missing_docs)]
+        names: &'a [N],
+    },
+    /// [`Line::Name`].
+    Name {
+        #[allow(missing_docs)]
+        id: WorkId,
+        #[allow(missing_docs)]
+        name: &'a N,
+    },
+    /// [`Line::Merge`].
+    Merge {
+        #[allow(missing_docs)]
+        id: WorkId,
+        #[allow(missing_docs)]
+        into: WorkId,
+    },
+    /// [`Line::Split`].
+    Split {
+        #[allow(missing_docs)]
+        id: WorkId,
+        #[allow(missing_docs)]
+        into: Vec<WorkId>,
+    },
+}
+
+impl<N> Event<'_, N> {
+    /// The event as the log writes it, each name given by `owned`.
+    pub fn line(self, owned: impl Fn(&N) -> OwnedName, at: &str) -> Line {
+        let at = at.to_owned();
+        match self {
+            Self::Mint { id, names } => Line::Mint {
+                id,
+                names: names.iter().map(owned).collect(),
+                at,
+            },
+            Self::Name { id, name } => Line::Name {
+                id,
+                name: owned(name),
+                at,
+            },
+            Self::Merge { id, into } => Line::Merge { id, into, at },
+            Self::Split { id, into } => Line::Split { id, into, at },
+        }
+    }
+}
+
+/// The works an assignment is given, each a list of names in the form its
+/// [`Table`] keeps them: a slice of lists, or a full merge's lists by name
+/// index, one array for all of them.
+pub trait Works<N> {
+    /// How many works.
+    fn len(&self) -> usize;
+    /// No works.
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+    /// The names of work `w`.
+    fn names(&self, w: usize) -> &[N];
+}
+
+impl<N, W: AsRef<[N]>> Works<N> for [W] {
+    fn len(&self) -> usize {
+        <[W]>::len(self)
+    }
+
+    fn names(&self, w: usize) -> &[N] {
+        self[w].as_ref()
+    }
+}
+
+impl<N, W: AsRef<[N]>> Works<N> for Vec<W> {
+    fn len(&self) -> usize {
+        Vec::len(self)
+    }
+
+    fn names(&self, w: usize) -> &[N] {
+        self[w].as_ref()
+    }
 }
 
 /// The log, folded: which names map to which ids, which ids are retired.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Registry {
-    minted: u32,
+    ids: Ids,
     names: HashMap<OwnedName, WorkId>,
+}
+
+/// What a fold of the log knows about ids, whatever it keys names by:
+/// how many were minted, which are retired and into what, and the lines
+/// folded. [`Registry`] and [`Ranked`] keep names two ways and ids this
+/// one way, so the rules an event must meet are written once.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct Ids {
+    minted: u32,
     retired: HashMap<WorkId, Option<WorkId>>,
     /// The parts of every id a split retired, in the order the line
     /// gives them: what an id with no successor can still answer with
     /// (serving plan §11, item 24).
     split: HashMap<WorkId, Vec<WorkId>>,
     lines: u64,
+}
+
+impl Ids {
+    fn mint(&mut self, id: WorkId) -> Result<(), String> {
+        if id.get() != self.minted + 1 {
+            return Err(format!("mint of {id} after {} ids", self.minted));
+        }
+        self.minted += 1;
+        Ok(())
+    }
+
+    fn check_live(&self, id: WorkId) -> Result<(), String> {
+        if id.get() > self.minted {
+            return Err(format!("{id} was never minted"));
+        }
+        if self.retired.contains_key(&id) {
+            return Err(format!("{id} is retired"));
+        }
+        Ok(())
+    }
+
+    fn merge(&mut self, id: WorkId, into: WorkId) -> Result<(), String> {
+        self.check_live(id)?;
+        self.check_live(into)?;
+        if into >= id {
+            return Err(format!("merge of {id} into {into}, which is not older"));
+        }
+        self.retired.insert(id, Some(into));
+        Ok(())
+    }
+
+    fn split(&mut self, id: WorkId, into: &[WorkId]) -> Result<(), String> {
+        self.check_live(id)?;
+        for part in into {
+            self.check_live(*part)?;
+        }
+        self.retired.insert(id, None);
+        self.split.insert(id, into.to_vec());
+        Ok(())
+    }
+
+    fn live(&self, mut id: WorkId) -> Option<WorkId> {
+        loop {
+            match self.retired.get(&id) {
+                None => return Some(id),
+                Some(Some(into)) => id = *into,
+                Some(None) => return None,
+            }
+        }
+    }
 }
 
 /// What one run's assignment did.
@@ -179,16 +332,13 @@ impl Registry {
     pub fn apply(&mut self, line: &Line) -> Result<(), String> {
         match line {
             Line::Mint { id, names, .. } => {
-                if id.get() != self.minted + 1 {
-                    return Err(format!("mint of {id} after {} ids", self.minted));
-                }
-                self.minted += 1;
+                self.ids.mint(*id)?;
                 for name in names {
                     self.names.insert(name.clone(), *id);
                 }
             }
             Line::Name { id, name, .. } => {
-                self.check_live(*id)?;
+                self.ids.check_live(*id)?;
                 self.names.insert(name.clone(), *id);
             }
             Line::Drop { name, .. } => {
@@ -196,34 +346,10 @@ impl Registry {
                     return Err(format!("drop of {name}, which is not mapped"));
                 }
             }
-            Line::Merge { id, into, .. } => {
-                self.check_live(*id)?;
-                self.check_live(*into)?;
-                if into >= id {
-                    return Err(format!("merge of {id} into {into}, which is not older"));
-                }
-                self.retired.insert(*id, Some(*into));
-            }
-            Line::Split { id, into, .. } => {
-                self.check_live(*id)?;
-                for part in into {
-                    self.check_live(*part)?;
-                }
-                self.retired.insert(*id, None);
-                self.split.insert(*id, into.clone());
-            }
+            Line::Merge { id, into, .. } => self.ids.merge(*id, *into)?,
+            Line::Split { id, into, .. } => self.ids.split(*id, into)?,
         }
-        self.lines += 1;
-        Ok(())
-    }
-
-    fn check_live(&self, id: WorkId) -> Result<(), String> {
-        if id.get() > self.minted {
-            return Err(format!("{id} was never minted"));
-        }
-        if self.retired.contains_key(&id) {
-            return Err(format!("{id} is retired"));
-        }
+        self.ids.lines += 1;
         Ok(())
     }
 
@@ -265,7 +391,7 @@ impl Registry {
     /// Ids minted so far.
     #[must_use]
     pub const fn minted(&self) -> u32 {
-        self.minted
+        self.ids.minted
     }
 
     /// Names mapped.
@@ -277,26 +403,20 @@ impl Registry {
     /// Events folded.
     #[must_use]
     pub const fn lines(&self) -> u64 {
-        self.lines
+        self.ids.lines
     }
 
     /// The live id `id` stands for: itself, the id it was merged into
     /// (transitively), or `None` when it was split.
     #[must_use]
-    pub fn live(&self, mut id: WorkId) -> Option<WorkId> {
-        loop {
-            match self.retired.get(&id) {
-                None => return Some(id),
-                Some(Some(into)) => id = *into,
-                Some(None) => return None,
-            }
-        }
+    pub fn live(&self, id: WorkId) -> Option<WorkId> {
+        self.ids.live(id)
     }
 
     /// Every retired id and what it was retired into: an older id for a
     /// merge, nothing for a split. In no particular order.
     pub fn retirements(&self) -> impl Iterator<Item = (WorkId, Option<WorkId>)> + '_ {
-        self.retired.iter().map(|(id, into)| (*id, *into))
+        self.ids.retired.iter().map(|(id, into)| (*id, *into))
     }
 
     /// The parts a split retired `id` into, in the line's order; empty
@@ -304,12 +424,15 @@ impl Registry {
     /// with these (serving plan §11, item 24).
     #[must_use]
     pub fn split_into(&self, id: WorkId) -> &[WorkId] {
-        self.split.get(&id).map_or(&[], Vec::as_slice)
+        self.ids.split.get(&id).map_or(&[], Vec::as_slice)
     }
 
     /// Every split id with its parts. In no particular order.
     pub fn splits(&self) -> impl Iterator<Item = (WorkId, &[WorkId])> + '_ {
-        self.split.iter().map(|(id, into)| (*id, into.as_slice()))
+        self.ids
+            .split
+            .iter()
+            .map(|(id, into)| (*id, into.as_slice()))
     }
 
     /// The live id a name maps to.
@@ -342,16 +465,270 @@ impl Registry {
 }
 
 impl Table for Registry {
+    type Name = OwnedName;
+
     fn lookup(&self, name: &OwnedName) -> Option<WorkId> {
         Self::lookup(self, name)
     }
 
     fn minted(&self) -> u32 {
-        self.minted
+        self.ids.minted
     }
 
+    fn fold(&mut self, event: Event<'_, OwnedName>, at: &str) -> Result<Line, String> {
+        let line = event.line(Clone::clone, at);
+        Self::apply(self, &line)?;
+        Ok(line)
+    }
+}
+
+/// Works as one array of names and one of where each work's begin: a
+/// full merge's works for [`assign`], each name a [`Ranked`] index, in a
+/// few bytes a name where a list per work took a heap object each.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Flat {
+    starts: Vec<u32>,
+    names: Vec<u32>,
+}
+
+impl Default for Flat {
+    fn default() -> Self {
+        Self {
+            starts: vec![0],
+            names: Vec::new(),
+        }
+    }
+}
+
+impl Flat {
+    #[allow(missing_docs)]
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// One more work, with `names`.
+    ///
+    /// # Panics
+    ///
+    /// More than 2^32 names in all.
+    pub fn push(&mut self, names: impl IntoIterator<Item = u32>) {
+        self.names.extend(names);
+        self.starts
+            .push(u32::try_from(self.names.len()).expect("fewer than 2^32 names"));
+    }
+
+    /// Every work's names, one after another.
+    #[must_use]
+    pub fn all(&self) -> &[u32] {
+        &self.names
+    }
+}
+
+impl Works<u32> for Flat {
+    fn len(&self) -> usize {
+        self.starts.len() - 1
+    }
+
+    fn names(&self, w: usize) -> &[u32] {
+        &self.names[self.starts[w] as usize..self.starts[w + 1] as usize]
+    }
+}
+
+/// A run's names by number, for [`Ranked`]: every name a full merge's works
+/// can give, each with one index, and back.
+pub trait NameIndex {
+    /// Indices run from zero to this.
+    fn len(&self) -> usize;
+    /// No names.
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+    /// `name`'s index, if the run has it.
+    fn index(&self, name: &OwnedName) -> Option<u32>;
+    /// The name at `ix`.
+    fn name(&self, ix: u32) -> OwnedName;
+}
+
+/// The log folded for a full merge (the merge's memory, step 2d,
+/// 2026-09-24): a name the run has is an index into an array of ids,
+/// four bytes, where [`Registry`] keeps it as a key of a hash map — on
+/// the corpus some 91 M names, 6.5 GB. A name of the log the run does not
+/// have is kept by its text, as the registry keeps every name; a complete
+/// run drops them all. The ids are kept as the registry keeps them, and
+/// every line is checked by the same rules.
+#[derive(Debug)]
+pub struct Ranked<'n, I: NameIndex + ?Sized> {
+    index: &'n I,
+    ids: Ids,
+    by_index: Vec<Option<WorkId>>,
+    others: HashMap<OwnedName, WorkId>,
+}
+
+impl<'n, I: NameIndex + ?Sized> Ranked<'n, I> {
+    /// The log at `path` folded over `index`; empty when there is no file
+    /// yet.
+    ///
+    /// # Errors
+    ///
+    /// As [`Registry::read`].
+    pub fn read(path: &Path, index: &'n I) -> io::Result<Self> {
+        let mut ranked = Self {
+            index,
+            ids: Ids::default(),
+            by_index: vec![None; index.len()],
+            others: HashMap::new(),
+        };
+        let file = match fs::File::open(path) {
+            Ok(file) => file,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(ranked),
+            Err(e) => return Err(e),
+        };
+        let bad = |number: usize, what: String| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("{}: line {number}: {what}", path.display()),
+            )
+        };
+        for (number, line) in BufReader::new(file).lines().enumerate() {
+            let line = line?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            let event: Line =
+                serde_json::from_str(&line).map_err(|e| bad(number + 1, e.to_string()))?;
+            ranked.apply(&event).map_err(|what| bad(number + 1, what))?;
+        }
+        let split = |id: WorkId| format!("maps to {id}, which was split");
+        for (ix, id) in ranked.by_index.iter().enumerate() {
+            if let Some(id) = id
+                && ranked.ids.live(*id).is_none()
+            {
+                let name = ranked
+                    .index
+                    .name(u32::try_from(ix).map_err(io::Error::other)?);
+                return Err(bad(0, format!("{name} {}", split(*id))));
+            }
+        }
+        for (name, id) in &ranked.others {
+            if ranked.ids.live(*id).is_none() {
+                return Err(bad(0, format!("{name} {}", split(*id))));
+            }
+        }
+        Ok(ranked)
+    }
+
+    fn map(&mut self, name: &OwnedName, id: WorkId) {
+        match self.index.index(name) {
+            Some(ix) => self.by_index[ix as usize] = Some(id),
+            None => {
+                self.others.insert(name.clone(), id);
+            }
+        }
+    }
+
+    /// Folds one line of the log: [`Registry::apply`]'s rules.
     fn apply(&mut self, line: &Line) -> Result<(), String> {
-        Self::apply(self, line)
+        match line {
+            Line::Mint { id, names, .. } => {
+                self.ids.mint(*id)?;
+                for name in names {
+                    self.map(name, *id);
+                }
+            }
+            Line::Name { id, name, .. } => {
+                self.ids.check_live(*id)?;
+                self.map(name, *id);
+            }
+            Line::Drop { name, .. } => {
+                let mapped = match self.index.index(name) {
+                    Some(ix) => self.by_index[ix as usize].take().is_some(),
+                    None => self.others.remove(name).is_some(),
+                };
+                if !mapped {
+                    return Err(format!("drop of {name}, which is not mapped"));
+                }
+            }
+            Line::Merge { id, into, .. } => self.ids.merge(*id, *into)?,
+            Line::Split { id, into, .. } => self.ids.split(*id, into)?,
+        }
+        self.ids.lines += 1;
+        Ok(())
+    }
+
+    /// Ids minted so far.
+    #[must_use]
+    pub const fn minted(&self) -> u32 {
+        self.ids.minted
+    }
+
+    /// Events folded.
+    #[must_use]
+    pub const fn lines(&self) -> u64 {
+        self.ids.lines
+    }
+
+    /// Drops every mapped name the run's works do not have — `seen` says
+    /// which indices they have, and a name the run does not have at all
+    /// no work has — returning the lines in name order, as
+    /// [`Registry::drop_unseen`] does. The end of a run over the whole
+    /// store, after every work and stub was assigned.
+    ///
+    /// # Panics
+    ///
+    /// Never: a name taken from the table is mapped.
+    #[allow(clippy::cast_possible_truncation)] // indices are under 2^32
+    pub fn drop_unseen(&mut self, seen: impl Fn(u32) -> bool, at: &str) -> Vec<Line> {
+        let mut gone: Vec<OwnedName> = self
+            .by_index
+            .iter()
+            .enumerate()
+            .filter(|(ix, id)| id.is_some() && !seen(*ix as u32))
+            .map(|(ix, _)| self.index.name(ix as u32))
+            .chain(self.others.keys().cloned())
+            .collect();
+        gone.sort();
+        let mut lines = Vec::with_capacity(gone.len());
+        for name in gone {
+            let line = Line::Drop {
+                name,
+                at: at.to_owned(),
+            };
+            self.apply(&line).expect("the name is mapped");
+            lines.push(line);
+        }
+        lines
+    }
+}
+
+impl<I: NameIndex + ?Sized> Table for Ranked<'_, I> {
+    type Name = u32;
+
+    fn lookup(&self, ix: &u32) -> Option<WorkId> {
+        self.by_index[*ix as usize].and_then(|id| self.ids.live(id))
+    }
+
+    fn minted(&self) -> u32 {
+        self.ids.minted
+    }
+
+    fn fold(&mut self, event: Event<'_, u32>, at: &str) -> Result<Line, String> {
+        match &event {
+            Event::Mint { id, names } => {
+                self.ids.mint(*id)?;
+                for ix in *names {
+                    self.by_index[*ix as usize] = Some(*id);
+                }
+            }
+            Event::Name { id, name } => {
+                self.ids.check_live(*id)?;
+                self.by_index[**name as usize] = Some(*id);
+            }
+            Event::Merge { id, into } => self.ids.merge(*id, *into)?,
+            Event::Split { id, into } => self.ids.split(*id, into)?,
+        }
+        self.ids.lines += 1;
+        Ok(event.line(|ix| self.index.name(*ix), at))
     }
 }
 
@@ -379,9 +756,9 @@ impl Table for Registry {
 /// Never: every line it applies is one the fold accepts by
 /// construction.
 #[must_use]
-pub fn assign<T: Table, W: AsRef<[OwnedName]>>(
+pub fn assign<T: Table, W: Works<T::Name> + ?Sized>(
     table: &mut T,
-    works: &[W],
+    works: &W,
     held: usize,
     at: &str,
 ) -> Assignment {
@@ -407,32 +784,47 @@ pub fn assign<T: Table, W: AsRef<[OwnedName]>>(
 ///
 /// As [`assign`]: never.
 #[allow(clippy::too_many_lines)]
-pub fn assign_each<T: Table, W: AsRef<[OwnedName]>>(
+pub fn assign_each<T: Table, W: Works<T::Name> + ?Sized>(
     table: &mut T,
-    works: &[W],
+    works: &W,
     held: usize,
     at: &str,
     emit: &mut dyn FnMut(Line) -> io::Result<()>,
 ) -> io::Result<Assignment> {
     {
         let mut out = Assignment::default();
-        let claims: Vec<Vec<WorkId>> = works
-            .iter()
-            .map(|names| {
-                let mut ids: Vec<WorkId> = names
-                    .as_ref()
-                    .iter()
-                    .filter_map(|n| table.lookup(n))
-                    .collect();
-                ids.sort_unstable();
-                ids.dedup();
-                ids
-            })
-            .collect();
-        let mut claimants: HashMap<WorkId, Vec<usize>> = HashMap::new();
-        for (w, ids) in claims.iter().enumerate() {
-            for id in ids {
-                claimants.entry(*id).or_default().push(w);
+        // Every work's claims — the ids its names map to before anything is
+        // assigned — in one array, and the works claiming an id kept only
+        // for an id more than one work claims, the only ones the rules
+        // below ask about: on the corpus a list per work and per id was
+        // gigabytes (the merge's memory, step 2d, 2026-09-24).
+        let mut claim_starts: Vec<u32> = Vec::with_capacity(works.len() + 1);
+        let mut claim_ids: Vec<WorkId> = Vec::new();
+        let mut buffer: Vec<WorkId> = Vec::new();
+        claim_starts.push(0);
+        for w in 0..works.len() {
+            buffer.clear();
+            buffer.extend(works.names(w).iter().filter_map(|n| table.lookup(n)));
+            buffer.sort_unstable();
+            buffer.dedup();
+            claim_ids.extend_from_slice(&buffer);
+            claim_starts.push(u32::try_from(claim_ids.len()).expect("fewer than 2^32 claims"));
+        }
+        let claims = |w: usize| &claim_ids[claim_starts[w] as usize..claim_starts[w + 1] as usize];
+        let mut claimants: HashMap<WorkId, Vec<usize>> = {
+            let mut sorted = claim_ids.clone();
+            sorted.sort_unstable();
+            sorted
+                .windows(2)
+                .filter(|pair| pair[0] == pair[1])
+                .map(|pair| (pair[0], Vec::new()))
+                .collect()
+        };
+        for w in 0..works.len() {
+            for id in claims(w) {
+                if let Some(ws) = claimants.get_mut(id) {
+                    ws.push(w);
+                }
             }
         }
         // The one part of a contested id that holds records keeps it.
@@ -440,7 +832,6 @@ pub fn assign_each<T: Table, W: AsRef<[OwnedName]>>(
         // the order this map is walked in.
         let keeper: HashMap<WorkId, usize> = claimants
             .iter()
-            .filter(|(_, ws)| ws.len() > 1)
             .filter_map(|(id, ws)| {
                 let mut holders = ws.iter().copied().filter(|w| *w < held);
                 let first = holders.next()?;
@@ -448,12 +839,12 @@ pub fn assign_each<T: Table, W: AsRef<[OwnedName]>>(
             })
             .collect();
         let contested = |id: &WorkId, w: usize| -> bool {
-            claimants[id].len() > 1 && keeper.get(id) != Some(&w)
+            claimants.contains_key(id) && keeper.get(id) != Some(&w)
         };
         let mut split_into: HashMap<WorkId, Vec<WorkId>> = HashMap::new();
-        for (w, names) in works.iter().enumerate() {
-            let names = names.as_ref();
-            let unique: Vec<WorkId> = claims[w]
+        for w in 0..works.len() {
+            let names = works.names(w);
+            let unique: Vec<WorkId> = claims(w)
                 .iter()
                 .copied()
                 .filter(|id| !contested(id, w))
@@ -461,12 +852,9 @@ pub fn assign_each<T: Table, W: AsRef<[OwnedName]>>(
             let id = match unique.as_slice() {
                 [] => {
                     let id = WorkId::new(table.minted() + 1).expect("ids fit u32");
-                    let line = Line::Mint {
-                        id,
-                        names: names.to_vec(),
-                        at: at.to_owned(),
-                    };
-                    table.apply(&line).expect("a mint after the last id");
+                    let line = table
+                        .fold(Event::Mint { id, names }, at)
+                        .expect("a mint after the last id");
                     emit(line)?;
                     out.minted += 1;
                     id
@@ -477,12 +865,15 @@ pub fn assign_each<T: Table, W: AsRef<[OwnedName]>>(
                 }
                 [winner, losers @ ..] => {
                     for loser in losers {
-                        let line = Line::Merge {
-                            id: *loser,
-                            into: *winner,
-                            at: at.to_owned(),
-                        };
-                        table.apply(&line).expect("both live, winner older");
+                        let line = table
+                            .fold(
+                                Event::Merge {
+                                    id: *loser,
+                                    into: *winner,
+                                },
+                                at,
+                            )
+                            .expect("both live, winner older");
                         emit(line)?;
                         out.merged += 1;
                     }
@@ -492,18 +883,15 @@ pub fn assign_each<T: Table, W: AsRef<[OwnedName]>>(
             };
             for name in names {
                 if table.lookup(name) != Some(id) {
-                    let line = Line::Name {
-                        id,
-                        name: name.clone(),
-                        at: at.to_owned(),
-                    };
-                    table.apply(&line).expect("the id is live");
+                    let line = table
+                        .fold(Event::Name { id, name }, at)
+                        .expect("the id is live");
                     emit(line)?;
                     out.attached += 1;
                 }
             }
-            for claimed in &claims[w] {
-                if claimants[claimed].len() > 1 && !keeper.contains_key(claimed) {
+            for claimed in claims(w) {
+                if claimants.contains_key(claimed) && !keeper.contains_key(claimed) {
                     split_into.entry(*claimed).or_default().push(id);
                 }
             }
@@ -514,12 +902,9 @@ pub fn assign_each<T: Table, W: AsRef<[OwnedName]>>(
         for (id, mut into) in splits {
             into.sort_unstable();
             into.dedup();
-            let line = Line::Split {
-                id,
-                into,
-                at: at.to_owned(),
-            };
-            table.apply(&line).expect("the parts are live");
+            let line = table
+                .fold(Event::Split { id, into }, at)
+                .expect("the parts are live");
             emit(line)?;
             out.split += 1;
         }
@@ -1136,6 +1521,133 @@ mod tests {
 
     fn id(n: u32) -> WorkId {
         WorkId::new(n).unwrap()
+    }
+
+    /// The run's names for [`super::Ranked`], in a test: a list, by place.
+    #[derive(Debug)]
+    struct Names(Vec<OwnedName>);
+
+    impl super::NameIndex for Names {
+        fn len(&self) -> usize {
+            self.0.len()
+        }
+
+        #[allow(clippy::cast_possible_truncation)] // a test's few names
+        fn index(&self, name: &OwnedName) -> Option<u32> {
+            self.0.iter().position(|n| n == name).map(|i| i as u32)
+        }
+
+        fn name(&self, ix: u32) -> OwnedName {
+            self.0[ix as usize].clone()
+        }
+    }
+
+    /// The merge's memory, step 2d (2026-09-24): a full merge's table by
+    /// name index folds the log to what the registry folds it to, and an
+    /// assignment over it writes every line the registry's would — mints,
+    /// names, merges, splits, a held work keeping an id a stub contests,
+    /// and the drops of a complete run, both of a name the run has and no
+    /// work does and of a name the run does not have at all.
+    #[test]
+    #[allow(clippy::cast_possible_truncation)] // a test's few names
+    fn a_ranked_table_answers_as_the_registry_does() {
+        let dir = std::env::temp_dir().join(format!("ol-rht-ranked-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("registry.jsonl");
+        let mut r = Registry::default();
+        let first = r.assign(
+            &[
+                vec![n("doi:10.1000/a"), n("pmid:1")],
+                vec![n("pmid:2")],
+                vec![n("pmid:3"), n("pmc:PMC3")],
+                vec![n("doi:10.1000/old"), n("pmid:4")],
+                vec![n("pmid:5"), n("pmc:PMC5")],
+            ],
+            5,
+            "t0",
+            true,
+        );
+        let second = r.assign(
+            &[
+                vec![
+                    n("doi:10.1000/a"),
+                    n("pmid:1"),
+                    n("pmid:2"),
+                    n("openalex:W9"),
+                ],
+                vec![n("pmid:3")],
+                vec![n("pmc:PMC3")],
+                vec![n("doi:10.1000/new"), n("pmid:4")],
+                vec![n("pmid:5"), n("pmc:PMC5")],
+                vec![n("doi:10.1000/old")],
+            ],
+            5,
+            "t1",
+            true,
+        );
+        Registry::append(&log, &first.lines).unwrap();
+        Registry::append(&log, &second.lines).unwrap();
+
+        let works = vec![
+            vec![n("doi:10.1000/a"), n("pmid:1")],
+            vec![n("pmid:3")],
+            vec![n("pmc:PMC3"), n("pmid:33")],
+            vec![n("doi:10.1000/new"), n("pmid:4"), n("pmid:44")],
+            vec![n("pmid:5")],
+            vec![n("pmc:PMC5")],
+            vec![n("pmid:6")],
+            vec![n("doi:10.1000/old")],
+        ];
+        let held = 7;
+        // The run has `pmid:2` — as a name no work's registry names hold,
+        // a shared or refused one — and not `openalex:W9` at all.
+        let mut all: Vec<OwnedName> = works.iter().flatten().cloned().collect();
+        all.push(n("pmid:2"));
+        all.sort();
+        let index = Names(all);
+        let by_index: Vec<Vec<u32>> = works
+            .iter()
+            .map(|w| {
+                w.iter()
+                    .map(|x| super::NameIndex::index(&index, x).unwrap())
+                    .collect()
+            })
+            .collect();
+
+        let mut registry = Registry::read(&log).unwrap();
+        let mut ranked = super::Ranked::read(&log, &index).unwrap();
+        assert_eq!(ranked.minted(), registry.minted());
+        assert_eq!(ranked.lines(), registry.lines());
+        let a = super::assign(&mut registry, &works, held, "t2");
+        let b = super::assign(&mut ranked, &by_index, held, "t2");
+        assert_eq!(b.ids, a.ids);
+        assert_eq!(b.lines, a.lines);
+        assert_eq!(
+            (b.minted, b.reused, b.merged, b.split, b.attached),
+            (a.minted, a.reused, a.merged, a.split, a.attached)
+        );
+        assert!(
+            a.merged + a.split + a.attached > 0,
+            "the run moves ids: {a:?}"
+        );
+        let seen: std::collections::HashSet<&OwnedName> = works.iter().flatten().collect();
+        let dropped_a = registry.drop_unseen(|x| seen.contains(x), "t2");
+        let in_works: std::collections::HashSet<u32> = by_index.iter().flatten().copied().collect();
+        let dropped_b = ranked.drop_unseen(|ix| in_works.contains(&ix), "t2");
+        assert_eq!(dropped_b, dropped_a);
+        assert_eq!(dropped_a.len(), 2, "pmid:2 and openalex:W9: {dropped_a:?}");
+        for (ix, name) in index.0.iter().enumerate() {
+            assert_eq!(
+                super::Table::lookup(&ranked, &(ix as u32)),
+                registry.lookup(name),
+                "{name}"
+            );
+        }
+        assert_eq!(
+            (ranked.minted(), ranked.lines()),
+            (registry.minted(), registry.lines())
+        );
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

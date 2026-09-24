@@ -1297,6 +1297,16 @@ stays.
   delivery in sixteen bytes, its set as a place in one list of set names;
   and the natives map is a vector by name index, which pass 2 now reads
   instead of building its own. No byte changes, so no merge version.
+- 2026-09-24, a full merge's registry folded by name number — part of
+  step 2d of [the merge's memory](inbox/merge-memory.md). `Ranked` keeps
+  an id per name the run has in an array by number, the rest by text; the
+  held works reach the registry as lists of numbers in its order, sorted
+  by rank without reading a name out; a line's names are read out only as
+  it is staged. The rules of §4 are one piece of code over any table,
+  generic in how the table keeps names, and the rules an event must meet
+  are one piece shared by the registry and `Ranked`; a test runs both over
+  one log and requires every line equal. No byte changes, so no merge
+  version.
 - 2026-09-24, nothing in the identity pass follows how names are
   numbered — step 2a of [the merge's memory](inbox/merge-memory.md). A
   name's index was the order it was first read; step 2b numbers names in

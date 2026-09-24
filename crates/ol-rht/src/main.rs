@@ -1312,29 +1312,34 @@ struct Totals {
 /// held count is what [`merge::registry::assign`] is told. On a
 /// complete run, names no longer seen are dropped.
 ///
-/// The works' names are lent to the registry, not copied, and its lines
-/// are staged as it makes them, not collected: on the corpus's first merge
-/// the copy was about 5 GB and the lines 5.9 GB, both held at the identity
-/// pass's peak (2026-09-24).
+/// The registry is folded by name number ([`merge::registry::Ranked`]),
+/// the works given as lists of numbers in the registry's order, and a
+/// line's names read out only as it is staged (the merge's memory, step
+/// 2d, 2026-09-24): on the corpus the registry's fold by name was 6.5 GB
+/// and a copy of every work's names for the order about 5 GB, both at the
+/// identity pass's peak.
 fn merge_assign(
     what: &str,
     path: &Path,
-    mut registry: Registry,
     res: &Resolution,
     complete: bool,
 ) -> Result<Assigned, ExitCode> {
-    let order = res.held_order();
-    let stub_works = res.stub_works();
-    let all: Vec<&[OwnedName]> = order
-        .iter()
-        .map(|(_, names)| names.as_slice())
-        .chain(stub_works.iter().map(Vec::as_slice))
-        .collect();
-    let at = ingest::time::now();
+    use merge::registry::{NameIndex, Works};
     let fail = |e: io::Error| {
         eprintln!("{what}: {}: {e}", path.display());
         ExitCode::FAILURE
     };
+    let mut ranked = merge::registry::Ranked::read(path, res).map_err(fail)?;
+    let (order, mut works) = res.registry_works();
+    let stub_works = res.stub_works();
+    for names in &stub_works {
+        works.push(
+            names
+                .iter()
+                .map(|n| res.index(n).expect("a stub's name is the run's")),
+        );
+    }
+    let at = ingest::time::now();
     let mut stager = merge_stager(what, path, complete)?;
     let mut computed = 0u64;
     let (assignment, dropped) = {
@@ -1343,11 +1348,15 @@ fn merge_assign(
             stager.as_mut().map_or(Ok(()), |s| s.push(&line))
         };
         let assignment =
-            merge::registry::assign_each(&mut registry, &all, order.len(), &at, &mut emit)
+            merge::registry::assign_each(&mut ranked, &works, order.len(), &at, &mut emit)
                 .map_err(fail)?;
         let dropped = if complete {
-            let seen: HashSet<&OwnedName> = all.iter().flat_map(|names| names.iter()).collect();
-            let lines = registry.drop_unseen(|n| seen.contains(n), &at);
+            let mut seen = vec![0u64; res.len().div_ceil(64)];
+            for &ix in works.all() {
+                seen[ix as usize / 64] |= 1 << (ix % 64);
+            }
+            let lines =
+                ranked.drop_unseen(|ix| seen[ix as usize / 64] & (1 << (ix % 64)) != 0, &at);
             let n = lines.len() as u64;
             for line in lines {
                 emit(line).map_err(fail)?;
@@ -1358,18 +1367,20 @@ fn merge_assign(
         };
         (assignment, dropped)
     };
+    debug_assert_eq!(works.len(), order.len() + stub_works.len());
+    drop(works);
     let pending = merge_staged(what, path, stager, computed)?;
     let (held_ids, stub_ids) = assignment.ids.split_at(order.len());
     let mut ids = merge::Ids {
         held: vec![WorkId::FIRST; res.works.len()],
         stubs: stub_ids.to_vec(),
     };
-    for ((w, _), id) in order.iter().zip(held_ids) {
-        ids.held[*w] = *id;
+    for (w, id) in order.iter().zip(held_ids) {
+        ids.held[*w as usize] = *id;
     }
     let totals = Totals {
-        minted: registry.minted(),
-        lines: registry.lines(),
+        minted: ranked.minted(),
+        lines: ranked.lines(),
     };
     Ok(Assigned {
         ids,
@@ -1524,15 +1535,8 @@ fn merge_identity(opts: &Options) -> ExitCode {
         Err(code) => return code,
     };
     let registry_path = store.registry();
-    let registry = match Registry::read(&registry_path) {
-        Ok(registry) => registry,
-        Err(e) => {
-            eprintln!("{what}: {}: {e}", registry_path.display());
-            return ExitCode::FAILURE;
-        }
-    };
     let complete = limit.is_none() && !opts.survey;
-    let assigned = match merge_assign(what, &registry_path, registry, &pass.res, complete) {
+    let assigned = match merge_assign(what, &registry_path, &pass.res, complete) {
         Ok(assigned) => assigned,
         Err(code) => return code,
     };
@@ -1600,13 +1604,6 @@ fn merge_all(opts: &Options, public_key: Option<&Path>) -> ExitCode {
         Err(code) => return code,
     };
     let registry_path = store.registry();
-    let registry = match Registry::read(&registry_path) {
-        Ok(registry) => registry,
-        Err(e) => {
-            eprintln!("{what}: {}: {e}", registry_path.display());
-            return ExitCode::FAILURE;
-        }
-    };
     let complete = limit.is_none() && !opts.survey;
     // Staged, not appended, and staged as made (`merge_assign`). The
     // registry is of record and pass 2 below runs for hours, so its lines
@@ -1616,7 +1613,7 @@ fn merge_all(opts: &Options, public_key: Option<&Path>) -> ExitCode {
     // this run found it (the user, 2026-09-19 — a run that died in pass 2
     // left 39,907 lines of record that no run had concluded, and an
     // append-only log cannot take them back).
-    let assigned = match merge_assign(what, &registry_path, registry, &res, complete) {
+    let assigned = match merge_assign(what, &registry_path, &res, complete) {
         Ok(assigned) => assigned,
         Err(code) => return code,
     };

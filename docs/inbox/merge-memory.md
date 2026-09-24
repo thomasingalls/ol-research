@@ -343,6 +343,24 @@ in pass 2's references (4.4 s against 2.3 s), which look up every name of
 every reference. The corpus's figures — memory, and how much slower a
 lookup is in an FST of 91 M names — are the next survey's.
 
+*On the corpus* (`ol-rht-merge-survey-v4`, 2a and 2b and merge version
+12, 2026-09-24; M): exit 0, nothing left that would stop a real merge.
+
+| phase | v3 heap / peak | v4 heap / peak |
+|---|---|---|
+| copies read, dictionary built (91,074,034 names, 612 MiB, the FST 199 MiB, 17 s) | — | 5.6 / 7.0 GiB |
+| names read (745 s; 773 s) | 20.4 / 21.7 GiB | 12.8 / 15.3 GiB |
+| identity resolved | 26.9 / 37.9 GiB | 19.4 / 26.2 GiB |
+| registry assigned | 27.3 / 41.3 GiB | 19.8 / 33.8 GiB |
+| pass 2 begins | 29.1 GiB | 21.6 GiB |
+| rows finished (2,943 s; 3,070 s) | 5.1 / 49.3 GiB | 5.1 / 41.8 GiB |
+
+Resident high-water 32.2 GB against 40.6. The run took 4% longer, most of it
+in pass 2's reading (873 s against 766), where every reference's names are
+looked up in the dictionary. The peak is now registry assignment's: the
+held works' names copied for `held_order` and the registry's fold growing
+as it mints, which are 2d's.
+
 **2c. Records, natives and copies, compact.** A record's assertions in one
 flat array by offset — name index, field as a small integer, native as a
 bit — instead of a list of 24-byte entries; `natives` a vector by name
@@ -382,6 +400,32 @@ rendered through the dictionary as they are written (6.5 GB → 0.4 GB).
 Pass 2's names table in four bytes a name instead of eight. `registry::assign`
 is handed the fold it works through, so the incremental merge keeps the map
 it has.
+
+*Built in part 2026-09-24* (the user: "ok to do 2d"). A full merge folds
+the registry by name number: `registry::Ranked`, an array of ids by the
+run's `NameIndex` — the arena's names by rank, then the stubs' — and a
+map by text only for the log's names the run does not have, which a
+complete run drops. `Resolution::registry_works` gives the registry the
+held works in its order as numbers in one `registry::Flat` list, sorted
+by rank, which is name order, with no work's names read out; the stubs
+follow. The assignment's rules are generic over how a table keeps names
+(`Table::Name`, and `Event`s a table folds and returns as log lines), so
+the registry by text, the serving layer's live table and `Ranked` run one
+piece of rule code; the id bookkeeping of a fold (`Ids`) is shared too.
+Inside the rules, every work's claims are one array and the works claiming
+an id are kept only for an id more than one work claims. Pass 2's names
+table packs a slot in four bytes, not eight. Not done: the works
+themselves as flat arrays.
+
+Measured (M): on the scratch store the merged sets, registry, journal and
+reports are byte for byte 2c's, on a first merge and on a second that
+reads the whole registry back through `Ranked` and reuses every id; both
+harnesses as before (1334 passes, the update files one `drop` apart,
+§11 item 24). A test folds one log through the registry and through
+`Ranked` and assigns the same works over both: the same ids, lines,
+drops and lookups. The identity-and-registry peak went from 0.62 to 0.42
+GiB on a first merge and from 0.70 to 0.42 on a second, and the phase got
+faster, the names being numbers throughout.
 
 For PubMed, all four come to about 6–8 GB for pass 1 and 8–10 GB for the
 run, one spill range included (E). For verification, as with steps 0 and 1:

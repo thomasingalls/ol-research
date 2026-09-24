@@ -1985,7 +1985,102 @@ pub struct Resolution {
     pub components: Components,
 }
 
+/// A full merge's names by number (the merge's memory, step 2d): the
+/// arena's first, by their index — a name's rank, under a dictionary — then
+/// the stubs', past the arena's. A name in both — refused wherever it was
+/// asserted and cited, so a stub's — is the arena's index, which is how a
+/// stub work's list and the registry's log both find it.
+impl crate::registry::NameIndex for Resolution {
+    fn len(&self) -> usize {
+        self.arena.len() + self.stubs.len()
+    }
+
+    #[allow(clippy::cast_possible_truncation)] // fewer than 2^32 names in a run
+    fn index(&self, name: &OwnedName) -> Option<u32> {
+        let name = name.as_name();
+        self.arena
+            .find(name)
+            .or_else(|| self.stubs.find(name).map(|s| self.arena.len() as u32 + s))
+    }
+
+    #[allow(clippy::cast_possible_truncation)] // fewer than 2^32 names in a run
+    fn name(&self, ix: u32) -> OwnedName {
+        let held = self.arena.len() as u32;
+        if ix < held {
+            self.arena.get(ix).into_owned()
+        } else {
+            self.stubs.get(ix - held).into_owned()
+        }
+    }
+}
+
 impl Resolution {
+    /// The held works in the registry's order, as [`Resolution::held_order`]
+    /// gives it, each with its registry names as [`NameIndex`] numbers in
+    /// one [`Flat`] list, and each one's index into
+    /// [`Resolution::works`]. Under a dictionary a name's number is its
+    /// rank, so a list of numbers sorts as the list of names would, and
+    /// no work's names are read out to sort them: on the corpus the copy
+    /// was about 5 GB (the merge's memory, step 2d, 2026-09-24).
+    ///
+    /// [`NameIndex`]: crate::registry::NameIndex
+    /// [`Flat`]: crate::registry::Flat
+    ///
+    /// # Panics
+    ///
+    /// A registry name that is not the run's, which cannot be.
+    #[must_use]
+    #[allow(clippy::cast_possible_truncation)] // fewer than 2^32 works in a run
+    pub fn registry_works(&self) -> (Vec<u32>, crate::registry::Flat) {
+        use crate::registry::{Flat, NameIndex, Works};
+        let mut out = Flat::new();
+        if self.arena.dictionary().is_none() {
+            let order = self.held_order();
+            for (_, names) in &order {
+                out.push(names.iter().map(|n| self.index(n).expect("the run's name")));
+            }
+            return (order.iter().map(|(w, _)| *w as u32).collect(), out);
+        }
+        let mut by_work = Flat::new();
+        for work in &self.works {
+            let promoted = Key::ALL.iter().filter_map(|&key| {
+                work.names
+                    .iter()
+                    .find(|n| n.standing == Standing::Promoted && self.arena.key(n.name) == key)
+                    .map(|n| n.name)
+            });
+            let mut aliases: SmallVec<[NameIx; 4]> = work
+                .names
+                .iter()
+                .filter(|n| n.standing == Standing::Alias)
+                .map(|n| n.name)
+                .collect();
+            aliases.sort_unstable();
+            by_work.push(promoted.chain(aliases));
+        }
+        let natives = |w: usize| -> SmallVec<[NameIx; 3]> {
+            let mut n: SmallVec<[NameIx; 3]> = self.works[w]
+                .records
+                .iter()
+                .map(|&rix| self.records[rix as usize].native)
+                .collect();
+            n.sort_unstable();
+            n
+        };
+        let mut order: Vec<u32> = (0..self.works.len() as u32).collect();
+        order.sort_by(|&a, &b| {
+            let (a, b) = (a as usize, b as usize);
+            by_work
+                .names(a)
+                .cmp(by_work.names(b))
+                .then_with(|| natives(a).cmp(&natives(b)))
+        });
+        for &w in &order {
+            out.push(by_work.names(w as usize).iter().copied());
+        }
+        (order, out)
+    }
+
     /// The record whose native name is at `ix`, if one is.
     #[must_use]
     pub fn record_of(&self, ix: NameIx) -> Option<RecordIx> {
@@ -2994,6 +3089,7 @@ mod tests {
     /// not the order a record keeps its names in (which the rows write),
     /// not the registry's order, and not a word of the report's examples.
     #[test]
+    #[allow(clippy::too_many_lines)] // one scenario, run under every numbering
     fn nothing_follows_how_names_are_numbered() {
         let registrant = model::Registrant::parse("10.30476").unwrap();
         // Names numbered before any record is read: `first` in that order,
@@ -3091,6 +3187,13 @@ mod tests {
                 "a record's names, in order"
             );
             assert_eq!(plain.held_order(), renumbered.held_order());
+            // What the registry is given, by number, is the same order and
+            // the same names (the merge's memory, step 2d).
+            assert_eq!(
+                given(&renumbered),
+                plain.held_order(),
+                "the registry's works"
+            );
             assert_eq!(plain.stub_works(), renumbered.stub_works());
             assert_eq!(
                 plain.components, renumbered.components,
@@ -3140,6 +3243,23 @@ mod tests {
         );
         pubmed(&mut id, 1, Some("10.1/a"), None, "One");
         id.check_dictionary().unwrap();
+    }
+
+    /// The held works as [`Resolution::registry_works`] gives them to the
+    /// registry, their names read back.
+    fn given(res: &Resolution) -> Vec<(usize, Vec<OwnedName>)> {
+        let (order, works) = res.registry_works();
+        order
+            .iter()
+            .enumerate()
+            .map(|(i, &w)| {
+                let names = crate::registry::Works::names(&works, i)
+                    .iter()
+                    .map(|&ix| crate::registry::NameIndex::name(res, ix))
+                    .collect();
+                (w as usize, names)
+            })
+            .collect()
     }
 
     /// Each work's names, the works in the order the pass made them.

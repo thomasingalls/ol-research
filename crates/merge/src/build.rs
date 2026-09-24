@@ -624,6 +624,37 @@ enum Slot {
     Shared,
 }
 
+/// A [`Slot`] in four bytes, where the enum takes eight — one a name, 91 M
+/// on the corpus (the merge's memory, step 2d): 0 free, `u32::MAX` shared,
+/// and a work's id otherwise, which is never either.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Packed(u32);
+
+impl Packed {
+    const FREE: Self = Self(0);
+
+    fn of(slot: Slot) -> Result<Self, Error> {
+        Ok(Self(match slot {
+            Slot::Free => 0,
+            Slot::Shared => u32::MAX,
+            Slot::Work(id) if id.get() == u32::MAX => {
+                return Err(Error::Invariant(format!(
+                    "{id} is past the names table's ids"
+                )));
+            }
+            Slot::Work(id) => id.get(),
+        }))
+    }
+
+    fn get(self) -> Slot {
+        match self.0 {
+            0 => Slot::Free,
+            u32::MAX => Slot::Shared,
+            id => Slot::Work(WorkId::new(id).expect("a packed id is not zero")),
+        }
+    }
+}
+
 /// What a name resolves to through a names table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Target {
@@ -844,8 +875,8 @@ pub const fn rank(key: Key) -> u8 {
 
 /// Every name's work: one live work unless shared (merge plan §8), and
 /// one promoted name per namespace per work.
-fn names_table(res: &Resolution, ids: &Ids) -> Result<Vec<Slot>, Error> {
-    let mut name_work = vec![Slot::Free; res.arena.len()];
+fn names_table(res: &Resolution, ids: &Ids) -> Result<Vec<Packed>, Error> {
+    let mut name_work = vec![Packed::FREE; res.arena.len()];
     for (w, work) in res.works.iter().enumerate() {
         let id = ids.held[w];
         for key in Key::ALL {
@@ -867,7 +898,7 @@ fn names_table(res: &Resolution, ids: &Ids) -> Result<Vec<Slot>, Error> {
         }
         for n in &work.names {
             let slot = &mut name_work[n.name as usize];
-            *slot = match (n.standing, *slot) {
+            *slot = Packed::of(match (n.standing, slot.get()) {
                 (Standing::Shared, Slot::Free | Slot::Shared) => Slot::Shared,
                 (Standing::Shared, Slot::Work(_)) | (_, Slot::Shared) => {
                     return Err(Error::Invariant(format!(
@@ -882,7 +913,7 @@ fn names_table(res: &Resolution, ids: &Ids) -> Result<Vec<Slot>, Error> {
                         res.arena.get(n.name)
                     )));
                 }
-            };
+            })?;
         }
     }
     Ok(name_work)
@@ -919,7 +950,7 @@ pub struct Builder {
     res: Resolution,
     ids: Ids,
     stub_works: Vec<Vec<OwnedName>>,
-    name_work: Vec<Slot>,
+    name_work: Vec<Packed>,
     stub_name_work: Vec<Option<WorkId>>,
     record_work: Vec<usize>,
     views: Vec<Option<Owned>>,
@@ -1149,7 +1180,7 @@ impl Builder {
     /// The work a name belongs to.
     fn resolve(&self, name: Name<'_>) -> Target {
         if let Some(ix) = self.res.arena.find(name) {
-            match self.name_work[ix as usize] {
+            match self.name_work[ix as usize].get() {
                 Slot::Work(id) => return Target::Work(id, false),
                 Slot::Shared => return Target::Shared,
                 // A name no work holds: refused wherever it was asserted —

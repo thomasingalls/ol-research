@@ -414,6 +414,8 @@ impl<'s> Live<'s> {
 }
 
 impl Table for Live<'_> {
+    type Name = OwnedName;
+
     fn lookup(&self, name: &OwnedName) -> Option<WorkId> {
         match self.resolved(name) {
             Some(Resolved::One(id)) => Some(id),
@@ -425,6 +427,18 @@ impl Table for Live<'_> {
         self.minted
     }
 
+    fn fold(
+        &mut self,
+        event: registry::Event<'_, OwnedName>,
+        at: &str,
+    ) -> Result<registry::Line, String> {
+        let line = event.line(Clone::clone, at);
+        self.apply(&line)?;
+        Ok(line)
+    }
+}
+
+impl Live<'_> {
     fn apply(&mut self, line: &registry::Line) -> Result<(), String> {
         match line {
             registry::Line::Mint { id, names, .. } => {
