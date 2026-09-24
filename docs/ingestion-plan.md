@@ -1093,12 +1093,15 @@ in your environment, never in the repo or in this conversation.
    Settled 2026-09-24, merge version 13. The count over the whole 2026
    baseline (`ol-rht-id-markup-v1`, 39,994,988 records): 388 values with
    an attribute leaked into them, every one in the article's own `pii`
-   slot, of 17.9 M; none in a DOI slot, an ELocationID or a reference. Two
-   shapes: a whole empty element, `<ARTICLE_ID IdType=""/>` — 221 from
-   registrant 10.12968 alone, most of the rest from 10.5483, 10.17458 and
-   10.3126 — which the shape rule already refused for its space; and a
-   prefix leaked in front of an id, `IdType="pii">JEU342`, from 10.1111
-   and 10.2174, some 14 values. The user: a malformed claim, never a name —
+   slot, of 17.9 M; none in a DOI slot, an ELocationID or a reference. By
+   the registrant of the article's DOI: 10.12968 221, 10.5483 74, 10.17458
+   38, 10.3126 28, none 13, 10.1111 10, 10.2174 4. Two shapes among the
+   examples: a whole empty element, `<ARTICLE_ID IdType=""/>`, which the
+   shape rule already refused for its space; and a prefix leaked in front
+   of an id, `IdType="pii">JEU342`. How many were names before the rule is
+   measured by the merge survey's dictionary, before and after: 91,074,034
+   distinct names (v4) against 91,073,972 (v5), 62 values, which of the
+   seven publishers not listed. The user: a malformed claim, never a name —
    "the id after idtype is almost certainly incomplete anyway". The
    normalized record keeps the value as written; `publisher::Scope::name`
    refuses it (`Refusal::Markup`), and not the registry's reading of

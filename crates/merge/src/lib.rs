@@ -138,7 +138,8 @@ pub use work::{SourceId, Sources, WorkId};
 /// Version 13 (2026-09-24): a publisher id with markup in its value —
 /// `IdType="pii">JEU342`, an attribute leaked in front of the id in NLM's
 /// own file — is a malformed claim and no name
-/// ([`publisher::Refusal::Markup`]); on the 2026 baseline some 14 values
-/// the shape rules let through. A name of that shape already in a
-/// registry still reads, and a complete merge drops it.
+/// ([`publisher::Refusal::Markup`]); on the 2026 baseline 62 distinct
+/// values the shape rules let through, by the survey's dictionary before
+/// and after. A name of that shape already in a registry still reads, and
+/// a complete merge drops it.
 pub const VERSION: u32 = 13;
