@@ -296,6 +296,35 @@ export function nameText(name: Name): string {
   return `${name.namespace}:${name.value}`
 }
 
+/**
+ * Where a name can be looked up outside this site, or null where there is
+ * nowhere to send anyone: a publisher's own id (`reg1038:…`) names the work
+ * to nobody but that publisher.
+ *
+ * Only a promoted name is a link. Promoted is the merge's word for the one
+ * name of its namespace used for display and link-out; an alias may be a
+ * version of the work, and a shared name leads to another work as readily as
+ * to this one.
+ */
+export function nameUrl(name: Name): string | null {
+  if (name.standing !== "promoted") return null
+  const value = encodeURIComponent(name.value)
+  switch (name.namespace) {
+    case "doi":
+      // A DOI may hold `#`, `?` or `<`, which doi.org decodes back; its own
+      // slashes it reads either way, and they read better left alone.
+      return `https://doi.org/${value.replace(/%2F/gi, "/")}`
+    case "pmid":
+      return `https://pubmed.ncbi.nlm.nih.gov/${value}/`
+    case "pmc":
+      return `https://pmc.ncbi.nlm.nih.gov/articles/${value}/`
+    case "openalex":
+      return `https://openalex.org/${value}`
+    default:
+      return null
+  }
+}
+
 /** How recognisable an identifier is, for choosing which one to lead with. */
 const NAMESPACE_ORDER = ["doi", "pmid", "pmc", "openalex"]
 

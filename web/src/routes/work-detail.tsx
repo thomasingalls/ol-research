@@ -158,7 +158,7 @@ function Paper({ id }: { id: string }) {
             <div className="space-y-1">
               <p className="text-muted-foreground text-xs">names</p>
               {w.names.length > 0 ? (
-                <Names names={w.names} />
+                <Names names={w.names} linked />
               ) : (
                 <Empty>no names</Empty>
               )}

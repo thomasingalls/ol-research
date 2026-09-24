@@ -6,16 +6,20 @@ product ambitions:
 - **Search** — text box, list of results. A result is the same row as any
   list's, less the identifiers: title, authors, venue and year, and a badge
   for a retraction or an expression of concern, so a reader is warned before
-  they open it. The ids and names are on the work's page. Counts of references and citers are left off the row until they
-  are shown to be cheap on the full collection.
-- **Work detail** — a work's metadata and its **names**, and beside them four
-  lists, one tab each: **References** (works it cites), *Cites the same
-  sources*, **Citers** (works citing it), *Cited alongside*. References and
-  citers are paged by cursor with a "Load more", and their tabs carry their
-  counts, which come with the work. A tab the work's own counts show to be
-  empty — no references, or no citers, and so nothing to compare by either —
-  is drawn muted, and still opens on a "No works" that says why. Every row is
-  clickable. A retraction or an expression of concern is badged.
+  they open it. The ids and names are on the work's page.
+- **Work detail** — a work's metadata and its **names**, each promoted name a
+  link out that opens in a new tab and sends no referrer: a DOI to the
+  publisher, a PMID to PubMed, a PMC id to PubMed Central's free full text,
+  an OpenAlex id to OpenAlex. A publisher's own id has nowhere to go, and an
+  alias or a shared name may lead to another work, so those stay plain.
+  Beside them, four lists, one tab each: **References** (works it cites),
+  *Cites the same sources*, **Citers** (works citing it), *Cited alongside*.
+  References and citers are paged by cursor with a "Load more", and their
+  tabs carry their counts, which come with the work. A tab the work's own
+  counts show to be empty — no references, or no citers, and so nothing to
+  compare by either — is drawn muted, and still opens on a "No works" that
+  says why. Every row is clickable. A retraction or an expression of concern
+  is badged.
 - **Related works** are the two tabs in italics: two questions, one call each.
   *Cites the same sources* — papers that cite the same sources as this one.
   *Cited alongside* — papers cited alongside this one. Each row says the
@@ -109,6 +113,14 @@ back to `index.html` for unknown paths. `pnpm dev` and `pnpm preview` both do.
   the work — and then these tabs show them as the other two do. The labels
   will need room: "Cites the same sources (30,531)" does not fit a tab at
   1280px.
+- **Free PDFs, and counts on search results.** A PMC link is the one free
+  full text the page can offer today; the work's `open_access` says a free
+  copy exists but not where. OpenAlex records do say where — Unpaywall's best
+  open URL, and each copy's PDF and licence — and the OpenAlex reader keeps
+  them, but the merge carries on only the yes or no. Carried through to the
+  work record, they are a "free PDF" link on the work's page. The reference
+  and citer counts are left off search results until they are shown to be
+  cheap on the full collection.
 
 ## Install
 
