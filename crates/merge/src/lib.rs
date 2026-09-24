@@ -135,4 +135,10 @@ pub use work::{SourceId, Sources, WorkId};
 /// a hairball, only if their titles are equal or one is the other's
 /// vernacular: §3.3's prefix clause called two letters answering one
 /// viewpoint copies. No set was ever written under version 11.
-pub const VERSION: u32 = 12;
+/// Version 13 (2026-09-24): a publisher id with markup in its value —
+/// `IdType="pii">JEU342`, an attribute leaked in front of the id in NLM's
+/// own file — is a malformed claim and no name
+/// ([`publisher::Refusal::Markup`]); on the 2026 baseline some 14 values
+/// the shape rules let through. A name of that shape already in a
+/// registry still reads, and a complete merge drops it.
+pub const VERSION: u32 = 13;

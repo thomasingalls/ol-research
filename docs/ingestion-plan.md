@@ -1089,7 +1089,24 @@ in your environment, never in the repo or in this conversation.
    for the seed, 42 to refetch the short pages, 200 of the 309 the second
    hop needs, and four probes; the rest of that hop resumes through the
    receipts on a later day, `fetch` on the same listing.
-9. **Publisher ids with markup in their value — to fix soon.** Found
+9. ~~**Publisher ids with markup in their value — to fix soon.**~~
+   Settled 2026-09-24, merge version 13. The count over the whole 2026
+   baseline (`ol-rht-id-markup-v1`, 39,994,988 records): 388 values with
+   an attribute leaked into them, every one in the article's own `pii`
+   slot, of 17.9 M; none in a DOI slot, an ELocationID or a reference. Two
+   shapes: a whole empty element, `<ARTICLE_ID IdType=""/>` — 221 from
+   registrant 10.12968 alone, most of the rest from 10.5483, 10.17458 and
+   10.3126 — which the shape rule already refused for its space; and a
+   prefix leaked in front of an id, `IdType="pii">JEU342`, from 10.1111
+   and 10.2174, some 14 values. The user: a malformed claim, never a name —
+   "the id after idtype is almost certainly incomplete anyway". The
+   normalized record keeps the value as written; `publisher::Scope::name`
+   refuses it (`Refusal::Markup`), and not the registry's reading of
+   names, so a name of that shape already written still reads and the
+   next complete merge drops it. The same count found the angle brackets
+   of 225 k SICI DOIs and PIIs, which are the identifiers, and eight
+   values with a stray `"` (three PIIs, five reference DOIs), left as they
+   are. Found
    2026-09-24 in the corpus merge survey (`ol-rht-merge-survey-v1`, among
    the components "resolved without a rule"): publisher-id names such as
    `reg1111:IdType="pii">JEU342`. The value is not ours to blame: NLM ships

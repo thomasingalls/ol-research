@@ -1307,6 +1307,14 @@ stays.
   are one piece shared by the registry and `Ranked`; a test runs both over
   one log and requires every line equal. No byte changes, so no merge
   version.
+- 2026-09-24, merge version 13: a publisher id with markup in its value
+  is a malformed claim, no name (ingestion plan §8 item 9). Counted over
+  the baseline first: 388 values, all article PIIs, most of them an empty
+  element the shape rule already refused; the rest an attribute leaked in
+  front of an id, which the user judged not to trust as the id whole. The
+  refusal is where a record's claims are read (`publisher::Scope::name`),
+  not where the registry's names are, so that no log written before it
+  becomes unreadable — the lesson of 2026-09-19.
 - 2026-09-24, nothing in the identity pass follows how names are
   numbered — step 2a of [the merge's memory](inbox/merge-memory.md). A
   name's index was the order it was first read; step 2b numbers names in

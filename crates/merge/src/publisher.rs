@@ -240,6 +240,15 @@ pub enum Refusal {
     /// 11,945 on the survey of 2026-09-19 — and 786 rows of the sample
     /// are restatements only after the rewrite.
     DoiRestated,
+    /// Markup in the value: `IdType="pii">JEU342`, an attribute and a `>`
+    /// leaked in front of the id in NLM's own file, or a whole empty
+    /// element, `<ARTICLE_ID IdType=""/>`. 388 of the 17.9 M article PIIs
+    /// of PubMed's 2026 baseline, from seven publishers
+    /// (`ol-rht-id-markup-v1`, 2026-09-24); none in any DOI slot or
+    /// reference. What follows the leak is not to be trusted to be the id
+    /// whole (the user, 2026-09-24), so the value is a malformed claim:
+    /// kept as written in the normalized record, never a name.
+    Markup,
 }
 
 impl Refusal {
@@ -255,6 +264,7 @@ impl Refusal {
             Self::ArticleNumber => "an article number",
             Self::Doi => "a DOI",
             Self::DoiRestated => "the record's own DOI",
+            Self::Markup => "markup in the value",
         }
     }
 }
@@ -323,6 +333,14 @@ impl<'a> Scope<'a> {
             return Err(Refusal::NoRegistrant);
         };
         shape(value)?;
+        // Here and not in `shape`, which `check` shares with the reading of
+        // names back from the registry: a rule a registry line could fail
+        // makes a log written before it unreadable (2026-09-19). A name of
+        // this kind written before the rule reads as it was, and the next
+        // complete merge drops it, no record asserting it any more.
+        if value.contains("IdType=") {
+            return Err(Refusal::Markup);
+        }
         let canonical = canonical(registrant, value);
         if self.dois.iter().any(|doi| restates(doi, &canonical)) {
             return Err(Refusal::DoiRestated);
@@ -635,5 +653,24 @@ mod tests {
         for bad in ["", "123", "0123", "1234567890", "10a4", "１０１６"] {
             assert_eq!(registrant_of(bad), None, "{bad:?}");
         }
+    }
+
+    /// The markup NLM shipped inside a PII (ingestion plan §8 item 9,
+    /// 2026-09-24) is a malformed claim, never a name — but a name of that
+    /// shape already in a registry still reads back.
+    #[test]
+    fn markup_in_a_value_is_no_name_and_an_old_one_still_reads() {
+        let doi = Doi::parse("10.1111/j.1550-7408.2008.00342.x").unwrap();
+        let mut scope = Scope::new();
+        scope.doi(&doi);
+        assert_eq!(scope.name("IdType=\"pii\">JEU342"), Err(Refusal::Markup));
+        assert!(scope.name("JEU342").is_ok());
+        assert_eq!(
+            scope.name("<ARTICLE_ID IdType=\"\"/>"),
+            Err(Refusal::NotPrintable),
+            "the empty element has a space, and the shape rule had it already"
+        );
+        assert!(super::check("IdType=\"pii\">JEU342").is_ok());
+        assert!(Name::parse("reg1111:IdType=\"pii\">JEU342").is_ok());
     }
 }
