@@ -1117,7 +1117,7 @@ impl Engine<'_> {
                     continue;
                 };
                 for n in &res.works[w].names {
-                    taken.insert(res.arena.get(n.name).clone(), p);
+                    taken.insert(res.arena.get(n.name).into_owned(), p);
                 }
             }
             if taken.is_empty() {

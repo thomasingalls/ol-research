@@ -7,6 +7,7 @@ description = "The merged layer: one work across sources, our own ids, the regis
 
 [dependencies]
 blake3.workspace = true
+fst.workspace = true
 ingest.workspace = true
 model.workspace = true
 postcard.workspace = true

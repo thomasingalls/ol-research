@@ -23,6 +23,7 @@ use ingest::Kind;
 use model::Date;
 
 use crate::contributor::Contributor;
+use crate::dictionary::Sorter;
 use crate::name::{Name, OwnedName};
 use crate::sets;
 use crate::view::View;
@@ -162,10 +163,15 @@ impl Copies {
     /// One copy, as the first reading sees it; a dead copy is not a
     /// candidate. Call after every withdrawal.
     pub fn see(&mut self, source: SourceId, native: Name<'_>, delivery: Delivery) {
+        self.seen(source, native, delivery);
+    }
+
+    /// [`Copies::see`], saying whether the copy stands: not withdrawn.
+    fn seen(&mut self, source: SourceId, native: Name<'_>, delivery: Delivery) -> bool {
         let key = (source, native.to_owned());
         *self.stats.copies.entry(source).or_default() += 1;
         if self.dead(&key, &delivery.set) {
-            return;
+            return false;
         }
         match self.newest.get_mut(&key) {
             None => {
@@ -180,6 +186,7 @@ impl Copies {
                 }
             }
         }
+        true
     }
 
     /// What became of the copy delivered as `delivery`, after every copy
@@ -248,8 +255,12 @@ impl Copies {
         Ok(read)
     }
 
-    /// Reads one works set of `S` for every copy's delivery. Call after
-    /// every deletions set is read.
+    /// Reads one works set of `S` for every copy's delivery, and gives
+    /// `names` every name a standing copy asserts — a full merge's
+    /// dictionary is made of them (the merge's memory, step 2b), and they
+    /// are exactly the names the identity pass reads, since it reads every
+    /// copy a deletion did not withdraw. Call after every deletions set is
+    /// read.
     ///
     /// # Errors
     ///
@@ -259,6 +270,7 @@ impl Copies {
         path: &Path,
         set: &str,
         limit: Option<usize>,
+        mut names: Option<&mut Sorter>,
     ) -> Result<u64, Error> {
         let io = |source| Error::Io {
             path: path.to_path_buf(),
@@ -279,7 +291,20 @@ impl Copies {
                     ordinal,
                 })?;
                 let delivery = delivery_of::<S>(&work, set, ordinal);
-                self.see(S::SOURCE, native, delivery);
+                let stands = self.seen(S::SOURCE, native, delivery);
+                if let Some(sorter) = names.as_deref_mut().filter(|_| stands) {
+                    let mut failed = None;
+                    S::names(&work, &mut |a| {
+                        if failed.is_none()
+                            && let Err(e) = sorter.push(a.name)
+                        {
+                            failed = Some(e);
+                        }
+                    });
+                    if let Some(e) = failed {
+                        return Err(io(e));
+                    }
+                }
                 read += 1;
             }
             Ok(read)

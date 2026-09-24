@@ -96,6 +96,17 @@ impl Registrant {
     pub const fn get(self) -> u32 {
         self.0
     }
+
+    /// The registrant with code `code`, as [`Registrant::get`] gives it:
+    /// four to nine digits, no leading zero.
+    #[must_use]
+    pub const fn from_code(code: u32) -> Option<Self> {
+        if code >= 1_000 && code <= 999_999_999 {
+            Some(Self(code))
+        } else {
+            None
+        }
+    }
 }
 
 impl fmt::Display for Registrant {

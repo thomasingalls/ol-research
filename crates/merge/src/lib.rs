@@ -31,6 +31,7 @@ pub mod build;
 pub mod contributor;
 pub mod copies;
 pub mod delta;
+pub mod dictionary;
 pub mod document;
 pub mod identity;
 pub mod journal;

@@ -1178,22 +1178,53 @@ fn merge_pass1(
     what: &str,
 ) -> Result<Pass1, ExitCode> {
     let started = std::time::Instant::now();
-    let mut identity = Identity::new();
-    identity.set_survey(opts.survey);
     let mut copies = merge::copies::Copies::new();
+    // Every name the pass will read, gathered while the copies are read and
+    // numbered in name order before the pass numbers any (the merge's
+    // memory, step 2b, 2026-09-24): its runs go under the system's
+    // temporary directory, the pod's own scratch on the box, as the spill
+    // does.
+    let names = std::env::temp_dir().join(format!("ol-rht-names-{}", std::process::id()));
     let sources = (|| -> Result<_, merge::identity::Error> {
         let pubmed = Sets::find::<Pubmed>(store)?;
         let crossref = Sets::find::<Crossref>(store)?;
         let openalex = Sets::find::<OpenAlex>(store)?;
-        merge_copies::<Pubmed>(&mut copies, &pubmed, limit)?;
-        merge_copies::<Crossref>(&mut copies, &crossref, limit)?;
-        merge_copies::<OpenAlex>(&mut copies, &openalex, limit)?;
+        let io = |source| merge::identity::Error::Io {
+            path: names.clone(),
+            source,
+        };
+        let mut sorter = merge::dictionary::Sorter::create(&names).map_err(io)?;
+        merge_copies::<Pubmed>(&mut copies, &pubmed, limit, &mut sorter)?;
+        merge_copies::<Crossref>(&mut copies, &crossref, limit, &mut sorter)?;
+        merge_copies::<OpenAlex>(&mut copies, &openalex, limit, &mut sorter)?;
+        let read = started.elapsed();
+        let pushed = sorter.pushed();
+        let sorting = std::time::Instant::now();
+        let dictionary = sorter.finish().map_err(io)?;
+        eprintln!(
+            "{what}: copies read in {:.1} s; {} distinct names of {pushed} read, a dictionary of {} MiB (the FST {} MiB) in {:.1} s; {}",
+            read.as_secs_f64(),
+            dictionary.len(),
+            dictionary.bytes() >> 20,
+            dictionary.fst_bytes() >> 20,
+            sorting.elapsed().as_secs_f64(),
+            heap()
+        );
+        Ok((pubmed, crossref, openalex, dictionary))
+    })();
+    let (pubmed, crossref, openalex, dictionary) = sources.map_err(|e| {
+        eprintln!("{what}: {e}");
+        ExitCode::FAILURE
+    })?;
+    let mut identity = Identity::with_dictionary(dictionary);
+    identity.set_survey(opts.survey);
+    let added = (|| -> Result<(), merge::identity::Error> {
         merge_add::<Pubmed>(&mut identity, &pubmed, limit, &copies)?;
         merge_add::<Crossref>(&mut identity, &crossref, limit, &copies)?;
         merge_add::<OpenAlex>(&mut identity, &openalex, limit, &copies)?;
-        Ok((pubmed, crossref, openalex))
+        identity.check_dictionary()
     })();
-    let (pubmed, crossref, openalex) = sources.map_err(|e| {
+    added.map_err(|e| {
         eprintln!("{what}: {e}");
         ExitCode::FAILURE
     })?;
@@ -3849,6 +3880,7 @@ fn merge_copies<S: Contributor>(
     copies: &mut merge::copies::Copies,
     sets: &Sets,
     limit: Option<usize>,
+    names: &mut merge::dictionary::Sorter,
 ) -> Result<(), merge::identity::Error> {
     let mut withdrawn = 0u64;
     for (path, set) in &sets.deletions {
@@ -3861,7 +3893,7 @@ fn merge_copies<S: Contributor>(
         );
     }
     for (path, set) in &sets.works {
-        copies.read_works::<S>(path, set, limit)?;
+        copies.read_works::<S>(path, set, limit, Some(&mut *names))?;
     }
     Ok(())
 }

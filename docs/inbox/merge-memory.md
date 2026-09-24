@@ -318,6 +318,31 @@ lookups (E), so each microsecond a lookup costs is about 8 minutes a pass.
 If the FST is too slow, 2b of the ranking above (a hash-compacted arena)
 fits behind the same methods.
 
+*Built 2026-09-24* (the user: "go on to 2b"). `merge::dictionary`: the
+copies read hands every standing copy's names to a `Sorter`, which sorts
+them in runs of 128 MiB under the temporary directory and merges the runs
+into a `Dictionary` — an FST from a name's byte form to its rank, and a
+front-coded list, 16 names a block, from rank back to name.
+`Identity::with_dictionary` numbers names by it; `Arena` gained the
+sorted form beside the hashed one, `get` returns a `Cow` (borrowed from
+the hashed form, read out of the sorted one) and `key` answers a name's
+namespace without reading it out. A record naming something the
+dictionary lacks, or a dictionary name no record asserted, stops the run
+(`Error::NotInDictionary`, `Identity::check_dictionary`): the two are made
+from the same reading and must agree. The incremental merge, the fixtures
+and the tests keep the hashed form.
+
+Measured (M): on the scratch store the merged sets, registry, journal and
+both reports are byte for byte 2a's, on a first merge and a second; the
+full/incremental harness leaves the same 200 files as before 2a (build
+times aside) and fails the same way; the renumbering test runs through a
+dictionary too. Over the sample's 2,147,019 registry names, shuffled: 9.9
+bytes a name all in; a lookup 430 ns against the hashed arena's 159 ns;
+reading a name out 154 ns. The run took 26.2 s against 19.9 s, most of it
+in pass 2's references (4.4 s against 2.3 s), which look up every name of
+every reference. The corpus's figures — memory, and how much slower a
+lookup is in an FST of 91 M names — are the next survey's.
+
 **2c. Records, natives and copies, compact.** A record's assertions in one
 flat array by offset — name index, field as a small integer, native as a
 bit — instead of a list of 24-byte entries; `natives` a vector by name

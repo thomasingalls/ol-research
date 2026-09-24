@@ -247,7 +247,7 @@ pub(crate) fn full_merge(
             .position(|w| {
                 w.records.iter().any(|rix| {
                     let rec = &b.resolution().records[*rix as usize];
-                    b.resolution().arena.get(rec.native) == native
+                    *b.resolution().arena.get(rec.native) == *native
                 })
             })
             .unwrap();

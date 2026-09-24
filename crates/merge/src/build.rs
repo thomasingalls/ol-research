@@ -8,6 +8,7 @@
 //! has been read, then promotes per work; the plan's §8 names the range
 //! shape that bounds this at scale.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::io;
@@ -851,12 +852,12 @@ fn names_table(res: &Resolution, ids: &Ids) -> Result<Vec<Slot>, Error> {
             let promoted = work
                 .names
                 .iter()
-                .filter(|n| n.standing == Standing::Promoted && res.arena.get(n.name).key() == key)
+                .filter(|n| n.standing == Standing::Promoted && res.arena.key(n.name) == key)
                 .count();
             let held = work
                 .names
                 .iter()
-                .filter(|n| n.standing != Standing::Shared && res.arena.get(n.name).key() == key)
+                .filter(|n| n.standing != Standing::Shared && res.arena.key(n.name) == key)
                 .count();
             if promoted > 1 || (held > 0 && promoted == 0) {
                 return Err(Error::Invariant(format!(
@@ -2183,13 +2184,13 @@ pub fn held<V: Views + ?Sized>(
             let record = &res.records[rix as usize];
             OwnedRecord {
                 source: record.source,
-                native: arena.get(record.native).clone(),
+                native: arena.get(record.native).into_owned(),
                 promoted: is_promoted(rix),
                 asserts: record
                     .asserts
                     .iter()
                     .map(|a| OwnedAssert {
-                        name: arena.get(a.name).clone(),
+                        name: arena.get(a.name).into_owned(),
                         field: a.field.into(),
                         native: a.native,
                     })
@@ -2199,14 +2200,20 @@ pub fn held<V: Views + ?Sized>(
         })
         .collect();
     records.sort_by(|a, b| (a.source, &a.native).cmp(&(b.source, &b.native)));
+    let natives: SmallVec<[Cow<'_, OwnedName>; 3]> = work
+        .records
+        .iter()
+        .map(|&rix| res.arena.get(res.records[rix as usize].native))
+        .collect();
     let mut cands: SmallVec<[Cand<'_>; 3]> = work
         .records
         .iter()
-        .filter_map(|&rix| {
+        .zip(&natives)
+        .filter_map(|(&rix, native)| {
             views.view(rix).map(|view| Cand {
                 source: res.records[rix as usize].source,
                 promoted: is_promoted(rix),
-                native: res.arena.get(res.records[rix as usize].native),
+                native: native.as_ref(),
                 view,
             })
         })
@@ -2324,7 +2331,7 @@ pub fn held<V: Views + ?Sized>(
         .names
         .iter()
         .map(|n| OwnedNamed {
-            name: arena.get(n.name).clone(),
+            name: arena.get(n.name).into_owned(),
             standing: n.standing,
             by: n.by,
             native: n.native,
@@ -2336,11 +2343,11 @@ pub fn held<V: Views + ?Sized>(
         .rejected
         .iter()
         .map(|r| OwnedRejected {
-            name: arena.get(r.name).clone(),
+            name: arena.get(r.name).into_owned(),
             by: res.records[r.record as usize].source,
             holder: r
                 .holder
-                .map(|h| arena.get(res.records[h as usize].native).clone()),
+                .map(|h| arena.get(res.records[h as usize].native).into_owned()),
             why: r.why,
         })
         .collect();

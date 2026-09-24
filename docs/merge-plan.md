@@ -1275,6 +1275,18 @@ stays.
   which on the corpus was about 11 GiB of the identity pass's peak (D).
   No byte under `merged/` changes, so no merge version; the report's
   examples change once.
+- 2026-09-24, a full merge numbers names from a dictionary — step 2b of
+  [the merge's memory](inbox/merge-memory.md). The copies read already
+  opens every works set before the identity pass, so it also gathers every
+  name a standing copy asserts, sorted on disk and merged into an FST from
+  name to rank and a front-coded list back (`merge::dictionary`); the
+  identity pass numbers names by rank, which after 2a moves nothing. The
+  hash maps that found a name, and every name as a heap object, go: on the
+  sample 9.9 bytes a name in all, against the note's 171 for a name and its
+  share of the pass. A lookup costs about 2.7 times what the hash map's
+  did (430 ns against 159 on the sample). The dictionary and the pass must
+  agree exactly, and a run stops if they do not. The incremental merge keeps
+  the hashed arena. No byte changes, so no merge version.
 
 ## 11. Open items
 

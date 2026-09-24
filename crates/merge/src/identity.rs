@@ -14,6 +14,7 @@
 //! [`Identity::resolve`] then applies the rules. Memory is names, not
 //! records: a record is a source, a native name and a few name indices.
 
+use std::borrow::Cow;
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
@@ -111,6 +112,17 @@ pub enum Error {
     },
     /// A shape the rules do not cover; the fix is a rule and a fixture.
     Unmodelled(String),
+    /// A record's name the run's dictionary lacks, or a name of the
+    /// dictionary no record asserted: the dictionary was made from other
+    /// sets than the pass read (the merge's memory, step 2b).
+    NotInDictionary {
+        #[allow(missing_docs)]
+        path: PathBuf,
+        /// From one; 0 for a name no record asserted.
+        ordinal: u64,
+        #[allow(missing_docs)]
+        name: String,
+    },
 }
 
 impl fmt::Display for Error {
@@ -138,6 +150,24 @@ impl fmt::Display for Error {
                 "a component of {records} records and {names} names is beyond the rules: {example}"
             ),
             Self::Unmodelled(what) => write!(f, "a shape the rules do not cover: {what}"),
+            Self::NotInDictionary {
+                path,
+                ordinal: 0,
+                name,
+            } => write!(
+                f,
+                "{}: {name} is in the run's dictionary and no record asserts it",
+                path.display()
+            ),
+            Self::NotInDictionary {
+                path,
+                ordinal,
+                name,
+            } => write!(
+                f,
+                "{}: record {ordinal} asserts {name}, which the run's dictionary lacks",
+                path.display()
+            ),
         }
     }
 }
@@ -244,6 +274,11 @@ pub struct Identity {
     settled: bool,
     /// [`Identity::cut_containers`] has run.
     containers_cut: bool,
+    /// Under a dictionary, which of its names a record has asserted, a
+    /// bit each, and how many: every one must be, or the dictionary was
+    /// made from other sets than the pass read.
+    interned: Vec<u64>,
+    interned_count: usize,
     survey: bool,
     /// Counts so far.
     pub stats: Stats,
@@ -254,6 +289,60 @@ impl Identity {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// A pass whose names are `dictionary`'s, numbered in name order: a
+    /// full merge's, which gathers every name it will read before it reads
+    /// any (the merge's memory, step 2b, 2026-09-24). Every name a record
+    /// asserts must be in it, and after the last [`Identity::add`],
+    /// [`Identity::check_dictionary`] says whether every name in it was
+    /// asserted.
+    #[must_use]
+    #[allow(clippy::cast_possible_truncation)] // fewer than 2^32 names in a run
+    pub fn with_dictionary(dictionary: crate::dictionary::Dictionary) -> Self {
+        let n = dictionary.len();
+        Self {
+            arena: Arena::sorted(dictionary),
+            parent: (0..n as NameIx).collect(),
+            interned: vec![0; n.div_ceil(64)],
+            ..Self::default()
+        }
+    }
+
+    /// Under a dictionary, whether the records read asserted every name
+    /// in it, as they would have had the names been interned as read.
+    ///
+    /// # Errors
+    ///
+    /// A name of the dictionary no record asserted.
+    #[allow(clippy::cast_possible_truncation)] // fewer than 2^32 names in a run
+    pub fn check_dictionary(&self) -> Result<(), Error> {
+        let Some(dictionary) = self.arena.dictionary() else {
+            return Ok(());
+        };
+        if self.interned_count == dictionary.len() {
+            return Ok(());
+        }
+        let unseen = (0..dictionary.len())
+            .find(|&i| self.interned[i / 64] & (1 << (i % 64)) == 0)
+            .unwrap_or(0);
+        Err(Error::NotInDictionary {
+            path: PathBuf::from("<dictionary>"),
+            ordinal: 0,
+            name: self.arena.get(unseen as NameIx).to_string(),
+        })
+    }
+
+    /// Notes that a record asserted the name at `ix`, under a dictionary.
+    fn seen(&mut self, ix: NameIx) {
+        if self.interned.is_empty() {
+            return;
+        }
+        let (word, bit) = (ix as usize / 64, 1u64 << (ix % 64));
+        if self.interned[word] & bit == 0 {
+            self.interned[word] |= bit;
+            self.interned_count += 1;
+        }
     }
 
     /// Under `--survey`, a value outside the merge's tables is counted
@@ -341,6 +430,13 @@ impl Identity {
                             ordinal: i as u64 + 1,
                         });
                     }
+                    Kept::NotInDictionary(name) => {
+                        return Err(Error::NotInDictionary {
+                            path: path.to_path_buf(),
+                            ordinal: i as u64 + 1,
+                            name: name.to_string(),
+                        });
+                    }
                 }
                 let related = S::relations(&work, table, &mut |r| {
                     if let Some(target) = r.target {
@@ -397,7 +493,14 @@ impl Identity {
         let mut claims: SmallVec<[Assert; 2]> = SmallVec::new();
         let mut native = None;
         for a in assertions {
-            let ix = self.arena.intern(a.name);
+            let Some(ix) = self.arena.intern(a.name) else {
+                return Err(Error::NotInDictionary {
+                    path: PathBuf::from("<memory>"),
+                    ordinal: before as u64 + 1,
+                    name: a.name.to_string(),
+                });
+            };
+            self.seen(ix);
             if self.parent.len() <= ix as usize {
                 self.parent.push(ix);
             }
@@ -486,11 +589,13 @@ impl Identity {
         // a union cannot be undone once made.
         let mut claims: SmallVec<[Assert; 2]> = SmallVec::new();
         let mut native = None;
-        let (arena, parent) = (&mut self.arena, &mut self.parent);
         for a in &assertions {
-            let ix = arena.intern(a.name);
-            if parent.len() <= ix as usize {
-                parent.push(ix);
+            let Some(ix) = self.arena.intern(a.name) else {
+                return Kept::NotInDictionary(a.name.to_owned());
+            };
+            self.seen(ix);
+            if self.parent.len() <= ix as usize {
+                self.parent.push(ix);
             }
             if a.native && native.is_none() {
                 native = Some(ix);
@@ -704,7 +809,7 @@ impl Identity {
         let n = self.arena.len();
         self.roots = (0..n as NameIx).map(|i| self.find(i)).collect();
         let mut tallies: HashMap<NameIx, Tally> = HashMap::new();
-        for (i, name) in self.arena.iter().enumerate() {
+        for i in 0..n {
             // A refused publisher id is in no component: `settle` took it
             // off every record, and a name no record asserts would
             // otherwise read as a stub.
@@ -712,7 +817,7 @@ impl Identity {
                 continue;
             }
             let t = tallies.entry(self.roots[i]).or_default();
-            let k = &mut t.keys[key_ix(name.key())];
+            let k = &mut t.keys[key_ix(self.arena.key(i as NameIx))];
             *k = k.saturating_add(1);
         }
         for rec in &self.records {
@@ -1033,7 +1138,7 @@ impl Identity {
             } else {
                 let mut first = None;
                 for name in unheld {
-                    let ix = self.stubs.intern(name);
+                    let ix = self.stubs.intern(name).expect("the stubs' arena is hashed");
                     if self.stub_parent.len() <= ix as usize {
                         self.stub_parent.push(ix);
                     }
@@ -1135,7 +1240,7 @@ impl Identity {
             for n in &work.names {
                 *components
                     .standings
-                    .entry((self.arena.get(n.name).key(), n.standing))
+                    .entry((self.arena.key(n.name), n.standing))
                     .or_default() += 1;
             }
             let pattern = work.sources(&self.records).to_string();
@@ -1249,7 +1354,7 @@ impl Identity {
             }
         }
         let mut asserters: Vec<(NameIx, Asserting)> = found.into_iter().collect();
-        asserters.sort_by(|a, b| self.arena.get(a.0).cmp(self.arena.get(b.0)));
+        asserters.sort_by(|a, b| self.arena.get(a.0).cmp(&self.arena.get(b.0)));
         // Records sharing a name are one work when their titles agree.
         let mut uf: Vec<usize> = (0..recs.len()).collect();
         let default = OwnedTitles::default();
@@ -1375,11 +1480,15 @@ impl Identity {
                     labels.duplicates.insert(s);
                 }
             }
-            let dois: Vec<&str> = work
+            let names: Vec<Cow<'_, OwnedName>> = work
                 .names
                 .iter()
-                .filter(|n| n.standing != Standing::Shared)
-                .filter_map(|n| match self.arena.get(n.name) {
+                .filter(|n| n.standing != Standing::Shared && self.arena.key(n.name) == Key::Doi)
+                .map(|n| self.arena.get(n.name))
+                .collect();
+            let dois: Vec<&str> = names
+                .iter()
+                .filter_map(|n| match &**n {
                     OwnedName::Doi(d) => Some(&**d),
                     _ => None,
                 })
@@ -1398,7 +1507,7 @@ impl Identity {
                 .names
                 .iter()
                 .filter(|n| n.standing != Standing::Shared)
-                .filter(|n| matches!(self.arena.get(n.name), OwnedName::Pmid(_)))
+                .filter(|n| self.arena.key(n.name) == Key::Pmid)
                 .count();
             if pmids > 1 {
                 labels.two_pmids = true;
@@ -1415,9 +1524,7 @@ impl Identity {
                 .names
                 .iter()
                 .enumerate()
-                .filter(|(_, n)| {
-                    n.standing != Standing::Shared && self.arena.get(n.name).key() == key
-                })
+                .filter(|(_, n)| n.standing != Standing::Shared && self.arena.key(n.name) == key)
                 .map(|(i, _)| i)
                 .collect();
             let Some(best) = candidates.iter().copied().min_by_key(|&i| {
@@ -1469,7 +1576,7 @@ impl Identity {
             out.push_str(" |");
             // Names in name order, as the rows write them, not in the
             // order they were numbered.
-            let mut names: Vec<(&OwnedName, String)> = w
+            let mut names: Vec<(Cow<'_, OwnedName>, String)> = w
                 .names
                 .iter()
                 .map(|n| {
@@ -1501,7 +1608,7 @@ impl Identity {
 }
 
 /// What became of one record read from a set.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Kept {
     Record,
     /// A copy a newer one speaks over, whose names joined the record's
@@ -1511,9 +1618,10 @@ enum Kept {
     /// A copy a deletion withdrew.
     Silent,
     NoNative,
+    /// A name the run's dictionary was not made with.
+    NotInDictionary(OwnedName),
 }
 
-/// Names per namespace and records per source in one component.
 /// A rejected name, why, and the record that holds it, if one does.
 type Refusal = (NameIx, Reason, Option<RecordIx>);
 
@@ -1562,6 +1670,7 @@ impl Groups {
     }
 }
 
+/// Names per namespace and records per source in one component.
 #[derive(Default)]
 struct Tally {
     keys: [u8; Key::ALL.len()],
@@ -1706,12 +1815,11 @@ impl Work {
 
     /// The promoted name of one namespace.
     #[must_use]
-    pub fn promoted<'a>(&self, key: Key, arena: &'a Arena) -> Option<&'a OwnedName> {
+    pub fn promoted<'a>(&self, key: Key, arena: &'a Arena) -> Option<Cow<'a, OwnedName>> {
         self.names
             .iter()
-            .filter(|n| n.standing == Standing::Promoted)
+            .find(|n| n.standing == Standing::Promoted && arena.key(n.name) == key)
             .map(|n| arena.get(n.name))
-            .find(|n| n.key() == key)
     }
 
     /// The names the registry keys the work by: every accepted name that
@@ -1721,13 +1829,13 @@ impl Work {
     pub fn registry_names(&self, arena: &Arena) -> Vec<OwnedName> {
         let mut out: Vec<OwnedName> = Key::ALL
             .iter()
-            .filter_map(|&k| self.promoted(k, arena).cloned())
+            .filter_map(|&k| self.promoted(k, arena).map(Cow::into_owned))
             .collect();
         let mut aliases: Vec<OwnedName> = self
             .names
             .iter()
             .filter(|n| n.standing == Standing::Alias)
-            .map(|n| arena.get(n.name).clone())
+            .map(|n| arena.get(n.name).into_owned())
             .collect();
         aliases.sort();
         out.extend(aliases);
@@ -1836,8 +1944,8 @@ impl Resolution {
             .enumerate()
             .map(|(i, w)| (i, w.registry_names(&self.arena)))
             .collect();
-        let natives = |w: usize| -> Vec<&OwnedName> {
-            let mut n: Vec<&OwnedName> = self.works[w]
+        let natives = |w: usize| -> Vec<Cow<'_, OwnedName>> {
+            let mut n: Vec<Cow<'_, OwnedName>> = self.works[w]
                 .records
                 .iter()
                 .map(|&rix| self.arena.get(self.records[rix as usize].native))
@@ -1862,7 +1970,7 @@ impl Resolution {
             by_root
                 .entry(root)
                 .or_default()
-                .push(self.stubs.get(ix).clone());
+                .push(self.stubs.get(ix).into_owned());
         }
         let mut works: Vec<Vec<OwnedName>> = by_root.into_values().collect();
         for names in &mut works {
@@ -1878,7 +1986,10 @@ impl Resolution {
 mod tests {
     use model::{OpenAlexId, PmcId, Pmid};
 
+    use std::borrow::Cow;
+
     use super::{Error, Identity, Reason, Resolution, Standing};
+    use crate::dictionary::Dictionary;
     use crate::name::{Assertion, Name, OwnedName};
     use crate::title::Titles;
     use crate::work::{SourceId, Sources};
@@ -2762,14 +2873,23 @@ mod tests {
     #[test]
     fn nothing_follows_how_names_are_numbered() {
         let registrant = model::Registrant::parse("10.30476").unwrap();
-        let build = |first: &[OwnedName]| {
-            let mut id = Identity::new();
-            for name in first {
-                let ix = id.arena.intern(name.as_name());
-                if id.parent.len() <= ix as usize {
-                    id.parent.push(ix);
+        // Names numbered before any record is read: `first` in that order,
+        // or, with `sorted`, a full merge's dictionary of them.
+        let build = |first: &[OwnedName], sorted: bool| {
+            let mut id = if sorted {
+                Identity::with_dictionary(
+                    Dictionary::of(first.iter().map(OwnedName::as_name)).unwrap(),
+                )
+            } else {
+                let mut id = Identity::new();
+                for name in first {
+                    let ix = id.arena.intern(name.as_name()).unwrap();
+                    if id.parent.len() <= ix as usize {
+                        id.parent.push(ix);
+                    }
                 }
-            }
+                id
+            };
             pubmed(&mut id, 1, Some("10.1/a"), Some(7), "Alpha");
             crossref(&mut id, "10.1/a", "Alpha");
             openalex(&mut id, 10, Some("10.1/a"), Some(1), "Alpha");
@@ -2818,6 +2938,7 @@ mod tests {
                     "The same title everywhere",
                 );
             }
+            id.check_dictionary().unwrap();
             id.mark();
             id.cite(
                 SourceId::Pubmed,
@@ -2825,13 +2946,15 @@ mod tests {
             );
             id.resolve(true).unwrap()
         };
-        let plain = build(&[]);
-        let mut names: Vec<OwnedName> = plain.arena.iter().cloned().collect();
+        let plain = build(&[], false);
+        let mut names: Vec<OwnedName> = plain.arena.iter().map(Cow::into_owned).collect();
         names.sort();
-        // In name order, as the dictionary will number them, and the
-        // reverse: `X-1` and `X-2` above are read in neither.
-        for names in [names.clone(), names.into_iter().rev().collect()] {
-            let renumbered = build(&names);
+        let reversed: Vec<OwnedName> = names.iter().rev().cloned().collect();
+        // In name order and in reverse — `X-1` and `X-2` above are read in
+        // neither — and through a dictionary, as a full merge numbers them.
+        for (names, sorted) in [(&names, false), (&reversed, false), (&names, true)] {
+            let renumbered = build(names, sorted);
+            assert_eq!(renumbered.arena.dictionary().is_some(), sorted);
             assert_ne!(
                 plain.arena.get(0),
                 renumbered.arena.get(0),
@@ -2855,6 +2978,45 @@ mod tests {
         assert_eq!(plain.components.unresolved.get("hairball"), Some(&1));
         assert_eq!(plain.stats.containers, 1);
         assert_eq!(plain.stats.collided, 1);
+    }
+
+    /// A dictionary made from other records than the pass reads stops it:
+    /// a name it lacks when a record asserts it, and a name no record
+    /// asserted once the records are in.
+    #[test]
+    fn a_dictionary_must_hold_exactly_the_names_read() {
+        let one = Dictionary::of([Name::Pmid(pmid(1)), Name::Doi("10.1/a")]).unwrap();
+        let mut id = Identity::with_dictionary(one);
+        let a = [Assertion {
+            name: Name::Pmid(pmid(2)),
+            field: "pmid",
+            native: true,
+        }];
+        let err = id
+            .push(
+                SourceId::Pubmed,
+                &a,
+                Titles {
+                    title: Some("Two"),
+                    vernacular: None,
+                },
+            )
+            .unwrap_err();
+        assert!(
+            matches!(err, Error::NotInDictionary { ordinal: 1, .. }),
+            "{err}"
+        );
+
+        let two = Dictionary::of([Name::Pmid(pmid(1)), Name::Doi("10.1/a")]).unwrap();
+        let mut id = Identity::with_dictionary(two);
+        pubmed(&mut id, 1, None, None, "One");
+        let err = id.check_dictionary().unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "<dictionary>: doi:10.1/a is in the run's dictionary and no record asserts it"
+        );
+        pubmed(&mut id, 1, Some("10.1/a"), None, "One");
+        id.check_dictionary().unwrap();
     }
 
     /// Each work's names, the works in the order the pass made them.

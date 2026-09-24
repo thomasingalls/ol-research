@@ -998,6 +998,7 @@ name = "merge"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "fst",
  "ingest",
  "model",
  "postcard",
