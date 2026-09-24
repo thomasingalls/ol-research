@@ -119,10 +119,20 @@ pub use work::{SourceId, Sources, WorkId};
 /// or a few, carried by every record of it, every other name held by one
 /// record, and no two of its titles agreeing — the shared names are the
 /// DOI of the supplement or proceedings the records were printed in, not
-/// of any one of them ([`identity::Reason::ContainerId`]). Each part keeps
+/// of any one of them (`container-id`, since gone). Each part keeps
 /// its own names and is refused the container's, with the container's
 /// own record as the holder where one is read; a reference naming it
 /// lands on that record, or on a stub for the container where none is.
 /// The parts and the container are not yet linked: merge plan §11 item
 /// 25 is how they will be.
-pub const VERSION: u32 = 11;
+/// Version 12 (2026-09-24): version 11's rule, named for what it knows.
+/// The corpus survey showed a star is not always a container's —
+/// `10.1016/s0197` on 38 records from two journals is a DOI cut short —
+/// so the shared names come off with the verdicts the rules already have:
+/// no article's id ([`identity::Reason::NotAnArticleId`]) where no record
+/// holds the name, and a wrong link where one does; `container-id` is
+/// gone. And two records are copies of one article, which leaves the star
+/// a hairball, only if their titles are equal or one is the other's
+/// vernacular: §3.3's prefix clause called two letters answering one
+/// viewpoint copies. No set was ever written under version 11.
+pub const VERSION: u32 = 12;

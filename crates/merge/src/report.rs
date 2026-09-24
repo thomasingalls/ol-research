@@ -64,13 +64,13 @@ pub fn identity(
             writeln!(out, "              {example}")?;
         }
     }
-    if s.containers > 0 {
+    if s.stars > 0 {
         writeln!(
             out,
-            "  names a container carries on its parts, and so no part's id: {} values, {} assertions rejected",
-            s.containers, s.container_assertions
+            "  names every record of a large component carries under a title of its own, and so no article's id: {} values, {} assertions rejected",
+            s.stars, s.star_assertions
         )?;
-        for example in &s.container_examples {
+        for example in &s.star_examples {
             writeln!(out, "              {example}")?;
         }
     }

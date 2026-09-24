@@ -1161,8 +1161,9 @@ impl Builder {
                 Slot::Work(id) => return Target::Work(id, false),
                 Slot::Shared => return Target::Shared,
                 // A name no work holds: refused wherever it was asserted —
-                // a container's DOI, taken off its parts — and a stub's if
-                // anything cited it, which the stubs say.
+                // a publisher id one source gave several records, a name a
+                // star's records all carry — and a stub's if anything
+                // cited it, which the stubs say.
                 Slot::Free => {}
             }
         }

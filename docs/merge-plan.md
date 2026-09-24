@@ -276,19 +276,26 @@ assertion now carries which rule rejected it, `wrong-link` or
 
 A third looks at a component's shape, once its size has put it past the
 rules (`HAIRBALL_RECORDS`, `HAIRBALL_NAMES`). If every name in it is
-either one record's alone or every record's, and no two of its titles
-agree, it is a container's: a proceedings, a block of abstracts, a
-supplement, published as one item under one DOI, whose parts PubMed
-indexes one by one with that DOI beside each. The names every record
-carries are the container's, so they are refused on each part —
-`container-id`, with the container's own record as the holder where one
-is read — and the parts are works of their own; a reference citing the
-DOI lands on the container's record, or on a stub that stands for the
-container (`Identity::cut_containers`, 2026-09-24, §10). Any other shape
-that large still stops the run: forty copies of one article under one
-DOI agree on their titles. Below the cap the same star is still the
-rules' to decide, and they make the DOI a shared name of every part
-(§11, item 25).
+either one record's alone or every record's, and no two of its records
+are copies of one article — no two titles equal after the fingerprint,
+or one the other's vernacular — it is a star, and the names every record
+carries name none of them. Most often they are a container's: a
+proceedings, a block of abstracts, a supplement, published as one item
+under one DOI, whose parts PubMed indexes one by one with that DOI beside
+each. Not always: `10.1016/s0197`, on 38 records from two journals, is a
+DOI cut short. So the verdicts are the ones the rules already have. A
+shared name no record holds natively is refused on every record as no
+article's id, `not-an-article-id`, and is a stub's where cited; one a
+record holds natively — a Crossref record of the container itself —
+stays that record's, and the other records' claims are wrong links, as
+below the cap. Either way the records are works of their own
+(`Identity::cut_stars`, 2026-09-24, §10). Titles are compared for
+equality here and not by the agreement above, whose prefix clause calls
+two letters on one viewpoint — "The two-hour marathon: how?" and "…: how
+important is age?" — one article. Any other shape that large still stops
+the run: forty copies of one article under one DOI have one title. Below
+the cap the same star is still the rules' to decide, and they make the
+DOI a shared name of every record (§11, item 25).
 
 Order: duplicates and spellings first (they merge nothing across sources),
 then the title test on every bridge, rejecting what fails it, then §3.4's
@@ -1261,6 +1268,28 @@ stays.
   Whether all eight of the corpus's stars pass the title test, and not
   only the four that were read, is the next survey's to say: one that
   does not stops the run as before.
+
+  The next survey (`ol-rht-merge-survey-v3`, 2026-09-24) says seven do.
+  The eighth — 38 letters answering "The two-hour marathon: Who and
+  when?", under its DOI and `reg1152:110/1/278` — stops the run still,
+  because two of its titles agree under §3.3's prefix clause: "The
+  two-hour marathon: how important is age?" and "The two-hour marathon:
+  how?". And one of the seven is no container: `10.1016/s0197` on 38
+  records, each with its own Elsevier PII, from at least two journals —
+  a DOI cut short in the deposit, not a volume's. The rule's effect on it
+  is right, the value refused on every record and each keeping its own
+  names, but its reason, `container-id`, says more than the evidence does.
+  Both are the user's to decide.
+
+  Decided the same day — merge version 12. The star's test compares titles
+  for equality, or a vernacular title, and no longer by §3.3's agreement;
+  the eighth star is cut. And the verdicts claim no more than the shape
+  shows: a shared name no record holds is refused as no article's id, the
+  publisher ids' verdict, and one a record holds leaves the others as
+  wrong links; `container-id` is gone. The user asked whether a
+  container's intent can still be found at the merge step; it can, from
+  evidence the merge reads (§11, item 25), so the verdict need not carry
+  it. No set was ever written under version 11.
 - 2026-09-24, nothing in the identity pass follows how names are
   numbered — step 2a of [the merge's memory](inbox/merge-memory.md). A
   name's index was the order it was first read; step 2b numbers names in
@@ -1731,20 +1760,34 @@ stays.
     indexing refused names and giving their claims back to the identity
     pass, which means a rejection recording which record made the claim —
     a merge version.
-25. **Containers and parts.** B, built 2026-09-24 (§3.3, §10), refuses a
-    container's DOI on its parts and leaves the container a stub, or the
-    record Crossref holds of it. C, the answer the user set aside for
-    later, models the container as a work and each part as related to it
-    — §2's `part`, a relation and not a grouping. B was built to grow
-    into it, and the path is short:
+25. **Containers and parts.** B, built 2026-09-24 and named for what it
+    knows in merge version 12 (§3.3, §10), refuses the name every record
+    of a star carries and leaves it a stub, or the record Crossref holds
+    of it. C, the answer the user set aside for later, models the
+    container as a work and each part as related to it — §2's `part`, a
+    relation and not a grouping. B was built to grow into it, and the path
+    is short:
+    - **Which stars are containers.** The verdict says only that the name
+      is no article's id; whether it is a container's is C's to find, from
+      evidence the merge reads. Every record of the star carries the
+      refusal, with the name. The records' views give each one's journal
+      — its ISSNs and NLM id — and its date: a container's parts share
+      one journal and one date, and `10.1016/s0197`'s records are from two
+      journals. Where Crossref's record of the DOI is read, its type and
+      page range say the rest ("Proceedings of the Physiological
+      Society", a journal article over pp. 33–82). The parts' volume,
+      issue and pages are in the normalized records but not yet in the
+      views, and C would add them.
     - **The container is already a work.** The stub a citing reference
       lands on under B has a registry id, and C keeps it: the stub
       becomes the container, and nothing moves in the registry. Where a
       Crossref record of the container is read, its work is the
       container, and each part's rejection already names that record as
       the holder.
-    - **The link is already written.** Every part's row carries
-      `container-id` on the container's DOI. C turns each into a relation
+    - **The link is already written.** Every part's row carries the
+      refusal of the container's DOI — `not-an-article-id`, or a wrong
+      link with the container's record as holder. For a star C finds to
+      be a container, it turns each into a relation
       in pass 2: `is-part-of` from the part's work to the work the DOI
       resolves to, and `has-part` back, both kinds already in
       `relation::Kind` from Crossref's vocabulary. `by` is the source

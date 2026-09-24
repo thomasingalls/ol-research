@@ -235,13 +235,14 @@ pub struct Stats {
     pub collided_assertions: u64,
     #[allow(missing_docs)]
     pub collided_examples: Vec<String>,
-    /// Names a container carries on its parts, taken off them
-    /// ([`Reason::ContainerId`]), and the assertions that took.
-    pub containers: u64,
+    /// Names every record of a star beyond the rules carries under a
+    /// title of its own, taken off them ([`Identity::cut_stars`]), and the
+    /// assertions that took.
+    pub stars: u64,
     #[allow(missing_docs)]
-    pub container_assertions: u64,
+    pub star_assertions: u64,
     /// The largest, written out, for the report.
-    pub container_examples: Vec<String>,
+    pub star_examples: Vec<String>,
 }
 
 /// The identity pass, accumulating over every set of every source.
@@ -264,7 +265,7 @@ pub struct Identity {
     /// Publisher-id claims, held back from the union until every record
     /// is in: see [`Identity::settle`].
     deferred: Vec<(RecordIx, NameIx, &'static str)>,
-    /// The claims `settle` and `cut_containers` rejected, each on the
+    /// The claims `settle` and `cut_stars` rejected, each on the
     /// record that made it.
     collisions: Vec<(RecordIx, Refusal)>,
     /// The names those rejections leave in no component.
@@ -272,8 +273,8 @@ pub struct Identity {
     /// Refused values written out, largest first, for the report.
     refusals: Vec<(usize, String)>,
     settled: bool,
-    /// [`Identity::cut_containers`] has run.
-    containers_cut: bool,
+    /// [`Identity::cut_stars`] has run.
+    stars_cut: bool,
     /// Under a dictionary, which of its names a record has asserted, a
     /// bit each, and how many: every one must be, or the dictionary was
     /// made from other sets than the pass read.
@@ -802,8 +803,8 @@ impl Identity {
 
     /// The components and which of them are conflicts, from the joins as
     /// they stand: after [`Identity::settle`], and again after
-    /// [`Identity::cut_containers`] takes a container's names off its
-    /// parts.
+    /// [`Identity::cut_stars`] takes a star's shared names off its
+    /// records.
     #[allow(clippy::cast_possible_truncation)] // fewer than 2^32 names in a run
     fn components(&mut self) {
         let n = self.arena.len();
@@ -844,42 +845,47 @@ impl Identity {
             .collect();
     }
 
-    /// Takes a container's names off its parts (merge plan §3.3, the
-    /// user's decision of 2026-09-24). Once, after the titles are read and
-    /// before anything is cited: by [`Identity::targets`],
-    /// [`Identity::cite`] or [`Identity::resolve`], whichever comes first.
+    /// Takes the names every record of a star carries off its records
+    /// (merge plan §3.3, the user's decisions of 2026-09-24). Once, after
+    /// the titles are read and before anything is cited: by
+    /// [`Identity::targets`], [`Identity::cite`] or [`Identity::resolve`],
+    /// whichever comes first.
     ///
-    /// A container is a proceedings, a block of abstracts, a supplement, a
-    /// set of letters on one article, published as one item with one DOI,
-    /// whose parts PubMed indexes one by one, each with its own PMID and
-    /// the container's DOI beside it: the Physiological Society's
-    /// proceedings of 1955 on 42 records, the Marine Biological
-    /// Laboratory's abstracts of 1950 on 96, a Journal of Neurosurgery
-    /// supplement on 48. The survey of the whole PubMed baseline found
-    /// eight, each a component larger than the rules were tested on
-    /// (`HAIRBALL_RECORDS`), and Crossref registers five of the eight DOIs
-    /// as one article over many pages (`Proceedings of the Physiological
-    /// Society`, pp. 33–82). The DOI names the container, not any part, so
-    /// it is no part's name: it comes off each part with its reason
-    /// ([`Reason::ContainerId`]), the parts become works of their own,
-    /// and a reference citing the DOI lands on a stub that stands for the
-    /// container. Where a record of the container itself is present — a
-    /// Crossref record whose own DOI it is — that record keeps it, and a
-    /// reference lands there. Modelling the container and its parts as
-    /// such is merge plan §11 item 25.
+    /// A star is a component larger than the rules were tested on
+    /// (`HAIRBALL_RECORDS`) in which every name is either one record's
+    /// alone or every record's, and no two records are copies of one
+    /// article: no two titles equal, after §3.3's fingerprint, or one the
+    /// other's vernacular title. Its shared names name none of its
+    /// records. Most often they are a container's — a proceedings, a block
+    /// of abstracts, a supplement, a set of letters on one article,
+    /// published under one DOI whose parts PubMed indexes one by one with
+    /// that DOI beside each: the Physiological Society's proceedings of
+    /// 1955 on 42 records, the Marine Biological Laboratory's abstracts of
+    /// 1950 on 96. But the shape says only that the value is no article's,
+    /// not what it is: `10.1016/s0197` on 38 records from two journals is a
+    /// DOI cut short in the deposit. So a shared name no record holds
+    /// natively is refused on every record as no article's id
+    /// ([`Reason::NotAnArticleId`], the verdict a publisher id one source
+    /// gives several records gets), and is a stub's where cited; one a
+    /// record of the component holds natively — a Crossref record of the
+    /// container itself — stays that record's, and the others' claims are
+    /// wrong links ([`Reason::WrongLink`]), as the rules make them below
+    /// the size cap. Whether a refused name was a container's is merge
+    /// plan §11 item 25's to decide, from evidence.
     ///
-    /// What makes a component a container's, from its shape alone and
-    /// never from its size alone: larger than the rules take, every name
-    /// either one record's alone or every record's, and every two
-    /// records' titles tested and different — so no two parts are copies
-    /// of one article, which a shared DOI and a shared title would say
-    /// instead, and which still stops the run. Anything else that large
-    /// is a hairball still.
-    fn cut_containers(&mut self) {
-        if self.containers_cut {
+    /// Titles are compared for equality only, not by §3.3's looser
+    /// agreement: its prefix and near-spelling clauses recognise one
+    /// article under two sources' spellings, and among the parts of one
+    /// container they call "The two-hour marathon: how?" a copy of "The
+    /// two-hour marathon: how important is age?". A star whose records are
+    /// copies of one article — forty under one DOI with one title — or
+    /// whose records' titles cannot be compared stays a hairball, and
+    /// anything else that large still stops the run.
+    fn cut_stars(&mut self) {
+        if self.stars_cut {
             return;
         }
-        self.containers_cut = true;
+        self.stars_cut = true;
         // The records of each conflict component, by root: conflicts are
         // few, and only a conflict can be larger than the rules take.
         let mut components: BTreeMap<NameIx, Vec<RecordIx>> = BTreeMap::new();
@@ -895,45 +901,10 @@ impl Identity {
         let mut examples: Vec<(usize, String)> = Vec::new();
         let mut cut = false;
         for recs in components.into_values() {
-            let mut by: BTreeMap<NameIx, SmallVec<[RecordIx; 1]>> = BTreeMap::new();
-            for &rix in &recs {
-                let r = &self.records[rix as usize];
-                let mut own: SmallVec<[NameIx; 4]> = SmallVec::new();
-                own.push(r.native);
-                for a in &r.asserts {
-                    if !own.contains(&a.name) {
-                        own.push(a.name);
-                    }
-                }
-                for name in own {
-                    by.entry(name).or_default().push(rix);
-                }
-            }
-            let all = recs.len();
-            if all <= HAIRBALL_RECORDS && by.len() <= HAIRBALL_NAMES {
+            let Some((names, shared)) = self.star(&recs) else {
                 continue;
-            }
-            if !by.values().all(|v| v.len() == 1 || v.len() == all) {
-                continue;
-            }
-            let apart = {
-                let default = OwnedTitles::default();
-                let title_of = |rix: RecordIx| self.titles.get(&rix).unwrap_or(&default);
-                (0..all).all(|i| {
-                    (i + 1..all).all(|j| {
-                        let agreement = title::agree(title_of(recs[i]), title_of(recs[j]));
-                        !agreement.is_agreement() && agreement != Agreement::Untestable
-                    })
-                })
             };
-            if !apart {
-                continue;
-            }
-            let shared: Vec<NameIx> = by
-                .iter()
-                .filter(|(_, v)| v.len() == all)
-                .map(|(name, _)| *name)
-                .collect();
+            let all = recs.len();
             for &name in &shared {
                 let holder = recs
                     .iter()
@@ -946,22 +917,26 @@ impl Identity {
                     self.records[rix as usize]
                         .asserts
                         .retain(|a| a.name != name);
-                    self.collisions
-                        .push((rix, (name, Reason::ContainerId, holder)));
-                    self.stats.container_assertions += 1;
+                    let why = if holder.is_some() {
+                        Reason::WrongLink
+                    } else {
+                        Reason::NotAnArticleId
+                    };
+                    self.collisions.push((rix, (name, why, holder)));
+                    self.stats.star_assertions += 1;
                 }
                 if holder.is_none() {
                     // No record holds it now: a name in no component, as a
                     // refused publisher id is, and a stub's where cited.
                     self.refused.insert(name);
                 }
-                self.stats.containers += 1;
+                self.stats.stars += 1;
                 examples.push((all, format!("{} on {all} records", self.arena.get(name))));
             }
             // The component joined again without them: its names each
             // their own again, then each record's remaining names joined
             // to its native name, as `add` joins them.
-            for &name in by.keys() {
+            for &name in &names {
                 self.parent[name as usize] = name;
             }
             for &rix in &recs {
@@ -979,10 +954,55 @@ impl Identity {
         }
         examples.sort_by_key(|(n, e)| (Reverse(*n), e.clone()));
         examples.truncate(EXAMPLES);
-        self.stats.container_examples = examples.into_iter().map(|(_, e)| e).collect();
+        self.stats.star_examples = examples.into_iter().map(|(_, e)| e).collect();
         if cut {
             self.components();
         }
+    }
+
+    /// A conflict component's names and, if it is a star past the rules,
+    /// the names every record of it carries: see [`Identity::cut_stars`].
+    fn star(&self, recs: &[RecordIx]) -> Option<(Vec<NameIx>, Vec<NameIx>)> {
+        let mut by: BTreeMap<NameIx, SmallVec<[RecordIx; 1]>> = BTreeMap::new();
+        for &rix in recs {
+            let r = &self.records[rix as usize];
+            let mut own: SmallVec<[NameIx; 4]> = SmallVec::new();
+            own.push(r.native);
+            for a in &r.asserts {
+                if !own.contains(&a.name) {
+                    own.push(a.name);
+                }
+            }
+            for name in own {
+                by.entry(name).or_default().push(rix);
+            }
+        }
+        let all = recs.len();
+        if all <= HAIRBALL_RECORDS && by.len() <= HAIRBALL_NAMES {
+            return None;
+        }
+        if !by.values().all(|v| v.len() == 1 || v.len() == all) {
+            return None;
+        }
+        let default = OwnedTitles::default();
+        let title_of = |rix: RecordIx| self.titles.get(&rix).unwrap_or(&default);
+        let apart = (0..all).all(|i| {
+            (i + 1..all).all(|j| {
+                !matches!(
+                    title::agree(title_of(recs[i]), title_of(recs[j])),
+                    Agreement::Equal | Agreement::Vernacular | Agreement::Untestable
+                )
+            })
+        });
+        if !apart {
+            return None;
+        }
+        let shared = by
+            .iter()
+            .filter(|(_, v)| v.len() == all)
+            .map(|(name, _)| *name)
+            .collect();
+        Some((by.into_keys().collect(), shared))
     }
 
     /// How many components are conflicts, after [`Identity::mark`].
@@ -1120,7 +1140,7 @@ impl Identity {
     /// [`Identity::cite`], counted among references or among relation
     /// targets.
     fn cite_in(&mut self, source: SourceId, names: &[Name<'_>], related: bool) -> &'static str {
-        self.cut_containers();
+        self.cut_stars();
         let mut held: SmallVec<[NameIx; 2]> = SmallVec::new();
         let mut unheld: SmallVec<[Name<'_>; 2]> = SmallVec::new();
         for &name in names {
@@ -1189,7 +1209,7 @@ impl Identity {
         if self.roots.len() != self.arena.len() {
             self.mark();
         }
-        self.cut_containers();
+        self.cut_stars();
         let (names_of, recs_of, roots) = self.grouped()?;
         let mut works = Vec::with_capacity(roots.len());
         let mut components = Components::default();
@@ -1767,15 +1787,12 @@ pub enum Reason {
     /// A foreign id naming a record whose title disagrees: the record
     /// that holds the name keeps it, the one that claimed it loses it.
     WrongLink,
-    /// A publisher id one source claimed for more than one of its own
-    /// records, and so no article's identifier (§3.1, 2026-09-19): an
-    /// issue's id, a volume's, a journal's title in the slot.
+    /// A name no article's: a publisher id one source claimed for more
+    /// than one of its own records (§3.1, 2026-09-19) — an issue's id, a
+    /// volume's, a journal's title in the slot — or a name every record of
+    /// a star beyond the rules carries under a title of its own (§3.3,
+    /// 2026-09-24) — a container's DOI on its parts, or a DOI cut short.
     NotAnArticleId,
-    /// A container's name on one of its parts: a proceedings', a block
-    /// of abstracts', a supplement's DOI on each item PubMed indexes in it
-    /// (§3.3, 2026-09-24). The container's own record holds it, where
-    /// there is one.
-    ContainerId,
 }
 
 impl fmt::Display for Reason {
@@ -1783,7 +1800,6 @@ impl fmt::Display for Reason {
         f.write_str(match self {
             Self::WrongLink => "wrong link",
             Self::NotAnArticleId => "not an article's id",
-            Self::ContainerId => "a container's id on its parts",
         })
     }
 }
@@ -2643,13 +2659,13 @@ mod tests {
         "General pharmacology of oenanthotoxin",
     ];
 
-    /// A container's DOI on each of its parts (§3.3, 2026-09-24): forty
-    /// abstracts of one proceedings, each its own PubMed record, all under
-    /// one DOI and every title different. The DOI comes off every part
-    /// with its reason, the parts are forty works, and a reference citing
-    /// the DOI makes a stub for the proceedings.
+    /// A star beyond the rules (§3.3, 2026-09-24): forty abstracts of one
+    /// proceedings, each its own PubMed record, all under the proceedings'
+    /// DOI and every title different. No record holds the DOI, so it comes
+    /// off every one as no article's id, the records are forty works, and a
+    /// reference citing the DOI makes a stub for it.
     #[test]
-    fn a_containers_doi_comes_off_its_parts() {
+    fn a_stars_shared_doi_comes_off_its_records() {
         const DOI: &str = "10.1113/jphysiol.1955.sp005387";
         let mut id = Identity::new();
         for (n, title) in (1u32..).zip(PROCEEDINGS) {
@@ -2658,12 +2674,12 @@ mod tests {
         pubmed(&mut id, 1, Some("10.1/cites"), None, "A citing paper");
         id.mark();
         assert_eq!(id.cite(SourceId::Pubmed, &[Name::Doi(DOI)]), "stub");
-        let res = id.resolve(false).expect("a container is no hairball");
+        let res = id.resolve(false).expect("a star is no hairball");
         assert_eq!(res.works.len(), 41);
-        assert_eq!(res.stats.containers, 1);
-        assert_eq!(res.stats.container_assertions, 40);
+        assert_eq!(res.stats.stars, 1);
+        assert_eq!(res.stats.star_assertions, 40);
         assert_eq!(
-            res.stats.container_examples,
+            res.stats.star_examples,
             [format!("doi:{DOI} on 40 records")]
         );
         for work in res
@@ -2673,7 +2689,7 @@ mod tests {
         {
             assert_eq!(work.names.len(), 1, "its PMID alone");
             assert_eq!(work.rejected.len(), 1);
-            assert_eq!(work.rejected[0].why, Reason::ContainerId);
+            assert_eq!(work.rejected[0].why, Reason::NotAnArticleId);
             assert_eq!(work.rejected[0].holder, None);
             assert_eq!(
                 res.arena.get(work.rejected[0].name).to_string(),
@@ -2689,11 +2705,11 @@ mod tests {
         assert_eq!(stubs[0][0].to_string(), format!("doi:{DOI}"));
     }
 
-    /// Where the container's own record is present — a Crossref record
-    /// whose DOI it is — that record keeps the DOI and only the parts lose
-    /// it, with that record as the holder.
+    /// Where a record holds the shared name natively — Crossref's record of
+    /// the proceedings itself — that record keeps it, and the others'
+    /// claims are wrong links, as the rules make them below the cap.
     #[test]
-    fn a_containers_own_record_keeps_its_doi() {
+    fn a_stars_name_stays_with_the_record_that_holds_it() {
         const DOI: &str = "10.1113/jphysiol.1955.sp005387";
         let mut id = Identity::new();
         for (n, title) in (1u32..).zip(PROCEEDINGS) {
@@ -2702,7 +2718,7 @@ mod tests {
         crossref(&mut id, DOI, "Proceedings of the Physiological Society");
         id.mark();
         assert_eq!(id.cite(SourceId::Pubmed, &[Name::Doi(DOI)]), "held");
-        let res = id.resolve(false).expect("a container is no hairball");
+        let res = id.resolve(false).expect("a star is no hairball");
         assert_eq!(res.works.len(), 41);
         let container = res
             .works
@@ -2720,16 +2736,12 @@ mod tests {
             .filter(|w| !w.rejected.is_empty())
             .collect();
         assert_eq!(parts.len(), 40);
-        assert!(
-            parts
-                .iter()
-                .all(|w| w.rejected[0].why == Reason::ContainerId
-                    && w.rejected[0].holder == Some(container.records[0]))
-        );
+        assert!(parts.iter().all(|w| w.rejected[0].why == Reason::WrongLink
+            && w.rejected[0].holder == Some(container.records[0])));
         assert!(res.stub_works().is_empty());
     }
 
-    /// Below the cap the rules decide, not the container rule: twelve
+    /// Below the cap the rules decide, not the star rule: twelve
     /// parts of the same proceedings are twelve works that share its DOI,
     /// none promoting it, and a reference citing it is ambiguous. The
     /// line B draws is the cap's; merge plan §11 item 25 asks whether it
@@ -2746,7 +2758,7 @@ mod tests {
         let res = id
             .resolve(false)
             .expect("twelve records are within the rules");
-        assert_eq!(res.stats.containers, 0);
+        assert_eq!(res.stats.stars, 0);
         assert_eq!(res.works.len(), 12);
         let standings: Vec<Standing> = res
             .works
@@ -2760,10 +2772,72 @@ mod tests {
         assert!(res.stub_works().is_empty());
     }
 
-    /// The same shape with titles that agree — forty copies of one article
-    /// under one DOI — is no container's, and is a hairball still.
+    /// Letters answering one viewpoint, "The two-hour marathon: Who and when?"
+    /// (J Appl Physiol 2011;110:278–293), as PubMed titles them.
+    const MARATHON: [&str; 38] = [
+        "Don't forget the gut--it is an important athletic organ!",
+        "Marathon run is an important stress to muscle and brain functions.",
+        "Wealth and athletic records.",
+        "Implications of the critical speed and slow component of Vo2 for the 2-hour marathon.",
+        "Maturity effect of training.",
+        "The 2-h marathon--running from east.",
+        "The two-hour marathon--who and when? And in what environmental conditions?",
+        "The 2-hour marathon--more than physiology.",
+        "The 2-hour marathon: Olympian vs. Paralympian.",
+        "The 2-hour marathon: will women close the gap on men?",
+        "Feasiblity of the two-hour marathon is a burning issue.",
+        "The two-hour marathon: how important is age?",
+        "What for nature, and who to nurture?",
+        "The two-hour marathon: through a highly individualized training process?",
+        "Physiological determinants of best performance in marathon running.",
+        "Influence of early life factors on elite performance.",
+        "Two-hour marathon: Bayes takes a day off?",
+        "The two-hour marathon: running economy and lower body flexibility.",
+        "Is the men's marathon world record 25 years behind the women's record?",
+        "Role of altitude training and the two-hour marathon.",
+        "A small body mass and higher muscle recruitment strategy is the key.",
+        "Two-hour marathon and running economy.",
+        "Oxidative stress: friend and foe of the elite marathoner.",
+        "Critical velocity and maximal lactate steady state: better determinants of 2-hour marathon.",
+        "The two-hour marathon, who and when? Haïle Gebrselassie in 2000.",
+        "The two-hour marathon: genetics will become increasingly important.",
+        "The two-hour marathon: physiological and biochemical factors determinants running economy.",
+        "What is coefficient of speed endurance to achieve two-hour marathon?",
+        "Genetic information will influence but not predict the first two-hour marathon.",
+        "Two-hour marathon requires Mother Nature's help.",
+        "Low pulmonary vascular resistance breaks the two-hour marathon limit.",
+        "The highest possible skeletal muscle metabolic stability as a key factor for breaking the 2-hour marathon barrier.",
+        "The two-hour marathon: the importance of breathing economy.",
+        "The two-hour marathon: how?",
+        "The athlete with maintained cerebral oxygenation breaks the record.",
+        "Do not underplay the roles of Vo2max and central fatigue in the 2-h marathon.",
+        "Mechanisms of self-optimized pacing.",
+        "Optimizing strategies for the marathon.",
+    ];
+
+    /// Two records whose titles only begin alike are not copies of one
+    /// article: §3.3's prefix clause calls "The two-hour marathon: how?" a
+    /// dropped subtitle of "The two-hour marathon: how important is age?",
+    /// and that kept the corpus's letters on one viewpoint a hairball until
+    /// the star's test asked for equal titles (2026-09-24).
     #[test]
-    fn a_star_whose_titles_agree_is_no_container() {
+    fn a_star_whose_titles_only_begin_alike_is_cut() {
+        const DOI: &str = "10.1152/japplphysiol.01259.2010";
+        let mut id = Identity::new();
+        for (n, title) in (1u32..).zip(MARATHON) {
+            pubmed(&mut id, 21_542_146 + n, Some(DOI), None, title);
+        }
+        id.mark();
+        let res = id.resolve(false).expect("a star is no hairball");
+        assert_eq!(res.works.len(), 38);
+        assert_eq!(res.stats.stars, 1);
+        assert_eq!(res.stats.star_assertions, 38);
+    }
+
+    /// The same shape with equal titles — forty copies of one article under
+    /// one DOI — is a hairball still.
+    #[test]
+    fn a_star_of_copies_of_one_article_is_a_hairball() {
         let mut id = Identity::new();
         for n in 1..=40 {
             pubmed(
@@ -2976,7 +3050,7 @@ mod tests {
             assert_eq!(plain.stats, renumbered.stats);
         }
         assert_eq!(plain.components.unresolved.get("hairball"), Some(&1));
-        assert_eq!(plain.stats.containers, 1);
+        assert_eq!(plain.stats.stars, 1);
         assert_eq!(plain.stats.collided, 1);
     }
 
