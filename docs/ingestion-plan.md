@@ -1637,6 +1637,21 @@ cross-IDs and a second edge namespace early.
   volume over two years (`1992-1993 Oct`, `VolumeMonth`, compared by the
   merge as its first year only) and a seasonal volume written with both
   years (`1986 Winter-1987 Spring`).
+- 2026-09-24, the count (`ol-rht-date-ranges-v1` on the box, 39,994,988
+  records in 1,334 files). Day ranges within one month that end before
+  they start: 16 issues, 242 records, against 6,011 that run forwards and
+  1,396 that cross a month and name it. Of the 16, 14 have a next issue
+  in their volume, and in all 14 it begins before a next-month end would
+  fall, which rules that reading out; in 12 it begins the day after the
+  dropped-digit end, in one (`Nurs Times` 79(25), `Jun 22-9`) the day
+  that end names, and in one six days after it. Of the other two, one's
+  previous issue began one dropped-digit length before, and one has no
+  neighbour. No range in the corpus is written so that only the
+  next-month reading fits (`28-3`). `Nurs Stand` 5(12), `1990 Dec 12-8`,
+  is followed by 5(13), `1990 Dec 19-1991 Jan 8`: a crossing, written
+  with its month and year. Whether version 8 reads these as the
+  dropped-digit week is the user's call; the merge and the index read
+  only the first day either way.
 
 ## 11. Dependencies
 
