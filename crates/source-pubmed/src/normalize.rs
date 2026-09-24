@@ -309,7 +309,10 @@ pub struct Dates<'n> {
 /// day range its first day ([`PartialDate::medline_certain`]), and the
 /// record normalizes; one that does not begin with a year still stops the
 /// run (the user's decision, 2026-09-24). The stats report counts these by
-/// what they say, so the grammar can still be taught from it.
+/// what they say, so the grammar can still be taught from it. Version 8
+/// taught it the backwards day ranges, which are a notation (`1995 Mar
+/// 22-8` is the 22nd to the 28th), so those are read now and only what
+/// that reading cannot make run forwards is kept.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Published<'n> {
     /// Read whole.

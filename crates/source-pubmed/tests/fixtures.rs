@@ -806,8 +806,8 @@ mod normalized {
                 MedlineDateError::Part(model::DateError::Calendar),
             ),
             (
-                "1995 Mar 22-8",
-                PartialDate::Day(Date::from_numbers(1995, 3, 22).unwrap()),
+                "1990 Dec 28-3",
+                PartialDate::Day(Date::from_numbers(1990, 12, 28).unwrap()),
                 MedlineDateError::Backwards,
             ),
         ] {
@@ -826,11 +826,28 @@ mod normalized {
             );
         }
 
-        let input = with("Winter 1976");
+        // The notation the baseline holds is read, not kept (model version
+        // 8): the week of the 22nd, its end's tens digit dropped.
+        let input = with("1995 Mar 22-8");
+        let article = only_article(&input);
+        let mut out = Collect::default();
+        normalize(&article, &mut out).unwrap();
+        assert!(
+            matches!(
+                out.citations[0].dates.published,
+                Published::Read(PartialDate::Span(span))
+                    if span.start.day.map(model::Day::get) == Some(22)
+                        && span.end.day.map(model::Day::get) == Some(28)
+            ),
+            "{:?}",
+            out.citations[0].dates.published
+        );
+
+        let input = with("CHRISTMAS 1992");
         let article = only_article(&input);
         let err = normalize(&article, &mut Collect::default()).unwrap_err();
         assert_eq!(err.field, "JournalIssue/PubDate", "{err}");
-        assert_eq!(err.raw, "Winter 1976", "{err}");
+        assert_eq!(err.raw, "CHRISTMAS 1992", "{err}");
     }
 
     /// `ValidYN="N"` is NLM saying the identifier is the wrong one: the

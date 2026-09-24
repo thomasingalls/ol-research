@@ -84,7 +84,21 @@
 /// its end is not kept. PubMed's `Dates.published` became a
 /// `normalize::Published`, which changes the layout. Normalized output
 /// under version 6 is rebuilt, not patched.
-pub const VERSION: u32 = 7;
+///
+/// Version 8 (2026-09-24): a day range within one month whose end has
+/// fewer digits than its start, and reads as before it, takes the start's
+/// leading digits — `1995 Mar 22-8` is the 22nd to the 28th, NLM's
+/// notation, as `14-5` is pages 14 to 15 on the same records (the user's
+/// call). The count over the whole baseline found 16 such issues, 242
+/// records; every one with a next issue in its volume is followed before a
+/// next-month end could fall, and no range is written so that only the
+/// next month would fit. Those records were kept with their first day
+/// under version 7 and are read now. So is a season written before its
+/// year (`Spring 2008`), which the survey on version 7 found on 3,044
+/// records of 2006 to 2017 that still stopped the run, because they do not
+/// begin with a year. Both change what normalized output holds. Output
+/// under version 7 is rebuilt, not patched.
+pub const VERSION: u32 = 8;
 
 pub mod claim;
 pub mod code;

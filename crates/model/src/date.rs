@@ -215,13 +215,14 @@ pub enum MedlineError {
     /// A recognized form with a bad part.
     Part(Error),
     /// A recognized form whose parts are each good and which ends before
-    /// it begins: `1990 Dec 12-8`, two nursing weeklies' issue for the
-    /// week of the 12th (PMIDs 2123665, 2255640). Before model version 6
-    /// this was read as a span ending four days before its start, without
-    /// a word — false data in a shape we knew. It is refused rather than
-    /// repaired: that `12-8` means `12-18`, a tens digit elided the way
-    /// NLM elides page ranges, is a reading of one month of one year, and
-    /// waits on a source that states the convention.
+    /// it begins. Before model version 6 such a range was read as a span
+    /// ending before its start, without a word — false data in a shape we
+    /// knew; version 6 refused it. The ones the baseline holds turned out
+    /// to be a notation, a day range with its end's tens digit dropped
+    /// (`1990 Dec 12-8` is the week of the 12th), which version 8 reads
+    /// (`dropped_digit`). What that reading cannot make run forwards —
+    /// `1990 Dec 28-3`, two years backwards — is still refused; none is in
+    /// the 2026 baseline.
     Backwards,
 }
 
@@ -955,6 +956,46 @@ fn month_span(year: Year, month: Month, rest: &str) -> Result<PartialDate, Medli
     )
 }
 
+/// The digits at the front of `s`, as written.
+fn leading_digits(s: &str) -> &str {
+    &s[..s.bytes().take_while(u8::is_ascii_digit).count()]
+}
+
+/// The end of a day range within one month, written as NLM writes page
+/// ranges: an end with fewer digits than the start, which reads as before
+/// it, takes the start's leading digits — `1995 Mar 22-8` is the 22nd to
+/// the 28th, as `14-5` on the same record is pages 14 to 15 (model version
+/// 8, the user's call of 2026-09-24).
+///
+/// The count over the whole 2026 baseline (`ol-rht-date-ranges-v1`) found
+/// 16 issues written this way, 242 records. For 14 of them the volume has a
+/// next issue, and every one begins before an end in the month after would
+/// fall, so that reading is out: `Nurs Times` 91(12) is `1995 Mar 22-8`,
+/// 91(13) `1995 Mar 29-Apr 4`, and `Nurs Stand` 5(12), `1990 Dec 12-8`, is
+/// followed by 5(13), `1990 Dec 19-1991 Jan 8` — a crossing, written with
+/// its month and its year, as all 1,396 crossings in the baseline name
+/// their month. In 12 of the 14 the next issue begins the day after the
+/// end read this way. In one (`Nurs Times` 79(25), `1983 Jun 22-9`) it
+/// begins on the 29th this reading ends on, and in one six days later:
+/// what the source wrote, kept as written, as `11-3` keeps pages 11 to 13.
+///
+/// An end the reading cannot make a later day of its month — `28-3`, or
+/// `Feb 22-9` in a year with no 29 February — is left as written, and the
+/// range refused as running backwards; none is in the baseline.
+fn dropped_digit(year: Year, month: Month, first: (Day, &str), last: (Day, &str)) -> Day {
+    let ((first, first_digits), (last, last_digits)) = (first, last);
+    if last >= first || last_digits.len() >= first_digits.len() {
+        return last;
+    }
+    let kept = &first_digits[..first_digits.len() - last_digits.len()];
+    format!("{kept}{last_digits}")
+        .parse::<u8>()
+        .ok()
+        .and_then(Day::new)
+        .filter(|&day| day > first && Date::new(year, month, day).is_ok())
+        .unwrap_or(last)
+}
+
 /// The first day of `YYYY Mon DD-DD` whose end day is before its start —
 /// the one shape of a backwards range whose start is certain
 /// ([`PartialDate::medline_certain`]).
@@ -1023,11 +1064,13 @@ impl PartialDate {
     /// | `YYYY Mon-YYYY Mon`      | `1998 Dec-1999 Jan`      |
     /// | `YYYY Mon YYYY-Mon`      | `2017 Dec 2016 - Jan`    |
     /// | `YYYY Mon DD-DD`         | `1999 Dec 20-27`         |
+    /// | `YYYY Mon DD-D`          | `1995 Mar 22-8` (22–28)  |
     /// | `YYYY Mon DD-Mon DD`     | `2001 Mar 30-Apr 1`      |
     /// | `YYYY Mon DD-Mon`        | `1992 Aug 15-Sep`        |
     /// | `YYYY Mon DD-YYYY Mon DD`| `2000 Dec 8-2001 Jan 10` |
     /// | `YYYY-YYYY`              | `1976-1977`              |
     /// | `YYYY Season`            | `2000 Spring`            |
+    /// | `Season YYYY`            | `Spring 2008`            |
     /// | `YYYY Nth Quarter`       | `2025 1st Quarter`       |
     /// | `YYYY-YYYY Season`       | `1976-1977 Winter`       |
     /// | `YYYY-YYYY Season-Season`| `1977-1978 Fall-Winter`  |
@@ -1051,6 +1094,18 @@ impl PartialDate {
     /// [`MedlineError::Part`] for a bad part, [`MedlineError::Backwards`]
     /// for a range that ends before it starts.
     pub fn parse_medline(s: &str) -> Result<Self, MedlineError> {
+        // `Season YYYY`, the season first — `Spring 2008` (PMID 20589228),
+        // `Winter 2017` — the one shape among the 3,044 records the survey
+        // of the whole 2026 baseline on model version 7 could not read that
+        // does not begin with a year: every one of the 24 examples it kept
+        // was this, on records of 2006 to 2017 (model version 8).
+        if let Ok((season, rest)) = take_season(s)
+            && let Some(rest) = rest.strip_prefix(' ')
+            && let Ok((year, rest)) = take_year(rest)
+            && done(rest).is_ok()
+        {
+            return Ok(Self::YearSeason(year, season));
+        }
         let (year, rest) = take_year(s)?;
         if rest.is_empty() {
             return Ok(Self::Year(year));
@@ -1121,6 +1176,7 @@ impl PartialDate {
                 bound(end_year, Some(end_month), None)?,
             );
         }
+        let first = leading_digits(rest);
         let (day, rest) = take_day(rest)?;
         let rest = rest.strip_prefix('-').ok_or(MedlineError::Unrecognized)?;
         // `-DD`, `-Mon DD`, `-Mon`, or `-YYYY Mon DD` (`2000 Dec 8-2001 Jan
@@ -1144,7 +1200,9 @@ impl PartialDate {
                 None => (end_year, end_month, None, rest),
             }
         } else {
+            let last = leading_digits(rest);
             let (end_day, rest) = take_day(rest)?;
+            let end_day = dropped_digit(year, month, (day, first), (end_day, last));
             (year, month, Some(end_day), rest)
         };
         done(rest)?;
@@ -1188,13 +1246,10 @@ impl PartialDate {
     /// `None` when it does not begin with a year, for then nothing is.
     ///
     /// The first day is kept because every reading of such a range starts
-    /// there. `1995 Mar 22-8`, `Nurs Times` 91(12), is either the week of
-    /// the 22nd written with its end's tens digit dropped, the way NLM
-    /// writes page ranges (`14-5`), or the 22nd to 8 April; the next issue
-    /// (`1995 Mar 29-Apr 4`) says the first, and in one issue of eight
-    /// checked the first reading's end is a day past where the next issue
-    /// begins. Which one a record means is not in the record, so its end is
-    /// not kept; the 22nd is true either way.
+    /// there, and its end is not, because none reads it. Since model
+    /// version 8 the ranges the 2026 baseline holds this way (`1995 Mar
+    /// 22-8`) are read, their end's tens digit dropped; what reaches here
+    /// is what that reading cannot make run forwards (`1990 Dec 28-3`).
     #[must_use]
     pub fn medline_certain(s: &str, error: MedlineError) -> Option<Self> {
         let (year, rest) = take_year(s).ok()?;
@@ -1822,15 +1877,16 @@ mod tests {
             let error = PartialDate::parse_medline(s).unwrap_err();
             PartialDate::medline_certain(s, error)
         };
-        // A day range whose end comes before its start keeps its first
-        // day, which every reading of it shares.
+        // A day range whose end comes before its start, even with its
+        // tens digit restored, keeps its first day, which every reading of
+        // it shares.
         assert_eq!(
-            certain("1995 Mar 22-8"),
-            Some(PartialDate::Day(Date::from_numbers(1995, 3, 22).unwrap()))
+            certain("1990 Dec 28-3"),
+            Some(PartialDate::Day(Date::from_numbers(1990, 12, 28).unwrap()))
         );
         assert_eq!(
-            certain("1990 Dec 12-8"),
-            Some(PartialDate::Day(Date::from_numbers(1990, 12, 12).unwrap()))
+            certain("1995 Feb 22-9"),
+            Some(PartialDate::Day(Date::from_numbers(1995, 2, 22).unwrap()))
         );
         // Anything else keeps its year alone.
         for (s, year) in [
@@ -1844,8 +1900,73 @@ mod tests {
             assert_eq!(certain(s), Some(PartialDate::Year(y(year))), "{s:?}");
         }
         // Nothing, without a year in front.
-        assert_eq!(certain("Winter 1976"), None);
+        assert_eq!(certain("CHRISTMAS 1992"), None);
         assert_eq!(certain("0999 Jan"), None);
+    }
+
+    /// A day range within one month whose end is written with fewer digits
+    /// than its start, and reads as before it, takes the start's leading
+    /// digits — NLM's notation, as on page ranges (model version 8). The
+    /// cases are the issues the count over the 2026 baseline found.
+    #[test]
+    fn medline_day_ranges_with_the_end_digit_dropped() {
+        let span = |a: Bound, b: Bound| Ok(PartialDate::Span(Span { start: a, end: b }));
+        let b = |year: u16, month: Month, day: u8| Bound {
+            year: y(year),
+            month: Some(month),
+            day: Some(d(day)),
+        };
+        for (s, (year, month, first, last)) in [
+            ("1995 Mar 22-8", (1995, Month::March, 22, 28)),
+            ("1994 Jul 13-9", (1994, Month::July, 13, 19)),
+            ("1990 Dec 12-8", (1990, Month::December, 12, 18)),
+            ("1996 Jan 10-6", (1996, Month::January, 10, 16)),
+            // The end the next issue begins on: what the source wrote.
+            ("1983 Jun 22-9", (1983, Month::June, 22, 29)),
+            ("1996 Feb 22-9", (1996, Month::February, 22, 29)),
+        ] {
+            assert_eq!(
+                PartialDate::parse_medline(s),
+                span(b(year, month, first), b(year, month, last)),
+                "{s:?}"
+            );
+        }
+        // An end written in full is read as written.
+        assert_eq!(
+            PartialDate::parse_medline("1999 Dec 20-27"),
+            span(b(1999, Month::December, 20), b(1999, Month::December, 27))
+        );
+    }
+
+    /// The season written before the year, as 3,044 records of 2006 to
+    /// 2017 write it (model version 8).
+    #[test]
+    fn medline_season_before_the_year() {
+        for (s, year, season) in [
+            ("Spring 2008", 2008, Season::Spring),
+            ("Summer 2010", 2010, Season::Summer),
+            ("Fall 2013", 2013, Season::Fall),
+            ("Winter 2017", 2017, Season::Winter),
+            ("WINTER 2017", 2017, Season::Winter),
+        ] {
+            assert_eq!(
+                PartialDate::parse_medline(s),
+                Ok(PartialDate::YearSeason(y(year), season)),
+                "{s:?}"
+            );
+        }
+        for s in [
+            "Spring 2008 ",
+            "Spring  2008",
+            "Spring-Summer 2008",
+            "Spring 08",
+        ] {
+            assert_eq!(
+                PartialDate::parse_medline(s),
+                Err(MedlineError::Unrecognized),
+                "{s:?}"
+            );
+        }
     }
 
     /// A range that ends before it starts is refused wherever it is
@@ -1853,7 +1974,13 @@ mod tests {
     #[test]
     fn medline_ranges_do_not_run_backwards() {
         for s in [
-            "1990 Dec 12-8",
+            // What the dropped-digit reading cannot make run forwards: a
+            // tens digit that would still be before the start, an end with
+            // as many digits as the start, and a day no February 1995 has.
+            "1990 Dec 28-3",
+            "1990 Dec 8-3",
+            "1990 Dec 22-12",
+            "1995 Feb 22-9",
             "1999 Dec-1998 Jan",
             "2000 Dec 8-1999 Jan 10",
             "1977-1976",

@@ -1652,6 +1652,20 @@ cross-IDs and a second edge namespace early.
   with its month and year. Whether version 8 reads these as the
   dropped-digit week is the user's call; the merge and the index read
   only the first day either way.
+- 2026-09-24, model version 8 — the user's call: read them. A day range
+  within one month whose end has fewer digits than its start, and reads
+  as before it, takes the start's leading digits: `1995 Mar 22-8` is the
+  22nd to the 28th. Where the reading gives no later day of the month
+  (`28-3`, `Feb 22-9` in 1995) the range is still refused and kept with
+  its first day; the count found none such. The survey on version 7 had
+  found one more thing, the only shape left that stopped a run: a season
+  before its year (`Spring 2008`, `Winter 2017`), 3,044 records of 2006
+  to 2017, every one of its 24 examples this shape. Version 8 reads it.
+  That survey also listed what version 7 keeps rather than reads, 6,116
+  records: a long tail with no dominant shape — `2016 Sept-Oct` (65),
+  `2016 11-12` (59), `2000 Aug, 7`, `2023 Auguest`, `2021 [SEASON]`,
+  `2020 COVID-19 SPECIAL ISSUE` — which is the case for keeping over
+  cataloguing that version 7 was built on.
 
 ## 11. Dependencies
 
