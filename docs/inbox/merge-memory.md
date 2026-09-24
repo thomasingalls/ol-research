@@ -352,6 +352,25 @@ with a delivery's set an index into the list of sets instead of its own
 string. `Copies` is read before the dictionary exists, so it is built as
 today and converted once the dictionary is ready. About 9 GB → 2.5 GB (E).
 
+*Built in part 2026-09-24* (the user: "start on 2c"), three changes that
+move no byte. A record's assertions: the field a name came from is a
+`name::Field`, two bytes into the process's one table of field names,
+where it was a sixteen-byte `&'static str`, so an assertion is eight bytes
+and not 24 (M, `size_of`), and five are kept inline, not three — a record
+88 bytes before, plus a second allocation whenever it had more than three,
+56 after. `Copies` keeps a delivery as `Kept`, sixteen bytes, its set a
+place in one list of set names and its place in the set four bytes,
+where a `Delivery` was 32 bytes and a string of its own; sets still
+compare by their names. And which record has a name as its native one is
+a vector by name index, carried into the `Resolution`, where the identity
+pass kept a hash map and pass 2 built a second. On the scratch store the
+merged sets, registry, journal and reports are byte for byte the same, and
+the 1334 harness passes; the sample is too small to show the saving, which
+is about 4–6 GB on the corpus by the arithmetic (E). Not done: `Copies`
+keyed by the native's rank instead of its name, which would take it from
+about 3 GB to 1 but asks every phase that reads a copy to look its native
+up first.
+
 **2d. Works and the registry.** Works as flat arrays by offset, like the
 records. `held_order` as a sort of work indices comparing registry names
 as lists of ranks — rank order is name order, so it is the same sort —

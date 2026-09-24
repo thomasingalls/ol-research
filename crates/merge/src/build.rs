@@ -922,7 +922,6 @@ pub struct Builder {
     name_work: Vec<Slot>,
     stub_name_work: Vec<Option<WorkId>>,
     record_work: Vec<usize>,
-    by_native: HashMap<NameIx, RecordIx>,
     views: Vec<Option<Owned>>,
     edges: Vec<(WorkId, WorkId, SourceId)>,
     relations: Vec<Relation>,
@@ -977,12 +976,6 @@ impl Builder {
         }
         let name_work = names_table(&res, &ids)?;
         let record_work = records_table(&res)?;
-        let mut by_native: HashMap<NameIx, RecordIx> = HashMap::with_capacity(res.records.len());
-        for (rix, r) in res.records.iter().enumerate() {
-            let rix = RecordIx::try_from(rix)
-                .map_err(|_| Error::Invariant("more than 2^32 records".to_owned()))?;
-            by_native.insert(r.native, rix);
-        }
         let mut stub_name_work = vec![None; res.stubs.len()];
         for (s, names) in stub_works.iter().enumerate() {
             for name in names {
@@ -1003,7 +996,6 @@ impl Builder {
             name_work,
             stub_name_work,
             record_work,
-            by_native,
             views,
             edges: Vec::new(),
             relations: Vec::new(),
@@ -1179,7 +1171,7 @@ impl Builder {
     /// The record with `native` as its native name, and its work's id.
     fn record_of(&self, native: Name<'_>) -> Option<(RecordIx, WorkId)> {
         let ix = self.res.arena.find(native)?;
-        let rix = *self.by_native.get(&ix)?;
+        let rix = self.res.record_of(ix)?;
         Some((rix, self.ids.held[self.record_work[rix as usize]]))
     }
 
@@ -2192,7 +2184,7 @@ pub fn held<V: Views + ?Sized>(
                     .iter()
                     .map(|a| OwnedAssert {
                         name: arena.get(a.name).into_owned(),
-                        field: a.field.into(),
+                        field: a.field.name().into(),
                         native: a.native,
                     })
                     .collect(),

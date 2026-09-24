@@ -2,6 +2,7 @@
 //! assertions of them (§3.1).
 
 use std::cmp::Ordering;
+use std::collections::HashMap;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 
@@ -418,6 +419,58 @@ pub fn field_static(field: &str) -> &'static str {
     let leaked: &'static str = Box::leak(field.to_owned().into_boxed_str());
     fields.insert(leaked);
     leaked
+}
+
+/// A field name as a small number, for what the identity pass keeps per
+/// assertion: two bytes where a `&'static str` took sixteen, on some 10⁸
+/// assertions (the merge's memory, step 2c, 2026-09-24). The names are a
+/// closed, short set, numbered in the order a run first meets them and
+/// kept in one table every run in the process shares.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Field(u16);
+
+type FieldTable = (Vec<&'static str>, HashMap<&'static str, u16>);
+
+fn fields() -> std::sync::MutexGuard<'static, FieldTable> {
+    use std::sync::{Mutex, OnceLock};
+    static FIELDS: OnceLock<Mutex<FieldTable>> = OnceLock::new();
+    FIELDS
+        .get_or_init(|| Mutex::new((Vec::new(), HashMap::new())))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+impl Field {
+    /// The field named `name`.
+    ///
+    /// # Panics
+    ///
+    /// More than 2^16 distinct field names in one process, which no source
+    /// comes near.
+    #[must_use]
+    pub fn of(name: &str) -> Self {
+        let mut table = fields();
+        if let Some(&ix) = table.1.get(name) {
+            return Self(ix);
+        }
+        let name = field_static(name);
+        let ix = u16::try_from(table.0.len()).expect("fewer than 2^16 field names");
+        table.0.push(name);
+        table.1.insert(name, ix);
+        Self(ix)
+    }
+
+    /// The field's name.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        fields().0[usize::from(self.0)]
+    }
+}
+
+impl fmt::Display for Field {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.name())
+    }
 }
 
 /// One record saying a name is its own (merge plan §3.1): the name, the

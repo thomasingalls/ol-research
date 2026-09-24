@@ -146,7 +146,7 @@ pub(crate) fn full_merge(
         .map(|(i, r)| Delivery::of(&r.view.borrow(), i as u64 + 1))
         .collect();
     for (r, delivery) in records.iter().zip(&deliveries) {
-        copies.see(r.source, r.native.as_name(), delivery.clone());
+        copies.see(r.source, r.native.as_name(), delivery);
     }
     // Relations come from the copy that speaks; its names, fields and
     // text are joined with the standing copies', since absence is not an

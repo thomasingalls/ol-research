@@ -127,12 +127,29 @@ impl std::fmt::Display for Error {
 impl std::error::Error for Error {}
 
 /// Every copy of every record a run reads, and the withdrawals.
+///
+/// A copy's delivery is kept as [`Kept`]: its set as a place in the list
+/// of sets the table has seen, and its place in the set in four bytes, so
+/// that a record costs no string of its own — on the corpus, 40 M of them
+/// (the merge's memory, step 2c, 2026-09-24). Sets compare by their names,
+/// as [`Delivery`] compares them, never by their places in the list.
 #[derive(Debug, Default)]
 pub struct Copies {
-    newest: HashMap<(SourceId, OwnedName), Delivery>,
-    withdrawn: HashMap<(SourceId, OwnedName), Box<str>>,
+    newest: HashMap<(SourceId, OwnedName), Kept>,
+    withdrawn: HashMap<(SourceId, OwnedName), u32>,
+    sets: Vec<Box<str>>,
+    set_ix: HashMap<Box<str>, u32>,
     #[allow(missing_docs)]
     pub stats: Stats,
+}
+
+/// A [`Delivery`] as [`Copies`] keeps it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Kept {
+    revised: Option<Date>,
+    version: u32,
+    set: u32,
+    ordinal: u32,
 }
 
 impl Copies {
@@ -142,47 +159,86 @@ impl Copies {
         Self::default()
     }
 
+    /// The place of `set` in the list of sets, adding it if new.
+    #[allow(clippy::cast_possible_truncation)] // fewer than 2^32 sets in a run
+    fn intern(&mut self, set: &str) -> u32 {
+        if let Some(&ix) = self.set_ix.get(set) {
+            return ix;
+        }
+        let ix = self.sets.len() as u32;
+        self.sets.push(set.into());
+        self.set_ix.insert(set.into(), ix);
+        ix
+    }
+
+    /// `delivery` as the table keeps it.
+    ///
+    /// # Panics
+    ///
+    /// A place in a set past 2^32, which no set comes near.
+    fn keep(&mut self, delivery: &Delivery) -> Kept {
+        Kept {
+            revised: delivery.revised,
+            version: delivery.version,
+            set: self.intern(&delivery.set),
+            ordinal: u32::try_from(delivery.ordinal).expect("fewer than 2^32 records in a set"),
+        }
+    }
+
+    /// Whether `a` is an older delivery than `b`, by [`Delivery`]'s order.
+    fn older(&self, a: &Kept, b: &Kept) -> bool {
+        (a.revised, a.version, &*self.sets[a.set as usize], a.ordinal)
+            < (b.revised, b.version, &*self.sets[b.set as usize], b.ordinal)
+    }
+
+    /// Whether the table keeps `delivery` as `kept`.
+    fn same(&self, kept: &Kept, delivery: &Delivery) -> bool {
+        kept.revised == delivery.revised
+            && kept.version == delivery.version
+            && *self.sets[kept.set as usize] == *delivery.set
+            && u64::from(kept.ordinal) == delivery.ordinal
+    }
+
     /// A deletions set's word that a record is withdrawn: every copy in a
     /// set before `set` in path order is dead. The latest such set counts.
     pub fn withdraw(&mut self, source: SourceId, native: OwnedName, set: &str) {
-        let slot = self
-            .withdrawn
-            .entry((source, native))
-            .or_insert_with(|| set.into());
-        if **slot < *set {
-            *slot = set.into();
+        let ix = self.intern(set);
+        let slot = self.withdrawn.entry((source, native)).or_insert(ix);
+        if *self.sets[*slot as usize] < *set {
+            *slot = ix;
         }
     }
 
     fn dead(&self, key: &(SourceId, OwnedName), set: &str) -> bool {
         self.withdrawn
             .get(key)
-            .is_some_and(|deleted| **deleted > *set)
+            .is_some_and(|&deleted| *self.sets[deleted as usize] > *set)
     }
 
     /// One copy, as the first reading sees it; a dead copy is not a
     /// candidate. Call after every withdrawal.
-    pub fn see(&mut self, source: SourceId, native: Name<'_>, delivery: Delivery) {
+    pub fn see(&mut self, source: SourceId, native: Name<'_>, delivery: &Delivery) {
         self.seen(source, native, delivery);
     }
 
     /// [`Copies::see`], saying whether the copy stands: not withdrawn.
-    fn seen(&mut self, source: SourceId, native: Name<'_>, delivery: Delivery) -> bool {
+    fn seen(&mut self, source: SourceId, native: Name<'_>, delivery: &Delivery) -> bool {
         let key = (source, native.to_owned());
         *self.stats.copies.entry(source).or_default() += 1;
         if self.dead(&key, &delivery.set) {
             return false;
         }
-        match self.newest.get_mut(&key) {
+        let kept = self.keep(delivery);
+        match self.newest.get(&key).copied() {
             None => {
-                self.newest.insert(key, delivery);
+                self.newest.insert(key, kept);
             }
             Some(current) => {
-                if current.set == delivery.set {
+                if current.set == kept.set {
                     *self.stats.within_one_set.entry(source).or_default() += 1;
                 }
-                if *current < delivery {
-                    *current = delivery;
+                if self.older(&current, &kept) {
+                    self.newest.insert(key, kept);
                 }
             }
         }
@@ -196,7 +252,11 @@ impl Copies {
         let key = (source, native.to_owned());
         if self.dead(&key, &delivery.set) {
             Fate::Withdrawn
-        } else if self.newest.get(&key) == Some(delivery) {
+        } else if self
+            .newest
+            .get(&key)
+            .is_some_and(|kept| self.same(kept, delivery))
+        {
             Fate::Speaks
         } else {
             Fate::Superseded
@@ -230,9 +290,10 @@ impl Copies {
     #[must_use]
     pub fn speaks_in(&self, source: SourceId, native: Name<'_>, set: &str) -> bool {
         let key = (source, native.to_owned());
-        self.newest
-            .get(&key)
-            .is_some_and(|d| *d.set == *set && !self.dead(&key, &d.set))
+        self.newest.get(&key).is_some_and(|kept| {
+            let speaking = &self.sets[kept.set as usize];
+            **speaking == *set && !self.dead(&key, speaking)
+        })
     }
 
     /// Reads one deletions set of `S`.
@@ -291,7 +352,7 @@ impl Copies {
                     ordinal,
                 })?;
                 let delivery = delivery_of::<S>(&work, set, ordinal);
-                let stands = self.seen(S::SOURCE, native, delivery);
+                let stands = self.seen(S::SOURCE, native, &delivery);
                 if let Some(sorter) = names.as_deref_mut().filter(|_| stands) {
                     let mut failed = None;
                     S::names(&work, &mut |a| {
@@ -378,7 +439,7 @@ mod tests {
         let update = d(Some("2026-01-01"), 1, "updatefiles/pubmed26n1335", 3);
         let older_stamp_later_set = d(Some("2025-12-01"), 1, "updatefiles/pubmed26n1336", 1);
         for copy in [&baseline, &update, &older_stamp_later_set] {
-            copies.see(SourceId::Pubmed, name, copy.clone());
+            copies.see(SourceId::Pubmed, name, copy);
         }
         assert_eq!(copies.fate(SourceId::Pubmed, name, &update), Fate::Speaks);
         assert_eq!(
@@ -396,8 +457,8 @@ mod tests {
         let v2 = d(Some("2026-02-03"), 2, "updatefiles/pubmed26n1339", 10);
         let v1 = d(Some("2026-02-03"), 1, "updatefiles/pubmed26n1339", 11);
         let other = OwnedName::parse("pmid:34621506").unwrap();
-        copies.see(SourceId::Pubmed, other.as_name(), v2.clone());
-        copies.see(SourceId::Pubmed, other.as_name(), v1.clone());
+        copies.see(SourceId::Pubmed, other.as_name(), &v2);
+        copies.see(SourceId::Pubmed, other.as_name(), &v1);
         assert_eq!(
             copies.fate(SourceId::Pubmed, other.as_name(), &v2),
             Fate::Speaks
@@ -417,13 +478,13 @@ mod tests {
         copies.withdraw(SourceId::Pubmed, pmid.clone(), "updatefiles/pubmed26n1336");
         let before = d(Some("2026-01-01"), 1, "baseline/pubmed26n1334", 1);
         let after = d(Some("2025-01-01"), 1, "updatefiles/pubmed26n1338", 1);
-        copies.see(SourceId::Pubmed, name, before.clone());
+        copies.see(SourceId::Pubmed, name, &before);
         assert_eq!(
             copies.fate(SourceId::Pubmed, name, &before),
             Fate::Withdrawn
         );
         assert!(!copies.speaks_in(SourceId::Pubmed, name, "baseline/pubmed26n1334"));
-        copies.see(SourceId::Pubmed, name, after.clone());
+        copies.see(SourceId::Pubmed, name, &after);
         assert_eq!(copies.fate(SourceId::Pubmed, name, &after), Fate::Speaks);
         // A later deletion withdraws that copy too.
         copies.withdraw(SourceId::Pubmed, pmid.clone(), "updatefiles/pubmed26n1339");

@@ -1290,6 +1290,13 @@ stays.
   container's intent can still be found at the merge step; it can, from
   evidence the merge reads (§11, item 25), so the verdict need not carry
   it. No set was ever written under version 11.
+- 2026-09-24, pass 1's records and copies made smaller — part of step 2c
+  of [the merge's memory](inbox/merge-memory.md). An assertion's field is
+  a two-byte `Field` into one table of names, so an assertion is eight
+  bytes, not 24, and a record keeps five inline; `Copies` keeps a
+  delivery in sixteen bytes, its set as a place in one list of set names;
+  and the natives map is a vector by name index, which pass 2 now reads
+  instead of building its own. No byte changes, so no merge version.
 - 2026-09-24, nothing in the identity pass follows how names are
   numbered — step 2a of [the merge's memory](inbox/merge-memory.md). A
   name's index was the order it was first read; step 2b numbers names in

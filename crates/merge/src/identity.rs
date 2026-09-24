@@ -28,7 +28,7 @@ use smallvec::SmallVec;
 use crate::arena::{Arena, NameIx};
 use crate::contributor::Contributor;
 use crate::copies::{self, Copies, Fate};
-use crate::name::{Assertion, Name, OwnedName};
+use crate::name::{Assertion, Field, Name, OwnedName};
 use crate::sets;
 use crate::title::{self, Agreement, OwnedTitles};
 use crate::view::Unmapped;
@@ -43,14 +43,16 @@ const HAIRBALL_RECORDS: usize = 32;
 const HAIRBALL_NAMES: usize = 64;
 /// Examples kept per shape for the report.
 const EXAMPLES: usize = 8;
+/// In the natives table, a name no record has as its native one.
+const NO_RECORD: RecordIx = RecordIx::MAX;
 
-/// One assertion, interned.
+/// One assertion, interned: eight bytes (the merge's memory, step 2c).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Assert {
     #[allow(missing_docs)]
     pub name: NameIx,
     #[allow(missing_docs)]
-    pub field: &'static str,
+    pub field: Field,
     #[allow(missing_docs)]
     pub native: bool,
 }
@@ -62,8 +64,9 @@ pub struct Record {
     pub source: SourceId,
     /// The record's native name.
     pub native: NameIx,
-    /// Every assertion, the native one included, each name once.
-    pub asserts: SmallVec<[Assert; 3]>,
+    /// Every assertion, the native one included, each name once; five
+    /// without a second allocation, which is nearly every record.
+    pub asserts: SmallVec<[Assert; 5]>,
 }
 
 #[derive(Debug)]
@@ -252,7 +255,9 @@ pub struct Identity {
     parent: Vec<NameIx>,
     roots: Vec<NameIx>,
     records: Vec<Record>,
-    natives: HashMap<NameIx, RecordIx>,
+    /// Each name's record, if it is a record's native name, by name
+    /// index: [`NO_RECORD`] where it is not.
+    natives: Vec<RecordIx>,
     set_of: Vec<u32>,
     sets: Vec<SetInfo>,
     conflict_roots: HashSet<NameIx>,
@@ -264,7 +269,7 @@ pub struct Identity {
     pending: Vec<(SourceId, OwnedName)>,
     /// Publisher-id claims, held back from the union until every record
     /// is in: see [`Identity::settle`].
-    deferred: Vec<(RecordIx, NameIx, &'static str)>,
+    deferred: Vec<(RecordIx, NameIx, Field)>,
     /// The claims `settle` and `cut_stars` rejected, each on the
     /// record that made it.
     collisions: Vec<(RecordIx, Refusal)>,
@@ -332,6 +337,21 @@ impl Identity {
             ordinal: 0,
             name: self.arena.get(unseen as NameIx).to_string(),
         })
+    }
+
+    /// The record whose native name is at `ix`, if one is.
+    fn native_record(&self, ix: NameIx) -> Option<RecordIx> {
+        self.natives
+            .get(ix as usize)
+            .copied()
+            .filter(|&rix| rix != NO_RECORD)
+    }
+
+    fn set_native(&mut self, ix: NameIx, rix: RecordIx) {
+        if self.natives.len() <= ix as usize {
+            self.natives.resize(ix as usize + 1, NO_RECORD);
+        }
+        self.natives[ix as usize] = rix;
     }
 
     /// Notes that a record asserted the name at `ix`, under a dictionary.
@@ -489,7 +509,7 @@ impl Identity {
             });
             (self.sets.len() - 1) as u32
         });
-        let mut asserts: SmallVec<[Assert; 3]> = SmallVec::new();
+        let mut asserts: SmallVec<[Assert; 5]> = SmallVec::new();
         // As in `record`: a publisher id waits for `settle`.
         let mut claims: SmallVec<[Assert; 2]> = SmallVec::new();
         let mut native = None;
@@ -510,7 +530,7 @@ impl Identity {
             }
             let assert = Assert {
                 name: ix,
-                field: a.field,
+                field: Field::of(a.field),
                 native: a.native,
             };
             if a.name.key() == Key::Publisher {
@@ -527,17 +547,21 @@ impl Identity {
                 ordinal: before as u64 + 1,
             });
         };
-        if let Some(&rix) = self.natives.get(&native) {
+        if let Some(rix) = self.native_record(native) {
             *self.stats.repeated.entry(source).or_default() += 1;
             self.defer(rix, &claims);
             return Ok(rix);
         }
         for a in &asserts {
             self.union(native, a.name);
-            *self.stats.asserted.entry((source, a.field)).or_default() += 1;
+            *self
+                .stats
+                .asserted
+                .entry((source, a.field.name()))
+                .or_default() += 1;
         }
         let rix = before as RecordIx;
-        self.natives.insert(native, rix);
+        self.set_native(native, rix);
         self.records.push(Record {
             source,
             native,
@@ -583,7 +607,7 @@ impl Identity {
                 return Kept::Silent;
             }
         };
-        let mut asserts: SmallVec<[Assert; 3]> = SmallVec::new();
+        let mut asserts: SmallVec<[Assert; 5]> = SmallVec::new();
         // Publisher ids are held back from the union until every record
         // is in. Whether one identifies an article at all is a fact about
         // the whole run and not about this record (§3.3, 2026-09-19), and
@@ -603,7 +627,7 @@ impl Identity {
             }
             let assert = Assert {
                 name: ix,
-                field: a.field,
+                field: Field::of(a.field),
                 native: a.native,
             };
             if a.name.key() == Key::Publisher {
@@ -617,10 +641,10 @@ impl Identity {
         let Some(native) = native else {
             return Kept::NoNative;
         };
-        if let Some(&rix) = self.natives.get(&native) {
+        if let Some(rix) = self.native_record(native) {
             *self.stats.repeated.entry(S::SOURCE).or_default() += 1;
             let known = &self.records[rix as usize].asserts;
-            let new: SmallVec<[Assert; 3]> = asserts
+            let new: SmallVec<[Assert; 5]> = asserts
                 .iter()
                 .filter(|a| !known.iter().any(|x| x.name == a.name))
                 .copied()
@@ -628,7 +652,11 @@ impl Identity {
             for a in new {
                 self.records[rix as usize].asserts.push(a);
                 self.union(native, a.name);
-                *self.stats.asserted.entry((S::SOURCE, a.field)).or_default() += 1;
+                *self
+                    .stats
+                    .asserted
+                    .entry((S::SOURCE, a.field.name()))
+                    .or_default() += 1;
                 *self.stats.joined.entry(S::SOURCE).or_default() += 1;
             }
             self.defer(rix, &claims);
@@ -641,10 +669,14 @@ impl Identity {
         }
         for a in &asserts {
             self.union(native, a.name);
-            *self.stats.asserted.entry((S::SOURCE, a.field)).or_default() += 1;
+            *self
+                .stats
+                .asserted
+                .entry((S::SOURCE, a.field.name()))
+                .or_default() += 1;
         }
         let rix = self.records.len() as RecordIx;
-        self.natives.insert(native, rix);
+        self.set_native(native, rix);
         self.records.push(Record {
             source: S::SOURCE,
             native,
@@ -745,7 +777,11 @@ impl Identity {
             for &(rix, field) in &by {
                 let source = self.records[rix as usize].source;
                 per_source[source as usize] += 1;
-                *self.stats.asserted.entry((source, field)).or_default() += 1;
+                *self
+                    .stats
+                    .asserted
+                    .entry((source, field.name()))
+                    .or_default() += 1;
             }
             if per_source.iter().any(|&n| n > 1) {
                 self.refused.insert(ix);
@@ -1063,7 +1099,7 @@ impl Identity {
                     continue;
                 }
                 let native = self.arena.find(native_name);
-                let Some(rix) = native.and_then(|n| self.natives.get(&n).copied()) else {
+                let Some(rix) = native.and_then(|n| self.native_record(n)) else {
                     continue;
                 };
                 if self.conflict.get(rix as usize).copied().unwrap_or(false)
@@ -1276,6 +1312,7 @@ impl Identity {
             stubs: self.stubs,
             stub_parent: self.stub_parent,
             records: self.records,
+            natives: self.natives,
             works,
             stats: self.stats,
             components,
@@ -1646,7 +1683,7 @@ enum Kept {
 type Refusal = (NameIx, Reason, Option<RecordIx>);
 
 /// The records claiming one publisher id, each once, with the field.
-type Claimants = SmallVec<[(RecordIx, &'static str); 2]>;
+type Claimants = SmallVec<[(RecordIx, Field); 2]>;
 
 /// The records asserting one name in a component, as positions into its
 /// records, and whether as their native name.
@@ -1937,6 +1974,9 @@ pub struct Resolution {
     stub_parent: Vec<NameIx>,
     #[allow(missing_docs)]
     pub records: Vec<Record>,
+    /// Each name's record, where it is one's native name: see
+    /// [`Resolution::record_of`].
+    natives: Vec<RecordIx>,
     #[allow(missing_docs)]
     pub works: Vec<Work>,
     #[allow(missing_docs)]
@@ -1946,6 +1986,15 @@ pub struct Resolution {
 }
 
 impl Resolution {
+    /// The record whose native name is at `ix`, if one is.
+    #[must_use]
+    pub fn record_of(&self, ix: NameIx) -> Option<RecordIx> {
+        self.natives
+            .get(ix as usize)
+            .copied()
+            .filter(|&rix| rix != NO_RECORD)
+    }
+
     /// The held works in the registry's order (merge plan §4): each
     /// work's index into [`Resolution::works`] with its registry names,
     /// sorted by the names, then, for the works that have none — a
