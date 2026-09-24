@@ -266,7 +266,7 @@ mod normalized {
     use source_pubmed::attr::{
         AffiliationIdSource, EIdType, IdType, IssnType, PubStatus, PublicationStatus, RefType,
     };
-    use source_pubmed::normalize::{AuthorName, Citation, Reference, normalize};
+    use source_pubmed::normalize::{AuthorName, Citation, Published, Reference, normalize};
 
     #[derive(Default)]
     struct Collect<'n> {
@@ -398,7 +398,7 @@ mod normalized {
         assert_eq!(c.ids.pii.as_slice(), ["2844550"]);
         assert!(c.ids.pmc.is_none());
         assert!(
-            matches!(c.dates.published, PartialDate::Day(d) if d.month() == Month::January && d.day().get() == 29)
+            matches!(c.dates.published, Published::Read(PartialDate::Day(d)) if d.month() == Month::January && d.day().get() == 29)
         );
         assert_eq!(c.dates.electronic.unwrap().to_string(), "2026-01-29");
         assert_eq!(c.dates.revised.unwrap().to_string(), "2026-01-29");
@@ -458,7 +458,7 @@ mod normalized {
         let out = run("medline_date");
         assert!(matches!(
             out.citations[0].dates.published,
-            PartialDate::Span(_) | PartialDate::YearQuarter(..)
+            Published::Read(PartialDate::Span(_) | PartialDate::YearQuarter(..))
         ));
     }
 
@@ -748,7 +748,10 @@ mod normalized {
         normalize(&article, &mut out).unwrap();
         assert_eq!(
             out.citations[0].dates.published,
-            PartialDate::YearSeason(model::Year::new(1976).unwrap(), model::Season::Winter)
+            Published::Read(PartialDate::YearSeason(
+                model::Year::new(1976).unwrap(),
+                model::Season::Winter
+            ))
         );
 
         let input = fixture("shortest").replace(
@@ -760,7 +763,10 @@ mod normalized {
         normalize(&article, &mut out).unwrap();
         assert_eq!(
             out.citations[0].dates.published,
-            PartialDate::YearSeason(model::Year::new(1976).unwrap(), model::Season::Winter)
+            Published::Read(PartialDate::YearSeason(
+                model::Year::new(1976).unwrap(),
+                model::Season::Winter
+            ))
         );
 
         let input = fixture("shortest").replace(
@@ -771,6 +777,60 @@ mod normalized {
         let err = normalize(&article, &mut Collect::default()).unwrap_err();
         assert_eq!(err.field, "JournalIssue/PubDate", "{err}");
         assert_eq!(err.raw, "2026-Feb-30", "{err}");
+    }
+
+    /// A `MedlineDate` the grammar does not read whole keeps what of it is
+    /// certain and the text as written, and the record normalizes; one
+    /// that does not begin with a year still stops the run (model version
+    /// 7, the user's decision of 2026-09-24). The values are the survey's,
+    /// of the whole 2026 baseline on model version 6.
+    #[test]
+    fn a_medline_date_not_read_whole_is_kept_with_what_is_certain() {
+        use model::{Date, MedlineDateError, Year};
+
+        let with = |medline: &str| {
+            fixture("shortest").replace(
+                "<PubDate>\n              <Year>2026</Year>\n              <Month>Jan</Month>\n              <Day>29</Day>\n            </PubDate>",
+                &format!("<PubDate>\n              <MedlineDate>{medline}</MedlineDate>\n            </PubDate>"),
+            )
+        };
+        for (medline, certain, error) in [
+            (
+                "1988 EASTER",
+                PartialDate::Year(Year::new(1988).unwrap()),
+                MedlineDateError::Unrecognized,
+            ),
+            (
+                "1956 Oct 7-Nov 31",
+                PartialDate::Year(Year::new(1956).unwrap()),
+                MedlineDateError::Part(model::DateError::Calendar),
+            ),
+            (
+                "1995 Mar 22-8",
+                PartialDate::Day(Date::from_numbers(1995, 3, 22).unwrap()),
+                MedlineDateError::Backwards,
+            ),
+        ] {
+            let input = with(medline);
+            let article = only_article(&input);
+            let mut out = Collect::default();
+            normalize(&article, &mut out).expect("a date kept keeps its record");
+            assert_eq!(
+                out.citations[0].dates.published,
+                Published::Kept {
+                    certain,
+                    raw: medline,
+                    error,
+                },
+                "{medline}"
+            );
+        }
+
+        let input = with("Winter 1976");
+        let article = only_article(&input);
+        let err = normalize(&article, &mut Collect::default()).unwrap_err();
+        assert_eq!(err.field, "JournalIssue/PubDate", "{err}");
+        assert_eq!(err.raw, "Winter 1976", "{err}");
     }
 
     /// `ValidYN="N"` is NLM saying the identifier is the wrong one: the

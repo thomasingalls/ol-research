@@ -1611,6 +1611,32 @@ cross-IDs and a second edge namespace early.
   date beside the raw text, or to list the records for exclusion. The
   142,172 PubMed records on this machine normalize under version 6 with
   none failing.
+- 2026-09-24, later — model version 7. The survey on version 6 found
+  9,503 records it could not read, all `MedlineDate`s: 9,248 not a
+  recognized form, 245 day ranges whose end comes before their start, 8
+  with a day no month has (`1956 Oct 7-Nov 31`), 2 with a day out of
+  range (`1980 Aug 1-32`). Version 6's refusal of the backwards ranges
+  was right to refuse and wrong in what it expected to find: they are
+  not errors but a notation. The neighbouring issues of the same weekly
+  journals, fetched from NLM, put `1995 Mar 22-8` (`Nurs Times` 91(12))
+  in the week of the 22nd — issue 13 is `1995 Mar 29-Apr 4` — which is
+  the end's tens digit dropped, as NLM drops it from page ranges on the
+  same records (`14-5`); and the user's reading, the 22nd to 8 April, is
+  what the notation would mean if it did not name a crossed month, which
+  it does (`Mar 29-Apr 4`). Which a record means is not in the record,
+  and in one issue of eight checked the dropped-digit end is a day past
+  the next issue's start, so the end is not kept: a counting Job on the
+  box measures the corpus against the neighbouring issues before any
+  reading is encoded. Decided with the user: a `MedlineDate` the grammar
+  does not read whole, that begins with a year, keeps what of it is
+  certain — its year, or such a day range's first day — beside the text
+  as written and why (`Published::Kept`), and its record normalizes; one
+  that does not begin with a year still stops the run. The stats report
+  lists the kept ones by text, commonest first, which is what the
+  grammar is taught from. Two shapes are read outright: a month of a
+  volume over two years (`1992-1993 Oct`, `VolumeMonth`, compared by the
+  merge as its first year only) and a seasonal volume written with both
+  years (`1986 Winter-1987 Spring`).
 
 ## 11. Dependencies
 

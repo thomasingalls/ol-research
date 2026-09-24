@@ -437,6 +437,13 @@ pub fn bound(date: &PartialDate) -> Bound {
             month: None,
             day: None,
         },
+        // Likewise a month of a volume over two years, and its month with
+        // it: a month of an unknown year is no month to compare.
+        PartialDate::VolumeMonth(v) => Bound {
+            year: v.from_year,
+            month: None,
+            day: None,
+        },
         PartialDate::Span(span) => span.start,
     }
 }

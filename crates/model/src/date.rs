@@ -112,6 +112,22 @@ pub struct Seasons {
     pub to: Season,
 }
 
+/// A month of a volume that spans two years: the years and the month its
+/// issue names — `1992-1993 Oct` (PMID 1342188), `1989-1990 Feb` (PMID
+/// 2483883), from the survey of the whole 2026 baseline on model version
+/// 6. As with [`Seasons`], exactly what the source states: which of the
+/// two years the month falls in is what it does not say, and nothing here
+/// guesses (model version 7, 2026-09-24).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct VolumeMonth {
+    /// The first year named.
+    pub from_year: Year,
+    /// The last year named.
+    pub to_year: Year,
+    /// The month named.
+    pub month: Month,
+}
+
 /// A publication date at whatever precision the source gave.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum PartialDate {
@@ -127,6 +143,8 @@ pub enum PartialDate {
     YearQuarter(Year, Quarter),
     /// A seasonal volume, over one year or two.
     Seasons(Seasons),
+    /// A month of a volume over two years.
+    VolumeMonth(VolumeMonth),
     /// A range.
     Span(Span),
 }
@@ -859,6 +877,47 @@ fn ends_before(end: Bound, start: Bound) -> bool {
     }
 }
 
+/// The rest of a date that starts `YYYY-YYYY`: nothing, a span of years
+/// (`1976-1977`); a season or two, a seasonal volume, which the years alone
+/// would lose (`1976-1977 Winter`, `1977-1978 Fall-Winter`); or a month, a
+/// [`VolumeMonth`] (`1992-1993 Oct`, model version 7). Two years that run
+/// backwards are refused whichever it is, for the reason a span that does
+/// is ([`MedlineError::Backwards`]).
+fn two_years(year: Year, end: Year, rest: &str) -> Result<PartialDate, MedlineError> {
+    let Some(rest) = rest.strip_prefix(' ') else {
+        done(rest)?;
+        return span(bound(year, None, None)?, bound(end, None, None)?);
+    };
+    let date = if let Ok((from, after)) = take_season(rest) {
+        let to = if let Some(after) = after.strip_prefix('-') {
+            let (to, after) = take_season(after)?;
+            done(after)?;
+            to
+        } else {
+            done(after)?;
+            from
+        };
+        PartialDate::Seasons(Seasons {
+            from_year: year,
+            to_year: end,
+            from,
+            to,
+        })
+    } else {
+        let (month, after) = take_month(rest)?;
+        done(after)?;
+        PartialDate::VolumeMonth(VolumeMonth {
+            from_year: year,
+            to_year: end,
+            month,
+        })
+    };
+    if end < year {
+        return Err(MedlineError::Backwards);
+    }
+    Ok(date)
+}
+
 /// The rest of a range that starts `YYYY Mon` and a separator: `Mon` or
 /// `YYYY Mon`, either with an optional ` DD` on the end month
 /// (`2026 Jan-Feb 01`, 56 records of one journal in pubmed26n1333).
@@ -894,6 +953,22 @@ fn month_span(year: Year, month: Month, rest: &str) -> Result<PartialDate, Medli
         bound(year, Some(month), None)?,
         bound(end_year, Some(end_month), end_day)?,
     )
+}
+
+/// The first day of `YYYY Mon DD-DD` whose end day is before its start —
+/// the one shape of a backwards range whose start is certain
+/// ([`PartialDate::medline_certain`]).
+fn backwards_first_day(year: Year, rest: &str) -> Option<Date> {
+    let rest = rest.strip_prefix(' ')?;
+    let (month, rest) = take_month(rest).ok()?;
+    let rest = rest.strip_prefix(' ')?;
+    let (first, rest) = take_day(rest).ok()?;
+    let rest = rest.strip_prefix('-')?;
+    let (last, rest) = take_day(rest).ok()?;
+    if !rest.is_empty() || last >= first {
+        return None;
+    }
+    Date::new(year, month, first).ok()
 }
 
 /// The year of a range's end month when the source wrote none: the
@@ -957,8 +1032,11 @@ impl PartialDate {
     /// | `YYYY-YYYY Season`       | `1976-1977 Winter`       |
     /// | `YYYY-YYYY Season-Season`| `1977-1978 Fall-Winter`  |
     /// | `YYYY Season-Season`     | `1978 Fall-Winter`       |
+    /// | `YYYY Season-YYYY Season`| `1986 Winter-1987 Spring`|
+    /// | `YYYY-YYYY Mon`          | `1992-1993 Oct`          |
     ///
-    /// The last three are [`PartialDate::Seasons`].
+    /// The four before the last are [`PartialDate::Seasons`]; the last is
+    /// [`PartialDate::VolumeMonth`].
     ///
     /// A range that starts with a month takes any of its four separators
     /// wherever the plain `-` is allowed, a month may be spelled out in
@@ -979,33 +1057,7 @@ impl PartialDate {
         }
         if let Some(rest) = rest.strip_prefix('-') {
             let (end, rest) = take_year(rest)?;
-            if let Some(rest) = rest.strip_prefix(' ') {
-                // `YYYY-YYYY Season` or `YYYY-YYYY Season-Season`: a
-                // seasonal volume, which the years alone would lose.
-                let (from, rest) = take_season(rest)?;
-                let to = if let Some(rest) = rest.strip_prefix('-') {
-                    let (to, rest) = take_season(rest)?;
-                    done(rest)?;
-                    to
-                } else {
-                    done(rest)?;
-                    from
-                };
-                // A volume over two years that runs backwards is refused
-                // for the reason a span that does is (`Backwards`); within
-                // one year the seasons are the source's own order.
-                if end < year {
-                    return Err(MedlineError::Backwards);
-                }
-                return Ok(Self::Seasons(Seasons {
-                    from_year: year,
-                    to_year: end,
-                    from,
-                    to,
-                }));
-            }
-            done(rest)?;
-            return span(bound(year, None, None)?, bound(end, None, None)?);
+            return two_years(year, end, rest);
         }
         let rest = rest.strip_prefix(' ').ok_or(MedlineError::Unrecognized)?;
         if let Some(quarter) = Quarter::from_name(rest) {
@@ -1015,15 +1067,27 @@ impl PartialDate {
             return Ok(Self::YearSeason(year, season));
         }
         // `YYYY Season-Season`, one year's seasonal issue spanning two of
-        // them: `1978 Fall-Winter`, pubmed26n0002.
+        // them: `1978 Fall-Winter`, pubmed26n0002; and `YYYY Season-YYYY
+        // Season`, the same across the new year with both years written:
+        // `1986 Winter-1987 Spring` (PMID 3611739, model version 7).
         if let Ok((from, after)) = take_season(rest)
             && let Some(after) = after.strip_prefix('-')
-            && let Ok((to, after)) = take_season(after)
-            && done(after).is_ok()
         {
+            let (to_year, after) = match take_year(after) {
+                Ok((to_year, after)) => (
+                    to_year,
+                    after.strip_prefix(' ').ok_or(MedlineError::Unrecognized)?,
+                ),
+                Err(_) => (year, after),
+            };
+            let (to, after) = take_season(after)?;
+            done(after)?;
+            if to_year < year {
+                return Err(MedlineError::Backwards);
+            }
             return Ok(Self::Seasons(Seasons {
                 from_year: year,
-                to_year: year,
+                to_year,
                 from,
                 to,
             }));
@@ -1116,6 +1180,32 @@ impl PartialDate {
         }
     }
 
+    /// What of a `MedlineDate` that [`parse_medline`](Self::parse_medline)
+    /// refused is still certain, for a source that keeps it beside the text
+    /// rather than losing its record (model version 7, the user's decision
+    /// of 2026-09-24): the year it begins with, and for a day range within
+    /// one month whose end comes before its start, its first day as well.
+    /// `None` when it does not begin with a year, for then nothing is.
+    ///
+    /// The first day is kept because every reading of such a range starts
+    /// there. `1995 Mar 22-8`, `Nurs Times` 91(12), is either the week of
+    /// the 22nd written with its end's tens digit dropped, the way NLM
+    /// writes page ranges (`14-5`), or the 22nd to 8 April; the next issue
+    /// (`1995 Mar 29-Apr 4`) says the first, and in one issue of eight
+    /// checked the first reading's end is a day past where the next issue
+    /// begins. Which one a record means is not in the record, so its end is
+    /// not kept; the 22nd is true either way.
+    #[must_use]
+    pub fn medline_certain(s: &str, error: MedlineError) -> Option<Self> {
+        let (year, rest) = take_year(s).ok()?;
+        if error == MedlineError::Backwards
+            && let Some(first) = backwards_first_day(year, rest)
+        {
+            return Some(Self::Day(first));
+        }
+        Some(Self::Year(year))
+    }
+
     /// A short label for the precision, for reports.
     #[must_use]
     pub const fn precision(&self) -> &'static str {
@@ -1126,6 +1216,7 @@ impl PartialDate {
             Self::YearSeason(..) => "year-season",
             Self::YearQuarter(..) => "year-quarter",
             Self::Seasons(_) => "seasons",
+            Self::VolumeMonth(_) => "volume-month",
             Self::Span(_) => "span",
         }
     }
@@ -1675,6 +1766,86 @@ mod tests {
             PartialDate::parse_medline("1956 Oct 7-Nov 31"),
             Err(MedlineError::Part(Error::Calendar))
         );
+    }
+
+    /// The two shapes the survey on model version 6 showed most of among
+    /// what it could not read, and what is certain of what still is not
+    /// (model version 7, 2026-09-24).
+    #[test]
+    fn medline_forms_of_model_version_7() {
+        use super::VolumeMonth;
+        assert_eq!(
+            PartialDate::parse_medline("1992-1993 Oct"),
+            Ok(PartialDate::VolumeMonth(VolumeMonth {
+                from_year: y(1992),
+                to_year: y(1993),
+                month: Month::October,
+            }))
+        );
+        assert_eq!(
+            PartialDate::parse_medline("1989-1990 FEB").map(|p| p.precision()),
+            Ok("volume-month")
+        );
+        assert_eq!(
+            PartialDate::parse_medline("1993-1992 Oct"),
+            Err(MedlineError::Backwards)
+        );
+        assert_eq!(
+            PartialDate::parse_medline("1992-1993 Oct-Nov"),
+            Err(MedlineError::Unrecognized)
+        );
+        assert_eq!(
+            PartialDate::parse_medline("1986 Winter-1987 Spring"),
+            Ok(PartialDate::Seasons(Seasons {
+                from_year: y(1986),
+                to_year: y(1987),
+                from: Season::Winter,
+                to: Season::Spring,
+            }))
+        );
+        assert_eq!(
+            PartialDate::parse_medline("1987 Winter-1986 Spring"),
+            Err(MedlineError::Backwards)
+        );
+        // Still one year's seasons without a second year.
+        assert_eq!(
+            PartialDate::parse_medline("1978 Fall-Winter"),
+            Ok(PartialDate::Seasons(Seasons {
+                from_year: y(1978),
+                to_year: y(1978),
+                from: Season::Fall,
+                to: Season::Winter,
+            }))
+        );
+
+        let certain = |s: &str| {
+            let error = PartialDate::parse_medline(s).unwrap_err();
+            PartialDate::medline_certain(s, error)
+        };
+        // A day range whose end comes before its start keeps its first
+        // day, which every reading of it shares.
+        assert_eq!(
+            certain("1995 Mar 22-8"),
+            Some(PartialDate::Day(Date::from_numbers(1995, 3, 22).unwrap()))
+        );
+        assert_eq!(
+            certain("1990 Dec 12-8"),
+            Some(PartialDate::Day(Date::from_numbers(1990, 12, 12).unwrap()))
+        );
+        // Anything else keeps its year alone.
+        for (s, year) in [
+            ("1988 EASTER", 1988),
+            ("1990 Nov C-Dec", 1990),
+            ("1990 Apr IL", 1990),
+            ("1956 Oct 7-Nov 31", 1956),
+            ("1971 Oct 70-Jan", 1971),
+            ("1999 Dec-1998 Jan", 1999),
+        ] {
+            assert_eq!(certain(s), Some(PartialDate::Year(y(year))), "{s:?}");
+        }
+        // Nothing, without a year in front.
+        assert_eq!(certain("Winter 1976"), None);
+        assert_eq!(certain("0999 Jan"), None);
     }
 
     /// A range that ends before it starts is refused wherever it is

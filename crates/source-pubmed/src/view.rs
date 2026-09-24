@@ -20,7 +20,7 @@ use merge::relation::Kind;
 use merge::view::{Status, Text, Unmapped, Venue, View, bound, join_sections, strip_markup, text};
 
 use crate::attr::RefType;
-use crate::normalize::{AuthorName, Citation, PersonName};
+use crate::normalize::{AuthorName, Citation, PersonName, Published};
 
 /// What scopes the record's publisher ids (merge plan §3.1): every DOI it
 /// holds, because either DOI slot may carry the registered one and a
@@ -264,7 +264,11 @@ fn form(genre: Option<Genre>) -> Form {
 /// table.
 pub fn view<'w>(work: &'w Citation<'_>, table: &'w Table) -> Result<View<'w>, Unmapped> {
     let genre = genre(work)?;
-    let issue = bound(&work.dates.published);
+    // A date kept rather than read compares as what of it is certain: its
+    // year, or a backwards day range's first day (model version 7).
+    let issue = match &work.dates.published {
+        Published::Read(date) | Published::Kept { certain: date, .. } => bound(date),
+    };
     let electronic = work.dates.electronic.map(|d| Bound {
         year: d.year(),
         month: Some(d.month()),

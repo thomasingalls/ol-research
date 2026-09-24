@@ -69,7 +69,22 @@
 /// kept as written beside why, and its record normalizes (the user's
 /// decision, 2026-09-24), which changes the layout. Normalized output
 /// under version 5 is rebuilt, not patched.
-pub const VERSION: u32 = 6;
+///
+/// Version 7 (2026-09-24): the survey on version 6 found 9,503 records it
+/// could not read, every one a `MedlineDate`. Two shapes are read: a
+/// month of a volume over two years (`1992-1993 Oct`,
+/// [`date::VolumeMonth`]) and a seasonal volume written with both years
+/// (`1986 Winter-1987 Spring`). The rest are kept rather than read: a
+/// `MedlineDate` the grammar cannot read whole, that begins with a year,
+/// keeps that year — or, for a day range within a month whose end comes
+/// before its start (`1995 Mar 22-8`), its first day — beside the text as
+/// written and why, and its record normalizes; one that does not begin
+/// with a year still stops the run (the user's decision, 2026-09-24).
+/// Which of two readings such a day range means is not in the record, so
+/// its end is not kept. PubMed's `Dates.published` became a
+/// `normalize::Published`, which changes the layout. Normalized output
+/// under version 6 is rebuilt, not patched.
+pub const VERSION: u32 = 7;
 
 pub mod claim;
 pub mod code;
@@ -90,7 +105,7 @@ pub use claim::Claim;
 pub use code::{CountryCode, CurrencyCode, Error as CodeError};
 pub use date::{
     Date, DateTime, Day, Error as DateError, MedlineError as MedlineDateError, Month, PartialDate,
-    Quarter, Season, Seasons, TimeOfDay, Year,
+    Quarter, Season, Seasons, TimeOfDay, VolumeMonth, Year,
 };
 pub use doi::{Doi, Error as DoiError, Registrant};
 pub use id::{OpenAlexId, ParseError, PmcId, Pmid};

@@ -10,7 +10,7 @@
 use ingest::Sink;
 use model::{Claim, PartialDate, Pmid, Season};
 use source_pubmed::attr::{AffiliationIdSource, NoteOwner, OtherIdSource};
-use source_pubmed::normalize::{Citation, Reference, normalize};
+use source_pubmed::normalize::{Citation, Published, Reference, normalize};
 use source_pubmed::record::Record;
 use source_pubmed::{ArticleSet, Pubmed};
 
@@ -78,13 +78,16 @@ fn older_records_count_their_references_even_to_zero() {
 fn a_season_may_be_a_month_range_with_a_hyphen_or_a_slash_or_autumn() {
     for name in ["season_month_range", "season_slash"] {
         assert!(
-            matches!(run(name).citations[0].dates.published, PartialDate::Span(_)),
+            matches!(
+                run(name).citations[0].dates.published,
+                Published::Read(PartialDate::Span(_))
+            ),
             "{name}"
         );
     }
     assert!(matches!(
         run("season_autumn").citations[0].dates.published,
-        PartialDate::YearSeason(_, Season::Fall)
+        Published::Read(PartialDate::YearSeason(_, Season::Fall))
     ));
 }
 

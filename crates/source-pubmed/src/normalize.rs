@@ -81,7 +81,8 @@ pub struct Citation<'n> {
     #[serde(borrow)]
     pub ids: Identifiers<'n>,
     /// The record's dates.
-    pub dates: Dates,
+    #[serde(borrow)]
+    pub dates: Dates<'n>,
     /// The journal and issue.
     #[serde(borrow)]
     pub journal: Journal<'n>,
@@ -278,9 +279,10 @@ pub struct Identifiers<'n> {
 
 /// The record's dates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Dates {
+pub struct Dates<'n> {
     /// `JournalIssue/PubDate`, at the precision the record gave.
-    pub published: PartialDate,
+    #[serde(borrow)]
+    pub published: Published<'n>,
     /// `ArticleDate`, the electronic publication date; at most one is
     /// modelled.
     pub electronic: Option<Date>,
@@ -288,6 +290,40 @@ pub struct Dates {
     pub revised: Option<Date>,
     /// `DateCompleted`.
     pub completed: Option<Date>,
+}
+
+/// `JournalIssue/PubDate`: the date, or, for a `MedlineDate` this build
+/// does not read whole, what of it is certain beside the text as written
+/// and why the rest was not read.
+///
+/// `MedlineDate` is defined by NLM as the date that fits no pattern
+/// (`el-MedlineDate.html`: "does not fit the available date patterns") and
+/// no list of its forms is published, so the grammar in `model::date` is
+/// ours, learned from the corpus, and will meet forms it has not seen: the
+/// survey of the whole 2026 baseline on model version 6 still found 9,248
+/// it could not read — `1988 EASTER`, `1990 Apr IL`, `1990 Nov-15` — and
+/// 245 day ranges whose end comes before their start. Before model version
+/// 7 each stopped the run, and in a daily update file would have stopped
+/// PubMed's freshness path until someone taught the grammar. Now a
+/// `MedlineDate` that begins with a year keeps that year, or for such a
+/// day range its first day ([`PartialDate::medline_certain`]), and the
+/// record normalizes; one that does not begin with a year still stops the
+/// run (the user's decision, 2026-09-24). The stats report counts these by
+/// what they say, so the grammar can still be taught from it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Published<'n> {
+    /// Read whole.
+    Read(PartialDate),
+    /// Not read whole: what of it is certain, and the text as written.
+    Kept {
+        /// The year the text begins with, or a backwards day range's
+        /// first day.
+        certain: PartialDate,
+        /// `MedlineDate` as written.
+        raw: &'n str,
+        /// Why the grammar did not read it whole.
+        error: MedlineDateError,
+    },
 }
 
 /// The journal and the issue the article appeared in.
@@ -850,12 +886,21 @@ impl Ctx {
         })
     }
 
-    fn published(&self, pub_date: &PubDate<'_>) -> Result<PartialDate, Error> {
+    fn published<'n>(&self, pub_date: &'n PubDate<'_>) -> Result<Published<'n>, Error> {
         const FIELD: &str = "JournalIssue/PubDate";
         let (year, month, day, season) = match pub_date {
             PubDate::Medline(text) => {
-                return PartialDate::parse_medline(text)
-                    .map_err(|e| self.err(FIELD, text, ErrorKind::MedlineDate(e)));
+                return match PartialDate::parse_medline(text) {
+                    Ok(date) => Ok(Published::Read(date)),
+                    Err(error) => match PartialDate::medline_certain(text, error) {
+                        Some(certain) => Ok(Published::Kept {
+                            certain,
+                            raw: text,
+                            error,
+                        }),
+                        None => Err(self.err(FIELD, text, ErrorKind::MedlineDate(error))),
+                    },
+                };
             }
             PubDate::Date {
                 year,
@@ -884,13 +929,14 @@ impl Ctx {
             && Season::from_name(s).is_none()
         {
             return PartialDate::parse_medline(&format!("{year} {}", s.replace('/', "-")))
+                .map(Published::Read)
                 .map_err(|e| self.err(FIELD, s, ErrorKind::MedlineDate(e)));
         }
         let s = season
             .as_deref()
             .map(|s| Season::parse(s).map_err(|e| self.err(FIELD, s, ErrorKind::Date(e))))
             .transpose()?;
-        Ok(match (m, d, s) {
+        Ok(Published::Read(match (m, d, s) {
             (None, None, None) => PartialDate::Year(y),
             (Some(m), None, None) => PartialDate::YearMonth(y, m),
             // The whole date in the report, as `date` writes one, not only
@@ -911,7 +957,7 @@ impl Ctx {
                     ErrorKind::Inconsistent("PubDate parts in a combination the DTD forbids"),
                 ));
             }
-        })
+        }))
     }
 
     fn mesh_term<'n>(
@@ -1475,7 +1521,7 @@ fn identifiers<'n>(
     })
 }
 
-fn dates(ctx: &Ctx, c: &MedlineCitation<'_>) -> Result<Dates, Error> {
+fn dates<'n>(ctx: &Ctx, c: &'n MedlineCitation<'_>) -> Result<Dates<'n>, Error> {
     let published = ctx.published(&c.article.journal.journal_issue.pub_date)?;
     let electronic = match c.article.article_dates.as_slice() {
         [] => None,

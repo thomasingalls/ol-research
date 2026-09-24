@@ -107,7 +107,7 @@ use source_crossref::Crossref;
 use source_openalex::OpenAlex;
 use source_openalex::normalize::LocationId;
 use source_pubmed::Pubmed;
-use source_pubmed::normalize::{Citation, HistoryDate, HistoryTime, Reference};
+use source_pubmed::normalize::{Citation, HistoryDate, HistoryTime, Published, Reference};
 
 /// Allocations per record are part of every report (plan §5, rule 13).
 #[global_allocator]
@@ -3913,6 +3913,13 @@ struct PubmedStats {
     /// Reference ids of a kind that is no name of ours, by kind.
     reference_loose: BTreeMap<&'static str, u64>,
     published: BTreeMap<&'static str, u64>,
+    /// `MedlineDate`s kept rather than read (model version 7), by the text
+    /// as written: the list the grammar is taught from next.
+    published_kept: BTreeMap<String, u64>,
+    /// The same, by why the grammar did not read them and by what of them
+    /// was certain.
+    published_kept_why: BTreeMap<String, u64>,
+    published_kept_certain: BTreeMap<&'static str, u64>,
     electronic: u64,
     revised: u64,
     completed: u64,
@@ -3963,6 +3970,26 @@ struct PubmedStats {
 }
 
 impl PubmedStats {
+    /// The `MedlineDate`s kept rather than read, with the commonest of
+    /// them as written: what the grammar is taught from next.
+    fn report_kept(&self) {
+        if self.published_kept.is_empty() {
+            return;
+        }
+        let kept: u64 = self.published_kept.values().sum();
+        eprintln!(
+            "  published kept as written: {kept} records, {} distinct; certain {:?}; why {:?}",
+            self.published_kept.len(),
+            self.published_kept_certain,
+            self.published_kept_why
+        );
+        let mut commonest: Vec<(&String, &u64)> = self.published_kept.iter().collect();
+        commonest.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
+        for (raw, n) in commonest.into_iter().take(40) {
+            eprintln!("    {n:>7}  {raw:?}");
+        }
+    }
+
     /// Counts one DOI claim as valid / malformed / absent.
     fn doi_claim<E: Display>(&mut self, slot: usize, claim: Option<&Claim<'_, Doi<'_>, E>>) {
         let counters = if slot == 0 {
@@ -4011,6 +4038,7 @@ impl StatsReport for PubmedStats {
         );
         self.publisher.report();
         eprintln!("  published {:?}", self.published);
+        self.report_kept();
         eprintln!(
             "  electronic {}  revised {}  completed {}",
             self.electronic, self.revised, self.completed
@@ -4119,10 +4147,22 @@ impl<'n> Sink<'n, Pubmed> for PubmedStats {
                     .any(|b| b != a),
             );
         }
-        *self
-            .published
-            .entry(c.dates.published.precision())
-            .or_default() += 1;
+        match &c.dates.published {
+            Published::Read(date) => *self.published.entry(date.precision()).or_default() += 1,
+            Published::Kept {
+                certain,
+                raw,
+                error,
+            } => {
+                *self.published.entry("kept").or_default() += 1;
+                bump(&mut self.published_kept, raw);
+                bump(&mut self.published_kept_why, &error.to_string());
+                *self
+                    .published_kept_certain
+                    .entry(certain.precision())
+                    .or_default() += 1;
+            }
+        }
         self.electronic += u64::from(c.dates.electronic.is_some());
         self.revised += u64::from(c.dates.revised.is_some());
         self.completed += u64::from(c.dates.completed.is_some());
@@ -4677,7 +4717,7 @@ impl<'n> Sink<'n, OpenAlex> for OpenAlexStats {
 
 impl Merge for PubmedStats {
     fn merge(&mut self, other: Self) {
-        absorb_all!(self, other: PubmedStats { citations, deletions, excluded, doi, elocation_doi, doi_lowercased, doi_disagree, pii, pii_extra, publisher, pmc, pmc_malformed, published, electronic, revised, completed, status, languages, publication_types, unplaced_types, title, abstracts, sections, sections_markup, sections_math, other_abstracts, journal_issn, journal_issn_linking, journal_issn_malformed, persons, collectives, orcid, affiliations, affiliation_ids, investigators, mesh_headings, mesh_major, chemicals, keywords, grants, grants_with_country, data_banks, history, history_date_malformed, history_time_malformed, publication_status, relations, references, reference_ids, reference_loose, reference_doi_malformed, reference_pmid_malformed, reference_pmc_malformed, malformed_samples });
+        absorb_all!(self, other: PubmedStats { citations, deletions, excluded, doi, elocation_doi, doi_lowercased, doi_disagree, pii, pii_extra, publisher, pmc, pmc_malformed, published, published_kept, published_kept_why, published_kept_certain, electronic, revised, completed, status, languages, publication_types, unplaced_types, title, abstracts, sections, sections_markup, sections_math, other_abstracts, journal_issn, journal_issn_linking, journal_issn_malformed, persons, collectives, orcid, affiliations, affiliation_ids, investigators, mesh_headings, mesh_major, chemicals, keywords, grants, grants_with_country, data_banks, history, history_date_malformed, history_time_malformed, publication_status, relations, references, reference_ids, reference_loose, reference_doi_malformed, reference_pmid_malformed, reference_pmc_malformed, malformed_samples });
     }
 }
 
