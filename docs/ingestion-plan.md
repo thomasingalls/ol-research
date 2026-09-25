@@ -52,7 +52,7 @@ wart is a claim the POC run confirms or refutes, not a commitment.
 
 | Source           | Native ID  | Nodes | Edges                                 | Full-scale channel                          | POC channel                              |
 |------------------|------------|-------|---------------------------------------|---------------------------------------------|------------------------------------------|
-| Crossref         | DOI        | yes   | yes — `reference[]`                   | annual file: one 208 GB tar of `.jsonl.gz`, torrent | the official 31 MB random-sample torrent |
+| Crossref         | DOI        | yes   | yes — `reference[]`                   | annual file: 35,908 `.jsonl.gz` shards, 223 GB, torrent | the official 31 MB random-sample torrent |
 | PubMed           | PMID       | yes   | partial — `ReferenceList`, mostly PMC | baseline + daily update files, HTTPS        | one late-numbered baseline file          |
 | arXiv            | arXiv ID   | yes   | **no**                                | OAI-PMH harvest                             | OAI-PMH, ~10 pages                       |
 | OpenAlex         | `W…`       | yes   | yes — `referenced_works[]`            | quarterly S3 snapshot over HTTPS, 666 GB    | one manifest-chosen part: 10,873 records, 20 MB |
@@ -60,14 +60,21 @@ wart is a claim the POC run confirms or refutes, not a commitment.
 
 ### Crossref
 
-- Nearly 1.8 × 10^8 records in the March 2026 file. Distributed as one
-  208 GB `tar` of gzipped JSON-lines files, one record per line — the
-  pre-2024 `{"items":[…]}` layout is gone. Via Academic Torrents
-  (doi 10.13003/nggf-vt1j) or AWS requester-pays (~$18). Records are the
-  REST API's item objects *(confirm on the sample)*.
+- Nearly 1.8 × 10^8 records in the March 2026 file. Distributed as 35,908
+  gzipped JSON-lines shards, `0.jsonl.gz` to `35907.jsonl.gz`, flat in one
+  directory, one record per line — 223,053,729,528 bytes, and no tar (the
+  torrent's metafile, read 2026-09-25) — the pre-2024 `{"items":[…]}`
+  layout is gone. Beside them is `a.py`, 666 bytes: Crossref's own
+  conversion script, which sorts a shard's records by DOI and writes each
+  back with its keys sorted, so every line starts `{"DOI": …`. Via
+  Academic Torrents (doi 10.13003/nggf-vt1j) or AWS requester-pays
+  (~$18). Records are the REST API's item objects: confirmed on the
+  sample, whose 10,000 records normalize with no failure on model 8
+  (2026-09-25); the reader tells an API page from a record line by its
+  first bytes.
 - Crossref also publishes a 31 MB **random sample** as its own torrent: 100
-  `.jsonl.gz` files. That is the POC input — no file selection from the big
-  tar needed, and a random draw is the best schema-diversity sample available.
+  `.jsonl.gz` files. That is the POC input — no selection from the full
+  file needed, and a random draw is the best schema-diversity sample available.
   Caveat from first use: the sample torrent has no web seed and few peers — it
   fetched zero bytes in a session while the full file showed 34 seeders.
   Fallbacks in §7.
@@ -251,6 +258,26 @@ its own, award ids — every one now a closed enum or a field (§9 M5).
 The API (2026-09) is a newer serializer than the June snapshot: §9 M5
 lists every difference the first 35,000 looked-up works showed, all
 modelled, each with a fixture.
+
+The snapshot of 2026-09-23 (2,040 parts, 476,196,327 works; 1,581 parts
+and 403.6 M works in 2026 partitions) differs again. Three of its
+smallest 2026 parts (2026-03-23, 2026-03-30, 2026-06-29; 9,071 works),
+enumerated path by path against the model on 2026-09-25, while the 17
+June parts show no difference under the same script:
+
+- `source.listed_in`, new, on every source object: an array of the lists
+  that index the source (`erih-plus`, `cwts-core`, `doaj`, `medline`,
+  `scielo`, `latindex`, national lists such as `jufo-1`…`3`, `norway-1`,
+  `2`, `ki-jl-1`…`3`, `abdc-*`), `[]` when none; absent from the API's
+  answers. Model 8 refuses it at the first work of every part.
+- A work `type` of `software`: 25 works, all Zenodo DataCite records.
+- `updated_date` before `created_date`: 2 works, both created
+  2026-08-07.
+- `language` codes `enc` and `idb`: kept as malformed claims, not failures.
+
+These parts are small and mostly DataCite's, so the large 2026
+partitions may hold more; the snapshot is surveyed whole before it is
+normalized (§10, 2026-09-25).
 
 ### Semantic Scholar — paused
 
@@ -1709,6 +1736,8 @@ cross-IDs and a second edge namespace early.
   That survey also listed what version 7 keeps rather than reads, 6,116
   records: a long tail with no dominant shape — `2016 Sept-Oct` (65),
   `2016 11-12` (59), `2000 Aug, 7`, `2023 Auguest`, `2021 [SEASON]`,
+  `2020 COVID-19 SPECIAL ISSUE` — which is the case for keeping over
+  cataloguing that version 7 was built on.
 - 2026-09-25, model version 9 — U+2010 HYPHEN in a DOI's suffix is read
   as `-`. Crossref's March 2026 bulk sample carries it in 13,305 of its
   262,499 reference DOIs, every one from Wiley's records (1,248 of them),
@@ -1726,8 +1755,22 @@ cross-IDs and a second edge namespace early.
   (8), spaces inside SICI DOIs (3), a minus sign (2), zero-width
   characters (2), and two that mix U+2010 with another; the merge still
   drops those without a trace (merge plan §11).
-  `2020 COVID-19 SPECIAL ISSUE` — which is the case for keeping over
-  cataloguing that version 7 was built on.
+- 2026-09-25, Crossref's bulk file is shards, not a tar — the 2026-09-14
+  entry above had it as one tar. The torrent's metafile (read 2026-09-25)
+  names 35,908 `N.jsonl.gz` shards and Crossref's conversion script
+  `a.py`, 223,053,729,528 bytes, flat in one directory; the box fetched it
+  by magnet link (homelab `job-fetch-crossref-v1`). A command naming
+  every shard is about 2.3 MB of arguments, over Linux's 2 MiB, so the
+  Jobs that read them take them in eight shares, listed without a glob.
+- 2026-09-25, Crossref before OpenAlex. The OpenAlex snapshot of
+  2026-09-23 is fetched to the box, but it waits until Crossref is live
+  (the user: "there are a lot of practical considerations needed to take
+  care of before taking this on"). Model 8 reads none of its 2026
+  partitions — 403.6 M of its 476 M works — for a new field, a new work
+  type and two updates dated before their creation (§2, OpenAlex). The
+  user is interested in OpenAlex as a hold-out: a dataset that validates
+  this pipeline's correctness, not an infallible oracle, but a
+  disagreement with it needs a rigorous justification.
 
 ## 11. Dependencies
 

@@ -1,8 +1,10 @@
 //! What Crossref offers in bulk: the annual public data file, one torrent
-//! carrying one tar of JSON lines (plan §2). `fetch` does not do torrents;
-//! the entry is listed so the listing says what exists, and `fetch`
-//! refuses it with the command to run. And, for seeding the POC sample
-//! only (plan §8, item 8), the REST API's answer to a batch of DOIs.
+//! carrying 35,908 gzipped JSON-lines shards and Crossref's conversion
+//! script `a.py`, flat in one directory, 223,053,729,528 bytes (plan §2).
+//! `fetch` does not do torrents; the entry is listed so the listing says
+//! what exists, and `fetch` refuses it with the command to run. And, for
+//! seeding the POC sample only (plan §8, item 8), the REST API's answer to
+//! a batch of DOIs.
 
 use std::time::Duration;
 
