@@ -10,7 +10,8 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card"
-import { Names } from "@/components/work-list"
+import { CopyNames } from "@/components/copy-names"
+import { ReadButton } from "@/components/read-button"
 import {
   CitationLists,
   LIST_DEFAULT,
@@ -141,6 +142,9 @@ function Paper({ id }: { id: string }) {
                 : [year(w.published), w.venue, w.genre]
                     .filter(Boolean)
                     .join(" · ") || "no year or venue"}
+              {/* The names the work goes by elsewhere, and this site's id
+                  for it, each a click to copy. */}
+              <CopyNames names={w.names} publicId={w.public_id} />
             </CardDescription>
           </CardHeader>
 
@@ -155,24 +159,7 @@ function Paper({ id }: { id: string }) {
               <p className="text-muted-foreground text-sm">{w.abstract}</p>
             )}
 
-            <div className="space-y-1">
-              <p className="text-muted-foreground text-xs">names</p>
-              {w.names.length > 0 ? (
-                <Names names={w.names} linked />
-              ) : (
-                <Empty>no names</Empty>
-              )}
-            </div>
-
-            {w.held_by.length > 0 && (
-              <p className="text-muted-foreground text-xs">
-                held by {w.held_by.join(", ")}
-              </p>
-            )}
-
-            <p className="text-muted-foreground font-mono text-xs">
-              {w.public_id}
-            </p>
+            <ReadButton names={w.names} />
           </CardContent>
         </Card>
       )}

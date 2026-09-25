@@ -329,16 +329,19 @@ export function nameUrl(name: Name): string | null {
 const NAMESPACE_ORDER = ["doi", "pmid", "pmc", "openalex"]
 
 /**
- * The name to put where a title would go, when there is no title. A DOI if
- * there is one, then a PMID, a PMC id, an OpenAlex id, and last a publisher's
- * own id (`reg1038:…`), which names the work to nobody outside that publisher.
+ * How recognisable a name is, lowest first: a DOI, then a PMID, a PMC id, an
+ * OpenAlex id, and last a publisher's own id (`reg1038:…`), which names the
+ * work to nobody outside that publisher. Within a namespace, the promoted
+ * name before an alias or a shared one.
  */
+export function nameRank(n: Name): number {
+  const known = NAMESPACE_ORDER.indexOf(n.namespace)
+  return (known === -1 ? NAMESPACE_ORDER.length : known) * 2 +
+    (n.standing === "promoted" ? 0 : 1)
+}
+
+/** The name to put where a title would go, when there is no title. */
 export function primaryName(names: Name[] | undefined): Name | null {
   if (!names || names.length === 0) return null
-  const rank = (n: Name) => {
-    const known = NAMESPACE_ORDER.indexOf(n.namespace)
-    return (known === -1 ? NAMESPACE_ORDER.length : known) * 2 +
-      (n.standing === "promoted" ? 0 : 1)
-  }
-  return names.reduce((best, n) => (rank(n) < rank(best) ? n : best))
+  return names.reduce((best, n) => (nameRank(n) < nameRank(best) ? n : best))
 }

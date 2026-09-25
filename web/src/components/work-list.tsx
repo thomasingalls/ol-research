@@ -1,11 +1,9 @@
 import { useRef } from "react"
 import { useQueryClient } from "@tanstack/react-query"
 import { Link } from "@tanstack/react-router"
-import { ArrowUpRightIcon } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import {
   nameText,
-  nameUrl,
   primaryName,
   year,
   type Name,
@@ -23,50 +21,27 @@ const INTENT_MS = 50
 
 /**
  * Render the names that point at a work, e.g. doi:10.1234/x, pmid:12345678.
- *
- * `linked` makes each name that has a page elsewhere a link to it — the
- * publisher's by DOI, PubMed's, PubMed Central's free full text, OpenAlex's —
- * opened in a new tab, and sending no referrer. Off in a row, because a row
- * is a link itself and a link cannot hold another.
+ * Text, not links: on a work's page the way out is the Read button, and a
+ * row is a link itself, which cannot hold another.
  */
-export function Names({
-  names,
-  omit,
-  linked = false,
-}: {
-  names: Name[]
-  omit?: Name | null
-  linked?: boolean
-}) {
+export function Names({ names, omit }: { names: Name[]; omit?: Name | null }) {
   // The name already standing as the row's headline is not repeated here.
   const rest = omit ? names.filter((n) => nameText(n) !== nameText(omit)) : names
   if (rest.length === 0) return null
   return (
     <div className="flex flex-wrap gap-1">
-      {rest.map((n) => {
-        const url = linked ? nameUrl(n) : null
-        const title = `${n.standing}${n.by.length ? ` · asserted by ${n.by.join(", ")}` : ""}`
-        // A DOI can run to 70 characters. Let the badge wrap and grow
-        // rather than run off the edge of a column.
-        const className = "h-auto font-mono text-xs break-all whitespace-normal"
-        return url ? (
-          <Badge key={nameText(n)} asChild variant="secondary" className={className}>
-            <a
-              href={url}
-              target="_blank"
-              rel="noopener noreferrer"
-              title={`${title} · opens ${new URL(url).host} in a new tab`}
-            >
-              {nameText(n)}
-              <ArrowUpRightIcon data-icon="inline-end" aria-hidden />
-            </a>
-          </Badge>
-        ) : (
-          <Badge key={nameText(n)} variant="secondary" className={className} title={title}>
-            {nameText(n)}
-          </Badge>
-        )
-      })}
+      {rest.map((n) => (
+        <Badge
+          key={nameText(n)}
+          variant="secondary"
+          // A DOI can run to 70 characters. Let the badge wrap and grow
+          // rather than run off the edge of a column.
+          className="h-auto font-mono text-xs break-all whitespace-normal"
+          title={`${n.standing}${n.by.length ? ` · asserted by ${n.by.join(", ")}` : ""}`}
+        >
+          {nameText(n)}
+        </Badge>
+      ))}
     </div>
   )
 }

@@ -7,11 +7,20 @@ product ambitions:
   list's, less the identifiers: title, authors, venue and year, and a badge
   for a retraction or an expression of concern, so a reader is warned before
   they open it. The ids and names are on the work's page.
-- **Work detail** — a work's metadata and its **names**, each promoted name a
-  link out that opens in a new tab and sends no referrer: a DOI to the
-  publisher, a PMID to PubMed, a PMC id to PubMed Central's free full text,
-  an OpenAlex id to OpenAlex. A publisher's own id has nowhere to go, and an
-  alias or a shared name may lead to another work, so those stay plain.
+- **Work detail** — a work's metadata, its ids, and where to read it.
+  Under the year and venue, the ids are one list behind a ghost button that
+  shows the first of them — a DOI if there is one — and a click on any line
+  copies it: every **name**, an alias or a shared name saying so, and the
+  public id last. A name is copied without its namespace (`10.1234/x`,
+  `12345678`), which is what a reference manager or PubMed's search box
+  takes; the public id is copied whole, `ol:` and all. The list stays open
+  after a copy, so the check lands beside what was clicked.
+  Under the abstract, where to read it is a split button. Its face is the
+  first place the work has, in the order publisher (a DOI), PubMed Central
+  (a PMC id), PubMed (a PMID), OpenAlex, and its menu holds the rest; each
+  opens in a new tab, sending no referrer. The places come from the promoted
+  names only. A publisher's own id has nowhere to go, and an alias or a
+  shared name may lead to another work, so none of those is a place.
   Beside them, four lists, one tab each: **References** (works it cites),
   *Cites the same sources*, **Citers** (works citing it), *Cited alongside*.
   References and citers are paged by cursor with a "Load more", and their
@@ -330,7 +339,9 @@ pnpm dlx shadcn@4.21.0 add <component>
 
 Keep the version pinned to something at least two weeks old. Currently
 installed: `button`, `input`, `card`, `badge`, `skeleton`, `alert`,
-`input-group`, `empty`, and `textarea`, which `input-group` imports.
+`input-group`, `empty`, `textarea`, which `input-group` imports,
+`dropdown-menu` and `button-group`, the Read button's, and `separator`,
+which `button-group` imports.
 
 The list tabs beside a work are not a `tabs` component. Which tab is open lives in
 the URL, so each tab is a `Link` — a real one, that can be middle-clicked,
