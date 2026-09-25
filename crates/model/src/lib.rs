@@ -98,7 +98,16 @@
 /// records of 2006 to 2017 that still stopped the run, because they do not
 /// begin with a year. Both change what normalized output holds. Output
 /// under version 7 is rebuilt, not patched.
-pub const VERSION: u32 = 8;
+///
+/// Version 9 (2026-09-25): U+2010 HYPHEN in a DOI's suffix is read as `-`
+/// ([`Doi`], the user's decision). Crossref's March 2026 sample carries it
+/// in 13,305 of its 262,499 reference DOIs, every one from Wiley, and the
+/// merge had been dropping those references without a trace, since a
+/// reference whose one name is malformed has nothing to land on. A DOI
+/// that was malformed under version 8 is a name now, wherever a source
+/// writes it, which changes what normalized output holds. Output under
+/// version 8 is rebuilt, not patched.
+pub const VERSION: u32 = 9;
 
 pub mod claim;
 pub mod code;

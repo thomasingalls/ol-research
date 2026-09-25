@@ -15,8 +15,17 @@ use std::fmt;
 ///
 /// Non-ASCII suffixes are permitted by the DOI Handbook and rejected here
 /// until one is observed; that is a modelling decision waiting on evidence.
-/// So far the only non-ASCII seen is a Unicode hyphen where an ASCII one
-/// belongs, which is the data being wrong, not the rule.
+///
+/// One non-ASCII character is read rather than rejected: U+2010 HYPHEN in
+/// the suffix is taken as `-` (model version 9, the user's decision,
+/// 2026-09-25). The Handbook would call the two different names — it
+/// compares code points and folds only ASCII case (§4.3.4, 2025 edition) —
+/// so this is a reading, and the evidence is what makes it one: in
+/// Crossref's March 2026 sample every one of 13,305 reference DOIs
+/// carrying it came from Wiley's 1,248 records, 13,301 of them are DOIs
+/// once it is read as `-`, and the hyphen-minus forms resolve at doi.org
+/// where the U+2010 form does not. Other dashes (U+2013, U+2212) and
+/// look-alikes (`×` for `x`) are not read; 30 in the same 262,499.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Doi<'a>(#[serde(borrow)] Cow<'a, str>);
@@ -119,11 +128,15 @@ impl<'a> Doi<'a> {
     /// The prefix OpenAlex and others put in front of a DOI.
     pub const URL_PREFIX: &'static str = "https://doi.org/";
 
+    /// U+2010 HYPHEN, read as `-` in a suffix (see [`Doi`]).
+    pub const HYPHEN: char = '\u{2010}';
+
     /// Parses a bare DOI such as `10.1001/jama.2025.15703`.
     ///
     /// # Errors
     ///
-    /// See [`Error`].
+    /// See [`Error`]. An offset is into the input as given, before any
+    /// [`Self::HYPHEN`] is read as `-`.
     pub fn parse(s: &'a str) -> Result<Self, Error> {
         if s.is_empty() {
             return Err(Error::Empty);
@@ -138,12 +151,29 @@ impl<'a> Doi<'a> {
             return Err(Error::EmptySuffix);
         }
         let suffix_start = s.len() - suffix.len();
-        if let Some(bad) = suffix.bytes().position(|b| !(0x21..=0x7e).contains(&b)) {
-            return Err(Error::InvalidChar {
-                offset: suffix_start + bad,
-            });
-        }
-        Ok(Self(if suffix.bytes().any(|b| b.is_ascii_uppercase()) {
+        // Printable ASCII throughout, but for HYPHEN; a suffix that is all
+        // ASCII — nearly every one — is checked a byte at a time.
+        let hyphen = if suffix.is_ascii() {
+            if let Some(bad) = suffix.bytes().position(|b| !(0x21..=0x7e).contains(&b)) {
+                return Err(Error::InvalidChar {
+                    offset: suffix_start + bad,
+                });
+            }
+            false
+        } else {
+            if let Some((bad, _)) = suffix
+                .char_indices()
+                .find(|&(_, c)| c != Self::HYPHEN && !('\x21'..='\x7e').contains(&c))
+            {
+                return Err(Error::InvalidChar {
+                    offset: suffix_start + bad,
+                });
+            }
+            true
+        };
+        Ok(Self(if hyphen {
+            Cow::Owned(s.replace(Self::HYPHEN, "-").to_ascii_lowercase())
+        } else if suffix.bytes().any(|b| b.is_ascii_uppercase()) {
             Cow::Owned(s.to_ascii_lowercase())
         } else {
             Cow::Borrowed(s)
@@ -180,7 +210,8 @@ impl<'a> Doi<'a> {
         Registrant::from_digits(&s[3..s.find('/').unwrap_or(s.len())]).unwrap_or(Registrant(0))
     }
 
-    /// True when no lowercasing copy was needed.
+    /// True when no copy was needed: nothing to lowercase, no
+    /// [`Self::HYPHEN`] to read.
     #[must_use]
     pub const fn is_borrowed(&self) -> bool {
         matches!(self.0, Cow::Borrowed(_))
@@ -246,11 +277,58 @@ mod tests {
             Doi::parse("https://www.ajronline.org/doi/10.2214/AJR.07.2123"),
             Err(Error::BadPrefix)
         );
-        // Crossref's Unicode hyphen: the data is wrong, not the rule.
+        // Dashes and look-alikes other than U+2010, as Crossref's March 2026
+        // sample carries them in reference DOIs: refused, not read.
         assert_eq!(
-            Doi::parse("10.1111/1755\u{2010}0998.13324"),
-            Err(Error::InvalidChar { offset: 12 })
+            Doi::parse("10.1111/j.1365\u{2013}3040.2007.01641.x"),
+            Err(Error::InvalidChar { offset: 14 })
         );
+        assert_eq!(
+            Doi::parse("10.12198/j.issn.1673\u{2212}159X.5718"),
+            Err(Error::InvalidChar { offset: 20 })
+        );
+        assert_eq!(
+            Doi::parse("10.1177/0308518\u{d7}18809094"),
+            Err(Error::InvalidChar { offset: 15 })
+        );
+        assert_eq!(
+            Doi::parse("10.1016/j.obmed.2025.100668\u{200c}"),
+            Err(Error::InvalidChar { offset: 27 })
+        );
+    }
+
+    #[test]
+    fn a_unicode_hyphen_is_read_as_a_hyphen() {
+        // Wiley's reference DOIs, from Crossref's March 2026 sample.
+        let doi = Doi::parse("10.1038/s41467\u{2010}020\u{2010}14809\u{2010}9").unwrap();
+        assert_eq!(doi.as_str(), "10.1038/s41467-020-14809-9");
+        assert!(!doi.is_borrowed());
+        assert_eq!(doi, Doi::parse("10.1038/s41467-020-14809-9").unwrap());
+        // Read and lowercased together.
+        assert_eq!(
+            Doi::parse("10.1111/1755\u{2010}0998.13324X")
+                .unwrap()
+                .as_str(),
+            "10.1111/1755-0998.13324x"
+        );
+        assert_eq!(
+            Doi::from_url("https://doi.org/10.1002/jha2\u{2010}1033")
+                .unwrap()
+                .as_str(),
+            "10.1002/jha2-1033"
+        );
+        // Beside a character that is not read, the offset is into the input
+        // as given: U+2010 is three bytes here, not one.
+        assert_eq!(
+            Doi::parse("10.1136/bmjopen\u{2212}2018\u{2010}025300"),
+            Err(Error::InvalidChar { offset: 15 })
+        );
+        assert_eq!(
+            Doi::parse("10.1136/bmjopen\u{2010}2018\u{2212}025300"),
+            Err(Error::InvalidChar { offset: 22 })
+        );
+        // Only in the suffix: the registrant is digits.
+        assert_eq!(Doi::parse("10.1111\u{2010}/x"), Err(Error::MissingSlash));
     }
 
     #[test]

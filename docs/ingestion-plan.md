@@ -105,7 +105,9 @@ wart is a claim the POC run confirms or refutes, not a commitment.
   the DOI's *current owner*, not its registrant — they differ on 67 works,
   because DOIs move between publishers. 47 reference DOIs (0.2 %) carry a
   Unicode hyphen (U+2010) for an ASCII one: the `Claim<Doi>` category
-  again. `updated-by` appears on affected works, so retraction status needs
+  again. In the bulk sample (2026-09-25) it is 13,305 of 262,499 reference
+  DOIs, every one in Wiley's records, and it is read as `-` since model
+  version 9 (§10). `updated-by` appears on affected works, so retraction status needs
   no inversion pass after all — §2's earlier claim about `update-to` stands
   for the notice side only.
 - Terms: metadata is free to reuse and not subject to copyright; abstracts
@@ -1707,6 +1709,23 @@ cross-IDs and a second edge namespace early.
   That survey also listed what version 7 keeps rather than reads, 6,116
   records: a long tail with no dominant shape — `2016 Sept-Oct` (65),
   `2016 11-12` (59), `2000 Aug, 7`, `2023 Auguest`, `2021 [SEASON]`,
+- 2026-09-25, model version 9 — U+2010 HYPHEN in a DOI's suffix is read
+  as `-`. Crossref's March 2026 bulk sample carries it in 13,305 of its
+  262,499 reference DOIs, every one from Wiley's records (1,248 of them),
+  and the merge had been dropping those references with no row at all:
+  a reference whose one name is malformed has nothing to land on. Read
+  as `-`, 13,301 are DOIs, and the three tried resolve at doi.org where
+  the U+2010 form of one answers 404. The DOI Handbook (2025 edition,
+  §4.2, §4.3.4) allows any Unicode in a suffix and calls two names the
+  same only when their code points are, but for ASCII case, so the two
+  forms are different names and this is a reading, not the standard's
+  equivalence. The user's first preference was to keep the character as
+  written, then: "we should just normalize that character, what the hell
+  wiley". Only U+2010 is read. The same sample's other 30 rejected
+  reference DOIs stay malformed: an en dash (13), `×` for `x` in SAGE's
+  (8), spaces inside SICI DOIs (3), a minus sign (2), zero-width
+  characters (2), and two that mix U+2010 with another; the merge still
+  drops those without a trace (merge plan §11).
   `2020 COVID-19 SPECIAL ISSUE` — which is the case for keeping over
   cataloguing that version 7 was built on.
 

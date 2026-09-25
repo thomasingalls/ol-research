@@ -1880,6 +1880,19 @@ stays.
       batch keeps a rejection the record's own row already carries, and
       under C a name whose work has parts is a container's wherever it
       turns up. Needed before daily update files, with items 23 and 24.
+26. **A reference whose one name is malformed leaves no trace.** A
+    citation carries no DOI field (`view.rs`, `Citation`) and an empty
+    citation is dropped (`build.rs`, `Builder::reference`), so a
+    reference that gives only a DOI the model refuses is neither an arc
+    nor an unresolved row: counted as `empty` in the report, and gone.
+    On Crossref's March 2026 bulk sample (2026-09-25, model 8) that was
+    13,339 of 317,615 references, nearly all Wiley's U+2010 hyphen, which
+    model version 9 reads as `-` (ingestion plan §10). What remains is 30
+    in the sample's 262,499 reference DOIs: other dashes, `×` for `x`,
+    spaces in SICI DOIs, zero-width characters. The malformed text is in
+    the normalized layer as a `Claim::Malformed`, so keeping it — an
+    unresolved row that carries the name as written — needs no
+    re-normalizing; it is a merged-layout change. Not built.
 21. ~~**The public id.**~~ Built 2026-09-16 (serving plan SP3):
     `merge::public` mints one for every id lacking it when `merge` is
     given `--public-key <file>` — a keyed BLAKE3 hash of the id, `ol:`
