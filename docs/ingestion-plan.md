@@ -1771,6 +1771,22 @@ cross-IDs and a second edge namespace early.
   user is interested in OpenAlex as a hold-out: a dataset that validates
   this pipeline's correctness, not an infallible oracle, but a
   disagreement with it needs a rigorous justification.
+- 2026-09-25, a set's records can be sought (serving plan §11, item 35,
+  the user's option (c)). A batch reads records back from the normalized
+  layer — a re-delivered record's earlier copies, the citers of a stub it
+  divides or of a name it moved — and a set was one zstd frame, read
+  whole to find any record: about half a second a set (M). The works and
+  references files now start a new frame every 256 KiB of records
+  (`binary::FRAME`), which reads as one stream as before, and a set gains
+  `<prefix>.index.zst`: each frame's offset and first record, and each
+  work's native name with its first reference's ordinal, since a work's
+  references follow it. A reader with the index finds a record by a seek
+  and one frame; a set without one is scanned, as before. The index is
+  keyed by the name the merge writes (`Source::native_key`), so the
+  source crates fill it. On the sample the sets are about 7 % larger
+  (M: the two baseline files 65.8 to 70.3 MiB) and an index is about
+  65 KB for 30,000 works. Neither the model nor the layout version moves:
+  every file reads as it did, and a set normalized before has no index.
 
 ## 11. Dependencies
 

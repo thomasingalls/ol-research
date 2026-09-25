@@ -67,6 +67,15 @@ pub trait Source: Sized {
         R: BufRead,
         F: FnMut(&Self::Native<'_>) -> ControlFlow<()>;
 
+    /// A normalized work's native name as the merge writes it
+    /// (`pmid:123`): what the set's [`crate::binary::Index`] is keyed by,
+    /// so that a reader holding the name finds the record's copy by a
+    /// seek. `None`, the default, writes no index.
+    fn native_key(work: &Self::Work<'_>) -> Option<String> {
+        let _ = work;
+        None
+    }
+
     /// Normalizes one record, pushing what it becomes to `sink`: a work and
     /// then each of its edges, or a deletion.
     ///

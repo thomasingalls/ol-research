@@ -147,6 +147,11 @@ impl ingest::Source for Crossref {
         records(input, each)
     }
 
+    /// The work's native name as the merge writes it, for the set's index.
+    fn native_key(work: &Self::Work<'_>) -> Option<String> {
+        merge::copies::native_of::<Self>(work).map(|name| name.to_string())
+    }
+
     fn normalize<'n, K: ingest::Sink<'n, Self>>(
         native: &'n Work<'_>,
         sink: &mut K,

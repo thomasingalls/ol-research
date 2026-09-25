@@ -1929,26 +1929,119 @@ impl serve::incremental::Records for Normalized<'_> {
 /// A copy's rank inside one set: its stamp, its version, its place.
 type InSet = (Option<model::Date>, u32, u64);
 
-/// The records of `S` among `natives` that `set` holds, in one pass over
-/// the set: each the newest copy there, joined with the others as the
-/// copy rule joins them (merge plan §8), with every reference the set
-/// beside it gives.
+/// The records of `S` among `natives` that `set` holds: each the newest
+/// copy there, joined with the others as the copy rule joins them (merge
+/// plan §8), with every reference the set beside it gives. A set with an
+/// index is sought, a record a seek and a frame; one without is scanned
+/// whole (serving plan §11, item 35).
 fn records_in<S: Contributor>(
     store: &Store,
     natives: &[OwnedName],
     set: &str,
 ) -> Result<Vec<serve::incremental::Incoming>, String> {
+    let prefix = store.normalized(model::VERSION, S::NAME).join(set);
+    let index = ingest::binary::Index::read(&prefix)
+        .map_err(|e| format!("{}: {e}", ingest::binary::Index::path(&prefix).display()))?;
+    let best = match index {
+        Some(index) => records_sought::<S>(&prefix, set, natives, &index)?,
+        None => records_scanned::<S>(&prefix, set, natives)?,
+    };
+    let mut out: Vec<serve::incremental::Incoming> =
+        best.into_values().map(|(_, record)| record).collect();
+    out.sort_by(|a, b| a.native.cmp(&b.native));
+    Ok(out)
+}
+
+/// What a set holds of each record asked for: its rank among the set's
+/// copies, and the copy as the copy rule joins them.
+type Held = HashMap<OwnedName, (InSet, serve::incremental::Incoming)>;
+
+/// One copy of a record, from a work of `S` read from `set`, where it is
+/// the `ordinal`th work.
+fn copy_of<S: Contributor>(
+    work: &S::Work<'_>,
+    table: &model::symbol::Table,
+    set: &str,
+    native: OwnedName,
+    ordinal: u64,
+) -> Result<(InSet, serve::incremental::Incoming), String> {
+    let mut asserts = Vec::new();
+    S::names(work, &mut |a| {
+        asserts.push(merge::build::OwnedAssert {
+            name: a.name.to_owned(),
+            field: a.field.into(),
+            native: a.native,
+        });
+    });
+    let view = S::view(work, table).map_err(|e| e.to_string())?;
+    let text = S::text(work, table).map_err(|e| e.to_string())?;
+    let mut relations = Vec::new();
+    S::relations(work, table, &mut |r| relations.push(r)).map_err(|e| e.to_string())?;
+    let mut view = merge::view::Owned::resolve(&view, table);
+    view.set = set.into();
+    let rank = (view.revised, view.version, ordinal + 1);
+    Ok((
+        rank,
+        serve::incremental::Incoming {
+            source: S::SOURCE,
+            native,
+            asserts,
+            view,
+            text,
+            relations,
+            references: Vec::new(),
+        },
+    ))
+}
+
+/// Joins a copy into what the set holds of its record: the newer speaks,
+/// the older fills it (merge plan §8).
+fn join_copy(best: &mut Held, (rank, copy): (InSet, serve::incremental::Incoming)) {
+    let native = copy.native.clone();
+    let joined = match best.remove(&native) {
+        None => (rank, copy),
+        Some((seen, older)) if seen < rank => {
+            let mut newer = copy;
+            newer.absorb(&older);
+            (rank, newer)
+        }
+        Some((seen, mut newer)) => {
+            newer.absorb(&copy);
+            (seen, newer)
+        }
+    };
+    best.insert(native, joined);
+}
+
+/// One reference of `S` as a batch carries it.
+fn reference_of<S: Contributor>(
+    reference: &S::Reference<'_>,
+    table: Option<&model::symbol::Table>,
+) -> serve::incremental::Reference {
+    let mut names = Vec::new();
+    S::targets(reference, &mut |n| names.push(n.to_owned()));
+    serve::incremental::Reference {
+        names,
+        citation: merge::build::OwnedCitation::of(&S::citation(reference), table),
+    }
+}
+
+/// [`records_in`] for a set with no index: every work and every
+/// reference read.
+fn records_scanned<S: Contributor>(
+    prefix: &Path,
+    set: &str,
+    natives: &[OwnedName],
+) -> Result<Held, String> {
     let wanted: HashSet<&OwnedName> = natives.iter().collect();
-    let dir = store.normalized(model::VERSION, S::NAME);
-    let prefix = dir.join(set);
-    let works_path = Kind::Works.path(&prefix);
+    let works_path = Kind::Works.path(prefix);
     let say = |path: &Path, e: &dyn Display| format!("{}: {e}", path.display());
     let reader =
         merge::sets::open::<S>(&works_path, Kind::Works).map_err(|e| say(&works_path, &e))?;
     let table = reader
         .table()
         .ok_or_else(|| say(&works_path, &"no symbol table"))?;
-    let mut best: HashMap<OwnedName, (InSet, serve::incremental::Incoming)> = HashMap::new();
+    let mut best: Held = HashMap::new();
     reader.with_table(|| -> Result<(), String> {
         for (i, work) in reader.records::<S::Work<'_>>().enumerate() {
             let work = work.map_err(|e| say(&works_path, &e))?;
@@ -1958,51 +2051,16 @@ fn records_in<S: Contributor>(
             else {
                 continue;
             };
-            let mut asserts = Vec::new();
-            S::names(&work, &mut |a| {
-                asserts.push(merge::build::OwnedAssert {
-                    name: a.name.to_owned(),
-                    field: a.field.into(),
-                    native: a.native,
-                });
-            });
-            let view = S::view(&work, table).map_err(|e| say(&works_path, &e))?;
-            let text = S::text(&work, table).map_err(|e| say(&works_path, &e))?;
-            let mut relations = Vec::new();
-            S::relations(&work, table, &mut |r| relations.push(r))
+            let copy = copy_of::<S>(&work, table, set, native, i as u64)
                 .map_err(|e| say(&works_path, &e))?;
-            let mut view = merge::view::Owned::resolve(&view, table);
-            view.set = set.into();
-            let rank = (view.revised, view.version, i as u64 + 1);
-            let copy = serve::incremental::Incoming {
-                source: S::SOURCE,
-                native: native.clone(),
-                asserts,
-                view,
-                text,
-                relations,
-                references: Vec::new(),
-            };
-            let joined = match best.remove(&native) {
-                None => (rank, copy),
-                Some((seen, older)) if seen < rank => {
-                    let mut newer = copy;
-                    newer.absorb(&older);
-                    (rank, newer)
-                }
-                Some((seen, mut newer)) => {
-                    newer.absorb(&copy);
-                    (seen, newer)
-                }
-            };
-            best.insert(native, joined);
+            join_copy(&mut best, copy);
         }
         Ok(())
     })?;
     if best.is_empty() {
-        return Ok(Vec::new());
+        return Ok(best);
     }
-    let references_path = Kind::References.path(&prefix);
+    let references_path = Kind::References.path(prefix);
     if references_path.exists() {
         let reader = merge::sets::open::<S>(&references_path, Kind::References)
             .map_err(|e| say(&references_path, &e))?;
@@ -2010,23 +2068,162 @@ fn records_in<S: Contributor>(
         reader.with_table(|| -> Result<(), String> {
             for row in reader.records::<(S::Id<'_>, S::Reference<'_>)>() {
                 let (id, reference) = row.map_err(|e| say(&references_path, &e))?;
-                let Some((_, record)) = best.get_mut(&S::native(&id).to_owned()) else {
-                    continue;
-                };
-                let mut names = Vec::new();
-                S::targets(&reference, &mut |n| names.push(n.to_owned()));
-                record.references.push(serve::incremental::Reference {
-                    names,
-                    citation: merge::build::OwnedCitation::of(&S::citation(&reference), table),
-                });
+                if let Some((_, record)) = best.get_mut(&S::native(&id).to_owned()) {
+                    record.references.push(reference_of::<S>(&reference, table));
+                }
             }
             Ok(())
         })?;
     }
-    let mut out: Vec<serve::incremental::Incoming> =
-        best.into_values().map(|(_, record)| record).collect();
-    out.sort_by(|a, b| a.native.cmp(&b.native));
+    Ok(best)
+}
+
+/// The frame of a table holding record `ordinal`: its place in the table
+/// and its first record.
+fn frame_of(frames: &[(u64, u64)], ordinal: u64) -> Option<(usize, u64)> {
+    let k = frames.partition_point(|f| f.1 <= ordinal).checked_sub(1)?;
+    Some((k, frames[k].1))
+}
+
+/// A frame into the cache, read unless it is there.
+fn load_frame(
+    frames: &mut HashMap<(Kind, usize), ingest::binary::Frame>,
+    kind: Kind,
+    path: &Path,
+    k: usize,
+    offset: u64,
+) -> Result<(), String> {
+    if let std::collections::hash_map::Entry::Vacant(slot) = frames.entry((kind, k)) {
+        slot.insert(
+            ingest::binary::frame(path, offset).map_err(|e| format!("{}: {e}", path.display()))?,
+        );
+    }
+    Ok(())
+}
+
+/// The references of the `i`th work of a set with an index, `native`:
+/// the ones that follow it in the references file, by seeks to the
+/// frames that hold them.
+fn sought_references<S: Contributor>(
+    prefix: &Path,
+    index: &ingest::binary::Index,
+    table: &model::symbol::Table,
+    frames: &mut HashMap<(Kind, usize), ingest::binary::Frame>,
+    i: usize,
+    native: &OwnedName,
+) -> Result<Vec<serve::incremental::Reference>, String> {
+    let references_path = Kind::References.path(prefix);
+    let say = |e: &dyn Display| format!("{}: {e}", references_path.display());
+    let start = index.works[i].1;
+    let end = index.works.get(i + 1).map_or(index.references, |w| w.1);
+    let mut out = Vec::new();
+    let mut at = start;
+    while at < end {
+        let (k, first) = frame_of(&index.references_frames, at)
+            .ok_or_else(|| say(&format!("no frame holds reference {at}")))?;
+        load_frame(
+            frames,
+            Kind::References,
+            &references_path,
+            k,
+            index.references_frames[k].0,
+        )?;
+        let frame = &frames[&(Kind::References, k)];
+        let before = out.len();
+        model::symbol::with_reading(table, || -> Result<(), String> {
+            let skip = usize::try_from(at - first).map_err(|e| e.to_string())?;
+            for row in frame
+                .records::<(S::Id<'_>, S::Reference<'_>)>()
+                .skip(skip)
+                .take(usize::try_from(end - at).unwrap_or(usize::MAX))
+            {
+                let (id, reference) = row.map_err(|e| say(&e))?;
+                if S::native(&id).to_owned() != *native {
+                    return Err(say(&format!(
+                        "a reference of {native} is another record's, where the index says"
+                    )));
+                }
+                out.push(reference_of::<S>(&reference, Some(table)));
+            }
+            Ok(())
+        })?;
+        let read = out.len() - before;
+        if read == 0 {
+            return Err(say(&format!("reference {at} is not in its frame")));
+        }
+        at += read as u64;
+    }
     Ok(out)
+}
+
+/// [`records_in`] for a set with an index: each record's works by a seek
+/// to its frame, and its references — which follow it in the references
+/// file — by seeks to the frames that hold them. A record the index
+/// names that the file does not hold where it says, or a reference that
+/// is not the record's, is a broken set and stops the read.
+fn records_sought<S: Contributor>(
+    prefix: &Path,
+    set: &str,
+    natives: &[OwnedName],
+    index: &ingest::binary::Index,
+) -> Result<Held, String> {
+    let wanted: HashMap<String, &OwnedName> = natives.iter().map(|n| (n.to_string(), n)).collect();
+    let ordinals: Vec<(usize, &OwnedName)> = index
+        .works
+        .iter()
+        .enumerate()
+        .filter_map(|(i, (key, _))| wanted.get(key.as_str()).map(|n| (i, *n)))
+        .collect();
+    let mut best: Held = HashMap::new();
+    if ordinals.is_empty() {
+        return Ok(best);
+    }
+    let works_path = Kind::Works.path(prefix);
+    let say = |path: &Path, e: &dyn Display| format!("{}: {e}", path.display());
+    let table = ingest::binary::table(prefix)
+        .map_err(|e| say(prefix, &e))?
+        .ok_or_else(|| say(prefix, &"no symbol table"))?;
+    let mut frames: HashMap<(Kind, usize), ingest::binary::Frame> = HashMap::new();
+    for &(i, native) in &ordinals {
+        let (k, first) = frame_of(&index.works_frames, i as u64)
+            .ok_or_else(|| say(&works_path, &format!("no frame holds work {i}")))?;
+        load_frame(
+            &mut frames,
+            Kind::Works,
+            &works_path,
+            k,
+            index.works_frames[k].0,
+        )?;
+        let frame = &frames[&(Kind::Works, k)];
+        let copy = model::symbol::with_reading(&table, || -> Result<_, String> {
+            let skip = usize::try_from(i as u64 - first).map_err(|e| e.to_string())?;
+            let work = frame
+                .records::<S::Work<'_>>()
+                .nth(skip)
+                .ok_or_else(|| say(&works_path, &format!("work {i} is not in its frame")))?
+                .map_err(|e| say(&works_path, &e))?;
+            if merge::copies::native_of::<S>(&work)
+                .map(|n| n.to_owned())
+                .as_ref()
+                != Some(native)
+            {
+                return Err(say(
+                    &works_path,
+                    &format!("work {i} is not {native}, as the index says"),
+                ));
+            }
+            copy_of::<S>(&work, &table, set, native.clone(), i as u64)
+                .map_err(|e| say(&works_path, &e))
+        })?;
+        join_copy(&mut best, copy);
+    }
+    for &(i, native) in &ordinals {
+        let references = sought_references::<S>(prefix, index, &table, &mut frames, i, native)?;
+        if let Some((_, record)) = best.get_mut(native) {
+            record.references.extend(references);
+        }
+    }
+    Ok(best)
 }
 
 /// Reads one prefix's works, references and deletions sets of `S` into a

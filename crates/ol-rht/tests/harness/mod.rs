@@ -15,6 +15,16 @@ use std::time::{Duration, Instant};
 use ingest::{Kind, Store};
 use serve::{Serving, compare};
 
+/// The set a file of the normalized layer belongs to: a kind's file, or
+/// the set's index.
+fn set_of(path: &Path) -> Option<PathBuf> {
+    Kind::prefix_of(path).or_else(|| {
+        let name = path.file_name()?.to_str()?;
+        name.strip_suffix(".index.zst")
+            .map(|prefix| path.with_file_name(prefix))
+    })
+}
+
 fn link_tree(from: &Path, to: &Path, skip: &[PathBuf]) -> std::io::Result<u64> {
     let mut linked = 0;
     for entry in std::fs::read_dir(from)? {
@@ -24,7 +34,7 @@ fn link_tree(from: &Path, to: &Path, skip: &[PathBuf]) -> std::io::Result<u64> {
         if entry.file_type()?.is_dir() {
             std::fs::create_dir_all(&target)?;
             linked += link_tree(&source, &target, skip)?;
-        } else if Kind::prefix_of(&source).is_none_or(|p| !skip.contains(&p)) {
+        } else if set_of(&source).is_none_or(|p| !skip.contains(&p)) {
             if std::fs::hard_link(&source, &target).is_err() {
                 std::fs::copy(&source, &target)?;
             }
@@ -137,6 +147,10 @@ pub(crate) fn batches_equal_the_full_merge(label: &str, root: &str, hold_outs: &
         let symbols = Kind::Symbols.path(prefix);
         if symbols.exists() {
             link_in(source.root(), &store, &symbols);
+        }
+        let index = ingest::binary::Index::path(prefix);
+        if index.exists() {
+            link_in(source.root(), &store, &index);
         }
         let in_scratch: Vec<PathBuf> = files
             .iter()

@@ -1832,13 +1832,27 @@ state kept outside the store, and a limit per principal on calls and on
     them in up to three passes — the earlier copies and the read-ahead
     before the components resolve, the list of events after, since it
     needs the final table. One scan is about half a second (M, as a
-    dump). On the corpus a batch's records have copies and citers across
-    the 1,334 baseline files and every update file since, so a pass could
-    scan hundreds of sets, minutes each pass (E). What is left, if the
-    corpus's batch time asks for it: fold the two passes before the
-    components resolve into one, and an index of each normalized set by
-    native id, so a copy is one seek and no pass scans a set whole (the
-    user's option (c)).
+    dump).
+
+    The last two steps, the same day (the user: "let's do the remaining
+    two steps"). The two passes before the rules run are one: a stub a
+    record arriving can divide is one its names reach, so its citers are
+    known right after the copy rule, and they are read with the earlier
+    copies into one cache (`ReadBack`); the engine's read-ahead reads only
+    what that could not foresee. Then 7.3, 25.1, 13.5, 18.3 and 28.9 s,
+    scanning 5, 8, 9, 10 and 12 sets (M). And a normalized set can be
+    sought (ingestion plan §10, 2026-09-25): its works and references
+    files are written in frames of 256 KiB with an index of each frame
+    and each work's native name, so a reader finds a record by a seek and
+    one frame, and scans only a set normalized before. On the sample,
+    normalized again, both harnesses still pass with 0 differences; the
+    update-file batches are within noise of before (7.4, 27.0, 12.6, 20.6
+    and 32.7 s) and the `1334` hold-out's from 6.2 to 3.9 s (M). The
+    sample's batches want thousands of records from each of its seven
+    sets, where a scan is nearly as cheap as seeking; a batch on the
+    corpus wants a few from each of hundreds, which is what the index is
+    for (E). The corpus is normalized again for model 9 anyway, and its
+    sets will carry the index then.
 
 ## 12. Sources consulted
 
