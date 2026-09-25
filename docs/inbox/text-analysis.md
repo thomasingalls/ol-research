@@ -11,6 +11,16 @@ and research](retrieval-benchmarks.md). Every fact is marked **P**
 scratch crate on 2026-09-24; for papers, the abstract), **S** (secondary
 only) or **U** (not verified).
 
+**Since, 2026-09-25:** the search box no longer goes through
+`QueryParser`. `crates/query-parser` reads what was typed into a tree,
+and `search::translate` builds the `TermQuery`, `PhraseQuery` and
+`BooleanQuery` by hand, splitting each word with the field's own analyzer
+for now (serving plan §7). So the query side that §2 and idea 6 describe
+as hand-built is the one there is: analyzing a query differently from the
+index is a change to the translation, not to a parser. The tokenizer as a
+project of its own is serving plan §11, item 11; the query language's
+second pass, item 36; the order proposed for what comes next, item 37.
+
 ## 1. The thesis
 
 In the user's words:

@@ -392,7 +392,7 @@ and for a highlighter to mirror. A search runs on a thread of its own,
 never on the threads that answer requests, at most `--search-threads`
 at once and each within `--search-deadline`, and writes one line to the
 query log on standard output, apart from the fault log on standard
-error. Its second pass is §11, item 36.
+error. Its second pass is §11, item 36; what comes next, item 37.
 
 **One hydrated row shape** across the three lists that carry works —
 an arc of a page, a neighbour of an expansion, a step on a path — since
@@ -1442,15 +1442,24 @@ state kept outside the store, and a limit per principal on calls and on
     index at all; and one document per work against one per record.
 
     The tokenizer is wrong for this dataset and is a project of its own,
-    top to bottom (the user, 2026-09-25); the query parser keeps
-    Tantivy's splitting until then, because a query has to be split as
-    its documents were. What the search box showed that day: `of`, not
-    a stop word, matched every document it was in, so `trial of aspirin`
-    finds nearly everything; an `é` typed as `e` and a combining accent
-    found nothing, the index holding the other spelling; and whether
-    every word must match or any may (any, today) is a product choice the
-    user has not settled — any until users want every match enumerated,
-    which is how researchers tend to work.
+    top to bottom (the user, 2026-09-25). Its thesis, what the current
+    mapping does to scientific text, the literature and the ideas so far
+    are `docs/inbox/text-analysis.md`. Until the project lands, a query
+    word is split as the index split the documents — by hand now, in
+    `search::translate`, rather than through Tantivy's parser, which is
+    what that note's idea 6 needs before query-time analysis can differ
+    from the index's. What the search box showed that day:
+    - `of` matched every document it was in, so `trial of aspirin`
+      counts nearly everything. Whether that is a stop list's to answer
+      is the project's: the note argues against one, since IDF already
+      discounts `of` in the ranking and Tantivy's English list turns
+      `vitamin A` into `vitamin`; what it costs is the count and the
+      facets, which is the next point's.
+    - Whether every word must match or any may (any, today) is a
+      product choice the user has not settled — any until users want
+      every match enumerated, which is how researchers tend to work.
+    - An `é` typed as `e` and a combining accent found nothing, the
+      index holding the other spelling.
 12. **The registry fold in `names build` and `epoch check`.** Most of a
     gigabyte on the sample to learn two retirements; at scale, tens of
     gigabytes. The retirements should be readable without folding the
@@ -1931,6 +1940,46 @@ state kept outside the store, and a limit per principal on calls and on
       design says which side converts, and whether the client runs this
       parser compiled for the browser or a twin held to it by the same
       properties (`fast-check` beside `proptest`).
+37. **Search after its first pass.** The first pass (2026-09-25, §7)
+    has not met the corpus: the local store's newest epoch (8) is built
+    from merged v2.9, far older than the merged layer this build reads,
+    so the server waits rather than opens it, and the first pass was
+    tested against a fake and small indexes in memory only. In the
+    order proposed on 2026-09-25, and not yet agreed as a plan:
+    1. *Deploy it and read the query log.* What people type, which
+       queries find nothing — where the tokenizer fails them — and which
+       are slow, which is what a search costs at forty-two million
+       works. Both items below would be steered by it. For the
+       deployment: `--search-threads` defaults to half the cores the
+       process is given, which is the pod's CPU limit, so the manifest
+       may want it said outright; and the query log is on standard
+       output beside the fault log on standard error, one stream in the
+       pod's log, holding what people typed — fine while the only user
+       is the user, and worth a second look before anyone else is one.
+    2. *The tokenizer* (item 11, `docs/inbox/text-analysis.md`): a
+       change of mapping, so a new index version and a rebuild on the
+       box. The query parser needs nothing from it: the engine splits.
+    3. *The language's second pass and the highlighter* (item 36),
+       designed together, on top of whatever the tokenizer makes of a
+       word.
+
+    Beside them, loose:
+    - *Counting every match.* A search's total and its facet counts
+      visit every document that matches, so no top-k shortcut prunes
+      anything, and under "any word matches" a broad query is most of
+      the corpus. The time limit bounds it; whether exact counts are
+      what the product wants is the ranking's question, with item 11's
+      any-or-every.
+    - *The other calls still run on the request threads.* `expand`,
+      `related` and `path` are bounded by their caps (§7) and were left
+      where they are; if one is ever slow enough to matter, it takes the
+      search's way.
+    - *The browser client* retries an `internal` once and a refusal
+      never, so a `429` (busy) or a `504` (past the limit) is shown as
+      its code and message and not retried; whether "busy" deserves a
+      retry after a moment, and plainer words for either, is the
+      client's.
+    - *The engine* stays Tantivy for now (item 4).
 
 ## 12. Sources consulted
 
