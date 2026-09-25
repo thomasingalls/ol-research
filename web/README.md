@@ -1,6 +1,6 @@
 # ol-rht web
 
-A small query interface over the citation graph. Three screens, one person, no
+A small query interface over the citation graph. Four screens, one person, no
 product ambitions:
 
 - **Search** — text box, list of results. A result is the same row as any
@@ -44,6 +44,10 @@ product ambitions:
   `openalex:W…`, `reg1038:…` — a publisher's own id) or a public id. One work jumps straight there; a **shared**
   name offers the choice between the works it was accepted into; an id retired
   by a **split** says so.
+- **Chat** — a shell and nothing behind it yet. What you send is shown, the
+  page says that no agent is connected, and nothing answers. The
+  conversation is held by the screen, not the URL, and is gone when you
+  leave it.
 
 Vocabulary, kept the same as the pipeline: a **work** is one entity; its
 **names** are the identifiers that point at it; a **stub** is a work we know
@@ -94,7 +98,7 @@ Routing is [TanStack Router](https://tanstack.com/router), code-based: routes
 declared beside the components they render, composed in `src/router.ts`.
 Search and work share a layout route, `browse`, which owns the search panel
 and `q` — that is what keeps the panel mounted when a work opens beside it.
-No file-based codegen — three screens do not earn a generated route tree.
+No file-based codegen — four screens do not earn a generated route tree.
 
 | route            | URL                                          | notes                                       |
 | ---------------- | -------------------------------------------- | ------------------------------------------- |
@@ -102,6 +106,7 @@ No file-based codegen — three screens do not earn a generated route tree.
 | `/work/$workId`  | `/work/ol:3FWKF485MRW1QF?q=protein+folding`  | `workId` is a public id; `q` is the search beside it, if any |
 | `/work/$workId`  | `/work/ol:3FWKF485MRW1QF?list=cited-alongside` | which list is open: `references` (the default, which normalises away), `cites-same`, `citers`, `cited-alongside` |
 | `/resolve`       | `/resolve?text=pmid:10410805`                | one outcome redirects to the work           |
+| `/chat`          | `/chat`                                      | a shell; the conversation is not in the URL |
 
 A link from one work to another keeps `q` and `list`, so the results stay
 beside it and the same list opens on it.

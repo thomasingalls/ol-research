@@ -5,9 +5,10 @@ import { browseRoute } from "@/routes/browse"
 import { searchRoute } from "@/routes/search"
 import { workRoute } from "@/routes/work-detail"
 import { resolveRoute } from "@/routes/resolve"
+import { chatRoute } from "@/routes/chat"
 
 /**
- * Code-based routes, not file-based. Three screens do not need a codegen step
+ * Code-based routes, not file-based. Four screens do not need a codegen step
  * and a generated route tree checked into the repo; each route is declared
  * beside the component it renders, and the tree is these few lines. Search
  * and work share a layout, `browse`, which holds the search panel so that it
@@ -19,6 +20,7 @@ import { resolveRoute } from "@/routes/resolve"
 const routeTree = rootRoute.addChildren([
   browseRoute.addChildren([searchRoute, workRoute]),
   resolveRoute,
+  chatRoute,
 ])
 
 /**
