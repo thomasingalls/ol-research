@@ -32,6 +32,9 @@ pub struct NamesTail {
     /// Names accepted into more than one work by a row in the works
     /// delta, which the registry does not key.
     shared: HashMap<String, Vec<WorkId>>,
+    /// Names a row in the works delta refuses, to the ids of those rows,
+    /// which the base's refused names are read beside.
+    refused: HashMap<String, Vec<WorkId>>,
     retired: HashMap<WorkId, Option<WorkId>>,
     /// The parts of every id a split retired since the epoch.
     split: HashMap<WorkId, Vec<WorkId>>,
@@ -76,8 +79,22 @@ impl NamesTail {
     }
 
     /// A row's names: the shared ones join the side map, the rest leave
-    /// it.
-    fn apply_row(&mut self, id: WorkId, names: &[merge::build::OwnedNamed]) {
+    /// it; and the names it refuses are its alone, whatever an older row
+    /// of the id refused.
+    fn apply_row(
+        &mut self,
+        id: WorkId,
+        names: &[merge::build::OwnedNamed],
+        rejected: &[merge::build::OwnedRejected],
+    ) {
+        self.forget_refused(id);
+        for r in rejected {
+            let ids = self.refused.entry(r.name.to_string()).or_default();
+            if !ids.contains(&id) {
+                ids.push(id);
+                ids.sort_unstable();
+            }
+        }
         for n in names {
             let key = n.name.to_string();
             if n.standing == Standing::Shared {
@@ -100,6 +117,20 @@ impl NamesTail {
             ids.retain(|x| *x != id);
             !ids.is_empty()
         });
+        self.forget_refused(id);
+    }
+
+    fn forget_refused(&mut self, id: WorkId) {
+        self.refused.retain(|_, ids| {
+            ids.retain(|x| *x != id);
+            !ids.is_empty()
+        });
+    }
+
+    /// The ids whose latest row in the works delta refuses `key`.
+    #[must_use]
+    pub fn refusing(&self, key: &str) -> &[WorkId] {
+        self.refused.get(key).map_or(&[], Vec::as_slice)
     }
 
     /// What the tail says about a key, if anything: `Some(None)` for a
@@ -682,7 +713,7 @@ impl Fold {
                 WorkLine::Put { work, .. } => {
                     self.works.slots.insert(work.id, Slot::Put(*offset));
                     self.works.stubs.insert(work.id, work.stub);
-                    self.names.apply_row(work.id, &work.names);
+                    self.names.apply_row(work.id, &work.names, &work.rejected);
                 }
                 WorkLine::Retire { id, into, .. } => {
                     self.works.slots.insert(*id, Slot::Retired(*into));

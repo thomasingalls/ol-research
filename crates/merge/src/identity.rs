@@ -714,12 +714,15 @@ impl Identity {
                 .iter()
                 .filter_map(|rix| by_record.get(rix).map(|names| (*rix, names)))
                 .flat_map(|(rix, names)| {
-                    names.iter().map(move |&(name, why, holder)| Rejection {
-                        name,
-                        record: rix,
-                        holder,
-                        why,
-                    })
+                    names
+                        .iter()
+                        .map(move |&(name, why, holder, field)| Rejection {
+                            name,
+                            record: rix,
+                            field,
+                            holder,
+                            why,
+                        })
                 })
                 .collect();
             work.rejected.extend(refused);
@@ -808,9 +811,9 @@ impl Identity {
                     self.refusals.sort_by_key(|(n, _)| Reverse(*n));
                     self.refusals.truncate(EXAMPLES);
                 }
-                for &(rix, _) in &by {
+                for &(rix, field) in &by {
                     self.collisions
-                        .push((rix, (ix, Reason::NotAnArticleId, None)));
+                        .push((rix, (ix, Reason::NotAnArticleId, None, field)));
                 }
                 continue;
             }
@@ -950,15 +953,19 @@ impl Identity {
                     if Some(rix) == holder {
                         continue;
                     }
-                    self.records[rix as usize]
-                        .asserts
-                        .retain(|a| a.name != name);
+                    let asserts = &mut self.records[rix as usize].asserts;
+                    let field = asserts
+                        .iter()
+                        .find(|a| a.name == name)
+                        .map(|a| a.field)
+                        .expect("a star's shared name is asserted by every record but its holder");
+                    asserts.retain(|a| a.name != name);
                     let why = if holder.is_some() {
                         Reason::WrongLink
                     } else {
                         Reason::NotAnArticleId
                     };
-                    self.collisions.push((rix, (name, why, holder)));
+                    self.collisions.push((rix, (name, why, holder, field)));
                     self.stats.star_assertions += 1;
                 }
                 if holder.is_none() {
@@ -1495,9 +1502,16 @@ impl Identity {
                     for &(pos, native) in list {
                         let g = group_of[pos];
                         if g != holder && !native {
+                            let field = self.records[recs[pos] as usize]
+                                .asserts
+                                .iter()
+                                .find(|a| a.name == name)
+                                .map(|a| a.field)
+                                .expect("an asserter asserts the name");
                             works[g].rejected.push(Rejection {
                                 name,
                                 record: recs[pos],
+                                field,
                                 holder: Some(holder_rec),
                                 why: Reason::WrongLink,
                             });
@@ -1680,7 +1694,7 @@ enum Kept {
 }
 
 /// A rejected name, why, and the record that holds it, if one does.
-type Refusal = (NameIx, Reason, Option<RecordIx>);
+type Refusal = (NameIx, Reason, Option<RecordIx>, Field);
 
 /// The records claiming one publisher id, each once, with the field.
 type Claimants = SmallVec<[(RecordIx, Field); 2]>;
@@ -1801,14 +1815,16 @@ pub struct WorkName {
     pub native: bool,
 }
 
-/// A rejected assertion: `record` claimed `name`, which `holder` holds
-/// natively, and their titles disagree (a wrong link, merge plan §3.3).
+/// A rejected assertion: `record` claimed `name` from `field`, and the
+/// rule `why` refused it (merge plan §3.3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Rejection {
     #[allow(missing_docs)]
     pub name: NameIx,
     #[allow(missing_docs)]
     pub record: RecordIx,
+    #[allow(missing_docs)]
+    pub field: Field,
     /// The record that holds the name; none when no record does, because
     /// the value identifies no article at all.
     pub holder: Option<RecordIx>,

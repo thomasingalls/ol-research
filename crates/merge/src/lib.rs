@@ -143,4 +143,15 @@ pub use work::{SourceId, Sources, WorkId};
 /// values the shape rules let through, by the survey's dictionary before
 /// and after. A name of that shape already in a registry still reads, and
 /// a complete merge drops it.
-pub const VERSION: u32 = 13;
+/// Version 14 (2026-09-25): a rejected assertion says which record made
+/// it and the field it came from ([`record::Rejected::record`]). A claim
+/// refused as no article's id, or cut off a star, is on no record's list
+/// of assertions, and whether it is refused is a fact about every record
+/// claiming it, so an incremental merge has to find the other claimants
+/// and hand the claim back to the identity pass to decide it as the full
+/// merge does (merge plan §11, item 24). And a record's assertions are
+/// in canonical order, its native name first and then by name, rather
+/// than the order its copies were read in: a batch reads a record's
+/// newest copy first and the full merge its oldest, and the update-files
+/// harness found 28 records whose names differed only in order.
+pub const VERSION: u32 = 14;

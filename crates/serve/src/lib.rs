@@ -46,7 +46,12 @@ pub use row::Row;
 /// at all (serving plan §11, item 24). Version 6 (2026-09-19): the
 /// cited-as rows carry the merged layer's new mark, whether a held work
 /// stood beside the landing (merge plan §11, item 14; §11, item 26).
-pub const VERSION: u32 = 6;
+/// Version 7 (2026-09-25): a row's rejected assertions name the record
+/// that made each and its field, as merge version 14's do, and the names
+/// base keeps every refused name with the works refusing it
+/// ([`names::REFUSED`]), which is how a batch finds a refused name's other
+/// claimants (merge plan §11, item 24).
+pub const VERSION: u32 = 7;
 
 /// The directory name for this binary's versions.
 #[must_use]

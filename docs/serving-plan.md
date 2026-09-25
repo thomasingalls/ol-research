@@ -1205,6 +1205,13 @@ state kept outside the store, and a limit per principal on calls and on
   before the next is read. The publish and the check print each step's
   heap. The check's 22 GB was the mapped pages of the indexes its
   cross-check reads, not heap (`docs/inbox/serving-memory.md`).
+- 2026-09-25, serve version 7, with merge version 14 (merge plan §11,
+  item 24). The names base keeps every name a row refuses with the works
+  refusing it (`refused.fst`, `refused.u32`), and the fold keeps the same
+  for the works delta's rows; `Serving::refusing` answers from both. A
+  batch closes each component over a name's refusers as well as its
+  holders, and gives each row's refused claims back to the record that
+  made them, so the identity pass decides them with every claimant in it.
 
 ## 11. Open items
 
@@ -1731,7 +1738,39 @@ state kept outside the store, and a limit per principal on calls and on
     so the server that reads it is deployed before a client that sends
     it.
 
-## 12. Sources consulted
+35. **Two divergences behind item 24.** Found 2026-09-25, once merge
+    plan §11 item 24 let the update-files harness past the registry
+    check to the comparison (before, it stopped one `drop` apart and
+    never compared). On the sample store at model 8, `1335`–`1339` held
+    out, the committed code (4eef069) gave 38 differences and now 5
+    remain (M). Both remaining cases were in the 38; neither is item
+    24's.
+
+    - **A reference whose landing a division made held gets no cited-as
+      rows.** A reference names a PMID, a DOI its own text repeats and
+      a PMC id, none held: one stub. A batch brings the PMID's record;
+      the stub's PMID is a held work's, the reference now names a held
+      work, so its DOI and PMC id make no stub (item 14) and it lands on
+      the held work. The full merge writes cited-as rows for that
+      landing — the DOI and PMC id beside it, the DOI in its text. The
+      batch writes none, because the citing record is not in the batch.
+      When a later batch makes a stub of the DOI, item 26's settling
+      again reads the cited-as rows, finds nothing, and the arc stays;
+      the full merge moves it to the stub by §6. On the sample: #3202's
+      reference, #46038, #1313865. The test
+      `a_name_a_division_left_beside_a_held_work_is_settled_again_when_it_becomes_a_stub`
+      reproduces it and is ignored until this is answered. A fix restates
+      the citing pair's cited-as rows whole when a division changes its
+      landing from a stub to a held work, reading the record's references
+      from the normalized layer as `twins` reads records. And
+      `compare::differences` checks no cited-as rows at all, which is
+      why this surfaced two batches after it happened.
+    - **One citer's `held_beside` on a stub.** Stub #1293222: a citing
+      record (#376705) gave the stub's PMID through two references, one
+      of which named a held work too. The full merge marks the PMID's
+      citer `held_beside: false` (a record's other reference named none);
+      the batch marks it `true`. Not yet reduced to a test.
+
 
 The serving-shape and feeds conversations of 2026-09-15 and the notes
 kept of them; the graph plan's §5 and §11; crates.io on 2026-09-15 for

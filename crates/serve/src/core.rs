@@ -512,6 +512,27 @@ impl Serving {
         self.resolve_key(&name.to_string())
     }
 
+    /// The works whose rows refuse `name` — whose records claimed it and
+    /// were refused — the base's where the works delta has no newer word
+    /// on the id, and the delta's own, in id order: a refused name's other
+    /// claimants, which no lookup of the name finds (merge plan §11, item
+    /// 24). Ids are as the rows have them, retired since or not.
+    #[must_use]
+    pub fn refusing(&self, name: &OwnedName) -> Vec<WorkId> {
+        let key = name.to_string();
+        let fold = self.fold();
+        let mut ids: Vec<WorkId> = self
+            .names
+            .refusing(&key)
+            .into_iter()
+            .filter(|id| fold.works.slot(*id).is_none())
+            .chain(fold.names.refusing(&key).iter().copied())
+            .collect();
+        ids.sort_unstable();
+        ids.dedup();
+        ids
+    }
+
     /// Everything the merge knows about a work, and its text: the works
     /// delta's latest row for it, or the base's.
     ///

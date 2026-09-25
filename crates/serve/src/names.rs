@@ -37,6 +37,13 @@ pub const PUBLIC: &str = "public.u64";
 /// One bit per id, set for a stub: what a reference's target is, without
 /// the works index.
 pub const STUBS: &str = "stubs.bits";
+/// Every name a row refuses — a rejected assertion's — to an offset in
+/// [`REFUSED_IDS`]: the other claimants of a name no lookup of
+/// [`FST`] finds, which an incremental merge must bring into the identity
+/// pass that decides the claim again (merge plan §11, item 24).
+pub const REFUSED: &str = "refused.fst";
+/// The works refusing each name in [`REFUSED`]: a count, then the ids.
+pub const REFUSED_IDS: &str = "refused.u32";
 #[allow(missing_docs)]
 pub const MANIFEST: &str = "manifest.json";
 
@@ -63,6 +70,10 @@ pub struct Manifest {
     pub keys: u64,
     /// Keys naming more than one work.
     pub shared: u64,
+    /// Names some row refuses, and the (name, work) pairs.
+    pub refused: u64,
+    #[allow(missing_docs)]
+    pub refusals: u64,
     #[allow(missing_docs)]
     pub public: u64,
     #[allow(missing_docs)]
@@ -113,7 +124,7 @@ impl Manifest {
                 crate::version()
             )));
         }
-        for file in [FST, SHARED, RETIRED, PUBLIC, STUBS] {
+        for file in [FST, SHARED, RETIRED, PUBLIC, STUBS, REFUSED, REFUSED_IDS] {
             if !self.files.contains_key(file) {
                 return Err(Error::Mismatch(format!(
                     "{}: the manifest lists no {file}",
@@ -142,6 +153,9 @@ pub(crate) fn part_of(dir: &Path) -> PathBuf {
 
 /// Bytes of pairs a sorted run holds before it is written.
 const RUN: usize = 256 << 20;
+
+/// The same for the refused names, which are few beside the names.
+const REFUSED_RUN: usize = 32 << 20;
 
 /// Builds the lookup into `dir` from the names sets under `merged`, the
 /// public log at `public` and the registry's retirements, replacing what
@@ -187,6 +201,16 @@ pub fn build(
     }
     let nodes = registry.minted();
     let mut stubs = vec![0u8; usize::try_from(nodes).unwrap_or(usize::MAX).div_ceil(8)];
+    let refused_scratch = scratch.with_file_name(format!(
+        "{}-refused",
+        scratch
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("names")
+    ));
+    let mut refused: merge::runs::Runs<(String, WorkId)> =
+        merge::runs::Runs::create(&refused_scratch, REFUSED_RUN)
+            .map_err(|e| Error::io(&refused_scratch, e))?;
     for path in merge::sets::find(merged, Kind::Works).map_err(|e| Error::io(merged, e))? {
         let reader = merge::layout::open(&path).map_err(|e| Error::io(&path, e))?;
         reader.with_table(|| -> Result<(), Error> {
@@ -197,6 +221,13 @@ pub fn build(
                     if let Some(byte) = stubs.get_mut(ix / 8) {
                         *byte |= 1 << (ix % 8);
                     }
+                }
+                for r in &row.rejected {
+                    let name = r.name.to_string();
+                    let bytes = name.len();
+                    refused
+                        .push((name, row.id), bytes)
+                        .map_err(|e| Error::io(&refused_scratch, e))?;
                 }
             }
             Ok(())
@@ -277,6 +308,11 @@ pub fn build(
         close(&mut builder, &done, &group)?;
     }
     let fst = builder.into_inner()?.finish()?;
+    let refused = refused
+        .sorted()
+        .map_err(|e| Error::io(&refused_scratch, e))?
+        .map(|item| item.map_err(|e| Error::io(&refused_scratch, e)));
+    let (refused_fst, refused_ids, refused_keys, refusals) = write_refused(&part, refused)?;
     let mut retirements: Vec<(u32, u32)> = registry
         .retirements()
         .map(|(id, into)| (id.get(), into.map_or(0, WorkId::get)))
@@ -292,6 +328,8 @@ pub fn build(
     let split_ids = registry.splits().count() as u64;
     let mut files = write_files(&part, &shared, &retirements, &split, &public_bits, &stubs)?;
     files.insert(FST.to_owned(), fst);
+    files.insert(REFUSED.to_owned(), refused_fst);
+    files.insert(REFUSED_IDS.to_owned(), refused_ids);
     let manifest = Manifest {
         serve: crate::VERSION,
         model: model::VERSION,
@@ -301,6 +339,8 @@ pub fn build(
         nodes,
         keys,
         shared: shared_keys,
+        refused: refused_keys,
+        refusals,
         public: public_keys,
         retired: retirements.len() as u64,
         split: split_ids,
@@ -317,7 +357,58 @@ pub fn build(
     })
 }
 
-/// Writes every file but the transducer into the part directory.
+/// The refused names' transducer and lists, from the (name, work) pairs
+/// in order, each once: the files, the names and the pairs.
+fn write_refused(
+    part: &Path,
+    pairs: impl Iterator<Item = Result<(String, WorkId), Error>>,
+) -> Result<(FileInfo, FileInfo, u64, u64), Error> {
+    let mut builder = MapBuilder::new(Sink::create(&part.join(REFUSED))?)?;
+    let mut lists = Sink::create(&part.join(REFUSED_IDS))?;
+    let (mut offset, mut keys, mut pairs_seen) = (0u64, 0u64, 0u64);
+    let mut group: Vec<WorkId> = Vec::new();
+    let mut key: Option<String> = None;
+    let mut close = |builder: &mut MapBuilder<Sink>,
+                     lists: &mut Sink,
+                     key: &str,
+                     group: &[WorkId]|
+     -> Result<(), Error> {
+        builder.insert(key, offset)?;
+        let count = u32::try_from(group.len()).map_err(|_| {
+            Error::Mismatch(format!("{key} refused by more works than a list holds"))
+        })?;
+        lists.put(&count.to_le_bytes())?;
+        for id in group {
+            lists.put(&id.get().to_le_bytes())?;
+        }
+        offset += 1 + group.len() as u64;
+        keys += 1;
+        Ok(())
+    };
+    for pair in pairs {
+        let (name, id) = pair?;
+        pairs_seen += 1;
+        if key.as_deref() != Some(name.as_str()) {
+            if let Some(done) = key.take() {
+                close(&mut builder, &mut lists, &done, &group)?;
+            }
+            group.clear();
+            key = Some(name);
+        }
+        group.push(id);
+    }
+    if let Some(done) = key.take() {
+        close(&mut builder, &mut lists, &done, &group)?;
+    }
+    Ok((
+        builder.into_inner()?.finish()?,
+        lists.finish()?,
+        keys,
+        pairs_seen,
+    ))
+}
+
+/// Writes every file but the transducers into the part directory.
 fn write_files(
     part: &Path,
     shared: &[u32],
@@ -369,6 +460,8 @@ pub struct Names {
     manifest: Manifest,
     map: Map<Mmap>,
     shared: Mapped,
+    refused: Option<Map<Mmap>>,
+    refused_ids: Mapped,
     public: Mapped,
     stubs: Mapped,
     retired: HashMap<WorkId, Option<WorkId>>,
@@ -399,6 +492,10 @@ impl Names {
             .ok_or_else(|| Error::Mismatch(format!("{}: an empty {FST}", dir.display())))?;
         let map = Map::new(fst_map)?;
         let shared = open(SHARED)?;
+        // No row refusing anything is an empty transducer, which maps to
+        // nothing.
+        let refused = open(REFUSED)?.into_inner().map(Map::new).transpose()?;
+        let refused_ids = open(REFUSED_IDS)?;
         let public = open(PUBLIC)?;
         let stubs = open(STUBS)?;
         if manifest.files[STUBS].bytes != u64::from(manifest.nodes).div_ceil(8) {
@@ -443,6 +540,8 @@ impl Names {
             manifest,
             map,
             shared,
+            refused,
+            refused_ids,
             public,
             stubs,
             retired,
@@ -507,6 +606,25 @@ impl Names {
             .filter_map(|k| WorkId::new(u32_at(bytes, offset + k)))
             .collect();
         Some(Resolved::Shared(ids))
+    }
+
+    /// The works whose rows refuse `key` — whose records claimed it and
+    /// were refused — as stored: ids retired since are not followed here.
+    #[must_use]
+    pub fn refusing(&self, key: &str) -> Vec<WorkId> {
+        let Some(offset) = self
+            .refused
+            .as_ref()
+            .and_then(|map| map.get(key))
+            .and_then(|v| usize::try_from(v).ok())
+        else {
+            return Vec::new();
+        };
+        let bytes = self.refused_ids.bytes();
+        let count = usize::try_from(u32_at(bytes, offset)).unwrap_or(0);
+        (1..=count)
+            .filter_map(|k| WorkId::new(u32_at(bytes, offset + k)))
+            .collect()
     }
 
     /// The live id an id stands for: itself, the id it was merged into,

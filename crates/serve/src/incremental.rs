@@ -472,6 +472,31 @@ impl Live<'_> {
     }
 }
 
+/// A row's record's refused claims given back to it (merge plan §11,
+/// item 24, 2026-09-25). A claim refused as no article's id, or cut off a
+/// star, is on no record's list of assertions; whether it is refused is
+/// the identity pass's to decide again with every claimant in it, as the
+/// full merge decides it from the normalized records, which make it. A
+/// wrong link the rules refused is on the list already.
+fn given_back(
+    asserts: &mut Vec<OwnedAssert>,
+    record: &crate::row::Record,
+    rejected: &[crate::row::Rejected],
+) {
+    for r in rejected {
+        if r.by == record.source
+            && r.record == record.native
+            && !asserts.iter().any(|a| a.name == r.name)
+        {
+            asserts.push(OwnedAssert {
+                name: r.name.clone(),
+                field: r.field.clone(),
+                native: false,
+            });
+        }
+    }
+}
+
 /// Every name a reference gave beside the held work it landed on: the
 /// rows of the `cited_as` set, as the full merge's second pass writes
 /// them (merge plan §11, item 14) — who cited each name, and for a name
@@ -852,6 +877,30 @@ impl Engine<'_> {
         }
     }
 
+    /// The live works whose rows refuse `name`: its other claimants,
+    /// which [`Engine::touch`] cannot find because a refused name is no
+    /// work's (merge plan §11, item 24). A work split since has parts
+    /// whose own rows say what they refuse.
+    fn claimants(&self, name: &OwnedName) -> Vec<WorkId> {
+        let mut ids: Vec<WorkId> = self
+            .serving
+            .refusing(name)
+            .into_iter()
+            .filter_map(|id| self.live.live(id))
+            .collect();
+        ids.sort_unstable();
+        ids.dedup();
+        ids
+    }
+
+    /// Every work the closure reaches through `name`: the ones it names
+    /// and the ones refusing it.
+    fn reach(&mut self, name: &OwnedName) -> Vec<WorkId> {
+        let mut ids = self.touch(name);
+        ids.extend(self.claimants(name));
+        ids
+    }
+
     /// Where an id retired in this batch went, following the chain.
     fn survivor_of(&self, id: WorkId) -> WorkId {
         let mut at = id;
@@ -873,7 +922,7 @@ impl Engine<'_> {
             let asserts = self.batch.records[i].asserts.clone();
             for a in &asserts {
                 comps.join(item, &a.name);
-                queue.extend(self.touch(&a.name));
+                queue.extend(self.reach(&a.name));
             }
         }
         // An older copy's work, so that its names join the row's record.
@@ -884,7 +933,7 @@ impl Engine<'_> {
             .flat_map(|r| r.asserts.iter().map(|a| a.name.clone()))
             .collect();
         for name in &older {
-            queue.extend(self.touch(name));
+            queue.extend(self.reach(name));
         }
         let deletions = self.batch.deletions.clone();
         for Deletion { source, native, .. } in &deletions {
@@ -937,16 +986,27 @@ impl Engine<'_> {
                     .map_or(&[][..], |i| &batch.cited_only[i].asserts[..]);
                 for a in record.asserts.iter().chain(older) {
                     comps.join(item, &a.name);
-                    for other in self.touch(&a.name) {
+                    for other in self.reach(&a.name) {
                         if !seen.contains(&other) {
                             queue.push(other);
                         }
                     }
                 }
             }
-            for n in &row.names {
-                comps.join(item, &n.name);
-                for other in self.touch(&n.name) {
+            // And over the names the row refuses, whichever record made
+            // the claim: a refused claim is decided by every record
+            // making it (§3.3), so its other claimants join this
+            // component — to refuse it again, or to accept it once a
+            // claimant is deleted or moved and one is left (§11, item
+            // 24, 2026-09-25).
+            let names = row
+                .names
+                .iter()
+                .map(|n| &n.name)
+                .chain(row.rejected.iter().map(|r| &r.name));
+            for name in names {
+                comps.join(item, name);
+                for other in self.reach(name) {
                     if !seen.contains(&other) {
                         queue.push(other);
                     }
@@ -1006,7 +1066,8 @@ impl Engine<'_> {
                         if self.deleted_in.contains_key(&key) || batch_natives.contains(&key) {
                             continue;
                         }
-                        let (asserts, view) = self.joined(record);
+                        let (mut asserts, view) = self.joined(record);
+                        given_back(&mut asserts, record, &row.rejected);
                         push(&mut identity, record.source, &asserts, &view)?;
                         origins.push(Origin::Row(id, j));
                     }

@@ -412,12 +412,15 @@ rules on one work with the rows alone. Everything else a record holds —
 its abstract, its author names, its references — stays in the
 normalized layer, reachable through this list: the merged record is a
 summary and an index, not a superset. A row's lists are in canonical
-order (records by source and native id, names by name), so a row does
-not depend on the order its records arrived in.
+order (records by source and native id, names by name, and since version
+14 a record's assertions its native name first, then by name), so a row
+does not depend on the order its records arrived in.
 
 **Names.** Every accepted name with its namespace, value, standing
 (promoted, alias, shared) and who asserted it (source and field); every
-rejected assertion with its reason. A stub's names have no asserter: each
+rejected assertion with its reason, and since version 14, 2026-09-25, the
+record that made it and the field it came from (§11, item 24). A stub's
+names have no asserter: each
 carries its citers instead, the works whose arcs landed on the stub
 through that name with the source of each citing record (2026-09-16), and
 its sources are its citers' (2026-09-17), so that an incremental merge can
@@ -1341,6 +1344,17 @@ stays.
   did (430 ns against 159 on the sample). The dictionary and the pass must
   agree exactly, and a run stops if they do not. The incremental merge keeps
   the hashed arena. No byte changes, so no merge version.
+- 2026-09-25, merge version 14: a rejected assertion names the record that
+  made it and the field it came from, so that an incremental merge decides
+  a refused claim as the full merge does (§11, item 24, the user's option
+  A). A claim refused as no article's id, or cut off a star, is on no
+  record's list of assertions, and whether it is refused depends on every
+  record making it. The names lookup now keeps every refused name with the
+  works whose rows refuse it (serving version 7); a batch closes each
+  component over them as it does over names, and gives each row's refused
+  claims back to the record that made them for the identity pass to
+  decide again: refused again while two records of a source claim it, or
+  a star holds it; accepted when one claimant is left.
 
 ## 11. Open items
 
@@ -1785,6 +1799,28 @@ stays.
     indexing refused names and giving their claims back to the identity
     pass, which means a rejection recording which record made the claim —
     a merge version.
+
+    Built 2026-09-25 (the user: "and the item-24 thing"), merge version 14
+    and serving version 7. A rejected assertion names the record that
+    made it and its field; the names lookup keeps every refused name with
+    the works whose rows refuse it, and the fold the same for the works
+    delta; a batch's closure follows a name to its refusers as well as its
+    holders, over the names a row refuses as well as the ones it holds;
+    and each row's refused claims are given back to their record before
+    the identity pass, which decides them with every claimant in it. Three
+    tests, each failing without the change and passing with it: a newer
+    copy of one of three articles claiming an issue's id (refused again),
+    a deletion leaving one claimant (the id becomes its name, as the full
+    merge after it has it), and a newer copy of one part of a 33-part
+    star (the shared DOI cut off again). On the sample store at model 8
+    (M): the `1334` hold-out gives 0 differences; the update-files
+    harness's full merge after the batches now appends nothing to the
+    registry, where the committed code was one `drop` apart. Past that
+    check it found what the check had hidden: 30 records whose names
+    differed only in order — a batch reads a record's newest copy first
+    and the full merge its oldest — so version 14 also writes a record's
+    assertions in canonical order (§5), after which 5 differences remain,
+    both cases older than this item (serving plan §11, item 35).
 25. **Containers and parts.** B, built 2026-09-24 and named for what it
     knows in merge version 12 (§3.3, §10), refuses the name every record
     of a star carries and leaves it a stub, or the record Crossref holds

@@ -197,6 +197,10 @@ pub struct OwnedRejected {
     pub name: OwnedName,
     #[allow(missing_docs)]
     pub by: SourceId,
+    /// See [`Rejected::record`].
+    pub record: OwnedName,
+    #[allow(missing_docs)]
+    pub field: Box<str>,
     /// None when no record holds the name: the value identifies no
     /// article at all (merge plan §3.1, [`Reason::NotAnArticleId`]).
     pub holder: Option<OwnedName>,
@@ -297,6 +301,8 @@ impl OwnedWork {
                 .map(|r| Rejected {
                     name: r.name.as_name(),
                     by: r.by,
+                    record: r.record.as_name(),
+                    field: &r.field,
                     holder: r.holder.as_ref().map(OwnedName::as_name),
                     why: r.why,
                 })
@@ -363,6 +369,8 @@ impl OwnedWork {
                 .map(|r| OwnedRejected {
                     name: r.name.to_owned(),
                     by: r.by,
+                    record: r.record.to_owned(),
+                    field: r.field.into(),
                     holder: r.holder.map(|h| h.to_owned()),
                     why: r.why,
                 })
@@ -2206,19 +2214,24 @@ pub fn held<V: Views + ?Sized>(
         .iter()
         .map(|&rix| {
             let record = &res.records[rix as usize];
+            let mut asserts: SmallVec<[OwnedAssert; 3]> = record
+                .asserts
+                .iter()
+                .map(|a| OwnedAssert {
+                    name: arena.get(a.name).into_owned(),
+                    field: a.field.name().into(),
+                    native: a.native,
+                })
+                .collect();
+            // The native name first, then by name: the order the copies
+            // were read in is no part of a record's evidence, and a batch
+            // reads them in another (merge version 14, 2026-09-25).
+            asserts.sort_by(|a, b| (!a.native, &a.name).cmp(&(!b.native, &b.name)));
             OwnedRecord {
                 source: record.source,
                 native: arena.get(record.native).into_owned(),
                 promoted: is_promoted(rix),
-                asserts: record
-                    .asserts
-                    .iter()
-                    .map(|a| OwnedAssert {
-                        name: arena.get(a.name).into_owned(),
-                        field: a.field.name().into(),
-                        native: a.native,
-                    })
-                    .collect(),
+                asserts,
                 view: views.view(rix).cloned().unwrap_or_default(),
             }
         })
@@ -2369,14 +2382,20 @@ pub fn held<V: Views + ?Sized>(
         .map(|r| OwnedRejected {
             name: arena.get(r.name).into_owned(),
             by: res.records[r.record as usize].source,
+            record: arena
+                .get(res.records[r.record as usize].native)
+                .into_owned(),
+            field: r.field.name().into(),
             holder: r
                 .holder
                 .map(|h| arena.get(res.records[h as usize].native).into_owned()),
             why: r.why,
         })
         .collect();
-    rejected
-        .sort_by(|a, b| (&a.name, a.by, &a.holder, a.why).cmp(&(&b.name, b.by, &b.holder, b.why)));
+    rejected.sort_by(|a, b| {
+        (&a.name, a.by, &a.record, &a.field, &a.holder, a.why)
+            .cmp(&(&b.name, b.by, &b.record, &b.field, &b.holder, b.why))
+    });
     OwnedWork {
         id,
         stub: false,

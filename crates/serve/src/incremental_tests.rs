@@ -13,7 +13,7 @@ use model::Issn;
 
 use crate::compare;
 use crate::core::{Resolved, Serving};
-use crate::fixture::{self, cites, record};
+use crate::fixture::{self, cites, cites_as, record};
 use crate::incremental::{self, Batch, Deletion, Incoming};
 
 /// The set every batch record and deletion of these tests is delivered in:
@@ -598,7 +598,7 @@ fn the_cases_a_full_merge_owns_stop_the_batch_before_it_writes() {
         view(false, 1, None),
         text(None, &["Alpha2"], None),
     );
-    fixture::cites_as(
+    cites_as(
         &mut both,
         &["pmid:1", "doi:10.1000/p91"],
         "Bee A. 1999. https://doi.org/10.1000/p91",
@@ -1064,7 +1064,7 @@ fn a_newer_copy_speaks_and_withdrawn_citations_leave_no_trace() {
         view(false, 1, None),
         text(None, &["Chi"], None),
     );
-    fixture::cites_as(
+    cites_as(
         &mut reader,
         &["pmid:81", "doi:10.1000/p81"],
         "Psi O. 1999. https://doi.org/10.1000/P81",
@@ -1673,6 +1673,199 @@ fn a_wrong_links_holder_joins_the_component_of_the_record_that_claims_it() {
     let claiming = resolve(&serving, "doi:10.1000/g75").unwrap();
     assert_ne!(held, claiming, "two works, as before the batch");
     assert_eq!(resolve(&serving, "openalex:W750"), Some(claiming));
+    drop(serving);
+    std::fs::remove_dir_all(store.root()).unwrap();
+}
+
+/// Merge plan §11, item 24, the case left open 2026-09-24 and seen on
+/// `pubmed26n1338`: the store holds every article of one issue, each
+/// claiming the issue's id in PubMed's PII slot, so the full merge refused
+/// it (§3.3) and no row names it. A batch brings a newer copy of one
+/// article alone. The other claimants are in no lookup of the id, only in
+/// their rows' refusals, so the batch's identity pass saw one claim and
+/// accepted it, and the full merge after it dropped the name again.
+fn issue_article(k: u32) -> Incoming {
+    record(
+        SourceId::Pubmed,
+        &[
+            &format!("pmid:91{k}"),
+            &format!("doi:10.30476/ijcbnm.2026.{k}"),
+            "reg30476:IJCBNM-15-2",
+        ],
+        &format!("Article {k} of the issue"),
+        view(false, 1, None),
+        text(None, &["X"], None),
+    )
+}
+
+#[test]
+fn a_refused_ids_other_claimants_join_the_batch_that_claims_it() {
+    let (store, serving) = batches_equal_the_full_merge(
+        "refused-id-one-claimant",
+        base_and((1..=3).map(issue_article).collect()),
+        &[],
+        vec![Batch {
+            records: vec![delivered(issue_article(2))],
+            ..Batch::default()
+        }],
+    );
+    let ids: Vec<Option<WorkId>> = (1..=3)
+        .map(|k| resolve(&serving, &format!("pmid:91{k}")))
+        .collect();
+    assert!(ids.iter().all(Option::is_some), "{ids:?}");
+    assert!(
+        ids[0] != ids[1] && ids[1] != ids[2] && ids[0] != ids[2],
+        "three works, as before the batch: {ids:?}"
+    );
+    assert_eq!(resolve(&serving, "reg30476:IJCBNM-15-2"), None);
+    drop(serving);
+    std::fs::remove_dir_all(store.root()).unwrap();
+}
+
+#[test]
+fn a_refused_id_left_with_one_claimant_is_its() {
+    // The other way round: two articles claim the id and it is refused;
+    // a batch deletes one of them. The full merge then sees one claim and
+    // accepts it (§3.3), so the batch has to give the refused claim back
+    // to the article that is left.
+    let (store, serving) = batches_equal_the_full_merge(
+        "refused-id-left-with-one",
+        base_and((1..=2).map(issue_article).collect()),
+        &[],
+        vec![Batch {
+            deletions: vec![withdrawal(SourceId::Pubmed, "pmid:912")],
+            ..Batch::default()
+        }],
+    );
+    let left = resolve(&serving, "pmid:911").unwrap();
+    assert_eq!(resolve(&serving, "reg30476:IJCBNM-15-2"), Some(left));
+    assert_eq!(resolve(&serving, "pmid:912"), None);
+    drop(serving);
+    std::fs::remove_dir_all(store.root()).unwrap();
+}
+
+/// A title of six nonsense words from `seed`: titles no two of which the
+/// rules of §3.3 call one article's.
+fn nonsense_title(seed: u32) -> String {
+    let mut x = u64::from(seed).wrapping_mul(6_364_136_223_846_793_005) ^ 0x9E37_79B9;
+    let mut words = Vec::new();
+    for _ in 0..6 {
+        let mut word = String::new();
+        for _ in 0..7 {
+            x = x
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            word.push(char::from(b'a' + u8::try_from((x >> 33) % 26).unwrap()));
+        }
+        words.push(word);
+    }
+    words.join(" ")
+}
+
+#[test]
+fn a_stars_part_delivered_again_is_refused_the_shared_name_again() {
+    // A star (§3.3, merge version 12): a proceedings' DOI on each of its
+    // 33 parts, more than the rules take, every part under a title of its
+    // own. The full merge refuses the DOI on every part as no article's
+    // id. A batch brings a newer copy of one part: the claim is on no
+    // row's records, so the batch has to find the other 32 parts through
+    // the refusal and hand their claims back for the star to be cut again.
+    let part = |k: u32| {
+        record(
+            SourceId::Pubmed,
+            &[
+                &format!("pmid:95{k:02}"),
+                &format!("doi:10.1000/part.{k}"),
+                "doi:10.1000/proceedings",
+            ],
+            &nonsense_title(k),
+            view(false, 1, None),
+            text(None, &["P"], None),
+        )
+    };
+    let (store, serving) = batches_equal_the_full_merge(
+        "star-part-again",
+        base_and((1..=33).map(part).collect()),
+        &[],
+        vec![Batch {
+            records: vec![delivered(part(7))],
+            ..Batch::default()
+        }],
+    );
+    let ids: std::collections::BTreeSet<WorkId> = (1..=33)
+        .map(|k| resolve(&serving, &format!("pmid:95{k:02}")).unwrap())
+        .collect();
+    assert_eq!(ids.len(), 33, "33 works, as before the batch");
+    assert_eq!(resolve(&serving, "doi:10.1000/proceedings"), None);
+    drop(serving);
+    std::fs::remove_dir_all(store.root()).unwrap();
+}
+
+#[test]
+#[ignore = "serving plan §11 item 35: the batch writes no cited-as rows for a landing a division made held"]
+fn a_name_a_division_left_beside_a_held_work_is_settled_again_when_it_becomes_a_stub() {
+    use SourceId::Pubmed;
+    // Seen on the update-files harness, 2026-09-25, once item 24 let it
+    // reach the comparison. A reference names a PMID, a DOI its own text
+    // repeats and a PMC id, none of them held: one stub. A batch brings
+    // the PMID's record, so the stub's PMID is a held work's and the
+    // reference names a held work — its DOI and PMC id make no stub of
+    // their own (merge plan §11, item 14) and it lands on the held work.
+    // A later batch brings another article whose reference makes a stub
+    // of the DOI. The full merge settles the first reference again by §6:
+    // its text repeats the DOI, so it lands on that stub.
+    let mut citing = record(
+        Pubmed,
+        &["pmid:9601"],
+        "An authors' reply",
+        view(false, 1, None),
+        text(None, &["R"], None),
+    );
+    cites_as(
+        &mut citing,
+        &["pmid:9602", "doi:10.1007/surveillance", "pmc:PMC9603"],
+        "Chaudhary VS. Surveillance studies. https://doi.org/10.1007/surveillance .",
+    );
+    let named = delivered(record(
+        Pubmed,
+        &["pmid:9602", "doi:10.1007/reply"],
+        "Another authors' reply",
+        view(false, 1, None),
+        text(None, &["S"], None),
+    ));
+    let mut other = delivered(record(
+        Pubmed,
+        &["pmid:9604"],
+        "Intussusception among children",
+        view(false, 1, None),
+        text(None, &["T"], None),
+    ));
+    cites_as(
+        &mut other,
+        &["pmid:9605", "doi:10.1007/surveillance", "pmc:PMC9606"],
+        "Chaudhary VS. Surveillance studies. https://doi.org/10.1007/surveillance .",
+    );
+    let (store, serving) = batches_equal_the_full_merge(
+        "division-left-beside-then-stub",
+        base_and(vec![citing]),
+        &[],
+        vec![
+            Batch {
+                records: vec![named],
+                ..Batch::default()
+            },
+            Batch {
+                records: vec![other],
+                ..Batch::default()
+            },
+        ],
+    );
+    let from = resolve(&serving, "pmid:9601").unwrap();
+    let stub = resolve(&serving, "doi:10.1007/surveillance").unwrap();
+    assert_eq!(
+        refs(&serving, from),
+        vec![(stub.get(), "pubmed".to_owned())]
+    );
     drop(serving);
     std::fs::remove_dir_all(store.root()).unwrap();
 }

@@ -139,9 +139,9 @@ pub struct Named<'a> {
     pub cited_by: SmallVec<[Citer; 1]>,
 }
 
-/// A rejected assertion: `by`'s record claimed `name`, which `holder`'s
-/// work holds natively, and their titles disagree — a wrong link (§3.3),
-/// the one reason there is.
+/// A rejected assertion: `by`'s record `record` claimed `name` from
+/// `field`, and the rule `why` refused it (§3.3): a wrong link, the name
+/// `holder`'s, or no article's id.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Rejected<'a> {
     #[allow(missing_docs)]
@@ -149,6 +149,15 @@ pub struct Rejected<'a> {
     pub name: Name<'a>,
     #[allow(missing_docs)]
     pub by: SourceId,
+    /// The native name of the record that made the claim. A refused
+    /// claim is on no record's list of assertions, and an incremental
+    /// merge gives it back to that record to decide again with the
+    /// other claimants (merge plan §11, item 24).
+    #[serde(borrow)]
+    pub record: Name<'a>,
+    /// The normalized field the claim came from, as an assertion's.
+    #[serde(borrow)]
+    pub field: &'a str,
     /// The native name of the record that holds it; none when no record
     /// does, because the value identifies no article at all.
     #[serde(borrow)]
