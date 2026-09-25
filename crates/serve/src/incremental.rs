@@ -790,7 +790,7 @@ struct Engine<'s> {
     /// Read set by set ([`Engine::read_copies`]): one scan of a set for
     /// every record wanted of it, where a read a record at a time scans a
     /// set each (serving plan §11, item 35, step 1).
-    copies: HashMap<(SourceId, OwnedName, Box<str>), Option<Incoming>>,
+    copies: ReadBack,
     applied: Applied,
 }
 
@@ -1814,32 +1814,8 @@ impl Engine<'_> {
         &mut self,
         wanted: impl IntoIterator<Item = (SourceId, OwnedName, Box<str>)>,
     ) -> Result<(), Error> {
-        let mut by_set: BTreeMap<(SourceId, Box<str>), Vec<OwnedName>> = BTreeMap::new();
-        for (source, native, set) in wanted {
-            if !self
-                .copies
-                .contains_key(&(source, native.clone(), set.clone()))
-            {
-                by_set.entry((source, set)).or_default().push(native);
-            }
-        }
-        for ((source, set), mut natives) in by_set {
-            natives.sort_unstable();
-            natives.dedup();
-            let found = self
-                .layer
-                .records(source, &natives, &set)
-                .map_err(Error::FullMerge)?;
-            self.applied.sets_read += 1;
-            for native in natives {
-                self.copies.insert((source, native, set.clone()), None);
-            }
-            for copy in found {
-                self.copies
-                    .insert((source, copy.native.clone(), set.clone()), Some(copy));
-            }
-        }
-        Ok(())
+        let layer = self.layer;
+        self.copies.read(layer, wanted)
     }
 
     /// A copy read back, its set read first if no read has read it.
@@ -1850,10 +1826,10 @@ impl Engine<'_> {
         set: &str,
     ) -> Result<Option<&Incoming>, Error> {
         let key = (source, native.clone(), Box::<str>::from(set));
-        if !self.copies.contains_key(&key) {
-            self.read_copies([key.clone()])?;
+        if !self.copies.copies.contains_key(&key) {
+            self.read_copies([key])?;
         }
-        Ok(self.copies.get(&key).and_then(Option::as_ref))
+        Ok(self.copies.get(source, native, set))
     }
 
     /// The citing records of every stub the components hold, read set by
@@ -2050,8 +2026,7 @@ impl Engine<'_> {
             for (native, sets) in entry {
                 let mut record: Option<Incoming> = None;
                 for set in &sets {
-                    let Some(Some(copy)) = self.copies.get(&(by, native.clone(), set.clone()))
-                    else {
+                    let Some(copy) = self.copies.get(by, &native, set) else {
                         return Err(Error::FullMerge(format!(
                             "{by}={native}, which cites a name this batch moved: its copy in {set} is not in the normalized layer"
                         )));
@@ -3693,6 +3668,112 @@ fn withdrawals(deletions: &[&Deletion]) -> HashMap<(SourceId, OwnedName), Box<st
     by
 }
 
+/// Copies read back from the normalized layer during one batch, by
+/// source, native name and set — `None` where the set does not hold the
+/// record — read set by set: one scan of a set for every record wanted of
+/// it, where a read a record at a time scans a set each (serving plan
+/// §11, item 35). Filled once before the rules run, for the earlier
+/// copies and the citers of every stub the batch's names reach, and read
+/// again only for what that pass could not foresee.
+#[derive(Default)]
+struct ReadBack {
+    copies: HashMap<(SourceId, OwnedName, Box<str>), Option<Incoming>>,
+    /// Sets scanned.
+    sets: u64,
+}
+
+impl ReadBack {
+    /// Reads the copies in `wanted` that no read has yet, set by set.
+    fn read(
+        &mut self,
+        layer: &dyn Records,
+        wanted: impl IntoIterator<Item = (SourceId, OwnedName, Box<str>)>,
+    ) -> Result<(), Error> {
+        let mut by_set: BTreeMap<(SourceId, Box<str>), Vec<OwnedName>> = BTreeMap::new();
+        for (source, native, set) in wanted {
+            if !self
+                .copies
+                .contains_key(&(source, native.clone(), set.clone()))
+            {
+                by_set.entry((source, set)).or_default().push(native);
+            }
+        }
+        for ((source, set), mut natives) in by_set {
+            natives.sort_unstable();
+            natives.dedup();
+            let found = layer
+                .records(source, &natives, &set)
+                .map_err(Error::FullMerge)?;
+            self.sets += 1;
+            for native in natives {
+                self.copies.insert((source, native, set.clone()), None);
+            }
+            for copy in found {
+                self.copies
+                    .insert((source, copy.native.clone(), set.clone()), Some(copy));
+            }
+        }
+        Ok(())
+    }
+
+    fn get(&self, source: SourceId, native: &OwnedName, set: &str) -> Option<&Incoming> {
+        self.copies
+            .get(&(source, native.clone(), Box::from(set)))
+            .and_then(Option::as_ref)
+    }
+}
+
+/// The copies of every record that cites a stub the batch's records name:
+/// the stubs a record arriving can divide, whose citers
+/// [`Engine::stub_citations`] reads back, foreseen before the rules run
+/// so that one pass over the sets reads them with the earlier copies.
+fn stub_citer_copies(
+    rows: &mut Rows<'_>,
+    batch: &Batch,
+) -> Result<Vec<(SourceId, OwnedName, Box<str>)>, Error> {
+    let carried: HashSet<(SourceId, &OwnedName)> = batch
+        .records
+        .iter()
+        .map(|r| (r.source, &r.native))
+        .collect();
+    let mut stubs: BTreeSet<WorkId> = BTreeSet::new();
+    for r in &batch.records {
+        for a in &r.asserts {
+            if let Some(Resolved::One(id)) = rows.serving.resolve_name(&a.name)
+                && rows.serving.is_stub(id)
+            {
+                stubs.insert(id);
+            }
+        }
+    }
+    let mut pairs: BTreeSet<(WorkId, SourceId)> = BTreeSet::new();
+    for id in stubs {
+        let Some(row) = rows.get(id)? else {
+            continue;
+        };
+        for n in &row.names {
+            for c in &n.cited_by {
+                pairs.insert((rows.serving.live(c.from).unwrap_or(c.from), c.by));
+            }
+        }
+    }
+    let mut wanted = Vec::new();
+    for (from, by) in pairs {
+        let Some(row) = rows.get(from)? else {
+            continue;
+        };
+        for record in row.records.iter().filter(|r| r.source == by) {
+            if carried.contains(&(by, &record.native)) {
+                continue;
+            }
+            for set in std::iter::once(&record.view.set).chain(&record.view.superseded) {
+                wanted.push((by, record.native.clone(), set.clone()));
+            }
+        }
+    }
+    Ok(wanted)
+}
+
 /// A record's references are the union over its standing copies (merge
 /// plan §8; merge version 15, 2026-09-25), and a batch carries only the
 /// copies it was delivered: the ones the row already had — the copy the
@@ -3708,7 +3789,8 @@ fn earlier_copies(
     batch: &mut Batch,
     withdrawn: &HashMap<(SourceId, OwnedName), Box<str>>,
     layer: &dyn Records,
-) -> Result<(u64, u64), Error> {
+    read_back: &mut ReadBack,
+) -> Result<u64, Error> {
     let inputs: HashSet<&str> = batch
         .records
         .iter()
@@ -3741,19 +3823,19 @@ fn earlier_copies(
         }
         sets_of.insert(key, sets);
     }
-    let mut found: HashMap<(SourceId, OwnedName, Box<str>), Incoming> = HashMap::new();
+    // One pass over the sets: these copies, and the citers of the stubs
+    // the batch's records can divide.
+    let ahead = stub_citer_copies(rows, batch)?;
+    read_back.read(
+        layer,
+        wanted
+            .into_iter()
+            .flat_map(|((source, set), natives)| {
+                natives.into_iter().map(move |n| (source, n, set.clone()))
+            })
+            .chain(ahead),
+    )?;
     let mut read = 0u64;
-    let mut sets = 0u64;
-    for ((source, set), natives) in wanted {
-        sets += 1;
-        for copy in layer
-            .records(source, &natives, &set)
-            .map_err(Error::FullMerge)?
-        {
-            found.insert((source, copy.native.clone(), set.clone()), copy);
-            read += 1;
-        }
-    }
     let speaking = batch.records.len();
     for (i, r) in batch
         .records
@@ -3766,12 +3848,13 @@ fn earlier_copies(
             continue;
         };
         for (k, set) in sets.iter().enumerate() {
-            let Some(copy) = found.get(&(r.source, r.native.clone(), set.clone())) else {
+            let Some(copy) = read_back.get(r.source, &r.native, set) else {
                 return Err(Error::FullMerge(format!(
                     "{}={}: its copy in {set} is not in the normalized layer, and a record's citations are every copy's",
                     r.source, r.native
                 )));
             };
+            read += 1;
             r.references.extend(copy.references.iter().cloned());
             // A copy of the batch's the row's copy speaks over gives no
             // relations; the row's copy does, and the pair is restated
@@ -3785,7 +3868,7 @@ fn earlier_copies(
             r.view.superseded.retain(|set| **set >= **cut);
         }
     }
-    Ok((read, sets))
+    Ok(read)
 }
 
 /// The delivery of the copy a record's row holds.
@@ -4012,8 +4095,9 @@ pub fn apply_with(
             .collect::<Vec<_>>(),
     );
     let mut batch = speaking(&mut rows, batch, &mut applied)?;
-    (applied.earlier_copies, applied.sets_read) =
-        earlier_copies(&mut rows, &mut batch, &withdrawn, layer)?;
+    let mut read_back = ReadBack::default();
+    applied.earlier_copies =
+        earlier_copies(&mut rows, &mut batch, &withdrawn, layer, &mut read_back)?;
     applied.records = batch.records.len() as u64;
     applied.at.clone_from(&at);
     let mut engine = Engine {
@@ -4039,11 +4123,12 @@ pub fn apply_with(
         stub_rows: BTreeMap::new(),
         replaced: HashSet::new(),
         names_dropped: 0,
-        copies: HashMap::new(),
+        copies: read_back,
         applied,
     };
     engine.resolve_all()?;
     let lists = engine.edges(batch_number)?;
+    engine.applied.sets_read = engine.copies.sets;
     let Engine {
         live,
         puts,
