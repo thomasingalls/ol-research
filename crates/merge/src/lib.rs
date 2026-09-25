@@ -154,4 +154,21 @@ pub use work::{SourceId, Sources, WorkId};
 /// than the order its copies were read in: a batch reads a record's
 /// newest copy first and the full merge its oldest, and the update-files
 /// harness found 28 records whose names differed only in order.
-pub const VERSION: u32 = 14;
+/// Version 15 (2026-09-25): a reference is counted once however many of a
+/// record's copies carry it — the user's ruling — where the full merge
+/// counted it once a copy: an arc two copies repeat was no one
+/// reference's (`sole` false in its cited-as rows, so it never moved
+/// whole) and its unresolved row was written twice. Two references are
+/// one when their names and their citation, whole, are equal
+/// ([`build::fingerprint`]); the same holds for a source's two records of
+/// one work, whose references land from the same work. With it, what an
+/// incremental merge needs to restate a record's evidence as the full
+/// merge writes it (serving plan §11, item 35): a record's view names
+/// the sets of the copies its speaking copy supersedes
+/// ([`view::View::superseded`]), so a batch can read every copy back; a
+/// relation keeps its cited-as row whatever it names, a stub included,
+/// so a batch that moves the name finds who relates to it; and a
+/// citation is read as text, a container given as a symbol of its set's
+/// table resolved, so that an unresolved row keeps its container and the
+/// same reference in two sets prints alike.
+pub const VERSION: u32 = 15;

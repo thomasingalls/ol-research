@@ -369,6 +369,21 @@ impl Cited {
         &self.manifest
     }
 
+    /// Every name the lookup has rows for, in order.
+    #[must_use]
+    pub fn names(&self) -> Vec<String> {
+        use fst::Streamer;
+        let Some(map) = self.map.as_ref() else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        let mut stream = map.stream();
+        while let Some((key, _)) = stream.next() {
+            out.push(String::from_utf8_lossy(key).into_owned());
+        }
+        out
+    }
+
     /// The references that gave `name` beside the work they landed on.
     #[must_use]
     pub fn rows_of(&self, name: &str) -> Vec<Row> {

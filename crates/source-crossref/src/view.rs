@@ -245,6 +245,7 @@ pub fn view<'w>(work: &'w Work<'_>, table: &'w Table) -> Result<View<'w>, Unmapp
     Ok(View {
         version: 1,
         set: "",
+        superseded: Vec::new(),
         revised: Some(work.indexed.date()),
         titles: <crate::Crossref as merge::Contributor>::titles(work),
         has_abstract: work.r#abstract.is_some(),

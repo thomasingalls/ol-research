@@ -306,6 +306,11 @@ impl CitedTail {
         id
     }
 
+    /// Every name the tail has rows for, in no particular order.
+    pub fn names(&self) -> impl Iterator<Item = &str> {
+        self.by_name.keys().map(String::as_str)
+    }
+
     /// The tail's rows for a name.
     #[must_use]
     pub fn rows_of(&self, name: &str) -> Vec<CitedRow> {

@@ -169,6 +169,9 @@ pub(crate) fn batches_equal_the_full_merge(label: &str, root: &str, hold_outs: &
         all_files.extend(files);
     }
     let last_batch = merge::journal::last(&store.journal()).unwrap().unwrap();
+    // The unresolved rows as the batches left them: the full merge next
+    // replaces the merged directory they are read from.
+    let unresolved_a = compare::unresolved(&store).unwrap();
     run(
         "full merge over everything",
         &["merge", "--store", store_arg, "--public-key", key_arg],
@@ -192,7 +195,13 @@ pub(crate) fn batches_equal_the_full_merge(label: &str, root: &str, hold_outs: &
         (2, last_batch.batch + 1)
     );
     let started = Instant::now();
-    let differences = compare::differences(&a, &b, 30).unwrap();
+    let mut differences = compare::differences(&a, &b, 30).unwrap();
+    let unresolved_b = compare::unresolved(&store).unwrap();
+    differences.extend(compare::unresolved_differences(
+        &unresolved_a,
+        &unresolved_b,
+        30,
+    ));
     eprintln!(
         "compared {} ids in {:.1} s: {} differences",
         b.minted(),

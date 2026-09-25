@@ -1738,39 +1738,73 @@ state kept outside the store, and a limit per principal on calls and on
     so the server that reads it is deployed before a client that sends
     it.
 
-35. **Two divergences behind item 24.** Found 2026-09-25, once merge
-    plan §11 item 24 let the update-files harness past the registry
-    check to the comparison (before, it stopped one `drop` apart and
-    never compared). On the sample store at model 8, `1335`–`1339` held
-    out, the committed code (4eef069) gave 38 differences and now 5
-    remain (M). Both remaining cases were in the 38; neither is item
-    24's.
+35. **The batch's evidence, and the list of events.** Found 2026-09-25,
+    once merge plan §11 item 24 let the update-files harness past the
+    registry check to the comparison (before, it stopped one `drop` apart
+    and never compared), and built the same day on the user's choices:
+    stored decisions kept up to date by a named list of events, not
+    facts worked out on demand; a reference two copies of a record carry
+    is one reference; a record's earlier copies read back from the
+    normalized layer. On the sample store at model 9, the comparison now
+    also checks every cited-as row and every unresolved row, which it
+    never did — the reason stale evidence surfaced batches after it went
+    stale.
 
-    - **A reference whose landing a division made held gets no cited-as
-      rows.** A reference names a PMID, a DOI its own text repeats and
-      a PMC id, none held: one stub. A batch brings the PMID's record;
-      the stub's PMID is a held work's, the reference now names a held
-      work, so its DOI and PMC id make no stub (item 14) and it lands on
-      the held work. The full merge writes cited-as rows for that
-      landing — the DOI and PMC id beside it, the DOI in its text. The
-      batch writes none, because the citing record is not in the batch.
-      When a later batch makes a stub of the DOI, item 26's settling
-      again reads the cited-as rows, finds nothing, and the arc stays;
-      the full merge moves it to the stub by §6. On the sample: #3202's
-      reference, #46038, #1313865. The test
-      `a_name_a_division_left_beside_a_held_work_is_settled_again_when_it_becomes_a_stub`
-      reproduces it and is ignored until this is answered. A fix restates
-      the citing pair's cited-as rows whole when a division changes its
-      landing from a stub to a held work, reading the record's references
-      from the normalized layer as `twins` reads records. And
-      `compare::differences` checks no cited-as rows at all, which is
-      why this surfaced two batches after it happened.
-    - **One citer's `held_beside` on a stub.** Stub #1293222: a citing
-      record (#376705) gave the stub's PMID through two references, one
-      of which named a held work too. The full merge marks the PMID's
-      citer `held_beside: false` (a record's other reference named none);
-      the batch marks it `true`. Not yet reduced to a test.
+    Measured (M), `1335`–`1339` held out: the committed code (4eef069)
+    gave 38 differences before the comparison could see evidence; with
+    it, 5,018; now 1. The `1334` hold-out: 85, now 0.
 
+    What each part fixed:
+
+    - **A reference counted once** (merge version 15): the full merge
+      counted a reference once a copy, so an arc two copies repeat was
+      no one reference's (`sole` false) and its unresolved row was
+      written twice. Now by fingerprint — the names and the citation,
+      whole, the citation read as text so the same reference in two sets
+      prints alike.
+    - **A record's references are every copy's**: a batch rewrote a
+      re-delivered record's cited-as and unresolved rows from its newest
+      copy alone. A record's view names the sets of the copies its
+      speaking copy supersedes (merge version 15), and the batch reads
+      them back, each set once (`earlier_copies`), for its own records and
+      for the older copies it carries for their citations — whose pair it
+      restates with the row's relations too.
+    - **The list of events** (`Engine::moved_names`): a citing record the
+      batch does not carry keeps rows drawn from where its references'
+      names pointed. Every event that makes them stale is a name's target
+      changing — a stub becoming a held work (the case of #3202, #46038,
+      #1313865) or a held work a stub, a name given to a work or a stub,
+      a name dropped, a work merged or split, a name becoming shared or
+      ceasing to be. The batch asks every name it touched where it
+      pointed before and where after; for each that changed, the records
+      that gave it — by their cited-as rows, or as citers of the stub
+      that held it — are read back from the normalized layer and their
+      cited-as rows, unresolved rows and relations restated through the
+      final table. A relation keeps its cited-as row on a stub too (merge
+      version 15), since it leaves no citer there.
+    - **A pair is every record of its source**: a work holding two
+      records of one source (twins) had its lists rewritten from the
+      re-delivered one alone; the twin is read back too, and each pair's
+      lists are gathered from every path that restates it and written
+      once.
+    - **Smaller**: a relation's row with no reference beside it is `sole`,
+      as the full merge counts it; a stub landing counts toward `sole`.
+
+    **Still open: one citer's mark on a divided stub.** Stub #1293222: a
+    record's two copies cite it differently — one by its DOI beside a
+    PMID that no record held yet, one by another PMID alone. Both
+    references land on the stub, whose row keeps one citer of the record
+    per name. When a later batch makes the first PMID a held work, the
+    stub divides, and the batch cannot tell from the row which reference
+    gave which name: it marks the second PMID's citer as naming a held
+    work beside it, where the full merge does not. The test
+    `a_records_copies_citing_one_stub_differently_mark_each_name_by_its_own_reference`
+    reproduces it and is ignored until this is answered. It is item 28's
+    division reading a stub's row where the references themselves are
+    what settle it; the same read back — the citers of a divided stub
+    from the normalized layer — would answer it.
+
+## 12. Sources consulted
 
 The serving-shape and feeds conversations of 2026-09-15 and the notes
 kept of them; the graph plan's §5 and §11; crates.io on 2026-09-15 for

@@ -43,8 +43,10 @@ pub enum Row {
     /// A record's view, before it is joined with the record's other
     /// copies: the join happens when the range is read, in this order.
     View(RecordIx, Owned),
-    /// One reference's arc, before edges are joined by source.
-    Edge(WorkId, WorkId, SourceId),
+    /// One reference's arc, before edges are joined by source, with the
+    /// reference's fingerprint ([`crate::build::fingerprint`]): a
+    /// reference a record's copies repeat is one reference.
+    Edge(WorkId, WorkId, SourceId, u64),
     #[allow(missing_docs)]
     Relation(Relation),
     #[allow(missing_docs)]
@@ -291,9 +293,9 @@ mod tests {
             ..Owned::default()
         };
         let rows = [
-            (id(3), Row::Edge(id(3), id(21), SourceId::Pubmed)),
+            (id(3), Row::Edge(id(3), id(21), SourceId::Pubmed, 1)),
             (id(12), Row::View(7, view.clone())),
-            (id(3), Row::Edge(id(3), id(4), SourceId::Crossref)),
+            (id(3), Row::Edge(id(3), id(4), SourceId::Crossref, 2)),
             (
                 id(25),
                 Row::Relation(Relation {

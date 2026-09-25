@@ -1907,10 +1907,21 @@ impl serve::incremental::Records for Normalized<'_> {
         native: &OwnedName,
         set: &str,
     ) -> Result<Option<serve::incremental::Incoming>, String> {
+        Ok(self
+            .records(source, std::slice::from_ref(native), set)?
+            .pop())
+    }
+
+    fn records(
+        &self,
+        source: merge::SourceId,
+        natives: &[OwnedName],
+        set: &str,
+    ) -> Result<Vec<serve::incremental::Incoming>, String> {
         match source {
-            merge::SourceId::Pubmed => record_in::<Pubmed>(self.store, native, set),
-            merge::SourceId::Crossref => record_in::<Crossref>(self.store, native, set),
-            merge::SourceId::OpenAlex => record_in::<OpenAlex>(self.store, native, set),
+            merge::SourceId::Pubmed => records_in::<Pubmed>(self.store, natives, set),
+            merge::SourceId::Crossref => records_in::<Crossref>(self.store, natives, set),
+            merge::SourceId::OpenAlex => records_in::<OpenAlex>(self.store, natives, set),
         }
     }
 }
@@ -1918,14 +1929,16 @@ impl serve::incremental::Records for Normalized<'_> {
 /// A copy's rank inside one set: its stamp, its version, its place.
 type InSet = (Option<model::Date>, u32, u64);
 
-/// One record of `S` from the set its speaking copy came from: the
-/// newest copy there, joined with the others as the copy rule joins them
-/// (merge plan §8), and every reference the set beside it gives.
-fn record_in<S: Contributor>(
+/// The records of `S` among `natives` that `set` holds, in one pass over
+/// the set: each the newest copy there, joined with the others as the
+/// copy rule joins them (merge plan §8), with every reference the set
+/// beside it gives.
+fn records_in<S: Contributor>(
     store: &Store,
-    native: &OwnedName,
+    natives: &[OwnedName],
     set: &str,
-) -> Result<Option<serve::incremental::Incoming>, String> {
+) -> Result<Vec<serve::incremental::Incoming>, String> {
+    let wanted: HashSet<&OwnedName> = natives.iter().collect();
     let dir = store.normalized(model::VERSION, S::NAME);
     let prefix = dir.join(set);
     let works_path = Kind::Works.path(&prefix);
@@ -1935,13 +1948,16 @@ fn record_in<S: Contributor>(
     let table = reader
         .table()
         .ok_or_else(|| say(&works_path, &"no symbol table"))?;
-    let mut best: Option<(InSet, serve::incremental::Incoming)> = None;
+    let mut best: HashMap<OwnedName, (InSet, serve::incremental::Incoming)> = HashMap::new();
     reader.with_table(|| -> Result<(), String> {
         for (i, work) in reader.records::<S::Work<'_>>().enumerate() {
             let work = work.map_err(|e| say(&works_path, &e))?;
-            if merge::copies::native_of::<S>(&work) != Some(native.as_name()) {
+            let Some(native) = merge::copies::native_of::<S>(&work)
+                .map(|n| n.to_owned())
+                .filter(|n| wanted.contains(n))
+            else {
                 continue;
-            }
+            };
             let mut asserts = Vec::new();
             S::names(&work, &mut |a| {
                 asserts.push(merge::build::OwnedAssert {
@@ -1967,7 +1983,7 @@ fn record_in<S: Contributor>(
                 relations,
                 references: Vec::new(),
             };
-            best = Some(match best.take() {
+            let joined = match best.remove(&native) {
                 None => (rank, copy),
                 Some((seen, older)) if seen < rank => {
                     let mut newer = copy;
@@ -1978,13 +1994,14 @@ fn record_in<S: Contributor>(
                     newer.absorb(&copy);
                     (seen, newer)
                 }
-            });
+            };
+            best.insert(native, joined);
         }
         Ok(())
     })?;
-    let Some((_, mut record)) = best else {
-        return Ok(None);
-    };
+    if best.is_empty() {
+        return Ok(Vec::new());
+    }
     let references_path = Kind::References.path(&prefix);
     if references_path.exists() {
         let reader = merge::sets::open::<S>(&references_path, Kind::References)
@@ -1993,9 +2010,9 @@ fn record_in<S: Contributor>(
         reader.with_table(|| -> Result<(), String> {
             for row in reader.records::<(S::Id<'_>, S::Reference<'_>)>() {
                 let (id, reference) = row.map_err(|e| say(&references_path, &e))?;
-                if S::native(&id) != native.as_name() {
+                let Some((_, record)) = best.get_mut(&S::native(&id).to_owned()) else {
                     continue;
-                }
+                };
                 let mut names = Vec::new();
                 S::targets(&reference, &mut |n| names.push(n.to_owned()));
                 record.references.push(serve::incremental::Reference {
@@ -2006,7 +2023,10 @@ fn record_in<S: Contributor>(
             Ok(())
         })?;
     }
-    Ok(Some(record))
+    let mut out: Vec<serve::incremental::Incoming> =
+        best.into_values().map(|(_, record)| record).collect();
+    out.sort_by(|a, b| a.native.cmp(&b.native));
+    Ok(out)
 }
 
 /// Reads one prefix's works, references and deletions sets of `S` into a
@@ -2293,11 +2313,12 @@ fn merge_batch(opts: &Options, public_key: Option<&Path>) -> ExitCode {
     let a = &applied;
     println!("batch {} at {}", a.batch, a.at);
     println!(
-        "  records: {} merged ({} copies superseded by a newer one, {} of them read for their citations alone, {} withdrawn), {} deletions ({} of records no work had, {} not applying to the copy that speaks)",
+        "  records: {} merged ({} copies superseded by a newer one, {} of them read for their citations alone, {} withdrawn; {} earlier copies read back for their citations), {} deletions ({} of records no work had, {} not applying to the copy that speaks)",
         a.records,
         a.superseded,
         a.cited_only,
         a.withdrawn,
+        a.earlier_copies,
         a.deleted,
         a.deletions_unknown,
         a.deletions_not_applying

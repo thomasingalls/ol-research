@@ -18,7 +18,46 @@ use merge::view::{Owned, Text, View};
 use merge::{Document, Name, OwnedName, Registry, SourceId, WorkId};
 
 use crate::epoch;
-use crate::incremental::{Incoming, Reference};
+use crate::incremental::{Incoming, Records, Reference};
+
+/// The normalized layer in memory: every copy delivered so far, each in
+/// the set its view names — what a batch reads a record's earlier copies
+/// back from (merge version 15), as the binary reads the store's sets.
+pub(crate) struct Layer(pub(crate) Vec<Incoming>);
+
+impl Records for Layer {
+    fn record(
+        &self,
+        source: SourceId,
+        native: &OwnedName,
+        set: &str,
+    ) -> Result<Option<Incoming>, String> {
+        // The set's copies of the record, as the binary joins them: the
+        // newest speaks, the others fill it, and every copy's references
+        // are the record's in that set.
+        let mut copies: Vec<&Incoming> = self
+            .0
+            .iter()
+            .filter(|r| r.source == source && r.native == *native && *r.view.set == *set)
+            .collect();
+        copies.sort_by(|a, b| {
+            if a.view.older_than(&b.view) {
+                std::cmp::Ordering::Less
+            } else {
+                std::cmp::Ordering::Greater
+            }
+        });
+        let Some((newest, older)) = copies.split_last() else {
+            return Ok(None);
+        };
+        let mut record = (*newest).clone();
+        for copy in older.iter().rev() {
+            record.absorb(copy);
+            record.references.extend(copy.references.iter().cloned());
+        }
+        Ok(Some(record))
+    }
+}
 
 /// The test key: 32 bytes nobody keeps.
 pub(crate) fn key() -> Key {

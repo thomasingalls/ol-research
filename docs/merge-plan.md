@@ -1355,6 +1355,20 @@ stays.
   claims back to the record that made them for the identity pass to
   decide again: refused again while two records of a source claim it, or
   a star holds it; accepted when one claimant is left.
+- 2026-09-25, merge version 15: what a batch needs to restate a record's
+  evidence as the full merge writes it (serving plan §11, item 35). A
+  reference is one however many of a record's copies carry it — the
+  user's ruling — counted by a fingerprint of its names and its citation,
+  whole; the full merge had counted it once a copy, so an arc two copies
+  repeat was no one reference's and its unresolved row was written twice.
+  A citation is read as text, a container given as a symbol of its set's
+  table resolved, so the same reference in two sets prints alike and an
+  unresolved row keeps its container, which it had dropped. A record's
+  view names the sets of the copies its speaking copy supersedes, so a
+  batch can read a record's earlier copies back (the user's option (a)).
+  And a relation keeps its cited-as row whatever it names, a stub
+  included: a relation leaves no citer on a stub, and without the row a
+  batch that moves the name could not find who relates to it.
 
 ## 11. Open items
 

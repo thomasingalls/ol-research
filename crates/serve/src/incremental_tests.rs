@@ -357,7 +357,16 @@ fn a_batch_folds_and_equals_the_full_merge_after_it() {
     assert!(v < v_stub && serving.is_stub(v_stub));
     assert_eq!(resolve(&serving, "doi:10.1000/v3"), Some(v_stub));
     let c = resolve(&serving, "pmid:3").unwrap();
-    let applied = incremental::apply(&store, &serving, batch(), Some(&fixture::key())).unwrap();
+    let mut delivered = base_records.clone();
+    delivered.extend(batch().records);
+    let applied = incremental::apply_with(
+        &store,
+        &serving,
+        batch(),
+        Some(&fixture::key()),
+        &fixture::Layer(delivered),
+    )
+    .unwrap();
     assert_eq!(applied.batch, 2);
     assert_eq!((applied.records, applied.deleted), (7, 2));
     assert_eq!(applied.merged, 2, "F into E, the pmid:30 stub into V");
@@ -523,6 +532,7 @@ fn a_batch_folds_and_equals_the_full_merge_after_it() {
 
     // A full merge over everything appends nothing and agrees.
     let registry_lines = journal::last(&store.journal()).unwrap().unwrap().registry;
+    let unresolved = compare::unresolved(&store).unwrap();
     let mut all = base_records;
     all.extend(batch().records);
     let epoch = fixture::full_merge(
@@ -543,7 +553,12 @@ fn a_batch_folds_and_equals_the_full_merge_after_it() {
     );
     let rebuilt = Serving::open(&store).unwrap();
     assert_eq!(rebuilt.watermark().batch, 3);
-    let differences = compare::differences(&serving, &rebuilt, 20).unwrap();
+    let mut differences = compare::differences(&serving, &rebuilt, 20).unwrap();
+    differences.extend(compare::unresolved_differences(
+        &unresolved,
+        &compare::unresolved(&store).unwrap(),
+        20,
+    ));
     assert!(differences.is_empty(), "{}", differences.join("\n"));
     // And a second open of the old epoch would refuse to fold past the
     // full merge: the batch line is a compaction.
@@ -656,7 +671,16 @@ fn a_reader_opened_later_folds_the_same_and_stops_at_a_compaction() {
     let store = fixture::store("later");
     fixture::full_merge(&store, &base(), &[]);
     let serving = Serving::open(&store).unwrap();
-    incremental::apply(&store, &serving, batch(), Some(&fixture::key())).unwrap();
+    let mut delivered = base();
+    delivered.extend(batch().records);
+    incremental::apply_with(
+        &store,
+        &serving,
+        batch(),
+        Some(&fixture::key()),
+        &fixture::Layer(delivered),
+    )
+    .unwrap();
     let later = Serving::open(&store).unwrap();
     assert_eq!(later.watermark().batch, 2);
     let differences = compare::differences(&serving, &later, 20).unwrap();
@@ -721,9 +745,17 @@ fn batches_equal_the_full_merge(
                 .iter()
                 .map(|d| (d.source, d.native.to_string(), d.set.to_string())),
         );
-        incremental::apply(&store, &serving, batch, Some(&fixture::key())).unwrap();
+        incremental::apply_with(
+            &store,
+            &serving,
+            batch,
+            Some(&fixture::key()),
+            &fixture::Layer(all.clone()),
+        )
+        .unwrap();
     }
     let before = journal::last(&store.journal()).unwrap().unwrap();
+    let unresolved = compare::unresolved(&store).unwrap();
     let deletions: Vec<(SourceId, &str, &str)> = deletions
         .iter()
         .map(|(s, n, set)| (*s, n.as_str(), set.as_str()))
@@ -737,7 +769,12 @@ fn batches_equal_the_full_merge(
         "{name}"
     );
     let rebuilt = Serving::open(&store).unwrap();
-    let differences = compare::differences(&serving, &rebuilt, 20).unwrap();
+    let mut differences = compare::differences(&serving, &rebuilt, 20).unwrap();
+    differences.extend(compare::unresolved_differences(
+        &unresolved,
+        &compare::unresolved(&store).unwrap(),
+        20,
+    ));
     assert!(
         differences.is_empty(),
         "{name}:\n{}",
@@ -1802,7 +1839,6 @@ fn a_stars_part_delivered_again_is_refused_the_shared_name_again() {
 }
 
 #[test]
-#[ignore = "serving plan §11 item 35: the batch writes no cited-as rows for a landing a division made held"]
 fn a_name_a_division_left_beside_a_held_work_is_settled_again_when_it_becomes_a_stub() {
     use SourceId::Pubmed;
     // Seen on the update-files harness, 2026-09-25, once item 24 let it
@@ -1865,6 +1901,128 @@ fn a_name_a_division_left_beside_a_held_work_is_settled_again_when_it_becomes_a_
     assert_eq!(
         refs(&serving, from),
         vec![(stub.get(), "pubmed".to_owned())]
+    );
+    drop(serving);
+    std::fs::remove_dir_all(store.root()).unwrap();
+}
+
+#[test]
+#[ignore = "serving plan §11 item 35: a stub's row keeps one citer of a record per name, and a division cannot tell which reference gave which name"]
+fn a_records_copies_citing_one_stub_differently_mark_each_name_by_its_own_reference() {
+    use SourceId::Pubmed;
+    // Serving plan §11, item 35, the second case, seen on the update files
+    // 2026-09-25 (stub #1293222). A stub S holds a DOI and a PMID, which
+    // another article's reference gave together. Record R's first copy
+    // cites S by its DOI beside a held work's PMID, its text repeating the
+    // DOI, so §6 lands it on S and the DOI's citer is marked as naming a
+    // held work beside. R's second copy cites S by its PMID alone. A
+    // record's citations are every copy's, and each name's citer is marked
+    // by the references that gave that name: the PMID's is not.
+    let mut other = record(
+        Pubmed,
+        &["pmid:9701"],
+        "An article citing the stub",
+        view(false, 1, None),
+        text(None, &["O"], None),
+    );
+    cites(&mut other, &["pmid:9702", "doi:10.1186/stub"]);
+    // The PMID beside the DOI is held only once a third batch brings its
+    // record: until then both of R's references name nothing held, both
+    // land on S, and S's row keeps one citer of R per name; the third
+    // batch divides S.
+    let mut held = record(
+        Pubmed,
+        &["pmid:9703"],
+        "A held article",
+        view(false, 1, None),
+        text(None, &["H"], None),
+    );
+    held.view.set = "latest".into();
+    let mut first = delivered(record(
+        Pubmed,
+        &["pmid:9704"],
+        "The citing record",
+        view(false, 1, None),
+        text(None, &["R"], None),
+    ));
+    cites_as(
+        &mut first,
+        &["pmid:9703", "doi:10.1186/stub"],
+        "Liu X. 2025. https://doi.org/10.1186/stub",
+    );
+    let mut second = record(
+        Pubmed,
+        &["pmid:9704"],
+        "The citing record",
+        view(false, 1, None),
+        text(None, &["R"], None),
+    );
+    second.view.set = "later".into();
+    cites_as(
+        &mut second,
+        &["pmid:9702"],
+        "J Orthop Surg Res. 2025;20:456",
+    );
+    let (store, serving) = batches_equal_the_full_merge(
+        "copies-citing-a-stub-differently",
+        base_and(vec![other]),
+        &[],
+        vec![
+            Batch {
+                records: vec![first],
+                ..Batch::default()
+            },
+            Batch {
+                records: vec![second],
+                ..Batch::default()
+            },
+            Batch {
+                records: vec![held],
+                ..Batch::default()
+            },
+        ],
+    );
+    let stub = resolve(&serving, "pmid:9702").unwrap();
+    assert!(serving.is_stub(stub));
+    drop(serving);
+    std::fs::remove_dir_all(store.root()).unwrap();
+}
+
+#[test]
+fn a_relation_to_a_name_nothing_held_joins_the_work_the_name_becomes() {
+    use SourceId::Pubmed;
+    // A correction relates to the article it corrects by a PMID no record
+    // holds: the name is a stub's, and since merge version 15 the
+    // relation keeps a cited-as row on the stub too, so a batch that
+    // brings the corrected article's record finds the correction by the
+    // name and restates its relation onto the held work (serving plan
+    // §11, item 35).
+    let mut correction = record(
+        Pubmed,
+        &["pmid:9801"],
+        "Correction: an article",
+        view(false, 1, None),
+        text(None, &["C"], None),
+    );
+    correction.relations.push(merge::relation::Related {
+        kind: merge::relation::Kind::ErratumFor,
+        target: Some(OwnedName::parse("pmid:9802").unwrap()),
+    });
+    let corrected = delivered(record(
+        Pubmed,
+        &["pmid:9802"],
+        "An article",
+        view(false, 1, None),
+        text(None, &["A"], None),
+    ));
+    let (store, serving) = batches_equal_the_full_merge(
+        "relation-to-nothing-held",
+        base_and(vec![correction]),
+        &[],
+        vec![Batch {
+            records: vec![corrected],
+            ..Batch::default()
+        }],
     );
     drop(serving);
     std::fs::remove_dir_all(store.root()).unwrap();

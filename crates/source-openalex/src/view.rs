@@ -102,6 +102,7 @@ pub fn view<'w>(work: &'w Work<'_>, _: &'w Table) -> Result<View<'w>, Unmapped> 
     Ok(View {
         version: 1,
         set: "",
+        superseded: Vec::new(),
         revised: Some(work.updated.date()),
         titles: <crate::OpenAlex as merge::Contributor>::titles(work),
         has_abstract: work.abstract_inverted_index.is_some(),

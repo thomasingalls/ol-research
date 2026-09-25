@@ -166,6 +166,30 @@ pub trait Records {
         native: &OwnedName,
         set: &str,
     ) -> Result<Option<Incoming>, String>;
+
+    /// Every record of `natives` that `set` holds, as
+    /// [`Records::record`] gives each: what a batch reads of the earlier
+    /// copies of the records it carries (merge version 15). A reader
+    /// that scans a set to find a record answers them all in one pass;
+    /// the default asks one at a time.
+    ///
+    /// # Errors
+    ///
+    /// The set cannot be read.
+    fn records(
+        &self,
+        source: SourceId,
+        natives: &[OwnedName],
+        set: &str,
+    ) -> Result<Vec<Incoming>, String> {
+        let mut out = Vec::new();
+        for native in natives {
+            if let Some(record) = self.record(source, native, set)? {
+                out.push(record);
+            }
+        }
+        Ok(out)
+    }
 }
 
 /// No reader: what [`apply`] passes, so a batch stops where the
@@ -260,6 +284,13 @@ pub struct Applied {
     pub superseded: u64,
     /// Copies of the batch a deletion later in path order withdrew.
     pub withdrawn: u64,
+    /// Earlier copies of the records the batch carries, read back from
+    /// the normalized layer for their citations ([`earlier_copies`]).
+    pub earlier_copies: u64,
+    /// Citing records the batch did not carry whose evidence a name it
+    /// moved left stale, read back and restated
+    /// ([`Engine::moved_names`]).
+    pub restated: u64,
     /// Deletions that withdrew nothing: the copy speaking for the record
     /// is not before the deletion.
     pub deletions_not_applying: u64,
@@ -624,6 +655,14 @@ enum Item {
     Batch(usize),
     Work(WorkId),
 }
+
+/// A citing work and source, and the records of that source it holds as
+/// the normalized layer has them ([`Engine::citing_records`]).
+type PairRecords = ((WorkId, SourceId), Vec<Incoming>);
+
+/// A record's native name and the sets its copies are in, the speaking
+/// copy's first.
+type CopySets = (OwnedName, Vec<Box<str>>);
 
 /// The items a batch touches, joined through their names.
 #[derive(Default)]
@@ -1660,6 +1699,175 @@ impl Engine<'_> {
         target_of(&self.live, self.serving, table, name)
     }
 
+    /// The citing records whose evidence this batch leaves stale: the
+    /// list of events of serving plan §11, item 35 (the user,
+    /// 2026-09-25). A citing record keeps cited-as and unresolved rows
+    /// drawn from where its references' names pointed, and every event
+    /// that can make them stale is one of a name's target changing — a
+    /// stub becoming a held work or a held work a stub, a name given to a
+    /// work or a stub, a name dropped, a work merged into another or
+    /// split, a name becoming shared or ceasing to be. So the names whose
+    /// target the batch changed are found by asking each name the batch
+    /// touched where it pointed before the batch and where it points
+    /// after, and each record that gave one of them — by its cited-as
+    /// rows, or as a citer of the stub that held it — is a (work, source)
+    /// pair to restate. Pairs the batch carries are restated anyway.
+    fn moved_names(
+        &mut self,
+        table: &HashMap<OwnedName, Target>,
+    ) -> Result<BTreeSet<(WorkId, SourceId)>, Error> {
+        let mut touched: BTreeSet<OwnedName> = BTreeSet::new();
+        let mut ids: BTreeSet<WorkId> = BTreeSet::new();
+        for (work, _) in &self.puts {
+            ids.insert(work.id);
+            touched.extend(work.names.iter().map(|n| n.name.clone()));
+        }
+        for (id, row) in &self.stub_rows {
+            ids.insert(*id);
+            touched.extend(row.names.keys().cloned());
+        }
+        ids.extend(self.retirements.iter().map(|(id, _)| *id));
+        ids.extend(self.splits.iter().map(|(id, _)| *id));
+        ids.extend(self.dropped.iter().copied());
+        for id in ids {
+            if let Some(row) = self.rows.get(id)? {
+                touched.extend(row.names.iter().map(|n| n.name.clone()));
+            }
+        }
+        touched.extend(self.live.attached());
+        for line in &self.live.lines {
+            if let registry::Line::Drop { name, .. } = line {
+                touched.insert(name.clone());
+            }
+        }
+        let before = |serving: &Serving, name: &OwnedName| -> Target {
+            match serving.resolve_name(name) {
+                Some(Resolved::One(id)) => match serving.live(id) {
+                    Some(live) => Target::Work(live, serving.is_stub(live)),
+                    None => Target::Unknown,
+                },
+                Some(Resolved::Shared(_)) => Target::Shared,
+                Some(Resolved::Split { .. }) | None => Target::Unknown,
+            }
+        };
+        let mut pairs: BTreeSet<(WorkId, SourceId)> = BTreeSet::new();
+        for name in &touched {
+            let was = before(self.serving, name);
+            if was == target_of(&self.live, self.serving, table, name) {
+                continue;
+            }
+            for row in self.serving.cited_as(name) {
+                pairs.insert((self.survivor_of(row.from), row.by));
+            }
+            if let Target::Work(stub, true) = was
+                && let Some(row) = self.rows.get(stub)?
+                && let Some(named) = row.names.iter().find(|n| n.name == *name)
+            {
+                for c in &named.cited_by {
+                    pairs.insert((self.survivor_of(c.from), c.by));
+                }
+            }
+        }
+        pairs.retain(|(from, _)| !self.gone.contains(from));
+        Ok(pairs)
+    }
+
+    /// The records of each pair as the normalized layer has them — the
+    /// speaking copy with its relations, and every copy's references —
+    /// for [`Engine::moved_names`]'s pairs: read back set by set, since
+    /// the batch does not carry them. A copy the layer cannot find stops
+    /// the batch, since the full merge would read it.
+    fn citing_records(
+        &mut self,
+        pairs: &[(WorkId, SourceId)],
+        except: &HashSet<(SourceId, OwnedName)>,
+    ) -> Result<Vec<PairRecords>, Error> {
+        let put: HashMap<WorkId, &OwnedWork> = self.puts.iter().map(|(w, _)| (w.id, w)).collect();
+        // Each pair's records: native, the speaking copy's set, the rest.
+        let mut plan: Vec<((WorkId, SourceId), Vec<CopySets>)> = Vec::new();
+        let mut wanted: BTreeMap<(SourceId, Box<str>), Vec<OwnedName>> = BTreeMap::new();
+        for &(from, by) in pairs {
+            let records: Vec<(OwnedName, Box<str>, Vec<Box<str>>)> = match put.get(&from) {
+                Some(work) => work
+                    .records
+                    .iter()
+                    .filter(|r| r.source == by)
+                    .map(|r| {
+                        (
+                            r.native.clone(),
+                            r.view.set.clone(),
+                            r.view.superseded.to_vec(),
+                        )
+                    })
+                    .collect(),
+                None => match self.rows.get(from)? {
+                    Some(row) => row
+                        .records
+                        .iter()
+                        .filter(|r| r.source == by)
+                        .map(|r| {
+                            (
+                                r.native.clone(),
+                                r.view.set.clone(),
+                                r.view.superseded.to_vec(),
+                            )
+                        })
+                        .collect(),
+                    None => Vec::new(),
+                },
+            };
+            let mut entry = Vec::new();
+            for (native, set, superseded) in records {
+                if except.contains(&(by, native.clone())) {
+                    continue;
+                }
+                let mut sets = vec![set];
+                sets.extend(superseded);
+                for set in &sets {
+                    wanted
+                        .entry((by, set.clone()))
+                        .or_default()
+                        .push(native.clone());
+                }
+                entry.push((native, sets));
+            }
+            plan.push(((from, by), entry));
+        }
+        let mut found: HashMap<(SourceId, OwnedName, Box<str>), Incoming> = HashMap::new();
+        for ((source, set), mut natives) in wanted {
+            natives.sort_unstable();
+            natives.dedup();
+            for copy in self
+                .layer
+                .records(source, &natives, &set)
+                .map_err(Error::FullMerge)?
+            {
+                found.insert((source, copy.native.clone(), set.clone()), copy);
+            }
+        }
+        let mut out = Vec::with_capacity(plan.len());
+        for ((from, by), entry) in plan {
+            let mut records = Vec::with_capacity(entry.len());
+            for (native, sets) in entry {
+                let mut record: Option<Incoming> = None;
+                for set in &sets {
+                    let Some(copy) = found.get(&(by, native.clone(), set.clone())) else {
+                        return Err(Error::FullMerge(format!(
+                            "{by}={native}, which cites a name this batch moved: its copy in {set} is not in the normalized layer"
+                        )));
+                    };
+                    match record.as_mut() {
+                        None => record = Some(copy.clone()),
+                        Some(r) => r.references.extend(copy.references.iter().cloned()),
+                    }
+                }
+                records.extend(record);
+            }
+            out.push(((from, by), records));
+        }
+        Ok(out)
+    }
+
     /// The batch's own resolution as a names table: every held row's
     /// names, shared ones apart, and the names of every stub whose row
     /// the batch is making.
@@ -2255,6 +2463,52 @@ impl Engine<'_> {
         }
         // Pass two: every reference through the final table.
         let table = self.table();
+        // Citing records the batch does not carry, whose evidence a name
+        // it moved leaves stale: read back, restated below.
+        let moved = self.moved_names(&table)?;
+        let carried: HashSet<(WorkId, SourceId)> = self
+            .batch
+            .records
+            .iter()
+            .chain(&self.batch.cited_only)
+            .filter_map(|r| {
+                let Resolved::One(work) = self.live.resolved(&r.native)? else {
+                    return None;
+                };
+                Some((self.survivor_of(work), r.source))
+            })
+            .collect();
+        let restate: Vec<(WorkId, SourceId)> = moved
+            .into_iter()
+            .filter(|pair| !carried.contains(pair))
+            .collect();
+        let citing = self.citing_records(&restate, &HashSet::new())?;
+        // A pair the batch carries is every record of its source in the
+        // work: the ones it does not carry — a twin of the same source —
+        // are read back too, all their copies, or the pair's lists would
+        // be the carried record's alone (serving plan §11, item 35).
+        let carried_natives: HashSet<(SourceId, OwnedName)> = self
+            .batch
+            .records
+            .iter()
+            .chain(&self.batch.cited_only)
+            .map(|r| (r.source, r.native.clone()))
+            .collect();
+        let mut carried_pairs: Vec<(WorkId, SourceId)> = carried.iter().copied().collect();
+        carried_pairs.extend(
+            self.batch
+                .records
+                .iter()
+                .enumerate()
+                .filter_map(|(i, r)| Some((*self.work_of_batch.get(&i)?, r.source))),
+        );
+        carried_pairs.sort_unstable();
+        carried_pairs.dedup();
+        let twins_of_carried: Vec<PairRecords> = self
+            .citing_records(&carried_pairs, &carried_natives)?
+            .into_iter()
+            .filter(|(_, records)| !records.is_empty())
+            .collect();
         // Names the batch's references give beside the works they land
         // on, whole per citing work and source, with how many references
         // of that pair landed on each work — what says whether an arc
@@ -2273,6 +2527,14 @@ impl Engine<'_> {
         // the stub before the landings restate what still cites it.
         let mut stale: Vec<(WorkId, (WorkId, SourceId))> = Vec::new();
         let mut lists = Lists::default();
+        // Each pair's unresolved rows and relations, gathered from every
+        // path that restates it and written once below: a pair is
+        // restated by more than one path — a record the batch carries and
+        // its twin read back, a withdrawn record's twin, a citer of a moved
+        // name — and a second whole list would be written over the first.
+        let mut pair_unresolved: BTreeMap<(WorkId, SourceId), Vec<OwnedUnresolved>> =
+            BTreeMap::new();
+        let mut pair_relations: BTreeMap<(WorkId, SourceId), Vec<Related>> = BTreeMap::new();
         let (live, serving) = (&self.live, self.serving);
         let resolver = |name: merge::Name<'_>| -> Target {
             target_of(live, serving, &table, &name.to_owned())
@@ -2280,10 +2542,16 @@ impl Engine<'_> {
         // What the records a work keeps of a source still give, through
         // the final table: the arcs they land on, their relations, their
         // unresolved rows, and the names they gave beside a landing.
+        // Every reference each citing work and source has given so far,
+        // by fingerprint: a reference the record's copies repeat — or its
+        // source's twin records — is one reference (merge version 15,
+        // the user, 2026-09-25), as the full merge counts them.
+        let mut seen: HashSet<(WorkId, SourceId, u64)> = HashSet::new();
         let kept_of = |records: &[Incoming],
                        work: WorkId,
                        beside: &mut Vec<OwnedCitedAs>,
-                       landings: &mut BTreeMap<(WorkId, SourceId, WorkId), u32>|
+                       landings: &mut BTreeMap<(WorkId, SourceId, WorkId), u32>,
+                       seen: &mut HashSet<(WorkId, SourceId, u64)>|
          -> (BTreeSet<WorkId>, Vec<Related>, Vec<OwnedUnresolved>) {
             let mut arcs: BTreeSet<WorkId> = BTreeSet::new();
             let mut relations: Vec<Related> = Vec::new();
@@ -2292,6 +2560,10 @@ impl Engine<'_> {
                 for reference in &r.references {
                     let names: Vec<merge::Name<'_>> =
                         reference.names.iter().map(OwnedName::as_name).collect();
+                    let print = build::fingerprint(&names, &reference.citation.borrow(), None);
+                    if !seen.insert((work, r.source, print)) {
+                        continue;
+                    }
                     let referenced =
                         build::resolve_reference(&names, &reference.citation.borrow(), resolver);
                     let why = match referenced {
@@ -2300,8 +2572,12 @@ impl Engine<'_> {
                         Referenced::SharedOnly => Some(Why::Shared),
                         Referenced::Edge { to, settled, stub } => {
                             arcs.insert(to);
+                            // Every reference landing there counts, on a
+                            // stub too, as the full merge counts arcs: a
+                            // relation's row there is sole only if one
+                            // or none did.
+                            *landings.entry((work, r.source, to)).or_default() += 1;
                             if !stub {
-                                *landings.entry((work, r.source, to)).or_default() += 1;
                                 beside_rows(
                                     beside,
                                     &reference.names,
@@ -2327,24 +2603,22 @@ impl Engine<'_> {
                 }
                 for rel in &r.relations {
                     if let Some(target) = rel.target.as_ref()
-                        && let Target::Work(to, stub) = target_of(live, serving, &table, target)
+                        && let Target::Work(to, _) = target_of(live, serving, &table, target)
                     {
                         relations.push(Related { to, kind: rel.kind });
-                        if !stub {
-                            beside.push(OwnedCitedAs {
-                                from: work,
-                                by: r.source,
-                                name: target.clone(),
-                                to,
-                                landed: target.as_name().key(),
-                                sole: true,
-                                relation: true,
-                                beside: false,
-                                by_text: false,
-                                in_text: false,
-                                beside_held: false,
-                            });
-                        }
+                        beside.push(OwnedCitedAs {
+                            from: work,
+                            by: r.source,
+                            name: target.clone(),
+                            to,
+                            landed: target.as_name().key(),
+                            sole: true,
+                            relation: true,
+                            beside: false,
+                            by_text: false,
+                            in_text: false,
+                            beside_held: false,
+                        });
                     }
                 }
             }
@@ -2365,6 +2639,10 @@ impl Engine<'_> {
             for reference in &r.references {
                 let names: Vec<merge::Name<'_>> =
                     reference.names.iter().map(OwnedName::as_name).collect();
+                let print = build::fingerprint(&names, &reference.citation.borrow(), None);
+                if !seen.insert((work, r.source, print)) {
+                    continue;
+                }
                 let referenced =
                     build::resolve_reference(&names, &reference.citation.borrow(), resolver);
                 *self
@@ -2378,6 +2656,7 @@ impl Engine<'_> {
                     Referenced::SharedOnly => Some(Why::Shared),
                     Referenced::Edge { to, settled, stub } => {
                         new_arcs.insert(to);
+                        *landings.entry((work, r.source, to)).or_default() += 1;
                         if stub {
                             for name in &reference.names {
                                 if target_of(live, serving, &table, name) == Target::Work(to, true)
@@ -2404,7 +2683,6 @@ impl Engine<'_> {
                                 }
                             }
                         } else {
-                            *landings.entry((work, r.source, to)).or_default() += 1;
                             beside_rows(
                                 &mut beside,
                                 &reference.names,
@@ -2433,29 +2711,29 @@ impl Engine<'_> {
                 let Some(target) = rel.target.as_ref() else {
                     continue;
                 };
-                let Target::Work(to, stub) = target_of(live, serving, &table, target) else {
+                let Target::Work(to, _) = target_of(live, serving, &table, target) else {
                     continue;
                 };
                 relations.push(Related { to, kind: rel.kind });
-                if !stub {
-                    // A relation names a held work: kept beside it like a
-                    // reference's names, since it says the name is still
-                    // named if it leaves (serving plan §11, item 28).
-                    beside.push(OwnedCitedAs {
-                        from: work,
-                        by: r.source,
-                        name: target.clone(),
-                        to,
-                        landed: target.as_name().key(),
-                        sole: true,
-                        relation: true,
-                        beside: false,
-                        by_text: false,
-                        in_text: false,
-                        beside_held: false,
-                    });
-                    put_cited_as.insert((work, r.source));
-                }
+                // A relation names a work, held or a stub: kept beside it
+                // like a reference's names, since it says the name is
+                // still named if it leaves (serving plan §11, item 28),
+                // and who names it when it moves (item 35, merge version
+                // 15).
+                beside.push(OwnedCitedAs {
+                    from: work,
+                    by: r.source,
+                    name: target.clone(),
+                    to,
+                    landed: target.as_name().key(),
+                    sole: true,
+                    relation: true,
+                    beside: false,
+                    by_text: false,
+                    in_text: false,
+                    beside_held: false,
+                });
+                put_cited_as.insert((work, r.source));
             }
             relations.sort_unstable();
             relations.dedup();
@@ -2489,7 +2767,7 @@ impl Engine<'_> {
                     // record restates the pair it leaves (2026-09-18).
                     let kept = twins.get(&(old_work, r.source)).map_or_else(
                         || (BTreeSet::new(), Vec::new(), Vec::new()),
-                        |records| kept_of(records, old_work, &mut beside, &mut landings),
+                        |records| kept_of(records, old_work, &mut beside, &mut landings, &mut seen),
                     );
                     let (kept_arcs, kept_relations, kept_rows) = kept;
                     // As in the deletions loop: an arc whose target this
@@ -2508,18 +2786,14 @@ impl Engine<'_> {
                     for to in new_arcs.difference(&old_arcs) {
                         lists.add(work, *to, by);
                     }
-                    lists.relations.push(RelationLine::Put {
-                        batch: batch_number,
-                        from: old_work,
-                        by: r.source,
-                        relations: kept_relations,
-                    });
-                    lists.unresolved.push(UnresolvedLine::Put {
-                        batch: batch_number,
-                        from: old_work,
-                        by: r.source,
-                        rows: kept_rows,
-                    });
+                    pair_relations
+                        .entry((old_work, r.source))
+                        .or_default()
+                        .extend(kept_relations);
+                    pair_unresolved
+                        .entry((old_work, r.source))
+                        .or_default()
+                        .extend(kept_rows);
                     if twins.contains_key(&(old_work, r.source)) {
                         put_cited_as.insert((old_work, r.source));
                     }
@@ -2529,18 +2803,14 @@ impl Engine<'_> {
                     lists.add(work, *to, by);
                 }
             }
-            lists.relations.push(RelationLine::Put {
-                batch: batch_number,
-                from: work,
-                by: r.source,
-                relations,
-            });
-            lists.unresolved.push(UnresolvedLine::Put {
-                batch: batch_number,
-                from: work,
-                by: r.source,
-                rows: unresolved,
-            });
+            pair_relations
+                .entry((work, r.source))
+                .or_default()
+                .extend(relations);
+            pair_unresolved
+                .entry((work, r.source))
+                .or_default()
+                .extend(unresolved);
             put_cited_as.insert((work, r.source));
         }
         // Copies the row's copy supersedes: their citations stand, so
@@ -2562,15 +2832,38 @@ impl Engine<'_> {
                 .filter(|a| a.by.contains(r.source))
                 .map(|a| a.work)
                 .collect();
+            let mut unresolved: Vec<OwnedUnresolved> = Vec::new();
             for reference in &r.references {
                 let names: Vec<merge::Name<'_>> =
                     reference.names.iter().map(OwnedName::as_name).collect();
+                let print = build::fingerprint(&names, &reference.citation.borrow(), None);
+                if !seen.insert((work, r.source, print)) {
+                    continue;
+                }
                 let referenced =
                     build::resolve_reference(&names, &reference.citation.borrow(), resolver);
+                let why = match referenced {
+                    Referenced::Empty | Referenced::Unknown => None,
+                    Referenced::NoName => Some(Why::NoName),
+                    Referenced::SharedOnly => Some(Why::Shared),
+                    Referenced::Edge { settled, .. } => {
+                        (settled != build::Settled::Agreed).then_some(Why::Disagree)
+                    }
+                };
+                if let Some(why) = why {
+                    unresolved.push(OwnedUnresolved {
+                        from: work,
+                        by: r.source,
+                        why,
+                        names: reference.names.iter().cloned().collect(),
+                        citation: reference.citation.clone(),
+                    });
+                }
                 if let Referenced::Edge { to, stub, .. } = referenced {
                     if !old_arcs.contains(&to) {
                         lists.add(work, to, by);
                     }
+                    *landings.entry((work, r.source, to)).or_default() += 1;
                     if stub {
                         for name in &reference.names {
                             if target_of(live, serving, &table, name) == Target::Work(to, true) {
@@ -2593,7 +2886,6 @@ impl Engine<'_> {
                             }
                         }
                     } else {
-                        *landings.entry((work, r.source, to)).or_default() += 1;
                         beside_rows(
                             &mut beside,
                             &reference.names,
@@ -2607,6 +2899,44 @@ impl Engine<'_> {
                     }
                 }
             }
+            // The row's pair restated from every copy's references, the
+            // row's own read back ([`earlier_copies`]): unresolved ones
+            // too, which the full merge keeps for each (merge version 15).
+            // The speaking copy's relations, read back with the row's
+            // copies ([`earlier_copies`]): the pair's relation list and its
+            // relation rows are restated with the rest.
+            let mut relations: Vec<Related> = Vec::new();
+            for rel in &r.relations {
+                let Some(target) = rel.target.as_ref() else {
+                    continue;
+                };
+                let Target::Work(to, _) = target_of(live, serving, &table, target) else {
+                    continue;
+                };
+                relations.push(Related { to, kind: rel.kind });
+                beside.push(OwnedCitedAs {
+                    from: work,
+                    by: r.source,
+                    name: target.clone(),
+                    to,
+                    landed: target.as_name().key(),
+                    sole: true,
+                    relation: true,
+                    beside: false,
+                    by_text: false,
+                    in_text: false,
+                    beside_held: false,
+                });
+                put_cited_as.insert((work, r.source));
+            }
+            pair_relations
+                .entry((work, r.source))
+                .or_default()
+                .extend(relations);
+            pair_unresolved
+                .entry((work, r.source))
+                .or_default()
+                .extend(unresolved);
             self.applied.cited_only += 1;
         }
         // A name this batch gave to a work or a stub: references that
@@ -2673,7 +3003,7 @@ impl Engine<'_> {
             let by: Sources = [source].into_iter().collect();
             let kept = twins.get(&(work, source)).map_or_else(
                 || (BTreeSet::new(), Vec::new(), Vec::new()),
-                |records| kept_of(records, work, &mut beside, &mut landings),
+                |records| kept_of(records, work, &mut beside, &mut landings, &mut seen),
             );
             let (kept_arcs, kept_relations, kept_rows) = kept;
             let old_arcs: Vec<WorkId> = self
@@ -2707,21 +3037,79 @@ impl Engine<'_> {
             for to in kept_arcs.difference(&standing) {
                 lists.add(work, *to, by);
             }
-            lists.relations.push(RelationLine::Put {
-                batch: batch_number,
-                from: work,
-                by: source,
-                relations: kept_relations,
-            });
-            lists.unresolved.push(UnresolvedLine::Put {
-                batch: batch_number,
-                from: work,
-                by: source,
-                rows: kept_rows,
-            });
+            pair_relations
+                .entry((work, source))
+                .or_default()
+                .extend(kept_relations);
+            pair_unresolved
+                .entry((work, source))
+                .or_default()
+                .extend(kept_rows);
             if twins.contains_key(&(work, source)) {
                 put_cited_as.insert((work, source));
             }
+        }
+        // The twins of the pairs the batch carries: their references join
+        // the pair's lists; their arcs already stand.
+        for ((from, by), records) in &twins_of_carried {
+            let (_, relations, rows) =
+                kept_of(records, *from, &mut beside, &mut landings, &mut seen);
+            pair_relations
+                .entry((*from, *by))
+                .or_default()
+                .extend(relations);
+            pair_unresolved
+                .entry((*from, *by))
+                .or_default()
+                .extend(rows);
+            put_cited_as.insert((*from, *by));
+        }
+        // The records whose evidence a moved name left stale, restated
+        // from every copy through the final table (serving plan §11, item
+        // 35): their cited-as and unresolved rows. Their arcs are the
+        // batch's own business above.
+        // A pair this batch restated already is whole: its references
+        // are counted in `seen`, and a second list would be written over
+        // the first.
+        let restated: HashSet<(WorkId, SourceId)> = pair_unresolved
+            .keys()
+            .copied()
+            .chain(put_cited_as.iter().copied())
+            .collect();
+        for ((from, by), records) in &citing {
+            if restated.contains(&(*from, *by)) {
+                continue;
+            }
+            let (_, relations, rows) =
+                kept_of(records, *from, &mut beside, &mut landings, &mut seen);
+            pair_relations
+                .entry((*from, *by))
+                .or_default()
+                .extend(relations);
+            pair_unresolved
+                .entry((*from, *by))
+                .or_default()
+                .extend(rows);
+            put_cited_as.insert((*from, *by));
+            self.applied.restated += 1;
+        }
+        for ((from, by), mut relations) in pair_relations {
+            relations.sort_unstable();
+            relations.dedup();
+            lists.relations.push(RelationLine::Put {
+                batch: batch_number,
+                from,
+                by,
+                relations,
+            });
+        }
+        for ((from, by), rows) in pair_unresolved {
+            lists.unresolved.push(UnresolvedLine::Put {
+                batch: batch_number,
+                from,
+                by,
+                rows,
+            });
         }
         // The cited-as rows, whole per citing work and source.
         for (from, by) in put_cited_as {
@@ -2729,7 +3117,10 @@ impl Engine<'_> {
                 .iter()
                 .filter(|row| (row.from, row.by) == (from, by))
                 .map(|row| OwnedCitedAs {
-                    sole: landings.get(&(from, by, row.to)) == Some(&1),
+                    // No two references of the pair landing there, as the
+                    // full merge counts it: a relation's row with no
+                    // reference beside it is sole too.
+                    sole: landings.get(&(from, by, row.to)).is_none_or(|n| *n <= 1),
                     ..row.clone()
                 })
                 .collect();
@@ -3079,6 +3470,114 @@ fn row_record(
         .cloned())
 }
 
+/// Which set each record's latest deletion is in, among `deletions`: a
+/// deletion withdraws the record's copies in the sets before its own.
+fn withdrawals(deletions: &[&Deletion]) -> HashMap<(SourceId, OwnedName), Box<str>> {
+    let mut by: HashMap<(SourceId, OwnedName), Box<str>> = HashMap::new();
+    for d in deletions {
+        let slot = by
+            .entry((d.source, d.native.clone()))
+            .or_insert_with(|| d.set.clone());
+        if **slot < *d.set {
+            slot.clone_from(&d.set);
+        }
+    }
+    by
+}
+
+/// A record's references are the union over its standing copies (merge
+/// plan §8; merge version 15, 2026-09-25), and a batch carries only the
+/// copies it was delivered: the ones the row already had — the copy the
+/// row names and the ones that copy superseded — are read back from the
+/// normalized layer, each set once, and their references joined to the
+/// batch's copy. The same for a copy of the batch's that the row's copy
+/// speaks over: what the row's pair is restated from is every copy's.
+/// A copy a deletion withdrew stays out; one the layer cannot find stops
+/// the batch, since the full merge would read it. The batch's own copies
+/// are already joined ([`speaking`]).
+fn earlier_copies(
+    rows: &mut Rows<'_>,
+    batch: &mut Batch,
+    withdrawn: &HashMap<(SourceId, OwnedName), Box<str>>,
+    layer: &dyn Records,
+) -> Result<u64, Error> {
+    let inputs: HashSet<&str> = batch
+        .records
+        .iter()
+        .chain(&batch.cited_only)
+        .map(|r| &*r.view.set)
+        .collect();
+    // Which copies each record wants, by the set they are in.
+    let mut wanted: BTreeMap<(SourceId, Box<str>), Vec<OwnedName>> = BTreeMap::new();
+    let mut sets_of: HashMap<(SourceId, OwnedName), Vec<Box<str>>> = HashMap::new();
+    for r in batch.records.iter().chain(&batch.cited_only) {
+        let key = (r.source, r.native.clone());
+        if sets_of.contains_key(&key) {
+            continue;
+        }
+        let Some(record) = row_record(rows, r.source, &r.native)? else {
+            continue;
+        };
+        let cut = withdrawn.get(&key);
+        let sets: Vec<Box<str>> = std::iter::once(&record.view.set)
+            .chain(&record.view.superseded)
+            .filter(|set| !set.is_empty() && !inputs.contains(&***set))
+            .filter(|set| cut.is_none_or(|cut| ***set >= **cut))
+            .cloned()
+            .collect();
+        for set in &sets {
+            wanted
+                .entry((r.source, set.clone()))
+                .or_default()
+                .push(r.native.clone());
+        }
+        sets_of.insert(key, sets);
+    }
+    let mut found: HashMap<(SourceId, OwnedName, Box<str>), Incoming> = HashMap::new();
+    let mut read = 0u64;
+    for ((source, set), natives) in wanted {
+        for copy in layer
+            .records(source, &natives, &set)
+            .map_err(Error::FullMerge)?
+        {
+            found.insert((source, copy.native.clone(), set.clone()), copy);
+            read += 1;
+        }
+    }
+    let speaking = batch.records.len();
+    for (i, r) in batch
+        .records
+        .iter_mut()
+        .chain(batch.cited_only.iter_mut())
+        .enumerate()
+    {
+        let key = (r.source, r.native.clone());
+        let Some(sets) = sets_of.get(&key) else {
+            continue;
+        };
+        for (k, set) in sets.iter().enumerate() {
+            let Some(copy) = found.get(&(r.source, r.native.clone(), set.clone())) else {
+                return Err(Error::FullMerge(format!(
+                    "{}={}: its copy in {set} is not in the normalized layer, and a record's citations are every copy's",
+                    r.source, r.native
+                )));
+            };
+            r.references.extend(copy.references.iter().cloned());
+            // A copy of the batch's the row's copy speaks over gives no
+            // relations; the row's copy does, and the pair is restated
+            // from it (the first set is the one the row names).
+            if i >= speaking && k == 0 {
+                r.relations.clone_from(&copy.relations);
+            }
+        }
+        // What a deletion withdrew is no copy the row keeps.
+        if let Some(cut) = withdrawn.get(&key) {
+            r.view.superseded.retain(|set| **set >= **cut);
+        }
+    }
+    Ok(read)
+}
+
 /// The delivery of the copy a record's row holds.
 fn row_copy(
     rows: &mut Rows<'_>,
@@ -3295,7 +3794,15 @@ pub fn apply_with(
         serving,
         cache: HashMap::new(),
     };
-    let batch = speaking(&mut rows, batch, &mut applied)?;
+    let withdrawn = withdrawals(
+        &batch
+            .deletions
+            .iter()
+            .chain(&batch.store_deletions)
+            .collect::<Vec<_>>(),
+    );
+    let mut batch = speaking(&mut rows, batch, &mut applied)?;
+    applied.earlier_copies = earlier_copies(&mut rows, &mut batch, &withdrawn, layer)?;
     applied.records = batch.records.len() as u64;
     applied.at.clone_from(&at);
     let mut engine = Engine {
