@@ -16,6 +16,7 @@ merge = { path = "crates/merge" }
 graph = { path = "crates/graph" }
 serve = { path = "crates/serve" }
 search = { path = "crates/search" }
+query-parser = { path = "crates/query-parser" }
 source-crossref = { path = "crates/source-crossref" }
 source-openalex = { path = "crates/source-openalex" }
 source-pubmed = { path = "crates/source-pubmed" }
@@ -71,6 +72,10 @@ smallvec = { version = "1", features = ["serde", "const_generics", "union"] }
 # in the server. `serde-compat` is on by default and is what makes the
 # generated field names the ones serde writes.
 ts-rs = "12"
+# Property-based tests, Hypothesis's shape in Rust: generated inputs,
+# shrunk to the smallest that fails (the user, 2026-09-25: the strong
+# preference, here and in general). Dev-dependency only.
+proptest = "1"
 
 [workspace.lints.rust]
 missing_debug_implementations = "warn"
