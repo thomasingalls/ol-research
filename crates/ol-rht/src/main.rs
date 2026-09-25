@@ -3541,8 +3541,15 @@ fn query_search(opts: &Options) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    let asked = match query_parser::parse(&text) {
+        Ok(asked) => asked,
+        Err(e) => {
+            eprintln!("{what}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
     let started = std::time::Instant::now();
-    let hits = match serving.search(&text, limit) {
+    let hits = match serving.search(&asked, limit) {
         Ok(hits) => hits,
         Err(e) => {
             eprintln!("{what}: {e}");
@@ -3956,8 +3963,15 @@ fn search_query(opts: &Options) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    let asked = match query_parser::parse(&text) {
+        Ok(asked) => asked,
+        Err(e) => {
+            eprintln!("{what}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
     let started = std::time::Instant::now();
-    let hits = match opened.search(&text, limit, 5) {
+    let hits = match opened.search(&asked, limit, 5, None) {
         Ok(hits) => hits,
         Err(e) => {
             eprintln!("{what}: {e}");

@@ -185,7 +185,7 @@ fn the_live_epoch_measures_the_bulk_read() {
         .map(|n| n.work)
         .collect();
     let hits: Vec<WorkId> = serving
-        .search("systematic review", 100)
+        .search(&query_parser::parse("systematic review").unwrap(), 100)
         .unwrap()
         .hits
         .iter()

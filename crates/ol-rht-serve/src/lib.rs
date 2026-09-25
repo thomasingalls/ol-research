@@ -14,6 +14,8 @@ pub mod http;
 /// The query string a route reads its parameters from, as the struct
 /// the route declares: one list of names instead of three.
 mod query;
+/// One line per search, apart from the fault log.
+mod querylog;
 pub mod service;
 pub mod terms;
 /// The browser client's TypeScript, from these same types. Tests only:

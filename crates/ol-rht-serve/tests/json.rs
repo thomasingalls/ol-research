@@ -1103,3 +1103,128 @@ async fn a_server_with_no_epoch_answers_unavailable_until_it_has_one() {
     let (status, body) = get(&agent, &format!("{base}/v1/epoch"));
     assert_eq!(status, 200, "{body}");
 }
+
+/// A search, its text written into the URL as a browser writes it.
+fn search(agent: &ureq::Agent, base: &str, text: &str) -> (u16, Value) {
+    let mut response = agent
+        .get(format!("{base}/v1/search"))
+        .query("query", text)
+        .call()
+        .unwrap();
+    let status = response.status().as_u16();
+    let body = response.body_mut().read_to_string().unwrap();
+    (status, serde_json::from_str(&body).unwrap())
+}
+
+/// Any text is a query (2026-09-25): what Tantivy's parser refused or
+/// took for a command is answered; empty is the query that finds
+/// nothing, where a missing `query` is still a URL built wrong; and the
+/// one refusal is size, named.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn any_text_is_a_query_and_only_size_is_refused() {
+    let base = start(Arc::new(Service::new(Fake::new(1), Terms::stub()))).await;
+    let agent = agent();
+    for text in [
+        "\"",
+        "(((((((((((((((((((((((((((((((",
+        "5'-UTR",
+        "id:[1 TO 5000]",
+        "aspirin^99999",
+        "-mice",
+        "title:",
+        "\u{1b}[2J \u{202e} \n",
+        "",
+        "   ",
+    ] {
+        let (status, body) = search(&agent, &base, text);
+        assert_eq!(status, 200, "{text:?}: {body}");
+        assert_eq!(body["total"], 0, "{text:?}");
+    }
+    let (status, body) = search(&agent, &base, "\"titled\"");
+    assert_eq!((status, body["total"].as_u64()), (200, Some(1)));
+    let (status, body) = get(&agent, &format!("{base}/v1/search"));
+    assert_eq!(
+        (status, body["message"].as_str()),
+        (400, Some("query is required"))
+    );
+
+    // A thousand and twenty-four words of ten letters each: past the
+    // eight kilobytes many proxies allow a URL, and answered here.
+    let words = |n: usize| vec!["abcdefghij"; n].join(" ");
+    let (status, _) = search(&agent, &base, &words(query_parser::MAX_WORDS));
+    assert_eq!(status, 200);
+    let (status, body) = search(&agent, &base, &words(query_parser::MAX_WORDS + 1));
+    assert_eq!(
+        (status, body["code"].as_str(), body["message"].as_str()),
+        (
+            400,
+            Some("invalid_argument"),
+            Some("the query is 1025 words; the limit is 1024")
+        )
+    );
+    // The byte cap is out of a URL's reach: the `http` crate refuses a
+    // URI over 65,534 bytes before any route sees it, so a GET cannot
+    // carry a query that long, and a text of any other script than
+    // ASCII's, three bytes of URL to each of its own, not a third of it
+    // (the gRPC test reaches the cap). What the server answers a URL
+    // that long with:
+    let long = format!("/v1/search?query={}", "a".repeat(70_000));
+    assert_eq!(raw_status(&base, &long), 414);
+}
+
+/// The status a request line is answered with, written by hand, since
+/// no client here will write a URL the `http` crate refuses.
+fn raw_status(base: &str, target: &str) -> u16 {
+    use std::io::{Read, Write};
+
+    let addr = base.trim_start_matches("http://");
+    let mut stream = std::net::TcpStream::connect(addr).unwrap();
+    write!(
+        stream,
+        "GET {target} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n"
+    )
+    .unwrap();
+    let mut head = [0u8; 12];
+    stream.read_exact(&mut head).unwrap();
+    std::str::from_utf8(&head[9..12]).unwrap().parse().unwrap()
+}
+
+/// Searches run on threads of their own within a time limit (2026-09-25):
+/// a search past it is refused `deadline_exceeded`; one that finds every
+/// search thread busy for the whole limit, `resource_exhausted`; and all
+/// the while every other call answers — on the one request thread this
+/// server has, which a search running on it would have held.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn a_slow_search_holds_no_request_thread() {
+    use std::time::{Duration, Instant};
+
+    let service =
+        Service::new(Fake::new(1), Terms::stub()).searching(1, Duration::from_millis(300));
+    let base = start(Arc::new(service)).await;
+    let first = std::thread::spawn({
+        let base = base.clone();
+        move || search(&agent(), &base, "slow")
+    });
+    // The first search holds the one search thread for 600 ms, answering
+    // its caller at 300.
+    std::thread::sleep(Duration::from_millis(100));
+    let agent = agent();
+    let asked = Instant::now();
+    let (status, _) = get(&agent, &format!("{base}/v1/epoch"));
+    assert_eq!(status, 200);
+    assert!(
+        asked.elapsed() < Duration::from_millis(250),
+        "{:?}",
+        asked.elapsed()
+    );
+    let (status, body) = search(&agent, &base, "slow");
+    assert_eq!(
+        (status, body["code"].as_str()),
+        (429, Some("resource_exhausted"))
+    );
+    let (status, body) = first.join().unwrap();
+    assert_eq!(
+        (status, body["code"].as_str()),
+        (504, Some("deadline_exceeded"))
+    );
+}

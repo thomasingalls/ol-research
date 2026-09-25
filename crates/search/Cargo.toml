@@ -9,9 +9,13 @@ description = "The lexical index: the serving layer's documents in a search engi
 ingest.workspace = true
 merge.workspace = true
 model.workspace = true
+query-parser.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tantivy.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
 
 [lints]
 workspace = true

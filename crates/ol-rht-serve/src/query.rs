@@ -45,6 +45,7 @@ use std::vec;
 
 use axum::extract::{FromRequestParts, Query};
 use axum::http::request::Parts;
+use serde::Deserialize;
 use serde::de::{
     self, DeserializeOwned, DeserializeSeed, EnumAccess, IntoDeserializer, MapAccess, SeqAccess,
     VariantAccess, Visitor,
@@ -310,6 +311,23 @@ impl<'de> de::Deserializer<'de> for Given<'_> {
         visitor.visit_enum(Named { text })
     }
 
+    /// A [`MaybeEmpty`] parameter: required, as any other, but written
+    /// empty is a value. Any other newtype is no shape a query string
+    /// carries.
+    fn deserialize_newtype_struct<V: Visitor<'de>>(
+        self,
+        name: &'static str,
+        visitor: V,
+    ) -> Result<V::Value, Invalid> {
+        if name != MAYBE_EMPTY {
+            return self.deserialize_any(visitor);
+        }
+        visitor.visit_newtype_struct(Given {
+            empty_is_a_value: true,
+            ..self
+        })
+    }
+
     fn deserialize_any<V: Visitor<'de>>(self, _visitor: V) -> Result<V::Value, Invalid> {
         Err(Invalid(format!(
             "{} is not a shape a query string carries",
@@ -319,8 +337,42 @@ impl<'de> de::Deserializer<'de> for Given<'_> {
 
     forward_to_deserialize_any! {
         i8 i16 i32 i64 i128 u8 u16 u128 f32 f64 char bytes byte_buf unit
-        unit_struct newtype_struct tuple tuple_struct map struct identifier
-        ignored_any
+        unit_struct tuple tuple_struct map struct identifier ignored_any
+    }
+}
+
+/// A parameter that must be written but may be written empty (2026-09-25):
+/// `?query=` is the query that finds nothing, where `?work=` is a client
+/// that built its URL wrong. Declared by its type, as every other
+/// distinction here is; the protocol cannot tell an empty string from an
+/// absent one, so over gRPC an empty query is simply the empty query.
+#[derive(Debug)]
+pub(crate) struct MaybeEmpty(pub(crate) String);
+
+/// The name serde hands [`Given`]'s `deserialize_newtype_struct` for a
+/// [`MaybeEmpty`], which is how the reader knows the declaration.
+const MAYBE_EMPTY: &str = "MaybeEmpty";
+
+impl<'de> Deserialize<'de> for MaybeEmpty {
+    fn deserialize<D: de::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Written;
+
+        impl<'de> Visitor<'de> for Written {
+            type Value = MaybeEmpty;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("a value, perhaps empty")
+            }
+
+            fn visit_newtype_struct<D: de::Deserializer<'de>>(
+                self,
+                deserializer: D,
+            ) -> Result<MaybeEmpty, D::Error> {
+                String::deserialize(deserializer).map(MaybeEmpty)
+            }
+        }
+
+        deserializer.deserialize_newtype_struct(MAYBE_EMPTY, Written)
     }
 }
 
