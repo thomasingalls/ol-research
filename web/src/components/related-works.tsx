@@ -136,8 +136,8 @@ function seededFrom(by: RelatedBy, seeds: number, held: number): string | null {
       : `measured from all ${n} of the works it cites`
   }
   return capped
-    ? `measured from ${n} of its ${held.toLocaleString()} citers`
-    : `measured from all ${n} of its citers`
+    ? `measured from ${n} of the ${held.toLocaleString()} works citing it`
+    : `measured from all ${n} of the works citing it`
 }
 
 /**
@@ -151,14 +151,15 @@ function overlap(by: RelatedBy, row: Neighbour): string {
   // that stands on its own rather than print "7 of 3".
   if (row.degree < n || row.degree === 0) {
     return by === "cited-alongside"
-      ? `cited alongside this one by ${n} ${n === 1 ? "work" : "works"}`
+      ? `cited by ${n} of the same ${n === 1 ? "work" : "works"} as this one`
       : `cites ${n} of the same ${n === 1 ? "source" : "sources"} as this one`
   }
   const degree = row.degree
   if (by === "cited-alongside") {
-    if (degree === 1) return "its one citer also cites this one"
-    if (n === degree) return `all ${n} of its citers also cite this one`
-    return `${n} of its ${degree.toLocaleString()} citers also ${n === 1 ? "cites" : "cite"} this one`
+    if (degree === 1) return "the one work citing it also cites this one"
+    if (n === degree)
+      return `all ${n} of the works citing it also cite this one`
+    return `${n} of the ${degree.toLocaleString()} works citing it also ${n === 1 ? "cites" : "cite"} this one`
   }
   if (degree === 1) return "the one work it cites is also cited by this one"
   if (n === degree)
@@ -175,7 +176,7 @@ function nothing(by: RelatedBy, seeds: number): string {
   }
   return by === "cites-same"
     ? "Nothing else we hold cites any of the same sources."
-    : "Nothing we hold is cited alongside this work."
+    : "Nothing else we hold is cited by any of the same works."
 }
 
 /**

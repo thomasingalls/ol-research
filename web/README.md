@@ -21,19 +21,25 @@ product ambitions:
   opens in a new tab, sending no referrer. The places come from the promoted
   names only. A publisher's own id has nowhere to go, and an alias or a
   shared name may lead to another work, so none of those is a place.
-  Beside them, four lists, one tab each: **References** (works it cites),
-  *Cites the same sources*, **Citers** (works citing it), *Cited alongside*.
-  References and citers are paged by cursor with a "Load more", and their
-  tabs carry their counts, which come with the work. A tab the work's own
-  counts show to be empty — no references, or no citers, and so nothing to
-  compare by either — is drawn muted, and still opens on a "No works" that
-  says why. Every row is clickable. A retraction or an expression of concern
-  is badged.
+  Beside them, four lists, one tab each, and every tab the rest of a
+  sentence about this paper: **Cites**, *Cites the same sources as*,
+  **Cited by**, *Cited by the same works as*. The line under the tabs says
+  the open one's sentence whole ("This paper is cited by these."). The tabs
+  sit a pair to a row where the header has 28rem; narrower — a phone, or the
+  side column at 1280–1535px — they stack one to a row, the pairs set apart
+  by a wider gap, so no label is cut. *Cites* and *Cited by* are paged by
+  cursor with a "Load more", and their tabs carry their counts, which come
+  with the work. A tab the work's own counts show to be empty — it cites
+  nothing, or nothing cites it, and so there is nothing to compare by
+  either — is drawn muted, and still opens on a "No works" that says why.
+  Every row is clickable. A retraction or an expression of concern is
+  badged.
 - **Related works** are the two tabs in italics: two questions, one call each.
-  *Cites the same sources* — papers that cite the same sources as this one.
-  *Cited alongside* — papers cited alongside this one. Each row says the
-  overlap in words ("7 of its 9 citers also cite this one"); the cosine beside
-  it only says why the row is where it is.
+  *Cites the same sources as* — papers that cite some of the same sources as
+  this one. *Cited by the same works as* — papers cited by some of the works
+  that cite this one. Each row says the overlap in words ("7 of the 9 works
+  citing it also cite this one"); the cosine beside it only says why the row
+  is where it is.
 - **Resolve** — paste a name (`doi:…`, `pmid:12345678`, `pmc:PMC…`,
   `openalex:W…`, `reg1038:…` — a publisher's own id) or a public id. One work jumps straight there; a **shared**
   name offers the choice between the works it was accepted into; an id retired
@@ -47,8 +53,9 @@ A stub is not missing data. It is 98% of what a reference list points at, and
 its identifiers are the whole of what the corpus holds for it — so a stub row
 leads with its identifier where a title would go, at the same weight, and is
 badged `stub`. It is never a blank row and never a "not found": the identifier
-is the answer. A list that is mostly stubs, as *Cited alongside* usually is, is
-therefore a list of identifiers, which is what it should look like.
+is the answer. A list that is mostly stubs, as *Cited by the same works as*
+usually is, is therefore a list of identifiers, which is what it should look
+like.
 
 ## Layout
 
@@ -112,16 +119,18 @@ back to `index.html` for unknown paths. `pnpm dev` and `pnpm preview` both do.
 
 ## Nice to have
 
-- **Counts on the related tabs.** *References* and *Citers* show how many
-  works they hold because the work record carries both numbers.
-  *Cites the same sources* and *Cited alongside* do not, because nothing
-  holds theirs: it is `total` from `/v1/related`, which is the walk itself
-  (up to 250,000 arcs), so asking for the count costs as much as asking for
-  the list. The fix belongs on the server — the two counts in the search
-  index, or an O(1) lookup by id, the way `references` and `citers` are on
-  the work — and then these tabs show them as the other two do. The labels
-  will need room: "Cites the same sources (30,531)" does not fit a tab at
-  1280px.
+- **Counts on the related tabs.** *Cites* and *Cited by* show how many works
+  they hold because the work record carries both numbers. *Cites the same
+  sources as* and *Cited by the same works as* do not, because nothing holds
+  theirs: it is `total` from `/v1/related`, which is the walk itself (up to
+  250,000 arcs), so asking for the count costs as much as asking for the list.
+  The fix belongs on the server — the two counts in the search index, or an
+  O(1) lookup by id, the way `references` and `citers` are on the work — and
+  then these tabs show them as the other two do. A stacked tab has room for
+  its count; side by side at the narrowest the pairs allow (a 28rem header),
+  "Cited by the same works as (30,531)" would not fit, so the pairs would need
+  a wider header before they sit side by side, or the count would go on the
+  line under the tabs.
 - **Free PDFs, and counts on search results.** A PMC link is the one free
   full text the page can offer today; the work's `open_access` says a free
   copy exists but not where. OpenAlex records do say where — Unpaywall's best
@@ -281,8 +290,9 @@ Things the contract will punish you for getting wrong:
   100 on "Show more".
 - **`seeds_used` against `seeds_total`.** A work with 882 citers may be seeded
   with fewer of them: `seeds_total` is what it had, `seeds_used` is what was
-  walked, and the list says both — "measured from 200 of its 882 citers" —
-  rather than implying it looked at all of them. The pair comes from the
+  walked, and the list says both — "measured from 200 of the 882 works
+  citing it" — rather than implying it looked at all of them. The pair comes
+  from the
   answer itself, not from the work's own counts, so the fraction is the one
   the server measured.
 - **`page` is the page size, not the page number.** One request is one page;

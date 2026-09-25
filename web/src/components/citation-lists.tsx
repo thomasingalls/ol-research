@@ -15,19 +15,22 @@ import { ErrorBox, LoadingRows, NoWorks } from "@/components/states"
 
 /**
  * A work's four lists, one tab each, in the order they are offered. They come
- * in pairs, and the tabs are laid out as two rows of two so the pairs show:
- * what this work cites, and what else cites the same sources; what cites this
- * work, and what else those citers cite alongside it. The first of each pair
- * is an edge list, paged by cursor; the second is one question asked of the
- * graph, `/v1/related`, and its `list` is that route's `by`.
+ * in pairs: what this work cites, and what else cites the same sources; what
+ * cites this work, and what else those works cite alongside it. The first of
+ * each pair is an edge list, paged by cursor; the second is one question
+ * asked of the graph, `/v1/related`, and its `list` is that route's `by`.
+ *
+ * Every tab reads as the rest of a sentence whose subject is this paper —
+ * "(This paper) cites", "(This paper is) cited by the same works as" — and
+ * its `note` is that sentence whole, shown under the tabs for the open one.
  *
  * `list` is the URL's parameter, so a tab is a link.
  *
- * `from` is which of the work's own two counts the list is built from. A
- * pair is only as full as its first half: a work that cites nothing has no
- * sources for anything else to share, and a work nothing cites has no citers
- * to cite anything alongside it. So a zero there means the list is empty,
- * known before anyone asks for it.
+ * `from` is which of the work's own two counts the list is built from, and so
+ * which pair it is in. A pair is only as full as its first half: a work that
+ * cites nothing has no sources for anything else to share, and a work nothing
+ * cites is in no reference list for anything else to share. So a zero there
+ * means the list is empty, known before anyone asks for it.
  *
  * `counted` is whether that count is the list's own length, which it is for
  * the edge lists, so their tabs can say it. A related list's length is only
@@ -37,35 +40,40 @@ import { ErrorBox, LoadingRows, NoWorks } from "@/components/states"
 export const LISTS = [
   {
     list: "references",
-    tab: "References",
-    note: "Works this one cites.",
+    tab: "Cites",
+    note: "This paper cites these.",
     from: "references",
     counted: true,
   },
   {
     list: "cites-same",
-    tab: "Cites the same sources",
-    note: "Papers that cite the same sources as this one.",
+    tab: "Cites the same sources as",
+    note: "This paper cites some of the same sources as each of these.",
     from: "references",
     counted: false,
   },
   {
     list: "citers",
-    tab: "Citers",
-    note: "Works citing this one.",
+    tab: "Cited by",
+    note: "This paper is cited by these.",
     from: "citers",
     counted: true,
   },
   {
     list: "cited-alongside",
-    tab: "Cited alongside",
-    note: "Papers cited alongside this one.",
+    tab: "Cited by the same works as",
+    note: "This paper is cited by some of the same works as each of these.",
     from: "citers",
     counted: false,
   },
 ] as const
 
 export type List = (typeof LISTS)[number]["list"]
+
+/** The lists two by two, as `from` pairs them. */
+const PAIRS = (["references", "citers"] as const).map((from) =>
+  LISTS.filter((l) => l.from === from),
+)
 
 export const LIST_DEFAULT: List = "references"
 
@@ -82,58 +90,72 @@ export function CitationLists({ id, list }: { id: PublicId; list: List }) {
           they stay at the top of their column while the list under them
           scrolls, and the rule is the edge it scrolls under. Tab labels,
           the line and the rows' text all start on one edge. */}
-      <header className="bg-background xl:bg-card space-y-2 border-b pb-3 xl:sticky xl:top-0 xl:z-10 xl:pt-3">
-        <nav aria-label="Which list to show" className="grid grid-cols-2 gap-1">
-          {LISTS.map((l) => {
-            // Empty for this work: drawn as a disabled button is, so it
-            // reads as nothing there, but it is still a link. The panel
-            // behind it says why it is empty, which is worth a click.
-            const empty = work !== null && work[l.from] === 0
-            const count = l.counted && work !== null ? work[l.from] : null
-            return (
-              <Button
-                key={l.list}
-                asChild
-                size="sm"
-                variant={l.list === list ? "secondary" : "ghost"}
-                className={cn("justify-start px-2", empty && "opacity-50")}
-              >
-                {/* A tab is a link, so the open one is in the URL and the
-                    page can be pasted to someone else as it stands.
-                    `replace` keeps Back meaning the work you arrived from,
-                    not the other tab. The page stays where it is; only the
-                    list starts again from its top. */}
-                <Link
-                  to="/work/$workId"
-                  params={{ workId: id }}
-                  search={(prev) => ({
-                    ...prev,
-                    list: l.list === LIST_DEFAULT ? undefined : l.list,
-                  })}
-                  replace
-                  resetScroll={false}
-                  activeOptions={{ exact: true }}
-                  onClick={(event) =>
-                    event.currentTarget
-                      .closest('[data-scroll-restoration-id="lists"]')
-                      ?.scrollTo({ top: 0 })
-                  }
-                >
-                  {l.tab}
-                  {count !== null && (
-                    <span className="text-muted-foreground tabular-nums">
-                      ({count.toLocaleString()})
-                    </span>
-                  )}
-                  {/* A count says "(0)" out loud; a muted tab without one
-                      needs saying for anyone who cannot see it muted. */}
-                  {empty && count === null && (
-                    <span className="sr-only"> (none)</span>
-                  )}
-                </Link>
-              </Button>
-            )
-          })}
+      <header className="@container bg-background xl:bg-card space-y-2 border-b pb-3 xl:sticky xl:top-0 xl:z-10 xl:pt-3">
+        {/* A pair to a row, side by side, where there is room for "Cited by
+            the same works as" in half the width. Where there is not — a
+            phone, or the side column beside a work on a laptop-sized
+            screen — the tabs stack one to a row, and a wider gap sets the
+            pairs apart. Measured on the header's own width, not the
+            screen's: one screen width gives it a whole page below `xl` and
+            a narrow column above. */}
+        <nav
+          aria-label="Which list to show"
+          className="flex flex-col gap-3 @md:gap-1"
+        >
+          {PAIRS.map((pair) => (
+            <div key={pair[0].from} className="grid gap-1 @md:grid-cols-2">
+              {pair.map((l) => {
+                // Empty for this work: drawn as a disabled button is, so it
+                // reads as nothing there, but it is still a link. The panel
+                // behind it says why it is empty, which is worth a click.
+                const empty = work !== null && work[l.from] === 0
+                const count = l.counted && work !== null ? work[l.from] : null
+                return (
+                  <Button
+                    key={l.list}
+                    asChild
+                    size="sm"
+                    variant={l.list === list ? "secondary" : "ghost"}
+                    className={cn("justify-start px-2", empty && "opacity-50")}
+                  >
+                    {/* A tab is a link, so the open one is in the URL and the
+                        page can be pasted to someone else as it stands.
+                        `replace` keeps Back meaning the work you arrived from,
+                        not the other tab. The page stays where it is; only the
+                        list starts again from its top. */}
+                    <Link
+                      to="/work/$workId"
+                      params={{ workId: id }}
+                      search={(prev) => ({
+                        ...prev,
+                        list: l.list === LIST_DEFAULT ? undefined : l.list,
+                      })}
+                      replace
+                      resetScroll={false}
+                      activeOptions={{ exact: true }}
+                      onClick={(event) =>
+                        event.currentTarget
+                          .closest('[data-scroll-restoration-id="lists"]')
+                          ?.scrollTo({ top: 0 })
+                      }
+                    >
+                      {l.tab}
+                      {count !== null && (
+                        <span className="text-muted-foreground tabular-nums">
+                          ({count.toLocaleString()})
+                        </span>
+                      )}
+                      {/* A count says "(0)" out loud; a muted tab without one
+                          needs saying for anyone who cannot see it muted. */}
+                      {empty && count === null && (
+                        <span className="sr-only"> (none)</span>
+                      )}
+                    </Link>
+                  </Button>
+                )
+              })}
+            </div>
+          ))}
         </nav>
         <p className="text-muted-foreground px-2 text-xs">{open.note}</p>
       </header>
