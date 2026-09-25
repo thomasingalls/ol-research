@@ -2313,12 +2313,13 @@ fn merge_batch(opts: &Options, public_key: Option<&Path>) -> ExitCode {
     let a = &applied;
     println!("batch {} at {}", a.batch, a.at);
     println!(
-        "  records: {} merged ({} copies superseded by a newer one, {} of them read for their citations alone, {} withdrawn; {} earlier copies read back for their citations), {} deletions ({} of records no work had, {} not applying to the copy that speaks)",
+        "  records: {} merged ({} copies superseded by a newer one, {} of them read for their citations alone, {} withdrawn; {} earlier copies read back for their citations, {} normalized sets scanned), {} deletions ({} of records no work had, {} not applying to the copy that speaks)",
         a.records,
         a.superseded,
         a.cited_only,
         a.withdrawn,
         a.earlier_copies,
+        a.sets_read,
         a.deleted,
         a.deletions_unknown,
         a.deletions_not_applying

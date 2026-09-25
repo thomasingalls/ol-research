@@ -1816,17 +1816,29 @@ state kept outside the store, and a limit per principal on calls and on
     hold-out with 0.
 
     **What it costs, and what is next.** The batches on the update files
-    took 5.5, 19.8, 11.5, 13.9 and 23.2 s before this item and take 9.2,
-    28.4, 15.0, 21.1 and 38.7 s now (M, the laptop). Every read back
-    scans a whole normalized set to find its records: `earlier_copies`
-    and the list of events read each set once per batch, but the division
-    reads one record at a time. On the corpus a record's copies are
-    spread over the 1,334 baseline files and every update file since, and
-    one scan is about half a second (M, as a dump), so a batch that reads
-    back from many sets could take minutes (E). Two steps, in order: read
-    the division's records set by set as the other two do; then an index
-    of each normalized set by native id, so a copy is one seek (the
-    user's option (c)), if the corpus's batch time asks for it.
+    took 5.5, 19.8, 11.5, 13.9 and 23.2 s before this item and 9.2, 28.4,
+    15.0, 21.1 and 38.7 s once it was built (M, the laptop). Every read
+    back scans a whole normalized set to find its records.
+
+    Step 1, the same day (the user: "go ahead with step 1"): the division
+    reads set by set too. Which stub divides is known only as its
+    component resolves, so the citing records of every stub the
+    components hold are read ahead, one scan a set, into a cache the
+    division and the list of events read from (`Engine::read_ahead`,
+    `Engine::read_copies`); a stub taken over whole reads for nothing,
+    but the cost is the sets, not the records. The batch's report counts
+    the sets it scanned. Now 8.0, 27.1, 15.0, 20.9 and 30.4 s, scanning
+    7, 11, 13, 15 and 18 sets (M): the sample has seven, and a batch reads
+    them in up to three passes — the earlier copies and the read-ahead
+    before the components resolve, the list of events after, since it
+    needs the final table. One scan is about half a second (M, as a
+    dump). On the corpus a batch's records have copies and citers across
+    the 1,334 baseline files and every update file since, so a pass could
+    scan hundreds of sets, minutes each pass (E). What is left, if the
+    corpus's batch time asks for it: fold the two passes before the
+    components resolve into one, and an index of each normalized set by
+    native id, so a copy is one seek and no pass scans a set whole (the
+    user's option (c)).
 
 ## 12. Sources consulted
 
