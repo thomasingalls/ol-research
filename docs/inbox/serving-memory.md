@@ -50,4 +50,25 @@ one range's documents, 1–2 GB; the works index's public maps, about 4 GB;
 a run of the sorts, 256 MiB; the graph, 3.5 GB — about 10 GB at the works
 step, where it was 135–185 GB. To measure before the corpus's epoch.
 
+## On the corpus, 2026-09-24
+
+`ol-rht-publish-corpus-v1` on ol-rht 742eaae published epoch 5 from the
+corpus's merge of record (batch 5, merged/v8.13) in 2,338 s, and
+`epoch check` passed it in 1,737 s (M): names and works rebuilt byte for
+byte, the graph's eight files matching their digests, all 41,990,151 rows'
+92,996,995 promoted names and 41,990,151 public ids resolving to their
+work, the lexical index holding all 39,984,110 held works. Resident
+high-water (M): the names lookup 5.1 GB; the works and lexical indexes,
+built together in about 15 minutes, 18.0 GB; `epoch check` 22.2 GB — so the
+estimate of about 10 GB was low by half, and the 135–185 GB it replaced
+was never run. On disk after ZFS's compression: works 19 GB, search
+17 GB, graph 3.7 GB, cited-as 3.1 GB, names 1.5 GB. The server's pod,
+its limit raised from 8 to 64 GiB for the page cache of these, switched to
+epoch 5 the moment it was published and the site answered with 41,990,151
+works; the pod serving epoch 4 was retired by the rolling handover.
+
+Still open: what drives the 18 GB (the join's map of every source record
+and the works index's public-id maps are the likely parts, E), and the
+server's latency on cold reads at this size.
+
 The merge of record does not wait on any of this: it writes the merged sets these stages read, and the site keeps serving the epoch it has until one it can read is published.

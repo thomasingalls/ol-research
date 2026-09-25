@@ -1189,6 +1189,16 @@ state kept outside the store, and a limit per principal on calls and on
   there is small, and the corpus's figure is its first run. The works
   index still reads the public log into its two maps (about 4 GB on the
   corpus, E).
+- 2026-09-24, the corpus's first epoch. Epoch 5, from the merge of record
+  of the whole PubMed 2026 baseline (batch 5, 39,994,988 records, merged
+  v8.13), published in 39 minutes and checked in 29
+  (`ol-rht-publish-corpus-v1`): 41,990,151 works and 405,847,886 arcs
+  served, every rebuild byte for byte, at 18 GB resident for the publish
+  and 22 GB for the check (`docs/inbox/serving-memory.md`). The server's
+  pod limit went from 8 to 64 GiB — the user: nothing else on the box
+  matters as much right now — so that most of its 44 GB of mapped
+  artifacts can stay in the page cache; the handover took the site from
+  epoch 4 to 5 without a gap.
 
 ## 11. Open items
 
