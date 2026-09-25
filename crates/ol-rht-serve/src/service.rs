@@ -10,10 +10,12 @@
 //! transports at once and neither can drift from the other.
 
 use std::sync::{Arc, RwLock};
+use std::time::{Duration, Instant};
 
 use merge::{Sources, WorkId};
+use search::Hits;
 use serve::{By, Resolved, Walk};
-use tokio::sync::mpsc;
+use tokio::sync::{Semaphore, mpsc};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
 
@@ -21,6 +23,7 @@ use crate::answers::{Answers, Direction};
 use crate::convert;
 use crate::proto::v1 as pb;
 use crate::proto::v1::serving_server::Serving;
+use crate::querylog::{self, Outcome};
 use crate::terms::Terms;
 
 /// Arcs a page may carry.
@@ -58,6 +61,18 @@ pub const PATHS_DEFAULT: u32 = 3;
 /// Works the two halves of a path search may expand between them before
 /// giving up. Not the caller's: a resource guard, not a question.
 pub const PATH_VISITS: u64 = graph::Bounds::DEFAULT.visits;
+/// How long a search may take, from its request's arrival to its answer,
+/// when the server is not told otherwise (`--search-deadline`).
+pub const SEARCH_DEADLINE: Duration = Duration::from_secs(10);
+
+/// Searches that may run at once when the server is not told otherwise
+/// (`--search-threads`): half the cores, so that the other half is always
+/// free for every other call, the health checks among them, and for the
+/// poll that folds a batch.
+#[must_use]
+pub fn search_threads() -> usize {
+    std::thread::available_parallelism().map_or(1, |n| (n.get() / 2).max(1))
+}
 
 /// The server.
 pub struct Service<A: Answers> {
@@ -67,6 +82,26 @@ pub struct Service<A: Answers> {
     /// and waits, not ready, while the one it replaces keeps answering.
     answers: RwLock<Option<Arc<A>>>,
     terms: Arc<Terms>,
+    searches: Searches,
+}
+
+/// Where searches run (2026-09-25): never on the threads that answer
+/// requests, where until then a search that took minutes held one of
+/// them for minutes and a few such held them all, health checks and all;
+/// on a thread of their own instead, at most `permits` at once, each
+/// within `deadline`.
+struct Searches {
+    permits: Arc<Semaphore>,
+    deadline: Duration,
+}
+
+impl Searches {
+    fn new(threads: usize, deadline: Duration) -> Self {
+        Self {
+            permits: Arc::new(Semaphore::new(threads.max(1))),
+            deadline,
+        }
+    }
 }
 
 impl<A: Answers> std::fmt::Debug for Service<A> {
@@ -76,11 +111,13 @@ impl<A: Answers> std::fmt::Debug for Service<A> {
 }
 
 impl<A: Answers> Service<A> {
-    /// Serves `answers` under `terms`.
+    /// Serves `answers` under `terms`, searching with the defaults
+    /// ([`search_threads`], [`SEARCH_DEADLINE`]).
     pub fn new(answers: A, terms: Terms) -> Self {
         Self {
             answers: RwLock::new(Some(Arc::new(answers))),
             terms: Arc::new(terms),
+            searches: Searches::new(search_threads(), SEARCH_DEADLINE),
         }
     }
 
@@ -91,7 +128,16 @@ impl<A: Answers> Service<A> {
         Self {
             answers: RwLock::new(None),
             terms: Arc::new(terms),
+            searches: Searches::new(search_threads(), SEARCH_DEADLINE),
         }
+    }
+
+    /// Runs at most `threads` searches at once, at least one, each within
+    /// `deadline`.
+    #[must_use]
+    pub fn searching(mut self, threads: usize, deadline: Duration) -> Self {
+        self.searches = Searches::new(threads, deadline);
+        self
     }
 
     /// Switches to a new epoch; requests in flight finish on the old one.
@@ -143,6 +189,8 @@ pub(crate) fn status(e: &serve::Error) -> Status {
     match e {
         serve::Error::NotAName(what) => Status::invalid_argument(what.clone()),
         serve::Error::NoEpoch => Status::failed_precondition(e.to_string()),
+        // The query log's, not the fault log's.
+        serve::Error::Search(search::Error::Deadline) => Status::deadline_exceeded(e.to_string()),
         other => {
             eprintln!("ol-rht-serve: {other}");
             Status::internal(other.to_string())
@@ -314,25 +362,116 @@ pub(crate) fn one_page<A: Answers>(
     })
 }
 
-/// Works matching a query, with facet counts over the matches.
+/// Works matching a query, with facet counts over the matches: the text
+/// read by the query parser, searched on a search thread within the time
+/// limit, and written to the query log whatever became of it. Any text
+/// within the parser's caps is a query, and whitespace alone is the query
+/// that finds nothing.
 ///
 /// # Errors
 ///
-/// A query the engine refuses, a row that does not decode. The two
-/// counts arrive already bounded, because the transports spell them
+/// `INVALID_ARGUMENT` for text over the parser's caps,
+/// `RESOURCE_EXHAUSTED` when no search thread comes free within the time
+/// limit, `DEADLINE_EXCEEDED` for a search that runs past it, and the
+/// engine's failures and a row that does not decode. The two counts
+/// arrive already bounded, because the transports spell them
 /// differently: gRPC's `facets` field is JSON's `facet_values`, which is
 /// what the number is (the user, 2026-09-19).
-pub(crate) fn searched<A: Answers>(
-    a: &A,
-    terms: &Terms,
-    query: &str,
+pub(crate) async fn searched<A: Answers>(
+    service: &Service<A>,
+    a: Arc<A>,
+    text: &str,
     limit: usize,
     facet_values: usize,
     hydrate: bool,
 ) -> Result<pb::SearchResponse, Status> {
-    let hits = a
-        .search(query, limit, facet_values)
-        .map_err(|e| status(&e))?;
+    let started = Instant::now();
+    let deadline = service.searches.deadline;
+    let until = started + deadline;
+    let log = |outcome, words, hits| querylog::log(outcome, text, words, hits, started.elapsed());
+    let asked = match query_parser::parse(text) {
+        Ok(asked) => asked,
+        Err(e) => {
+            log(Outcome::TooLong, None, None);
+            return Err(Status::invalid_argument(e.to_string()));
+        }
+    };
+    let words = Some(asked.words().len());
+    let permits = Arc::clone(&service.searches.permits);
+    let permit = match tokio::time::timeout_at(until.into(), permits.acquire_owned()).await {
+        Ok(Ok(permit)) => permit,
+        Ok(Err(closed)) => {
+            eprintln!("ol-rht-serve: search threads: {closed}");
+            log(Outcome::Failed, words, None);
+            return Err(Status::internal(closed.to_string()));
+        }
+        Err(_) => {
+            eprintln!(
+                "ol-rht-serve: every search thread was busy for the whole {} s time limit",
+                deadline.as_secs()
+            );
+            log(Outcome::Busy, words, None);
+            return Err(Status::resource_exhausted(
+                "every search thread is busy; try again shortly",
+            ));
+        }
+    };
+    let terms = Arc::clone(&service.terms);
+    // The permit goes with the search and is let go when the search
+    // stops, not when its caller stops waiting: a search past its time
+    // limit holds its thread until the engine next looks at the clock.
+    let task = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        let hits = a
+            .search(&asked, limit, facet_values, until)
+            .map_err(Stopped::Search)?;
+        answer(&*a, &terms, hits, hydrate).map_err(Stopped::Answer)
+    });
+    let late = || {
+        Status::deadline_exceeded(format!(
+            "the search ran past its time limit of {} s",
+            deadline.as_secs()
+        ))
+    };
+    match tokio::time::timeout_at(until.into(), task).await {
+        Ok(Ok(Ok(response))) => {
+            log(Outcome::Answered, words, Some(response.total));
+            Ok(response)
+        }
+        Err(_) | Ok(Ok(Err(Stopped::Search(serve::Error::Search(search::Error::Deadline))))) => {
+            log(Outcome::TimedOut, words, None);
+            Err(late())
+        }
+        Ok(Ok(Err(Stopped::Search(e)))) => {
+            log(Outcome::Failed, words, None);
+            Err(status(&e))
+        }
+        Ok(Ok(Err(Stopped::Answer(refusal)))) => {
+            log(Outcome::Failed, words, None);
+            Err(refusal)
+        }
+        Ok(Err(stopped)) => {
+            eprintln!("ol-rht-serve: a search stopped: {stopped}");
+            log(Outcome::Failed, words, None);
+            Err(Status::internal(format!("the search stopped: {stopped}")))
+        }
+    }
+}
+
+/// Why a search on its thread gave no answer: the engine, or the answer
+/// made from its hits.
+enum Stopped {
+    Search(serve::Error),
+    Answer(Status),
+}
+
+/// The response for `hits`.
+fn answer<A: Answers>(
+    a: &A,
+    terms: &Terms,
+    hits: Hits,
+    hydrate: bool,
+) -> Result<pb::SearchResponse, Status> {
     Ok(pb::SearchResponse {
         answered: Some(answered(a, terms, Terms::all())),
         total: hits.total as u64,
@@ -642,14 +781,11 @@ impl<A: Answers> Serving for Service<A> {
     ) -> Result<Response<pb::SearchResponse>, Status> {
         let a = self.current()?;
         let req = req.into_inner();
-        Ok(Response::new(searched(
-            &*a,
-            &self.terms,
-            &req.query,
-            bounded(req.limit, SEARCH_DEFAULT, SEARCH_MAX, "limit")?,
-            bounded(req.facets, FACETS_DEFAULT, FACETS_MAX, "facets")?,
-            req.hydrate,
-        )?))
+        let limit = bounded(req.limit, SEARCH_DEFAULT, SEARCH_MAX, "limit")?;
+        let facets = bounded(req.facets, FACETS_DEFAULT, FACETS_MAX, "facets")?;
+        Ok(Response::new(
+            searched(self, a, &req.query, limit, facets, req.hydrate).await?,
+        ))
     }
 
     async fn expand(

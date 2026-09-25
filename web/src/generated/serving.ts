@@ -401,7 +401,9 @@ export type ResolveResponse = {
  */
 export type SearchParams = {
   /**
-   * The query, as typed.
+   * The query, as typed: any text, every character of it text. Empty
+   * is the query that finds nothing; over 1,024 words or 64 KiB is
+   * refused.
    */
   query: string,
   /**

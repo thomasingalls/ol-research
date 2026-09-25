@@ -25,6 +25,10 @@ pub const SAMPLE_QUERIES: [&str; 6] = [
 /// # Errors
 ///
 /// Writing to `out`, or the engine while it counts.
+///
+/// # Panics
+///
+/// Never: every sample query is within the query parser's caps.
 pub fn print(out: &mut impl Write, opened: &Opened, stats: &Stats) -> Result<(), crate::Error> {
     let m = opened.manifest();
     writeln!(out, "search {} {}", m.engine, crate::version())?;
@@ -86,7 +90,8 @@ pub fn print(out: &mut impl Write, opened: &Opened, stats: &Stats) -> Result<(),
     writeln!(out, "  mapping: {}", schema::DESCRIPTION)?;
     writeln!(out, "  sample queries, top three by score")?;
     for query in SAMPLE_QUERIES {
-        let hits = opened.search(query, 3, 1)?;
+        let asked = query_parser::parse(query).expect("a sample query is within the caps");
+        let hits = opened.search(&asked, 3, 1, None)?;
         writeln!(out, "    {query:?}: {} hits", hits.total)?;
         for hit in &hits.hits {
             writeln!(

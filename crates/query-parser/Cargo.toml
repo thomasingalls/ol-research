@@ -1,0 +1,17 @@
+[package]
+name = "query-parser"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The query parser: what a person typed into the search box, read into the one query tree every search engine behind the serving layer is asked from."
+
+# No engine here, on purpose: the tree is the engines' common ground, and
+# each engine's translation lives beside that engine (`search` for
+# Tantivy).
+[dependencies]
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

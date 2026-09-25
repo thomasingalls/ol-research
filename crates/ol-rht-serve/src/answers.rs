@@ -2,6 +2,7 @@
 //! core, or a fake in the tests.
 
 use std::collections::HashMap;
+use std::time::Instant;
 
 use graph::Arc;
 use merge::{Sources, WorkId};
@@ -76,12 +77,19 @@ pub trait Answers: Send + Sync + 'static {
     fn public_of(&self, id: WorkId) -> Option<String>;
     /// `n` arcs of a list from `offset`, and the list's length.
     fn page(&self, id: WorkId, direction: Direction, offset: u64, n: usize) -> Page;
-    /// Works matching a query.
+    /// Works matching a query, as the query parser read it, stopped at
+    /// `until`.
     ///
     /// # Errors
     ///
-    /// A query the engine refuses.
-    fn search(&self, text: &str, limit: usize, facets: usize) -> Result<Hits, serve::Error>;
+    /// The engine, or `search::Error::Deadline` past `until`.
+    fn search(
+        &self,
+        asked: &query_parser::Query,
+        limit: usize,
+        facets: usize,
+        until: Instant,
+    ) -> Result<Hits, serve::Error>;
     /// One hop out from a seed set along `walk`, scored and ranked;
     /// `about` is the work the question is about, left out of its own
     /// answer.
@@ -152,8 +160,14 @@ impl Answers for Serving {
         Page { arcs, total, by }
     }
 
-    fn search(&self, text: &str, limit: usize, facets: usize) -> Result<Hits, serve::Error> {
-        self.search_facets(text, limit, facets)
+    fn search(
+        &self,
+        asked: &query_parser::Query,
+        limit: usize,
+        facets: usize,
+        until: Instant,
+    ) -> Result<Hits, serve::Error> {
+        self.search_facets(asked, limit, facets, Some(until))
     }
 
     fn expand(

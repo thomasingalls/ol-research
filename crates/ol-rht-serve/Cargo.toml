@@ -20,6 +20,7 @@ ingest.workspace = true
 merge.workspace = true
 model.workspace = true
 prost.workspace = true
+query-parser.workspace = true
 search.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -32,6 +33,7 @@ tonic-prost.workspace = true
 tonic-reflection.workspace = true
 
 [dev-dependencies]
+proptest.workspace = true
 # The descriptor set, read back in `ts.rs` to prove no enum reaches a
 # response body. A build-dependency already; this is the same crate.
 prost-types.workspace = true

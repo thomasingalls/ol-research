@@ -11,6 +11,7 @@ graph.workspace = true
 ingest.workspace = true
 memmap2.workspace = true
 merge.workspace = true
+query-parser.workspace = true
 model.workspace = true
 postcard.workspace = true
 search.workspace = true

@@ -525,9 +525,17 @@ fn a_batch_folds_and_equals_the_full_merge_after_it() {
     assert!(serving.work(i).unwrap().is_none());
     assert_eq!(resolve(&serving, "pmid:8"), None);
     // The lexical index absorbed the batch.
-    let hits = serving.search("delta", 10).unwrap();
+    let hits = serving
+        .search(&query_parser::parse("delta").unwrap(), 10)
+        .unwrap();
     assert_eq!(hits.total, 1);
-    assert_eq!(serving.search("iota", 10).unwrap().total, 0);
+    assert_eq!(
+        serving
+            .search(&query_parser::parse("iota").unwrap(), 10)
+            .unwrap()
+            .total,
+        0
+    );
     assert_eq!(serving.public_of(d).map(|p| p.len()), Some(17));
 
     // A full merge over everything appends nothing and agrees.

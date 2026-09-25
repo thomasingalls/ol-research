@@ -1,9 +1,16 @@
 //! `ol-rht-serve --store <root> [--listen <addr>] [--http <addr>|off]
-//! [--allow-origin <origin>]… [--poll <seconds>]`: the query core over
-//! gRPC and, on a second listener, over JSON (serving plan §7). Opens
-//! the epoch `current` names, serves it, folds every batch the journal
-//! gains (§5) on each poll, and switches to a new epoch when `current`
-//! changes, requests in flight finishing on the old.
+//! [--allow-origin <origin>]… [--poll <seconds>] [--search-threads <n>]
+//! [--search-deadline <seconds>]`: the query core over gRPC and, on a
+//! second listener, over JSON (serving plan §7). Opens the epoch
+//! `current` names, serves it, folds every batch the journal gains (§5)
+//! on each poll, and switches to a new epoch when `current` changes,
+//! requests in flight finishing on the old.
+//!
+//! Searches run on threads of their own, never on the ones that answer
+//! requests: at most `--search-threads` at once (half the cores unless
+//! told), each within `--search-deadline` (10 s unless told). Every
+//! search writes one line to standard output, the query log; standard
+//! error stays the log of the server's own trouble.
 //!
 //! A server built for another model or merge version than the store's
 //! does not exit (2026-09-24). While `current` names an epoch built from
@@ -31,7 +38,7 @@ use tonic::transport::server::TcpIncoming;
 /// process is, which is what a liveness probe asks.
 type Named = ServingServer<Service<Serving>>;
 
-const USAGE: &str = "usage: ol-rht-serve [--store <root>] [--listen <addr>] [--http <addr>|off] [--allow-origin <origin>]... [--poll <seconds>]";
+const USAGE: &str = "usage: ol-rht-serve [--store <root>] [--listen <addr>] [--http <addr>|off] [--allow-origin <origin>]... [--poll <seconds>] [--search-threads <n>] [--search-deadline <seconds>]";
 
 struct Args {
     store: PathBuf,
@@ -39,6 +46,8 @@ struct Args {
     http: String,
     origins: Vec<String>,
     poll: u64,
+    search_threads: usize,
+    search_deadline: Duration,
 }
 
 fn parse(args: &[String]) -> Option<Args> {
@@ -53,6 +62,8 @@ fn parse(args: &[String]) -> Option<Args> {
         http: "127.0.0.1:50052".to_owned(),
         origins: Vec::new(),
         poll: 1,
+        search_threads: ol_rht_serve::service::search_threads(),
+        search_deadline: ol_rht_serve::service::SEARCH_DEADLINE,
     };
     let mut i = 0;
     while i < args.len() {
@@ -63,6 +74,13 @@ fn parse(args: &[String]) -> Option<Args> {
             "--http" => out.http.clone_from(value),
             "--allow-origin" => out.origins.push(value.clone()),
             "--poll" => out.poll = value.parse().ok()?,
+            "--search-threads" => {
+                out.search_threads = value.parse().ok().filter(|n| *n > 0)?;
+            }
+            "--search-deadline" => {
+                let seconds: u64 = value.parse().ok().filter(|s| *s > 0)?;
+                out.search_deadline = Duration::from_secs(seconds);
+            }
             _ => return None,
         }
         i += 2;
@@ -152,10 +170,18 @@ async fn main() -> ExitCode {
             origins.listed().join(", ")
         );
     }
-    let service = Arc::new(match serving {
-        Some(serving) => Service::new(serving, Terms::stub()),
-        None => Service::waiting(Terms::stub()),
-    });
+    eprintln!(
+        "ol-rht-serve: at most {} searches at once, each within {} s; one line per search on stdout",
+        args.search_threads,
+        args.search_deadline.as_secs()
+    );
+    let service = Arc::new(
+        match serving {
+            Some(serving) => Service::new(serving, Terms::stub()),
+            None => Service::waiting(Terms::stub()),
+        }
+        .searching(args.search_threads, args.search_deadline),
+    );
     let (reporter, health) = tonic_health::server::health_reporter();
     if service.current().is_ok() {
         reporter.set_serving::<Named>().await;

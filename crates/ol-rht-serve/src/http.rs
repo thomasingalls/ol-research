@@ -44,7 +44,7 @@ use tonic::{Code, Status};
 
 use crate::answers::{Answers, Direction};
 use crate::proto::v1 as pb;
-use crate::query::Params;
+use crate::query::{MaybeEmpty, Params};
 use crate::service::{self, Service};
 
 /// The one list of the routes, read three ways: by `axum` as the router
@@ -299,8 +299,11 @@ fn list<A: Answers>(
     ts(export_to = "serving.ts", optional_fields)
 )]
 pub(crate) struct SearchParams {
-    /// The query, as typed.
-    query: String,
+    /// The query, as typed: any text, every character of it text. Empty
+    /// is the query that finds nothing; over 1,024 words or 64 KiB is
+    /// refused.
+    #[cfg_attr(test, ts(as = "String"))]
+    query: MaybeEmpty,
     /// Hits returned, to a cap of 100; 10 when it is not asked.
     limit: Option<u32>,
     /// Values kept per facet root, to a cap of 20; 5 when it is not
@@ -330,14 +333,17 @@ async fn search<A: Answers>(
         service::FACETS_MAX,
         "facet_values",
     )?;
-    Ok(Json(service::searched(
-        &*a,
-        service.terms(),
-        &params.query,
-        limit,
-        facet_values,
-        params.hydrate.unwrap_or(false),
-    )?))
+    Ok(Json(
+        service::searched(
+            &service,
+            a,
+            &params.query.0,
+            limit,
+            facet_values,
+            params.hydrate.unwrap_or(false),
+        )
+        .await?,
+    ))
 }
 
 /// Which way an expansion walks. Named and not numbered: the protocol's

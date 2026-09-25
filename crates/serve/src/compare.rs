@@ -33,6 +33,10 @@ pub const QUERIES: [&str; 6] = [
 /// # Errors
 ///
 /// A row that does not decode, or the engine.
+///
+/// # Panics
+///
+/// Never: every fixed query is within the query parser's caps.
 #[allow(clippy::too_many_lines)]
 pub fn differences(a: &Serving, b: &Serving, limit: usize) -> Result<Vec<String>, Error> {
     let mut out: Vec<String> = Vec::new();
@@ -169,7 +173,8 @@ pub fn differences(a: &Serving, b: &Serving, limit: usize) -> Result<Vec<String>
         }
     }
     for query in QUERIES {
-        let (ha, hb) = (a.search(query, 100)?, b.search(query, 100)?);
+        let asked = query_parser::parse(query).expect("a comparison query is within the caps");
+        let (ha, hb) = (a.search(&asked, 100)?, b.search(&asked, 100)?);
         if ha.total != hb.total {
             note(format!(
                 "search {query:?}: {} hits against {}",

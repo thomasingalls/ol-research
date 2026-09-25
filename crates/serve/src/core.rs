@@ -7,6 +7,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{RwLock, RwLockReadGuard};
+use std::time::Instant;
 
 use graph::Base;
 use ingest::Store;
@@ -664,23 +665,30 @@ impl Serving {
         Arcs::new(self.graph.citers(id), delta)
     }
 
-    /// Works matching a query, with facet counts over the matches.
+    /// Works matching a query, as the query parser read it, with facet
+    /// counts over the matches.
     ///
     /// # Errors
     ///
-    /// A query the engine refuses.
-    pub fn search(&self, text: &str, limit: usize) -> Result<Hits, Error> {
-        self.search_facets(text, limit, 5)
+    /// The engine.
+    pub fn search(&self, asked: &query_parser::Query, limit: usize) -> Result<Hits, Error> {
+        self.search_facets(asked, limit, 5, None)
     }
 
     /// As [`search`](Self::search), with the top `facets` values of each
-    /// facet root.
+    /// facet root, and stopped at `until` when there is one.
     ///
     /// # Errors
     ///
-    /// A query the engine refuses.
-    pub fn search_facets(&self, text: &str, limit: usize, facets: usize) -> Result<Hits, Error> {
-        Ok(self.search.search(text, limit, facets)?)
+    /// The engine, or `search::Error::Deadline` past `until`.
+    pub fn search_facets(
+        &self,
+        asked: &query_parser::Query,
+        limit: usize,
+        facets: usize,
+        until: Option<Instant>,
+    ) -> Result<Hits, Error> {
+        Ok(self.search.search(asked, limit, facets, until)?)
     }
 
     /// A work's public id: minted since the epoch, or in the base's array.
