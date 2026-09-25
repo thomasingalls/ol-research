@@ -730,7 +730,7 @@ fn batches_equal_the_full_merge(
     base: Vec<Incoming>,
     store_deletions: &[Deletion],
     batches: Vec<Batch>,
-) -> (ingest::Store, Serving) {
+) -> (fixture::Scratch, Serving) {
     let store = fixture::store(name);
     let mut all = base;
     let mut deletions: Vec<(SourceId, String, String)> = store_deletions

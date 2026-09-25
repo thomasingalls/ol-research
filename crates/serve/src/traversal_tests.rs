@@ -54,7 +54,7 @@ fn corpus() -> Vec<Incoming> {
     records
 }
 
-fn open(name: &str) -> (ingest::Store, Serving) {
+fn open(name: &str) -> (fixture::Scratch, Serving) {
     let store = fixture::store(name);
     assert_eq!(fixture::full_merge(&store, &corpus(), &[]), 1);
     let serving = Serving::open(&store).unwrap();

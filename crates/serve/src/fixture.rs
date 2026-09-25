@@ -65,7 +65,7 @@ pub(crate) fn key() -> Key {
 }
 
 /// A scratch store.
-pub(crate) fn store(name: &str) -> Store {
+pub(crate) fn store(name: &str) -> Scratch {
     let root = std::env::temp_dir().join(format!(
         "ol-rht-serve-{name}-{}-{}",
         std::process::id(),
@@ -73,7 +73,28 @@ pub(crate) fn store(name: &str) -> Store {
     ));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).unwrap();
-    Store::new(root)
+    Scratch(Store::new(root))
+}
+
+/// A test's scratch store, removed when the test is done with it, as a
+/// test that forgets to remove it left it behind on every run; kept when
+/// the test fails, for a look at what it left.
+pub(crate) struct Scratch(Store);
+
+impl std::ops::Deref for Scratch {
+    type Target = Store;
+
+    fn deref(&self) -> &Store {
+        &self.0
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        if !std::thread::panicking() {
+            let _ = std::fs::remove_dir_all(self.0.root());
+        }
+    }
 }
 
 fn owned(view: &View<'_>) -> Owned {
