@@ -303,7 +303,7 @@ pub(crate) fn full_merge(
     )
     .unwrap();
     // The artifacts.
-    let public = Public::read(&public_path).unwrap();
+    let public = merge::public::ById::read(&public_path).unwrap();
     let names_dir = store.names(model::VERSION, merge::VERSION, crate::VERSION);
     crate::names::build(&names_dir, &merged_dir, &registry_path, &public_path, batch).unwrap();
     let owned_records: Vec<Incoming> = alive.clone();

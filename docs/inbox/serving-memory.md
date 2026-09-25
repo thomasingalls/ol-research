@@ -71,4 +71,44 @@ Still open: what drives the 18 GB (the join's map of every source record
 and the works index's public-id maps are the likely parts, E), and the
 server's latency on cold reads at this size.
 
+## The 18 GB, 2026-09-25
+
+`epoch publish` and `epoch check` now print a line as each step ends, with
+the heap then and the most it was during the step, read from the
+allocator: heap alone, where the Job's `VmRSS` also counts the pages of
+every file the process has mapped. On a sample store (the two baseline
+and five update files, 100,469 held works, 1,587,371 ids), lined up with
+the corpus Job's log:
+
+- **The works index's public ids.** Its two maps of text took 187 MiB on
+  the sample (M), about 119 B an id: about 5.0 GB on the corpus (D).
+  The works index only asks an id for its public id, so it now reads the
+  log into a slot per id (`merge::public::ById`, 8 bytes and a bit an
+  id): 16 MiB on the sample (M), about 0.35 GB on the corpus (D).
+- **Two ranges held at once.** Taking the next range of documents while
+  the last was still held: on the corpus a range is about 500,000 held
+  works (D, 524,288 ids a range, 95 % held) at 2.7 KB a document
+  resident (M), 1.3 GB, held twice, and about 40 % more while a range is
+  read back (M). A range now goes before the next is read.
+- Together these are the ~9–10 GB the works pass held for its first
+  seven minutes, in the publish and in the check's rebuild alike (M,
+  `VmRSS` 9.0–10.8 GB and 9.1–9.6 GB); with both fixed, about 3 GB (D).
+- **The publish's last 8 GB** came in the lexical index's last minutes
+  (M, 10 GB at 19:48 to 17.5 at 19:52, down to 10.8 and up again), and
+  the check's rebuild, which has no lexical index, never showed it: the
+  lexical index merging its segments (E), heap and mapped pages together.
+  The next publish's step lines will say how much of it is heap.
+- **The check's 22.2 GB** came in its last six minutes, the cross-check
+  (M), whose heap on the sample is 2.3 MiB (M): the pages of the works
+  and lexical indexes it reads, mapped, which the kernel takes back when
+  it needs them (D). Nothing to fix.
+- The Job's `memory.peak` of 49,151 MiB is its limit (M): a container's
+  count includes the page cache of what it writes — the spill and the
+  artifacts — which the kernel reclaims at the limit. The run was never
+  short of memory; it exited 0.
+
+On the sample the works, names and cited-as artifacts are byte for byte
+what they were, `epoch check` passes, and the works pass's peak went from
+776 to 605 MiB in the publish and from 539 to 367 MiB in the check (M).
+
 The merge of record does not wait on any of this: it writes the merged sets these stages read, and the site keeps serving the epoch it has until one it can read is published.

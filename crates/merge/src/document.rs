@@ -558,10 +558,11 @@ impl<'a, F: FnMut(&[Document]) -> Result<(), Error>> Ranged<'a, F> {
         }
     }
 
-    /// Takes the next range and observes it; `false` after the last.
+    /// Takes the next range and observes it; `false` after the last. The
+    /// range before goes first, so that two are never held at once.
     fn advance(&mut self) -> Result<bool, Error> {
+        self.current = Vec::new();
         let Some(range) = self.assembly.next_range()? else {
-            self.current = Vec::new();
             return Ok(false);
         };
         (self.observe)(&range)?;

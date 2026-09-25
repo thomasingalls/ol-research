@@ -1156,6 +1156,22 @@ fn spill_shards() -> u32 {
         .unwrap_or(8)
 }
 
+/// One step of a long run done: says so with the heap now and the most it
+/// was during the step, in MiB so that a sample's steps are told apart,
+/// then starts the peak again for the next (the serving layer's memory,
+/// 2026-09-25).
+#[allow(clippy::cast_precision_loss)] // reporting only
+fn phase(what: &str, done: &str, started: std::time::Instant) {
+    let mib = |bytes: u64| bytes as f64 / f64::from(1u32 << 20);
+    eprintln!(
+        "{what}: {done} at {:.1} s; heap {:.1} MiB, peak {:.1} MiB",
+        started.elapsed().as_secs_f64(),
+        mib(ingest::alloc::live_bytes()),
+        mib(ingest::alloc::peak_bytes())
+    );
+    ingest::alloc::reset_peak();
+}
+
 /// The heap now and at its worst so far, for a merge phase's progress
 /// line: where a merge's memory goes, phase by phase, is what says how to
 /// split it (2026-09-24, the corpus survey killed at 80 GiB in pass 2).
@@ -2796,7 +2812,11 @@ fn search_add<S: Contributor>(
 }
 
 /// Every held work's document, from the merged and normalized sets.
-fn assemble(what: &str, store: &Store) -> Result<merge::Assembly, ExitCode> {
+fn assemble(
+    what: &str,
+    store: &Store,
+    started: std::time::Instant,
+) -> Result<merge::Assembly, ExitCode> {
     static RUNS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let merged = merge::layout::dir(store);
     // The documents and their text go to disk by id range as the join
@@ -2811,9 +2831,11 @@ fn assemble(what: &str, store: &Store) -> Result<merge::Assembly, ExitCode> {
     let width = spill_shards() * merge::layout::SHARD;
     let assembled = (|| -> Result<_, merge::document::Error> {
         let mut assembler = merge::Assembler::read_in(&merged, &dir, width)?;
+        phase(what, "documents read from the merged sets", started);
         search_add::<Pubmed>(&mut assembler, store)?;
         search_add::<Crossref>(&mut assembler, store)?;
         search_add::<OpenAlex>(&mut assembler, store)?;
+        phase(what, "text read from the normalized sets", started);
         Ok(assembler.ranged())
     })();
     let assembly = assembled.map_err(|e| {
@@ -2840,9 +2862,10 @@ fn works_ranged(
     assembly: &mut merge::Assembly,
     observe: impl FnMut(&[merge::Document]) -> Result<(), merge::document::Error>,
     batch: u64,
+    started: std::time::Instant,
 ) -> Result<serve::works::Built, ExitCode> {
     let mut ranged = merge::document::Ranged::new(assembly, observe);
-    let built = works_write(what, store, dir, &mut ranged, batch)?;
+    let built = works_write(what, store, dir, &mut ranged, batch, started)?;
     ranged.finish().map_err(|e| {
         eprintln!("{what}: {e}");
         ExitCode::FAILURE
@@ -2894,13 +2917,15 @@ fn works_write(
     dir: &Path,
     documents: &mut dyn merge::Documents,
     batch: u64,
+    started: std::time::Instant,
 ) -> Result<serve::works::Built, ExitCode> {
     let fail = |e: String| {
         eprintln!("{what}: {e}");
         ExitCode::FAILURE
     };
-    let public = merge::public::Public::read(&store.public())
+    let public = merge::public::ById::read(&store.public())
         .map_err(|e| fail(format!("{}: {e}", store.public().display())))?;
+    phase(what, "public ids read for the works index", started);
     serve::works::build(dir, &merge::layout::dir(store), documents, &public, batch)
         .map_err(|e| fail(e.to_string()))
 }
@@ -2960,7 +2985,7 @@ fn works_build(opts: &Options) -> ExitCode {
         Ok(line) => line,
         Err(code) => return code,
     };
-    let mut assembly = match assemble(what, &store) {
+    let mut assembly = match assemble(what, &store, started) {
         Ok(assembled) => assembled,
         Err(code) => return code,
     };
@@ -2970,7 +2995,15 @@ fn works_build(opts: &Options) -> ExitCode {
         started.elapsed().as_secs_f64()
     );
     let dir = store.works(model::VERSION, merge::VERSION, serve::VERSION);
-    let built = match works_ranged(what, &store, &dir, &mut assembly, |_| Ok(()), batch.batch) {
+    let built = match works_ranged(
+        what,
+        &store,
+        &dir,
+        &mut assembly,
+        |_| Ok(()),
+        batch.batch,
+        started,
+    ) {
         Ok(built) => built,
         Err(code) => return code,
     };
@@ -3004,6 +3037,7 @@ fn publish_documents(
     batch: &merge::journal::Line,
     works_dir: &Path,
     search_dir: &Path,
+    started: std::time::Instant,
 ) -> Result<(), ExitCode> {
     let fail = |e: String| {
         eprintln!("{what}: {e}");
@@ -3015,7 +3049,7 @@ fn publish_documents(
     if !(works_wanted || search_wanted) {
         return Ok(());
     }
-    let mut assembly = assemble(what, store)?;
+    let mut assembly = assemble(what, store, started)?;
     let mut lexical = if search_wanted {
         eprintln!("{what}: building the lexical index");
         Some(search::index::Build::start(search_dir).map_err(|e| fail(e.to_string()))?)
@@ -3030,15 +3064,25 @@ fn publish_documents(
     };
     if works_wanted {
         eprintln!("{what}: building works for batch {}", batch.batch);
-        works_ranged(what, store, works_dir, &mut assembly, observe, batch.batch)?;
+        works_ranged(
+            what,
+            store,
+            works_dir,
+            &mut assembly,
+            observe,
+            batch.batch,
+            started,
+        )?;
     } else {
         merge::document::Ranged::new(&mut assembly, observe)
             .finish()
             .map_err(|e| fail(e.to_string()))?;
     }
     drop(assembly);
+    phase(what, "works index built, documents let go", started);
     if let Some(build) = lexical {
         build.finish(batch.batch).map_err(|e| fail(e.to_string()))?;
+        phase(what, "lexical index committed", started);
     }
     Ok(())
 }
@@ -3069,10 +3113,11 @@ fn epoch_publish(opts: &Options) -> ExitCode {
         if !serve::names::Manifest::read(&names_dir).is_ok_and(|m| m.batch == batch.batch) {
             eprintln!("{what}: building names for batch {}", batch.batch);
             names_write(what, &store, &names_dir, batch.batch)?;
+            phase(what, "names built", started);
         }
         let works_dir = store.works(model::VERSION, merge::VERSION, serve::VERSION);
         let search_dir = search::dir(&store);
-        publish_documents(what, &store, &batch, &works_dir, &search_dir)?;
+        publish_documents(what, &store, &batch, &works_dir, &search_dir, started)?;
         let cited_dir = store.cited(model::VERSION, merge::VERSION, serve::VERSION);
         if !serve::cited::Manifest::read(&cited_dir).is_ok_and(|m| m.batch == batch.batch) {
             eprintln!(
@@ -3081,11 +3126,13 @@ fn epoch_publish(opts: &Options) -> ExitCode {
             );
             serve::cited::build(&cited_dir, &merge::layout::dir(&store), batch.batch)
                 .map_err(|e| fail(e.to_string()))?;
+            phase(what, "cited-as lookup built", started);
         }
         let graph_dir = graph::layout::dir(&store, false);
         if !graph::Manifest::read(&graph_dir).is_ok_and(|m| m.built_at >= batch.at) {
             eprintln!("{what}: building the graph");
             graph_write(what, &store, &graph_dir, false)?;
+            phase(what, "graph built", started);
         }
         let n = serve::epoch::current(&store)
             .map_err(|e| fail(e.to_string()))?
@@ -3165,9 +3212,10 @@ fn epoch_check(opts: &Options) -> ExitCode {
             return Err(fail("the names lookup rebuilt differently".into()));
         }
         println!("  names: a rebuild is byte-identical");
+        phase(what, "names rebuilt", started);
         let works_dir = store.root().join(&epoch.artifacts["works"].dir);
         let scratch = works_dir.with_file_name(format!("{}.check", serve::version()));
-        let mut assembly = assemble(what, &store)?;
+        let mut assembly = assemble(what, &store, started)?;
         let rebuilt = works_ranged(
             what,
             &store,
@@ -3175,7 +3223,9 @@ fn epoch_check(opts: &Options) -> ExitCode {
             &mut assembly,
             |_| Ok(()),
             epoch.batch,
+            started,
         )?;
+        drop(assembly);
         let same = [serve::works::BLOCKS, serve::works::OFFSETS]
             .iter()
             .all(|f| rebuilt.manifest.files[*f] == serving.works().manifest().files[*f]);
@@ -3184,7 +3234,10 @@ fn epoch_check(opts: &Options) -> ExitCode {
             return Err(fail("the works index rebuilt differently".into()));
         }
         println!("  works: a rebuild is byte-identical");
-        serving.cross_check().map_err(|e| fail(e.to_string()))
+        phase(what, "works rebuilt", started);
+        let checked = serving.cross_check().map_err(|e| fail(e.to_string()));
+        phase(what, "cross-checked", started);
+        checked
     })();
     match checked {
         Ok(c) => {
@@ -3830,7 +3883,7 @@ fn search_build(opts: &Options) -> ExitCode {
     let store = opts.store();
     let started = std::time::Instant::now();
     let allocations = ingest::alloc::allocations();
-    let mut assembly = match assemble(what, &store) {
+    let mut assembly = match assemble(what, &store, started) {
         Ok(assembled) => assembled,
         Err(code) => return code,
     };

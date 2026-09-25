@@ -46,6 +46,14 @@ pub fn peak_bytes() -> u64 {
     PEAK.load(Ordering::Relaxed)
 }
 
+/// Starts [`peak_bytes`] again from [`live_bytes`], so that the next
+/// reading of it is one phase's worst rather than the process's (the
+/// serving layer's memory, 2026-09-25: the corpus's publish peaked at 18 GB
+/// and which of its steps did it is the question).
+pub fn reset_peak() {
+    PEAK.store(LIVE.load(Ordering::Relaxed), Ordering::Relaxed);
+}
+
 fn count(bytes: usize) {
     ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
     BYTES.fetch_add(bytes as u64, Ordering::Relaxed);

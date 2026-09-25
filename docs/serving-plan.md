@@ -1199,6 +1199,12 @@ state kept outside the store, and a limit per principal on calls and on
   matters as much right now — so that most of its 44 GB of mapped
   artifacts can stay in the page cache; the handover took the site from
   epoch 4 to 5 without a gap.
+- 2026-09-25, the 18 GB. The works index reads the public log into a
+  slot per id (`merge::public::ById`) instead of `Public`'s two maps
+  (about 5 GB of the corpus's publish, D), and a range of documents goes
+  before the next is read. The publish and the check print each step's
+  heap. The check's 22 GB was the mapped pages of the indexes its
+  cross-check reads, not heap (`docs/inbox/serving-memory.md`).
 
 ## 11. Open items
 

@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use ingest::Kind;
-use merge::public::Public;
+use merge::public::ById;
 use merge::record::Work;
 use merge::{Documents, WorkId};
 use serde::{Deserialize, Serialize};
@@ -205,7 +205,7 @@ impl Writer {
         work: &Work<'_>,
         table: &model::symbol::Table,
         documents: &mut dyn Documents,
-        public: &Public,
+        public: &ById,
     ) -> Result<(), Error> {
         if work.id.get() < self.next {
             return Err(Error::Mismatch(format!("{} out of order", work.id)));
@@ -217,7 +217,7 @@ impl Writer {
             .document(work.id)
             .map_err(|e| Error::Mismatch(e.to_string()))?;
         let public_id = public.of(work.id);
-        let row = Row::of(work, table, public_id, document);
+        let row = Row::of(work, table, public_id.as_deref(), document);
         self.works += 1;
         if work.stub {
             self.stubs += 1;
@@ -248,7 +248,7 @@ pub fn build(
     dir: &Path,
     merged: &Path,
     documents: &mut dyn Documents,
-    public: &Public,
+    public: &ById,
     batch: u64,
 ) -> Result<Built, Error> {
     let part = part_of(dir);

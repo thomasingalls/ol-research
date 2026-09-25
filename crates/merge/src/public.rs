@@ -59,6 +59,85 @@ pub fn lines(path: &Path) -> io::Result<impl Iterator<Item = io::Result<(WorkId,
         }))
 }
 
+/// Every id's public id as its 64 bits, in a slot per id: what a reader
+/// that only asks an id for its public id keeps of the log. Eight bytes and
+/// a bit an id, where [`Public`]'s two maps of text take about 120 — on the
+/// corpus's publish the works index's copy of them was about 5 GB (the
+/// serving layer's memory, 2026-09-25).
+#[derive(Debug, Default)]
+pub struct ById {
+    bits: Vec<u64>,
+    minted: Vec<u64>,
+    len: usize,
+}
+
+impl ById {
+    /// Reads the log at `path` as a stream; empty when there is no file.
+    ///
+    /// # Errors
+    ///
+    /// I/O, a line that is not a mint, an id minted twice, or a public id
+    /// not in its canonical spelling — which this could not give back as
+    /// the log has it.
+    pub fn read(path: &Path) -> io::Result<Self> {
+        let bad = |what: String| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("{}: {what}", path.display()),
+            )
+        };
+        let mut this = Self::default();
+        for line in lines(path)? {
+            let (id, text) = line?;
+            let bits = decode(&text).map_err(|e| bad(format!("{id}: {e}")))?;
+            if encode(bits) != text {
+                return Err(bad(format!(
+                    "{id}: {text:?} is not its public id's canonical spelling"
+                )));
+            }
+            let slot = Self::slot(id);
+            if slot >= this.bits.len() {
+                this.bits.resize(slot + 1, 0);
+                this.minted.resize((slot + 1).div_ceil(64), 0);
+            }
+            let mask = 1u64 << (slot % 64);
+            if this.minted[slot / 64] & mask != 0 {
+                return Err(bad(format!("{id} minted twice")));
+            }
+            this.minted[slot / 64] |= mask;
+            this.bits[slot] = bits;
+            this.len += 1;
+        }
+        this.bits.shrink_to_fit();
+        this.minted.shrink_to_fit();
+        Ok(this)
+    }
+
+    fn slot(id: WorkId) -> usize {
+        usize::try_from(id.get() - 1).unwrap_or(usize::MAX)
+    }
+
+    /// A work's public id.
+    #[must_use]
+    pub fn of(&self, id: WorkId) -> Option<String> {
+        let slot = Self::slot(id);
+        let word = self.minted.get(slot / 64)?;
+        (word & (1u64 << (slot % 64)) != 0).then(|| encode(self.bits[slot]))
+    }
+
+    /// Ids with a public id.
+    #[must_use]
+    pub const fn len(&self) -> usize {
+        self.len
+    }
+
+    /// No id has one.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+}
+
 /// Crockford's alphabet: no I, L, O or U.
 const ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 
@@ -373,7 +452,7 @@ pub fn canonical(text: &str) -> Result<String, ParsePublicError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Key, LEN, Line, PREFIX, Public, canonical, decode, derive, encode};
+    use super::{ById, Key, LEN, Line, PREFIX, Public, canonical, decode, derive, encode};
     use crate::work::WorkId;
 
     fn id(n: u32) -> WorkId {
@@ -448,6 +527,39 @@ mod tests {
         assert_eq!(again.of(id(2)), public.of(id(2)));
         Public::append(&path, &lines[..1]).unwrap();
         assert!(Public::read(&path).is_err(), "minted twice");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The dense table answers every id as the two maps do — ids minted
+    /// out of order, ids past its end, ids between with none — and refuses
+    /// what the maps refuse of an id, and a spelling it could not give back.
+    #[test]
+    fn the_table_by_id_answers_as_the_maps_do() {
+        let dir = std::env::temp_dir().join(format!("ol-rht-public-by-id-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("public.jsonl");
+        assert!(ById::read(&path).unwrap().is_empty(), "no log, no ids");
+        let key = Key::from_bytes([3; 32]);
+        let mut public = Public::default();
+        let order = [70, 3, 64, 1, 65, 200, 2, 63, 129];
+        let lines = public.mint(order.map(id), &key, "t");
+        Public::append(&path, &lines).unwrap();
+        let by_id = ById::read(&path).unwrap();
+        assert_eq!(by_id.len(), order.len());
+        for n in 1..=260 {
+            assert_eq!(by_id.of(id(n)).as_deref(), public.of(id(n)), "id {n}");
+        }
+        Public::append(&path, &lines[2..3]).unwrap();
+        let err = ById::read(&path).unwrap_err().to_string();
+        assert!(err.contains("minted twice"), "{err}");
+        std::fs::remove_file(&path).unwrap();
+        let lower = Line {
+            public: lines[0].public.to_lowercase(),
+            ..lines[0].clone()
+        };
+        Public::append(&path, &[lower]).unwrap();
+        let err = ById::read(&path).unwrap_err().to_string();
+        assert!(err.contains("canonical spelling"), "{err}");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
