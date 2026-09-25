@@ -1790,19 +1790,43 @@ state kept outside the store, and a limit per principal on calls and on
     - **Smaller**: a relation's row with no reference beside it is `sole`,
       as the full merge counts it; a stub landing counts toward `sole`.
 
-    **Still open: one citer's mark on a divided stub.** Stub #1293222: a
-    record's two copies cite it differently — one by its DOI beside a
-    PMID that no record held yet, one by another PMID alone. Both
-    references land on the stub, whose row keeps one citer of the record
-    per name. When a later batch makes the first PMID a held work, the
-    stub divides, and the batch cannot tell from the row which reference
-    gave which name: it marks the second PMID's citer as naming a held
-    work beside it, where the full merge does not. The test
+    **One citer's mark on a divided stub**, built the same day (the user:
+    "go ahead with the divided-stub case"). Stub #1293222: a record's two
+    copies cite it differently — one by its DOI beside a PMID that no
+    record held yet, one by another PMID alone. Both references land on
+    the stub, whose row keeps one citer of the record per name, and when a
+    later batch makes the first PMID a held work the stub divides: the
+    batch could not tell which reference gave which name, settled the two
+    as one, and marked the second PMID's citer as naming a held work
+    beside it, where the full merge does not. Now a stub that divides —
+    a name left over, or names going to different parts — has its citing
+    records' references read back (`Engine::stub_citations`: the batch's
+    own copy where it carries the record, else every copy the normalized
+    layer has), and each reference is settled by §6 on its own, with its
+    own marks; the landing key gains which reference it was. A stub taken
+    over whole by one part reads nothing back, since every reference
+    lands there whatever it gave. The test
     `a_records_copies_citing_one_stub_differently_mark_each_name_by_its_own_reference`
-    reproduces it and is ignored until this is answered. It is item 28's
-    division reading a stub's row where the references themselves are
-    what settle it; the same read back — the citers of a divided stub
-    from the normalized layer — would answer it.
+    reproduces it and passes.
+
+    **Both harnesses now pass** (M, the sample store at model 9): the
+    update files with 0 differences, cited-as and unresolved rows
+    included, where the committed code of the morning gave 38 before the
+    comparison could see the evidence and 5,018 once it could; the `1334`
+    hold-out with 0.
+
+    **What it costs, and what is next.** The batches on the update files
+    took 5.5, 19.8, 11.5, 13.9 and 23.2 s before this item and take 9.2,
+    28.4, 15.0, 21.1 and 38.7 s now (M, the laptop). Every read back
+    scans a whole normalized set to find its records: `earlier_copies`
+    and the list of events read each set once per batch, but the division
+    reads one record at a time. On the corpus a record's copies are
+    spread over the 1,334 baseline files and every update file since, and
+    one scan is about half a second (M, as a dump), so a batch that reads
+    back from many sets could take minutes (E). Two steps, in order: read
+    the division's records set by set as the other two do; then an index
+    of each normalized set by native id, so a copy is one seek (the
+    user's option (c)), if the corpus's batch time asks for it.
 
 ## 12. Sources consulted
 

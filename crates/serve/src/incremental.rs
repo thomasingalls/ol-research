@@ -887,6 +887,7 @@ impl Engine<'_> {
                 citer,
                 landed: Some(row.landed),
                 sole: row.sole,
+                reference: 0,
             });
         }
         // One record's several references that landed here alike are one
@@ -1294,12 +1295,24 @@ impl Engine<'_> {
                     _ => false,
                 }
             };
-            // A stub's row says who cited each of its names; a held
-            // work's names are answered by the cited-as evidence, which
-            // says the same for every name a reference gave (serving plan
-            // §11, item 28, 2026-09-18).
+            // A stub's row says who cited each of its names, one citer a
+            // record, and a held work's names are answered by the cited-as
+            // evidence, which says the same for every name a reference
+            // gave (serving plan §11, item 28, 2026-09-18). Where a stub
+            // divides — a name left over, or names going to different
+            // parts — which reference gave which name is what §6 settles,
+            // and one citer a record cannot say it: the citing records'
+            // references are read back (item 35, 2026-09-25).
+            let divides = parts.len() > 1 || row.names.iter().any(|n| !taken.contains_key(&n.name));
+            let read_back = if row.stub && divides {
+                Some(self.stub_citations(row)?)
+            } else {
+                None
+            };
             let cited_by = |this: &Self, n: &crate::row::Named| -> Vec<Cited> {
-                if row.stub {
+                if let Some(read) = &read_back {
+                    read.get(&n.name).cloned().unwrap_or_default()
+                } else if row.stub {
                     n.cited_by.iter().map(|c| Cited::of_stub(*c)).collect()
                 } else {
                     this.citers_of(&n.name, *id)
@@ -1699,6 +1712,107 @@ impl Engine<'_> {
         target_of(&self.live, self.serving, table, name)
     }
 
+    /// Every reference a stub's citing records make to it, read back —
+    /// the batch's own copy where it carries the record, else every copy
+    /// the normalized layer has — as one citation per reference and name
+    /// of the stub it gave: what a stub that divides is settled from,
+    /// since its row keeps one citer a record and name, and a record's
+    /// two references to it can give different names (serving plan §11,
+    /// item 35, 2026-09-25). Each reference's marks are its own: whether
+    /// its text repeats the name, and whether it names a held work beside
+    /// the stub.
+    fn stub_citations(&mut self, row: &Row) -> Result<HashMap<OwnedName, Vec<Cited>>, Error> {
+        let names: HashSet<&OwnedName> = row.names.iter().map(|n| &n.name).collect();
+        let mut pairs: BTreeSet<(WorkId, SourceId)> = BTreeSet::new();
+        for n in &row.names {
+            for c in &n.cited_by {
+                pairs.insert((self.live.live(c.from).unwrap_or(c.from), c.by));
+            }
+        }
+        let mut out: HashMap<OwnedName, Vec<Cited>> = HashMap::new();
+        for (from, by) in pairs {
+            let references = self.references_of(from, by)?;
+            let mut seen: HashSet<u64> = HashSet::new();
+            let mut k = 0u32;
+            for reference in &references {
+                let borrowed: Vec<merge::Name<'_>> =
+                    reference.names.iter().map(OwnedName::as_name).collect();
+                if !seen.insert(build::fingerprint(
+                    &borrowed,
+                    &reference.citation.borrow(),
+                    None,
+                )) {
+                    continue;
+                }
+                if !reference.names.iter().any(|n| names.contains(n)) {
+                    continue;
+                }
+                k += 1;
+                let held_beside = reference
+                    .names
+                    .iter()
+                    .filter(|n| !names.contains(n))
+                    .any(|n| self.held_before(n));
+                for name in reference.names.iter().filter(|n| names.contains(n)) {
+                    out.entry(name.clone()).or_default().push(Cited {
+                        citer: Citer {
+                            from,
+                            by,
+                            in_text: repeats(reference.citation.text.as_deref(), name),
+                            held_beside,
+                        },
+                        landed: None,
+                        sole: true,
+                        reference: k,
+                    });
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Every reference of `by`'s records in work `from`, every copy's:
+    /// the batch's own where it carries the record, the rest read back
+    /// from the normalized layer.
+    fn references_of(&mut self, from: WorkId, by: SourceId) -> Result<Vec<Reference>, Error> {
+        let Some(row) = self.rows.get(from)? else {
+            return Ok(Vec::new());
+        };
+        let mut out = Vec::new();
+        for record in row.records.iter().filter(|r| r.source == by) {
+            if let Some(i) = self.index.get(by, &record.native) {
+                out.extend(self.batch.records[i].references.iter().cloned());
+                continue;
+            }
+            let sets = std::iter::once(&record.view.set).chain(&record.view.superseded);
+            for set in sets {
+                let Some(copy) = self
+                    .layer
+                    .record(by, &record.native, set)
+                    .map_err(Error::FullMerge)?
+                else {
+                    return Err(Error::FullMerge(format!(
+                        "{by}={}, which cites a stub this batch divides: its copy in {set} is not in the normalized layer",
+                        record.native
+                    )));
+                };
+                out.extend(copy.references);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Whether a name named a held work before this batch.
+    fn held_before(&self, name: &OwnedName) -> bool {
+        match self.serving.resolve_name(name) {
+            Some(Resolved::One(id)) => self
+                .serving
+                .live(id)
+                .is_some_and(|live| !self.serving.is_stub(live)),
+            _ => false,
+        }
+    }
+
     /// The citing records whose evidence this batch leaves stale: the
     /// list of events of serving plan §11, item 35 (the user,
     /// 2026-09-25). A citing record keeps cited-as and unresolved rows
@@ -1924,7 +2038,10 @@ impl Engine<'_> {
 /// and one arc, and only the namespace that landed each tells them
 /// apart (serving plan §11, item 28, 2026-09-19). `None` on a stub's own
 /// row, which keeps citers and no landings.
-type Landing = (WorkId, SourceId, Option<Namespace>);
+/// A citing work and source, the namespace that landed the reference,
+/// and which of the record's references it was — zero where the evidence
+/// read does not tell them apart.
+type Landing = (WorkId, SourceId, Option<Namespace>, u32);
 
 /// One citing reference of a row being divided, as the row's evidence
 /// has it.
@@ -1935,9 +2052,13 @@ struct Cited {
     landed: Option<Namespace>,
     /// The citing record made only this one reference landing here, so
     /// the names under this landing are one reference's. A stub's row
-    /// keeps no such mark and its citers have always been read as one
-    /// reference each; that is item 28's own open work, not this rule's.
+    /// keeps no such mark, and its citers are read as one reference each
+    /// unless the stub divides, when the references themselves are read
+    /// back ([`Engine::stub_citations`]).
     sole: bool,
+    /// Which of the record's references this is, counted from one, where
+    /// they were read back; zero where the evidence does not say.
+    reference: u32,
 }
 
 impl Cited {
@@ -1947,11 +2068,12 @@ impl Cited {
             citer,
             landed: None,
             sole: true,
+            reference: 0,
         }
     }
 
     fn landing(self) -> Landing {
-        (self.citer.from, self.citer.by, self.landed)
+        (self.citer.from, self.citer.by, self.landed, self.reference)
     }
 }
 

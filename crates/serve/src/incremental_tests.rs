@@ -626,11 +626,8 @@ fn the_cases_a_full_merge_owns_stop_the_batch_before_it_writes() {
         text(None, &["Beta2"], None),
     );
     cites(&mut pair, &["pmid:91", "doi:10.1000/p91"]);
-    fixture::full_merge(
-        &store,
-        &base_and(vec![delivered(both), delivered(pair)]),
-        &[],
-    );
+    let delivered_so_far = base_and(vec![delivered(both), delivered(pair)]);
+    fixture::full_merge(&store, &delivered_so_far, &[]);
     let serving = Serving::open(&store).unwrap();
     let arriving = delivered(record(
         Pubmed,
@@ -639,7 +636,10 @@ fn the_cases_a_full_merge_owns_stop_the_batch_before_it_writes() {
         view(false, 1, None),
         text(None, &["Gamma2"], None),
     ));
-    let err = incremental::apply(
+    // The stub divides, so its citers are read back: the layer has them.
+    let mut layer = delivered_so_far;
+    layer.push(arriving.clone());
+    let err = incremental::apply_with(
         &store,
         &serving,
         Batch {
@@ -647,6 +647,7 @@ fn the_cases_a_full_merge_owns_stop_the_batch_before_it_writes() {
             ..Batch::default()
         },
         None,
+        &fixture::Layer(layer),
     )
     .unwrap_err();
     assert!(
@@ -1907,7 +1908,6 @@ fn a_name_a_division_left_beside_a_held_work_is_settled_again_when_it_becomes_a_
 }
 
 #[test]
-#[ignore = "serving plan §11 item 35: a stub's row keeps one citer of a record per name, and a division cannot tell which reference gave which name"]
 fn a_records_copies_citing_one_stub_differently_mark_each_name_by_its_own_reference() {
     use SourceId::Pubmed;
     // Serving plan §11, item 35, the second case, seen on the update files
