@@ -292,5 +292,7 @@ mod normalized {
         for kind in Kind::NORMALIZED {
             std::fs::remove_file(kind.path(&prefix)).unwrap();
         }
+        // Every source names its records, so every set has an index.
+        std::fs::remove_file(ingest::binary::Index::path(&prefix)).unwrap();
     }
 }

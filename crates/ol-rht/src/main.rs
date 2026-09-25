@@ -575,6 +575,7 @@ where
                     for kind in Kind::NORMALIZED {
                         let _ = std::fs::remove_file(kind.path(&w.prefix));
                     }
+                    let _ = std::fs::remove_file(ingest::binary::Index::path(&w.prefix));
                 }
                 eprintln!("{} write: {e}", S::NAME);
                 eprintln!("no output written");
