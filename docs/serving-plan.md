@@ -375,6 +375,25 @@ seeding is bounded by the **arcs** walking it would read and not by a
 count of seeds, since a seed's own list may be any length, and both
 numbers come back so a bounded answer reads as one.
 
+**The search box** (2026-09-25, §10). What a person types is read by
+our own parser (`crates/query-parser`) into a query tree that every
+engine is asked from, and never handed to an engine as its own query
+language: Tantivy's parser, which read the box until then, took `:`,
+quotes, brackets, `^`, `~`, `*`, `+`, `-` and `AND`/`OR`/`NOT` for
+commands, refused `5'-UTR` and `(2R,3S)-dihydroxy`, let `id:[1 TO
+100]` walk the internal numbering, and took a second to read twenty
+nested parentheses, each one more doubling it. The language's first
+pass is plain text — every character is text, a word is what lies
+between whitespace — and its one refusal is size: 1,024 words, 64 KiB.
+Each engine's translation of the tree lives beside the engine
+(`search::translate` for Tantivy); the tree keeps each word as typed,
+with its place in the text, for the engines to split as they indexed
+and for a highlighter to mirror. A search runs on a thread of its own,
+never on the threads that answer requests, at most `--search-threads`
+at once and each within `--search-deadline`, and writes one line to the
+query log on standard output, apart from the fault log on standard
+error. Its second pass is §11, item 36.
+
 **One hydrated row shape** across the three lists that carry works —
 an arc of a page, a neighbour of an expansion, a step on a path — since
 they had drifted into three (2026-09-19, §10): `public_id`, `stub`,
@@ -431,6 +450,10 @@ state kept outside the store, and a limit per principal on calls and on
   §11, item 7) live in `merge::view`, since the sinks are not the only
   readers, and every `Contributor` answers `text`: the abstract, the
   author names and the venue name of a record as plain text.
+- **`crates/query-parser`**, the search box's text read into the query
+  tree (2026-09-25): no engine in it, so that every engine's translation
+  reads the same tree, and so that it can be compiled for a browser if
+  the highlighter that mirrors it is built that way.
 - **`crates/ol-rht-serve`**, the transport binary, and in `ol-rht` the
   build commands.
 - **Layout**, under the store: `merged/journal.jsonl` and
@@ -451,8 +474,11 @@ state kept outside the store, and a limit per principal on calls and on
   merge over the normalized sets at the paths (set files, prefixes or
   directories), with a report of what it minted, merged, dropped, added
   and removed; `ol-rht-serve --store <root> [--listen <addr>] [--http
-  <addr>|off] [--allow-origin <origin>]… [--poll <seconds>]`, which
-  folds the journal every poll, one second by default, and serves §7's
+  <addr>|off] [--allow-origin <origin>]… [--poll <seconds>]
+  [--search-threads <n>] [--search-deadline <seconds>]`, which folds
+  the journal every poll, one second by default, runs at most
+  `--search-threads` searches at once (half the cores unless told), each
+  within `--search-deadline` (ten seconds unless told), and serves §7's
   JSON facade on a second listener — `127.0.0.1:50052` unless told
   otherwise, `off` to leave the port unbound, and the origins named
   exactly, the Vite dev server's two in both spellings of loopback when
@@ -1212,6 +1238,97 @@ state kept outside the store, and a limit per principal on calls and on
   batch closes each component over a name's refusers as well as its
   holders, and gives each row's refused claims back to the record that
   made them, so the identity pass decides them with every claimant in it.
+- 2026-09-25, the search box reads any text — the user's "stray
+  characters can bring down the server! we need to be able to support
+  arbitrary queries, including special characters", with PubMed whole in
+  the index. A probe of about 120 inputs against Tantivy's own parser on
+  a three-document index found:
+  - **Nested parentheses doubling its time per level**, valid or not:
+    twenty deep a second to read, twenty-two four seconds, twenty-three
+    past the probe's five-second cap (release build). The search ran on the threads
+    that answer every request, so a few such queries held them all,
+    health checks among them.
+  - **Ordinary scientific text refused as syntax**: `5'-UTR`,
+    `(2R,3S)-dihydroxy`, `doi:10.1000/x`, `http://…`, an unmatched quote,
+    `aspirin AND`, `-aspirin`. Every refusal went out as `INTERNAL` (500),
+    whole query and all into the fault log, and the browser client
+    retried it once, as it retries any `internal`.
+  - **The engine's commands reaching past the text**: `id:[1 TO 100]`
+    searched by internal `WorkId` and answered with public ids, the
+    mapping the keyed public id keeps opaque (§6); `*` matched every
+    work; `^` boosts made every score infinite or zero; no size limit.
+
+  The user's calls, one at a time:
+  - **Our own parser** on the server, `crates/query-parser`, and later a
+    syntax highlighter in the client that mirrors it, designed later.
+    The parser reads into a query tree with no engine in it, since the
+    user wants the reader "adaptable to several query backends"; each
+    engine's translation of the tree sits beside the engine
+    (`search::translate`). The tree keeps each word as typed with its
+    byte span: splitting a word is the engine's, as it split the
+    documents, and the spans are what the highlighter needs. A vector
+    engine reads the same tree: its text embedded, its filters and
+    exclusions applied as filters.
+  - **Plain text first**, every character text, a word what lies between
+    whitespace, so the first pass is about the interface being right;
+    PubMed's shape — phrases, exclusions, fields, `AND`/`OR`/`NOT`,
+    parentheses — in a later pass (§11, item 36). Whatever is built
+    should be easy to change, the first pass being temporary.
+  - **Words split at punctuation stay Tantivy's**, the pieces of a word
+    side by side as a phrase (`IL-6` is `il` then `6`), though the
+    tokenizer is wrong for this dataset and is its own project (§11,
+    item 11). Where Tantivy's parser read plain words at all, the
+    translation finds the same documents at the same scores, down to two
+    things it did quietly: a word typed twice counts once, and every
+    word in every field is one flat list of alternatives. A property
+    test holds the two to it.
+  - **A size cap**, 1,024 words as typed — "i'd start much longer";
+    words as the unit is tentative — and 64 KiB, checked first, so one
+    enormous word cannot slip past. Over either is `INVALID_ARGUMENT`
+    (400) naming the cap: `the query is 1025 words; the limit is 1024`.
+    The user wants long queries dealt with now; over GET a URI is capped
+    at 65,534 bytes by the `http` crate and answered `414` before any
+    route sees it, so the byte cap is only reached over gRPC, and a
+    query in any script but ASCII, three bytes of URL to each of its
+    own, gets a third of it. Whether search becomes a POST, and keeps a
+    little state per client, is open (§11, item 36).
+  - **An empty query finds nothing**, on both transports. proto3 has no
+    required field and cannot tell an empty string from an absent one;
+    the JSON surface can, and keeps refusing a missing `query` as a URL
+    built wrong, while `?query=` is now the query that finds nothing
+    (`query::MaybeEmpty`, the one parameter declared so).
+  - **Searches on threads of their own** — "oh was that not happening
+    already?" It was not. At most `--search-threads` at once, half the
+    cores unless told, each within `--search-deadline`, ten seconds
+    unless told, from the request's arrival. No thread free within the
+    limit is `RESOURCE_EXHAUSTED` (429), the machines' trouble and in the
+    fault log; a search past it is `DEADLINE_EXCEEDED` (504). Tantivy
+    cannot cancel a search, but a collector may walk a segment's matches
+    itself, and `search::until` does, looking at the clock every 4,096
+    documents, so a search past its time gives its thread back. Hits,
+    the count and the facet counts are now one pass over the matches,
+    where they were two.
+  - **Failed queries out of the fault log, into a log of their own** —
+    "isn't the fault log how we figured out that there was a problem in
+    the first place?" One line per search on standard output, whatever
+    became of it (`answered`, `too-long`, `busy`, `timed-out`,
+    `failed`), with its bytes, words, hits and milliseconds, and the
+    query last, whole up to the byte cap and "escaped/encoded so it's
+    readable but not dangerous": every invisible or controlling
+    character — escape sequences, right-to-left overrides, zero-width
+    characters, line separators, combining marks — written as a
+    `\u{…}` escape, a backslash as `\\`, everything visible in any
+    script as typed. Plain text, not JSON, because a JSON reader undoes
+    its escapes on the way out and these are undone by nothing.
+  - **Tests generated, not listed**: the user's "*strong* preference for
+    hypothesis-style property-based testing, for this and in general";
+    `proptest` (and `fast-check` for the client when the highlighter
+    comes). Properties: any text reads into exactly its own words; the
+    word cap counts words as typed; plain words find what Tantivy's
+    parser found, at its scores; any word of a title that the index
+    split into pieces finds that title; the log's line is visible
+    character by character and undoes to the whole query. The probe's
+    inputs are a fixed list beside them, to grow.
 
 ## 11. Open items
 
@@ -1231,6 +1348,15 @@ state kept outside the store, and a limit per principal on calls and on
    object store, which is where the store is going — or OpenSearch. SP2
    compares on the sample what the sample can show: relevance, typo
    tolerance, facets, the sink's shape; scale is measured on the box.
+
+   The user, 2026-09-25: what is thin is mature, feature-complete
+   libraries like Lucene, which is why everyone uses Lucene; Tantivy
+   claims to do what Lucene does and clearly does not, and by the
+   search-benchmark-game (tantivy-search.github.io/bench) recent Lucene
+   (10.3.0) now leads it on every measure — Lucene's only cost is Java.
+   Vespa may have strengths. No change of engine now; a fork of Tantivy
+   may be interesting later. The query parser's tree (§7) keeps the
+   engine a translation away either way.
 5. **The works index's block size and dictionary**, and whether a record
    is served whole or by field; SP3's measurement.
 6. **The names transducer's update cost.** An FST is immutable; the
@@ -1314,6 +1440,17 @@ state kept outside the store, and a limit per principal on calls and on
     vernacular and sub-titles; keywords, MeSH terms, chemicals and topics
     as text or as facets; which sources' abstracts the terms allow in an
     index at all; and one document per work against one per record.
+
+    The tokenizer is wrong for this dataset and is a project of its own,
+    top to bottom (the user, 2026-09-25); the query parser keeps
+    Tantivy's splitting until then, because a query has to be split as
+    its documents were. What the search box showed that day: `of`, not
+    a stop word, matched every document it was in, so `trial of aspirin`
+    finds nearly everything; an `é` typed as `e` and a combining accent
+    found nothing, the index holding the other spelling; and whether
+    every word must match or any may (any, today) is a product choice the
+    user has not settled — any until users want every match enumerated,
+    which is how researchers tend to work.
 12. **The registry fold in `names build` and `epoch check`.** Most of a
     gigabyte on the sample to learn two retirements; at scale, tens of
     gigabytes. The retirements should be readable without folding the
@@ -1737,7 +1874,6 @@ state kept outside the store, and a limit per principal on calls and on
     An older server refuses `hydrate` on search as an unknown parameter,
     so the server that reads it is deployed before a client that sends
     it.
-
 35. **Two divergences behind item 24.** Found 2026-09-25, once merge
     plan §11 item 24 let the update-files harness past the registry
     check to the comparison (before, it stopped one `drop` apart and
@@ -1770,7 +1906,33 @@ state kept outside the store, and a limit per principal on calls and on
       of which named a held work too. The full merge marks the PMID's
       citer `held_beside: false` (a record's other reference named none);
       the batch marks it `true`. Not yet reduced to a test.
+36. **The query language's second pass.** The first (2026-09-25, §7)
+    is plain text, so that the interface is right first; the second is
+    PubMed's shape — quoted phrases, `-` to exclude, fields under names
+    of our own, `AND`/`OR`/`NOT` and parentheses, nesting capped — read
+    in one pass as the first is, so that nothing typed can cost more to
+    read than its length. Waiting on it:
+    - *What an exclusion alone means.* `-mice` with nothing to find is
+      "everything but mice" in the user's reading; over the whole corpus
+      that is every work at one score, so it wants a filter or a sort to
+      go with it.
+    - *Identifiers typed into the box* — a DOI, a PMID, an `ol:` id —
+      found as the work they name before any text search.
+    - *Year, genre and the other facets as filters*, partly in the text
+      and partly beside it; the user partly agrees.
+    - *A word typed twice counts once*, as Tantivy's parser counted it
+      and the first pass keeps; whether it should is the product's.
+    - *Long queries.* Words as the cap's unit is tentative. A GET's URI
+      stops at 65,534 bytes, a third of that in any script but ASCII,
+      so search may become a POST, and may keep a little state per
+      client "to keep track of their experience"; both undecided.
+    - *The highlighter* in the client, mirroring the parser: the tree's
+      spans are bytes of UTF-8 and a browser counts UTF-16, so the
+      design says which side converts, and whether the client runs this
+      parser compiled for the browser or a twin held to it by the same
+      properties (`fast-check` beside `proptest`).
 
+## 12. Sources consulted
 
 The serving-shape and feeds conversations of 2026-09-15 and the notes
 kept of them; the graph plan's §5 and §11; crates.io on 2026-09-15 for
