@@ -21,7 +21,7 @@ use std::fmt;
 /// an ASCII twin as well (`día` and `dia`) — a second name for the work,
 /// which the merge joins, not a spelling this type folds.
 ///
-/// Three things are read rather than rejected, each a misspelling of a DOI
+/// Four things are read rather than rejected, each a misspelling of a DOI
 /// the registry knows, and each reported in [`Readings`] so a source can
 /// count it:
 /// - every Unicode dash, and the minus sign, is `-`. U+2010 since model
@@ -37,10 +37,15 @@ use std::fmt;
 ///   lowercased, `ã¼` for `ü` (`10.2195/…_gã¼nthner_…`, whose `günthner` twin
 ///   is registered and resolves), is repaired: `Ã` or `ã` followed by a
 ///   character from U+0080 to U+00BF is the Latin-1 letter those two bytes
-///   encode, U+00C0 to U+00FF.
+///   encode, U+00C0 to U+00FF;
+/// - a soft hyphen, U+00AD, is dropped (model version 11, 2026-09-26). It
+///   is not a dash but a place a line may break, shown only where one does,
+///   so `10.11646/zoo\u{ad}taxa.4966.5.3` is Zootaxa's `…/zootaxa.4966.5.3`;
+///   Crossref's March 2026 file cites JAMA's DOIs with one after the slash
+///   (`10.1001/\u{ad}jamasurg.2022.7640`), copied from a web page.
 ///
 /// A character that is none of these — a symbol (`×` for `x`), a control,
-/// a zero-width joiner — is still refused.
+/// a zero-width joiner, whitespace inside — is still refused.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Doi<'a>(#[serde(borrow)] Cow<'a, str>);
@@ -58,7 +63,7 @@ pub struct Registrant(u32);
 /// What reading a DOI changed from what its source wrote, beyond case
 /// ([`Doi::read`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[allow(clippy::struct_excessive_bools)] // three independent facts
+#[allow(clippy::struct_excessive_bools)] // four independent facts
 pub struct Readings {
     /// A dash other than `-` was read as `-`.
     pub dash: bool,
@@ -66,6 +71,8 @@ pub struct Readings {
     pub space: bool,
     /// A broken encoding was repaired.
     pub encoding: bool,
+    /// A soft hyphen was dropped.
+    pub soft_hyphen: bool,
 }
 
 impl Readings {
@@ -75,6 +82,7 @@ impl Readings {
             (self.dash, "a dash read as a hyphen"),
             (self.space, "whitespace at an end dropped"),
             (self.encoding, "a broken encoding repaired"),
+            (self.soft_hyphen, "a soft hyphen dropped"),
         ]
         .into_iter()
         .filter_map(|(made, what)| made.then_some(what))
@@ -83,7 +91,7 @@ impl Readings {
     /// True when nothing was read.
     #[must_use]
     pub const fn is_empty(self) -> bool {
-        !(self.dash || self.space || self.encoding)
+        !(self.dash || self.space || self.encoding || self.soft_hyphen)
     }
 }
 
@@ -201,7 +209,8 @@ impl<'a> Doi<'a> {
     }
 
     /// Parses a bare DOI, and says what it read from what was written: a
-    /// dash, whitespace at an end, a broken encoding ([`Doi`]).
+    /// dash, whitespace at an end, a broken encoding, a soft hyphen
+    /// ([`Doi`]).
     ///
     /// # Errors
     ///
@@ -260,6 +269,8 @@ impl<'a> Doi<'a> {
             } else if DASHES.contains(&c) {
                 out.push('-');
                 readings.dash = true;
+            } else if c == '\u{AD}' {
+                readings.soft_hyphen = true;
             } else if c.is_alphabetic() {
                 out.extend(c.to_lowercase());
             } else {
@@ -267,6 +278,9 @@ impl<'a> Doi<'a> {
                     offset: suffix_start + at,
                 });
             }
+        }
+        if out.len() == s.len() - suffix.len() {
+            return Err(Error::EmptySuffix);
         }
         Ok((Self(Cow::Owned(out)), readings))
     }
@@ -549,6 +563,52 @@ mod tests {
                 .made()
                 .collect::<Vec<_>>(),
             ["a dash read as a hyphen", "whitespace at an end dropped"]
+        );
+    }
+
+    /// Reference DOIs of Crossref's March 2026 file with a soft hyphen, as
+    /// the normalize reports printed them (homelab
+    /// `ol-rht-normalize-crossref-v1`, 2026-09-26).
+    #[test]
+    fn a_soft_hyphen_is_dropped() {
+        for (written, read) in [
+            (
+                "10.11646/zoo\u{ad}taxa.4966.5.3",
+                "10.11646/zootaxa.4966.5.3",
+            ),
+            (
+                "10.1001/\u{ad}jamasurg.2022.7640",
+                "10.1001/jamasurg.2022.7640",
+            ),
+            (
+                "10.1001/\u{ad}jamanetworkopen.2019.8340",
+                "10.1001/jamanetworkopen.2019.8340",
+            ),
+            ("10.4137/\u{ad}jmecd.S18077", "10.4137/jmecd.s18077"),
+        ] {
+            let (doi, r) = Doi::read(written).unwrap();
+            assert_eq!(doi.as_str(), read);
+            assert_eq!(
+                r,
+                Readings {
+                    soft_hyphen: true,
+                    ..Readings::default()
+                }
+            );
+            assert_eq!(r.made().collect::<Vec<_>>(), ["a soft hyphen dropped"]);
+        }
+        assert_eq!(
+            Doi::read("10.1234/\u{ad}"),
+            Err(Error::EmptySuffix),
+            "nothing but a soft hyphen is no suffix"
+        );
+        assert_eq!(
+            Doi::read("10.1234/a\u{ad}\u{2013}b").unwrap().1,
+            Readings {
+                dash: true,
+                soft_hyphen: true,
+                ..Readings::default()
+            }
         );
     }
 

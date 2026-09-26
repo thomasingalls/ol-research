@@ -149,7 +149,17 @@
 /// was ever normalized under the version 10 builds before
 /// those (only surveyed), so they are version 10 too. Output under version
 /// 9 is rebuilt, not patched.
-pub const VERSION: u32 = 10;
+///
+/// Version 11 (2026-09-26): a soft hyphen, U+00AD, in a DOI is dropped and
+/// counted as a reading ([`doi::Readings`]), the user's call on the first
+/// normalize of Crossref's whole file under version 10, whose reports
+/// printed reference DOIs with one inside a word
+/// (`10.11646/zoo\u{ad}taxa.4966.5.3`) and after the slash (JAMA's
+/// `10.1001/\u{ad}jamasurg.2022.7640`). Version 10 was written to the
+/// box's store (homelab `ol-rht-normalize-crossref-v1`,
+/// `ol-rht-normalize-baseline-v3`) but merged only in a survey; its sets
+/// are rebuilt, not patched.
+pub const VERSION: u32 = 11;
 
 pub mod claim;
 pub mod code;

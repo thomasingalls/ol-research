@@ -1220,6 +1220,38 @@ in your environment, never in the repo or in this conversation.
    name, as a `pmc` slot holding something else is kept (§6); or read the
    id after the leaked prefix as a modelled repair of a known shape. Not a
    silent strip.
+10. **Whitespace inside a DOI — to settle carefully, later** (the user,
+    2026-09-26). `model::Doi` drops whitespace at either end and refuses
+    it inside, so a reference DOI with a space in it is malformed, and
+    the merge drops it. The first normalize of Crossref's whole file under
+    model 10 counted 1,185,296 malformed reference DOIs of 2,742,943,742
+    references (M; how many for a space was not counted). Of the 64
+    malformed ones its reports printed as samples, eight per share, 49
+    have a space (M, a sample and no more), in two shapes that look alike
+    and want opposite readings:
+    - a space *inside* a DOI, where dropping it gives the DOI:
+      `10.1136/bmjop en-2018-027049`, `10.1186/ s12916-017-0906-5`,
+      `10.1111/chd. 12608`, `10.1088/1757 - 899X/1320/1/012002`, and
+      Wiley's SICI DOIs with a space before `<`
+      (`10.1002/(SICI)1097-0134(1999)37:3 <22::AID-PROT5>3.0.CO;2-W`,
+      18 of the 64);
+    - a space *after* a DOI, before text that is not part of it, where the
+      DOI ends at the space and joining would make a DOI no one
+      registered: `10.1101/gr.229102. Article published online before
+      print in May 2002`, `10.13998/j.cnki.issn1002-1248.25-0444,
+      2025-11-05.`, `10.1371/journal.pntd.0008959 journals.plos.org`,
+      `10.1007/s11325-021-02382-0 10.1007/s11325-021-02382-0` (the DOI
+      twice), `10.1006/jmbi.1990.9999 S0022-2836(05)80360-2 [pii]`.
+    Some are neither for certain (`10.1111/test.1236 7`,
+    `10.1016/0190-9622 (93)70259-v`). To settle first: count the spaces
+    by shape over the whole file, check a sample of each at doi.org, then
+    decide with the user between leaving them malformed (today), a
+    modelled reading per shape, each counted as the other readings are,
+    and a claim. The same samples show other shapes not taken up either:
+    `≤`/`≥` for `<`/`>` in a SICI, a private-use U+F6BA for a dash
+    (`10.2478/sjecr\u{f6ba}2019\u{f6ba}0006`), a zero-width space
+    (`10.1128/aem.45.4.1394-\u{200b}1397.1983`), curly quotes after the
+    DOI, a registrant written with a letter (`10.l007/…`).
 
 ## 9. Milestones
 
@@ -2124,6 +2156,27 @@ cross-IDs and a second edge namespace early.
   the publisher's, and read as written. OpenAlex's `sh`, a claim since
   2026-09-15 as a code outside ISO 639-2, is now a language the model
   knows (Serbo-Croatian, ISO 639-3's `hbs`), and read.
+- 2026-09-26, the first normalize of the whole March 2026 file, model 10
+  (homelab `ol-rht-normalize-crossref-v1` and, beside it, the PubMed
+  baseline's `ol-rht-normalize-baseline-v3`; ol-rht 7d2ef1b), every
+  share exit 0 (M): Crossref 179,536,204 records read, 179,536,197
+  written (the 7 test deposits kept out), 2,742,943,742 references of
+  which 1,985,281,469 have a DOI, 1,185,296 a malformed one and
+  756,476,977 none; 198.6 GiB of sets, 23 to 28 minutes a share. Every
+  reading's count equals the third survey's. PubMed 39,994,988 works,
+  446,087,838 references, 12 minutes. The reports' samples of malformed
+  reference DOIs showed a soft hyphen, U+00AD, in four of 64; the user:
+  "we can normalize the soft hyphens already". It is dropped, not read
+  as `-`: a soft hyphen is a place a line may break, shown only where one
+  does (`10.11646/zoo\u{ad}taxa.4966.5.3` is Zootaxa's
+  `10.11646/zootaxa.4966.5.3`; JAMA's are cited with one after the
+  slash). Counted as "a soft hyphen dropped", beside the other readings.
+  Model version 11, since what a set holds changes; the v10 sets are
+  rebuilt before a merge of record, not patched. The merge survey over
+  PubMed and an eighth of those v10 sets (`ol-rht-merge-survey-v6`) still
+  measures what it was run for. Whitespace inside a DOI, in the same
+  samples, is open item 10 (§8), the user's "to deal with more carefully
+  later".
 
 ## 11. Dependencies
 
