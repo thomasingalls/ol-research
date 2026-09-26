@@ -1272,8 +1272,11 @@ fn merge_pass1(
         let pushed = sorter.pushed();
         let sorting = std::time::Instant::now();
         let dictionary = sorter.finish().map_err(io)?;
+        // Every copy seen: each one's fate kept by its set and place, and
+        // the copies by name let go (the merge's memory, 2026-09-26).
+        copies.settle()?;
         eprintln!(
-            "{what}: copies read in {:.1} s; {} distinct names of {pushed} read, a dictionary of {} MiB (the FST {} MiB) in {:.1} s; {}",
+            "{what}: copies read in {:.1} s; {} distinct names of {pushed} read, a dictionary of {} MiB (the FST {} MiB) and the copies settled in {:.1} s; {}",
             read.as_secs_f64(),
             dictionary.len(),
             dictionary.bytes() >> 20,

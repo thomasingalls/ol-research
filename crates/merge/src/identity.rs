@@ -126,6 +126,14 @@ pub enum Error {
         #[allow(missing_docs)]
         name: String,
     },
+    /// A record's newest copy the copies read did not see by its set and
+    /// place ([`copies::Error::Unread`]).
+    Unread {
+        #[allow(missing_docs)]
+        set: Box<str>,
+        /// From one.
+        ordinal: u64,
+    },
 }
 
 impl fmt::Display for Error {
@@ -171,6 +179,10 @@ impl fmt::Display for Error {
                 "{}: record {ordinal} asserts {name}, which the run's dictionary lacks",
                 path.display()
             ),
+            Self::Unread { set, ordinal } => write!(
+                f,
+                "{set}: record {ordinal} speaks, and the copies read did not see it there"
+            ),
         }
     }
 }
@@ -180,6 +192,7 @@ impl From<copies::Error> for Error {
         match e {
             copies::Error::Io { path, source } => Self::Io { path, source },
             copies::Error::NoNativeName { path, ordinal } => Self::NoNativeName { path, ordinal },
+            copies::Error::Unread { set, ordinal } => Self::Unread { set, ordinal },
         }
     }
 }

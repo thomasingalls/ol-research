@@ -107,6 +107,14 @@ pub enum Error {
         /// From 1.
         ordinal: u64,
     },
+    /// A record's newest copy that the copies read did not see by its set
+    /// and its place, so that no phase could ask for it.
+    Unread {
+        #[allow(missing_docs)]
+        set: Box<str>,
+        /// From 1.
+        ordinal: u64,
+    },
 }
 
 impl std::fmt::Display for Error {
@@ -120,6 +128,10 @@ impl std::fmt::Display for Error {
                     path.display()
                 )
             }
+            Self::Unread { set, ordinal } => write!(
+                f,
+                "{set}: record {ordinal} speaks, and the copies read did not see it there"
+            ),
         }
     }
 }
@@ -133,12 +145,25 @@ impl std::error::Error for Error {}
 /// that a record costs no string of its own — on the corpus, 40 M of them
 /// (the merge's memory, step 2c, 2026-09-24). Sets compare by their names,
 /// as [`Delivery`] compares them, never by their places in the list.
+///
+/// A full merge reads every copy before it asks about any, and every phase
+/// asks about a copy by its set and its place in the set, as the copies
+/// read saw it. So once that read is done the table settles
+/// ([`Copies::settle`]): each copy's fate is kept, a byte a copy, by set
+/// and place, and the copies keyed by their record's name — 77 bytes a
+/// record on the laptop's store — are let go (the merge's memory,
+/// 2026-09-26; step 2c's "not done").
 #[derive(Debug, Default)]
 pub struct Copies {
     newest: HashMap<(SourceId, OwnedName), Kept>,
     withdrawn: HashMap<(SourceId, OwnedName), u32>,
     sets: Vec<Box<str>>,
     set_ix: HashMap<Box<str>, u32>,
+    /// Every copy the copies read saw, by set and then place from 1:
+    /// whether it stood when read, and once settled, its fate.
+    fates: Vec<Vec<Fate>>,
+    /// `fates` answers for every copy, and `newest` is let go.
+    settled: bool,
     #[allow(missing_docs)]
     pub stats: Stats,
 }
@@ -202,6 +227,7 @@ impl Copies {
     /// A deletions set's word that a record is withdrawn: every copy in a
     /// set before `set` in path order is dead. The latest such set counts.
     pub fn withdraw(&mut self, source: SourceId, native: OwnedName, set: &str) {
+        debug_assert!(!self.settled, "a withdrawal after the table settled");
         let ix = self.intern(set);
         let slot = self.withdrawn.entry((source, native)).or_insert(ix);
         if *self.sets[*slot as usize] < *set {
@@ -218,7 +244,82 @@ impl Copies {
     /// One copy, as the first reading sees it; a dead copy is not a
     /// candidate. Call after every withdrawal.
     pub fn see(&mut self, source: SourceId, native: Name<'_>, delivery: &Delivery) {
+        debug_assert!(!self.settled, "a copy seen after the table settled");
         self.seen(source, native, delivery);
+    }
+
+    /// A copy as a full merge's copies read sees it: [`Copies::see`], and
+    /// noted by its set and its place, which is how every later phase asks
+    /// about it. Says whether the copy stands.
+    fn read_copy(&mut self, source: SourceId, native: Name<'_>, delivery: &Delivery) -> bool {
+        let stands = self.seen(source, native, delivery);
+        let set = self.intern(&delivery.set) as usize;
+        if self.fates.len() <= set {
+            self.fates.resize_with(set + 1, Vec::new);
+        }
+        let at = usize::try_from(delivery.ordinal)
+            .ok()
+            .and_then(|o| o.checked_sub(1))
+            .expect("a place in a set counts from 1");
+        let fates = &mut self.fates[set];
+        if fates.len() <= at {
+            fates.resize(at + 1, Fate::Superseded);
+        }
+        fates[at] = if stands {
+            Fate::Superseded
+        } else {
+            Fate::Withdrawn
+        };
+        stands
+    }
+
+    /// Settles every copy's fate once the copies read has seen every copy:
+    /// each record's newest copy speaks, and the rest stay as they were
+    /// read, superseded or withdrawn. Then the table answers
+    /// [`Copies::fate`] by a copy's set and place alone and lets go of
+    /// the copies it kept by name; [`Copies::alive_in`] still asks the
+    /// withdrawals, which are few.
+    ///
+    /// # Errors
+    ///
+    /// A record's newest copy the copies read did not see by its place:
+    /// one given to [`Copies::see`] alone.
+    pub fn settle(&mut self) -> Result<(), Error> {
+        for (_, kept) in std::mem::take(&mut self.newest) {
+            let at = (kept.ordinal as usize).wrapping_sub(1);
+            let Some(fate) = self
+                .fates
+                .get_mut(kept.set as usize)
+                .and_then(|fates| fates.get_mut(at))
+            else {
+                return Err(Error::Unread {
+                    set: self.sets[kept.set as usize].clone(),
+                    ordinal: kept.ordinal.into(),
+                });
+            };
+            *fate = Fate::Speaks;
+        }
+        self.settled = true;
+        Ok(())
+    }
+
+    /// A settled table's fate for the copy delivered as `delivery`.
+    ///
+    /// # Panics
+    ///
+    /// A copy the copies read did not see: no phase reads a copy it did
+    /// not.
+    fn settled_fate(&self, delivery: &Delivery) -> Fate {
+        let fate = self.set_ix.get(&*delivery.set).and_then(|&set| {
+            let at = usize::try_from(delivery.ordinal).ok()?.checked_sub(1)?;
+            self.fates.get(set as usize)?.get(at).copied()
+        });
+        fate.unwrap_or_else(|| {
+            panic!(
+                "{}: record {} was not seen by the copies read",
+                delivery.set, delivery.ordinal
+            )
+        })
     }
 
     /// [`Copies::see`], saying whether the copy stands: not withdrawn.
@@ -249,6 +350,9 @@ impl Copies {
     /// was seen.
     #[must_use]
     pub fn fate(&self, source: SourceId, native: Name<'_>, delivery: &Delivery) -> Fate {
+        if self.settled {
+            return self.settled_fate(delivery);
+        }
         let key = (source, native.to_owned());
         if self.dead(&key, &delivery.set) {
             Fate::Withdrawn
@@ -288,7 +392,12 @@ impl Copies {
     /// Whether the record's speaking copy is in `set`: what a set's names,
     /// fields, relations and text are asked.
     #[must_use]
+    ///
+    /// # Panics
+    ///
+    /// Asked of a settled table, which keeps copies by place, not name.
     pub fn speaks_in(&self, source: SourceId, native: Name<'_>, set: &str) -> bool {
+        assert!(!self.settled, "speaks_in asked of a settled table");
         let key = (source, native.to_owned());
         self.newest.get(&key).is_some_and(|kept| {
             let speaking = &self.sets[kept.set as usize];
@@ -352,7 +461,7 @@ impl Copies {
                     ordinal,
                 })?;
                 let delivery = delivery_of::<S>(&work, set, ordinal);
-                let stands = self.seen(S::SOURCE, native, &delivery);
+                let stands = self.read_copy(S::SOURCE, native, &delivery);
                 if let Some(sorter) = names.as_deref_mut().filter(|_| stands) {
                     let mut failed = None;
                     S::names(&work, &mut |a| {
@@ -489,6 +598,66 @@ mod tests {
         // A later deletion withdraws that copy too.
         copies.withdraw(SourceId::Pubmed, pmid.clone(), "updatefiles/pubmed26n1339");
         assert_eq!(copies.fate(SourceId::Pubmed, name, &after), Fate::Withdrawn);
+    }
+
+    /// A settled table answers every copy's fate as the table keyed by
+    /// name did, from its set and place alone, having let the names go
+    /// (the merge's memory, 2026-09-26).
+    #[test]
+    fn a_settled_table_gives_every_copy_the_fate_it_had() {
+        let pmid = |n| OwnedName::parse(&format!("pmid:{n}")).unwrap();
+        let (baseline, update) = ("baseline/pubmed26n1334", "updatefiles/pubmed26n1335");
+        // Record 1 in both sets, the update newer; record 2 withdrawn by
+        // a deletion after the baseline; record 3 twice in the update,
+        // the second copy a higher version; record 4 once.
+        let read: Vec<(u32, Delivery)> = vec![
+            (1, d(Some("2026-01-01"), 1, baseline, 1)),
+            (2, d(Some("2026-01-01"), 1, baseline, 2)),
+            (4, d(Some("2026-01-01"), 1, baseline, 3)),
+            (1, d(Some("2026-02-01"), 1, update, 1)),
+            (3, d(Some("2026-02-01"), 1, update, 2)),
+            (3, d(Some("2026-02-01"), 2, update, 3)),
+        ];
+        let table = || {
+            let mut copies = Copies::new();
+            copies.withdraw(SourceId::Pubmed, pmid(2), "deletions/pubmed26n1335");
+            copies
+        };
+        let mut named = table();
+        let mut placed = table();
+        for (n, delivery) in &read {
+            named.see(SourceId::Pubmed, pmid(*n).as_name(), delivery);
+            placed.read_copy(SourceId::Pubmed, pmid(*n).as_name(), delivery);
+        }
+        placed.settle().unwrap();
+        assert!(placed.newest.is_empty(), "the copies by name let go");
+        let fates: Vec<Fate> = read
+            .iter()
+            .map(|(n, delivery)| placed.fate(SourceId::Pubmed, pmid(*n).as_name(), delivery))
+            .collect();
+        assert_eq!(
+            fates,
+            [
+                Fate::Superseded,
+                Fate::Withdrawn,
+                Fate::Speaks,
+                Fate::Speaks,
+                Fate::Superseded,
+                Fate::Speaks,
+            ]
+        );
+        for ((n, delivery), fate) in read.iter().zip(fates) {
+            assert_eq!(
+                named.fate(SourceId::Pubmed, pmid(*n).as_name(), delivery),
+                fate
+            );
+        }
+        assert!(placed.alive_in(SourceId::Pubmed, pmid(1).as_name(), baseline));
+        assert!(!placed.alive_in(SourceId::Pubmed, pmid(2).as_name(), baseline));
+        // A copy seen only by name has no place a phase could ask for.
+        let mut unplaced = table();
+        unplaced.see(SourceId::Pubmed, pmid(5).as_name(), &read[0].1);
+        assert!(unplaced.settle().is_err());
     }
 
     #[test]

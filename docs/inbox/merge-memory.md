@@ -557,6 +557,27 @@ two forms are held together only while the works are made flat, which
 at the eighth comes below the peak the pass already had while
 resolving.
 
+**The copies, settled.** *Built 2026-09-26*, 2c's "not done", in a
+different form than it proposed. `Copies` kept every record's newest
+copy by the record's name, 77 bytes a record, and every phase asked it
+by name, an owned copy of the name made for each question. But a full
+merge reads every copy before it asks about any, and every phase asks
+about a copy by its set and its place in the set, as the copies read
+saw it; so once that read is done, `Copies::settle` writes each copy's
+fate — speaks, superseded, withdrawn — in a byte by set and place, and
+lets the table by name go. The withdrawals stay by name: they are few,
+and a reference asks them. Keying the table by the name's number, as
+2c proposed, would have kept four times as much and asked every phase
+to look the number up first. On the laptop's store (M): settling freed
+3,465,013 of the table's 3,475,249 bytes; the same 58 merged files and
+registry byte for byte, the same report, the journal line different in
+its time alone; a test reads the same copies into a table by name and
+a settled one and gets every fate alike. At the eighth about 4.8 GB
+down to 0.06 (D), and for the whole file about 17 GB to 0.2 (E) —
+after the copies read, whose own peak still holds the table by name
+while it reads. The incremental merge and the test fixture never
+settle, and ask by name as before.
+
 ## Walls behind this one
 
 - **Time.** Pass 1 decodes on one thread: 26 minutes for 36.5 GiB. The
