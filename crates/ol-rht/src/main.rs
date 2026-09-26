@@ -4896,6 +4896,8 @@ struct CrossrefStats {
     dates: BTreeMap<&'static str, u64>,
     /// Works with a version label, and with a part number.
     version_part: [u64; 2],
+    /// Works with no `member`, and with no `publisher`.
+    unowned: [u64; 2],
     malformed_samples: Vec<String>,
 }
 
@@ -4971,6 +4973,8 @@ impl<'n> Sink<'n, Crossref> for CrossrefStats {
         }
         self.version_part[0] += u64::from(w.version.is_some());
         self.version_part[1] += u64::from(w.part_number.is_some());
+        self.unowned[0] += u64::from(w.member.is_none());
+        self.unowned[1] += u64::from(w.publisher.is_none());
     }
 
     fn reference(&mut self, _from: &Doi<'n>, r: &source_crossref::normalize::Reference<'n>) {
@@ -5052,8 +5056,8 @@ impl StatsReport for CrossrefStats {
         );
         eprintln!("  dates {:?}", self.dates);
         eprintln!(
-            "  version labels {}  part numbers {}",
-            self.version_part[0], self.version_part[1]
+            "  version labels {}  part numbers {}  no member {}  no publisher {}",
+            self.version_part[0], self.version_part[1], self.unowned[0], self.unowned[1]
         );
         eprintln!("references {}", self.references);
         eprintln!(
@@ -5409,7 +5413,7 @@ impl Merge for PubmedStats {
 
 impl Merge for CrossrefStats {
     fn merge(&mut self, other: Self) {
-        absorb_all!(self, other: CrossrefStats { works, deletions, types, untyped, excluded, set_aside, doi_lowercased, owner_differs, publisher, issued, title, alternate_titles, subtitle_empty, abstracts, persons, orgs, with_orcid, institutions, issns, isbns, languages, references, reference_doi, reference_empty, updates, update_words, relations, licenses, license_starts, dates, version_part, malformed_samples });
+        absorb_all!(self, other: CrossrefStats { works, deletions, types, untyped, excluded, set_aside, doi_lowercased, owner_differs, publisher, issued, title, alternate_titles, subtitle_empty, abstracts, persons, orgs, with_orcid, institutions, issns, isbns, languages, references, reference_doi, reference_empty, updates, update_words, relations, licenses, license_starts, dates, version_part, unowned, malformed_samples });
     }
 }
 

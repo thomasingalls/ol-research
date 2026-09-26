@@ -61,8 +61,10 @@ pub struct Work<'n> {
     /// `prefix`: the DOI's current owner, which differs from the DOI's own
     /// registrant on 7 % of works.
     pub owner: Registrant,
-    /// `member`.
-    pub member: u32,
+    /// `member`; absent where the record does not say it, a DOI moved to a
+    /// new owner's `prefix` (see [`crate::record::Work::member`]). Not
+    /// looked up from the prefix: that is another source's word.
+    pub member: Option<u32>,
     /// `type`; `None` where the record has none, which is unknown rather
     /// than guessed (the user's call, 2026-09-26).
     pub kind: Option<WorkType>,
@@ -122,9 +124,9 @@ pub struct Work<'n> {
     /// `status`: posted content withdrawn or removed.
     #[serde(borrow)]
     pub status: Option<PostedStatus<'n>>,
-    #[allow(missing_docs)]
+    /// `publisher`; absent with `member`.
     #[serde(borrow)]
-    pub publisher: Interned<'n>,
+    pub publisher: Option<Interned<'n>>,
     /// `language`, ISO 639-1.
     pub language: Option<Lang>,
     /// `author[]`.
@@ -1003,8 +1005,11 @@ pub fn normalize<'n, K: Sink<'n, Crossref>>(w: &'n Native<'_>, emit: &mut K) -> 
     }
     let owner = Registrant::parse(&w.prefix)
         .map_err(|e| ctx.err("prefix", &w.prefix, ErrorKind::Doi(e)))?;
-    let member = model::id::strict_u32(&w.member)
-        .map_err(|e| ctx.err("member", &w.member, ErrorKind::Id(e)))?;
+    let member = w
+        .member
+        .as_deref()
+        .map(|m| model::id::strict_u32(m).map_err(|e| ctx.err("member", m, ErrorKind::Id(e))))
+        .transpose()?;
 
     let created = ctx.stamp(
         "created",
@@ -1231,7 +1236,7 @@ pub fn normalize<'n, K: Sink<'n, Crossref>>(w: &'n Native<'_>, emit: &mut K) -> 
         part_number: w.part_number.as_deref(),
         version: w.version.as_ref().map(|v| &*v.version),
         status,
-        publisher: Interned::Text(&w.publisher),
+        publisher: w.publisher.as_deref().map(Interned::Text),
         language,
         authors,
         institutions,

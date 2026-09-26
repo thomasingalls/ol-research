@@ -47,9 +47,14 @@ pub struct Work<'a> {
     /// The DOI prefix, `10.1016`.
     #[serde(borrow)]
     pub prefix: Text<'a>,
-    /// The member id, digits as a string.
+    /// The member id, digits as a string. Absent, with `publisher`, where
+    /// a DOI has moved to a member Crossref's index does not attach to the
+    /// work — a journal passed to a new owner, whose `prefix` is here
+    /// (`10.65087`, the Aquatic Ecosystem Health & Management Society, for
+    /// Taylor & Francis's and Elsevier's DOIs): 15,535 records of the March
+    /// 2026 file (2026-09-26), and still absent on the live API.
     #[serde(borrow)]
-    pub member: Text<'a>,
+    pub member: Option<Text<'a>>,
     /// Query relevance; `0.0` outside searches.
     pub score: f64,
     /// DOI registration.
@@ -139,9 +144,10 @@ pub struct Work<'a> {
     /// A JATS XML fragment; 275 of 1,000.
     #[serde(borrow)]
     pub r#abstract: Option<Text<'a>>,
+    /// Absent with `member`, but on two records that keep the name
+    /// without the number.
     #[serde(borrow)]
-    #[allow(missing_docs)]
-    pub publisher: Text<'a>,
+    pub publisher: Option<Text<'a>>,
     #[serde(borrow)]
     #[allow(missing_docs)]
     pub publisher_location: Option<Text<'a>>,

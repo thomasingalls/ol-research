@@ -719,3 +719,14 @@ fn a_null_secondary_link_is_read() {
     assert_eq!((&secondary.url, &secondary.label), (&None, &None));
     run("resource_secondary_null");
 }
+
+/// 10.30546/100981.1.2024.001, shard 1222 line 2216: a journal article
+/// whose DOI now belongs to prefix 10.65765, a new member's, and whose
+/// record says neither the member nor the publisher — as 15,535 records
+/// of the file do. Both absent, the owner kept from `prefix`.
+#[test]
+fn a_record_that_names_no_member_has_none() {
+    let w = run("member_absent");
+    assert_eq!((w.member, w.publisher), (None, None));
+    assert_eq!(w.owner.to_string(), "10.65765");
+}

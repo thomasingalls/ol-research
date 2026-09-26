@@ -2002,6 +2002,18 @@ cross-IDs and a second edge namespace early.
   `{"URL": null, "label": null}` (309: OUP's through Ingenta and BioOne,
   the Chinese Journal of Mechanical Engineering's). Both are read as
   absent; the next survey says whether the file holds a third.
+- 2026-09-26, still model 10: no `member`. 15,535 records of the file
+  name no member, and all but two of those dumped no publisher either
+  (M). They are DOIs that moved: Taylor & Francis's, Elsevier's, De
+  Gruyter's and smaller publishers' journals passed to new owners whose
+  prefixes the records carry (`10.65087`, the Aquatic Ecosystem Health &
+  Management Society; `10.65844`, Hasanuddin University — Crossref's
+  `/prefixes`, 2026-09-26), deposited in 2025 and 2026, and Crossref's
+  index does not attach the new member to the work, on the live API as
+  in the file. `member` and `publisher` are now optional: absent where
+  the record does not say them. The owner is still known, from `prefix`.
+  The member is not looked up from the prefix: that would be another
+  source's word, for a lookup table of its own if it is ever wanted.
 
 ## 11. Dependencies
 
