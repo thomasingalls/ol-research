@@ -50,6 +50,11 @@ fourth unchosen.
 The free sources (OpenAlex, Semantic Scholar) and the frontier systems
 that rent them (retrieval frontier §6) offer none of these whole.
 
+**Qualification, 2026-09-25:** that was an early assessment, not an
+established competitive advantage. The workbench comparison in §10 adds
+documented provenance and execution features that this framing missed;
+speed, cost, and corpus-level disagreement handling still need comparison.
+
 ## 3. Candidate shapes
 
 | shape | for whom | how much exists | distinctive or crowded |
@@ -233,6 +238,34 @@ product can measurably improve that. Europe-first does not yet imply
 support for every European language or a decision to build a translation
 model. Language pairs, terminology needs, and acceptable error rates
 remain open.
+
+## 10. The workbench is part of the product — 2026-09-25
+
+**The user's clarification:** “skills+ui+coding agent in a ui with
+intentionally designed interfaces for these tools” is the dream. The
+user reports having designed this in 2024 and expresses frustration on
+finding several products with that shape. This records the intended
+experience more clearly than §3's list of individual utilities.
+
+**Correction to the earlier framing:** the product under discussion
+includes a coherent environment in which a researcher can direct an
+agent, use scientific procedures, inspect and revise outputs, and retain
+the evidence and work that produced them. Treating the corpus, tracer,
+and citation checker as separate candidate products understated that
+intended experience.
+
+The sourced [workbench comparison](competition-list.md#research-workbenches--2026-09-25)
+adds OpenScience (Synthetic Sciences), Open Science Desktop (AI4S),
+Claude Science, and K-Dense. Their documented skills, execution,
+scientific interfaces, and provenance are substantive overlap with the
+broader vision. Extensibility also matters: comparisons need to include
+what a skill or connector enables within those environments.
+
+This does not establish equal quality, adoption, or coverage of the
+proposed concept-lineage task. It does mean that provenance, local
+execution, and a purpose-built scientific interface cannot be treated
+as unclaimed differentiators. The user has not chosen to narrow the
+product, pivot to infrastructure, or abandon the workbench vision.
 
 ---
 

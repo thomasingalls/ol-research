@@ -1,12 +1,17 @@
 # Competition and adjacent tools
 
-Updated 2026-09-24. One row per service, with every documented area of
-overlap marked independently. Read across to see a service's span and down
+Updated 2026-09-25. One row per service or named product family, with each
+documented area of overlap marked independently. Read across to see a service's span and down
 to find alternatives for a particular capability. Rows are alphabetical.
 
 This is a working inventory of advertised capabilities, not a product
 quality ranking or an exhaustive feature audit. Infrastructure and access
 services may also be suppliers or integration partners.
+
+The [research-workbench comparison](#research-workbenches--2026-09-25)
+adds a second view: how skills, code execution, specialized interfaces,
+and inspectable artifacts fit together. The literature matrix alone
+understates this part of the competition.
 
 ## Capability matrix
 
@@ -24,6 +29,7 @@ provide the sources.
 | [Causaly](https://www.causaly.com/) | ● | ● | · | ● | · | · | · | · | ● | · | · |
 | [CCC / RightFind](https://www.copyright.com/solutions-rightfind-suite/) | ● | · | · | · | · | ● | · | ● | · | · | ● |
 | [ChatPDF](https://www.chatpdf.com/) | ● | · | · | ● | · | ● | · | ● | ● | · | ● |
+| [Claude Science](https://claude.com/docs/claude-science/overview) | ↗ | · | ● | ● | · | ● | · | ● | · | · | · |
 | [Connected Papers](https://www.connectedpapers.com/) | ● | ● | · | · | · | · | · | · | · | · | · |
 | [Consensus](https://help.consensus.app/en/collections/10600168-explore-features) | ● | ● | · | ● | · | ● | ● | · | ● | · | ● |
 | [CORE](https://core.ac.uk/services/api) | ● | · | · | · | · | · | · | ● | ● | · | · |
@@ -36,14 +42,17 @@ provide the sources.
 | [GetFTR](https://www.getfulltextresearch.com/) | · | · | · | · | · | · | · | ● | · | · | · |
 | [Google Scholar](https://scholar.google.com/intl/en/scholar/help.html) | ● | ● | · | · | ● | ● | ● | ● | · | · | · |
 | [Iris.ai / RSpace](https://iris.ai/products/rspace) | ● | · | · | ● | ● | ● | · | · | · | · | ● |
+| [K-Dense / Web + BYOK](https://www.k-dense.ai/products) | ● | · | ● | ● | · | ● | · | · | ● | · | · |
 | [The Lens](https://www.lens.org/) | ● | ● | · | · | · | ● | · | · | ● | ● | · |
 | [Litmaps](https://www.litmaps.com/features) | ● | ● | · | · | ● | ● | · | · | · | · | ● |
 | [Mendeley](https://www.mendeley.com/features/) | · | · | · | ● | · | ● | ● | · | · | · | ● |
 | [Mistral / Vibe + Studio](https://mistral.ai/products/vibe/) | ↗ | · | · | ● | · | ● | · | · | ● | · | ● |
 | [Open Knowledge Maps](https://openknowledgemaps.org/) | ● | ● | · | · | · | · | · | · | · | · | · |
+| [Open Science Desktop (AI4S)](https://openedscience.com/) | ● | · | ● | ● | · | ● | · | · | ● | · | · |
 | [OpenAIRE Graph](https://graph.openaire.eu/) | ● | ● | · | · | · | · | · | · | ● | · | · |
 | [OpenAlex](https://openalex.org/) | ● | ● | · | · | · | · | · | · | ● | · | · |
 | [OpenCitations](https://opencitations.net/) | ● | ● | · | · | · | · | · | · | ● | · | · |
+| [OpenScience (Synthetic Sciences)](https://www.openscience.sh/) | ● | · | ● | ● | · | ● | · | · | ● | · | · |
 | [Paperpile](https://paperpile.com/) | ↗ | · | · | ↗ | · | ● | ● | ● | · | · | ● |
 | [Papers / ReadCube](https://about.readcube.com/) | ● | · | · | ● | ● | ● | ● | ● | · | · | ● |
 | [Papers with Code (.co)](https://paperswithcode.co/) | ● | · | · | · | · | · | · | · | · | · | · |
@@ -87,6 +96,55 @@ concept maps both fall under tracing. The notes retain those distinctions.
 Reference checking is separate from generating a bibliography, and
 programmatic access is separate from owning a corpus.
 
+For workbenches, Library can mean saved research files and notes in a
+project. API/data can mean an interface for driving the agent runtime;
+it does not imply a scholarly corpus API. Connecting to an MCP server
+does not itself earn an API/data mark. Execution provenance is covered
+below rather than counted as citation tracing.
+
+## Research workbenches — 2026-09-25
+
+The user supplied OpenScience, Open Science Desktop, and Claude Science,
+recognizing the intended product shape: skills plus a coding agent inside
+an interface deliberately designed for the scientific tools and their
+outputs. Their note, retained from the top of this document:
+
+> holy shit this is a crowded field, i had no idea. i... i'm very frustrated about this, i *designed* this in 2024.
+
+These overlap the working environment as well as individual research
+tasks. The table compares documented interfaces and capabilities; none
+was installed or tested in this review. The two similarly named Open
+Science projects are separate repositories and products.
+
+| Product | Skills and execution | Interfaces for working with results | Record and extensibility |
+| --- | --- | --- | --- |
+| **OpenScience — Synthetic Sciences** ([repository](https://github.com/synthetic-sciences/openscience)) | Bundled scientific procedures, Python/R kernels, shell, notebooks, and delegated work. | Desktop/browser workspace. Its [architecture](https://github.com/synthetic-sciences/openscience/blob/main/ARCHITECTURE.md) describes file/terminal views and inline molecules, structures, genomes, and plots. | Local session state, provenance, and artifact review; configurable models, MCP, plugins, and SDKs. |
+| **Open Science Desktop — AI4S** ([repository](https://github.com/ai4s-research/open-science)) | Research/exploration, literature, experiment, writing, and review skills; local and remote execution. | Tiled sessions, notebooks, tables/charts, scientific file viewers, and an [artifact inspector](https://openedscience.com/) linking outputs to inputs and code. | Run records and file versions; OpenCode runtime, MCP, SDK, and ACP support for other agents/editors. |
+| **Claude Science** ([overview](https://claude.com/docs/claude-science/overview)) | [Scientific and custom skills](https://claude.com/docs/claude-science/connectors-and-skills), Python/R/shell execution, and delegation. | [Artifact tabs](https://claude.com/docs/claude-science/artifacts) with versions/diffs; [comments](https://claude.com/docs/claude-science/comments) attached to text, figures, or HTML elements and sent back to the agent. | Per-artifact code, execution log, environment, and review; persistent projects and configurable connectors. Available as a desktop beta. |
+| **K-Dense — BYOK and Web** ([products](https://www.k-dense.ai/products)) | [BYOK](https://github.com/K-Dense-AI/k-dense-byok) runs scientific skills and specialist agents on a user's machine. [Web](https://www.k-dense.ai/products/k-dense-web) provides hosted execution and review. | BYOK combines scientific viewers, editable code/tables, annotations, and a Living Lab Notebook linking hypotheses, methods, observations, decisions, and artifacts. | BYOK exports notebook records and project files; Web exposes tools for browser agents through WebMCP. These are separate offerings in one family. |
+
+**Public interest and availability, observed 2026-09-25.** The GitHub
+pages displayed approximately 3.6k stars / 489 forks for Synthetic
+Sciences and 1.7k stars / 209 forks for AI4S. These measure repository
+interest, not active researchers, retention, or paid use. Claude's docs
+establish beta availability to eligible existing paid plans; no
+Science-specific usage figures were established in this review.
+
+**Shared components matter.** Synthetic Sciences credits K-Dense's
+scientific skills among its bundled procedures; AI4S documents an
+OpenCode runtime. These products can reuse substantial parts while
+competing through integration and interaction design. A skill catalogue
+alone is not a measure of working tool coverage or research quality.
+
+**What this changes in the comparison.** Provenance, local execution,
+specialist skills, and a designed scientific UI are already documented
+across this group. They cannot be assumed to distinguish this project.
+The proposed concept-lineage workflow still needs direct comparison,
+including what an extensible workbench can do with a suitable skill or
+connector. The relevant boundary is the complete task a researcher can
+finish and inspect in the environment, not only a vendor's default
+literature-search feature. See the dated [product-shape correction](product-shapes.md#10-the-workbench-is-part-of-the-product--2026-09-25).
+
 ## Scope and evidence
 
 - **Academia.edu.** Research sharing and paper discovery.
@@ -95,6 +153,7 @@ programmatic access is separate from owning a corpus.
 - **Causaly.** Biomedical relationships and enterprise research workflows, with a Bio Graph API. Its [Scientific Information Retrieval System](https://www.causaly.com/ai-platform/scientific-rag) combines similarity retrieval with graph-based search and ranking over biomedical concepts and relationships.
 - **CCC / RightFind.** The row covers the RightFind suite's discovery, shared libraries, access, and licensing. [RightFind Insight](https://www.copyright.com/solutions-rightfind-insight/) adds semantic search and concept navigation.
 - **ChatPDF.** Document Q&A, summaries, multi-file folders, and sharing, plus a [PDF extraction/chat API](https://www.chatpdf.com/docs/api/backend). [AI Research](https://www.chatpdf.com/scholar) adds literature search, abstract-based synthesis, and full-paper chat for open-access papers. Links back to source passages do not by themselves establish reference checking or bibliography generation. Its homepage advertises 10M+ users and 1M+ questions answered daily; these are provider-reported adoption figures, not independently verified active-user or revenue measurements.
+- **Claude Science.** Scientific workbench with literature-review skills and external literature connectors. Its [reviewer](https://claude.com/docs/claude-science/the-reviewer) can flag citations that do not support claims; [literature access](https://claude.com/docs/claude-science/literature-access) retrieves and saves full text using open-access and configured institutional/publisher routes. Saved artifacts explain Library; comments to the agent do not establish team collaboration. Custom MCP connections consume tools, rather than establish a supplied corpus API.
 - **Connected Papers.** Visual exploration of related papers.
 - **Consensus.** The feature catalogue includes citation graphs, shared collections, bibliography creation, and an API alongside search and synthesis.
 - **CORE.** Aggregated research metadata and open-access full text, available through search and machine access.
@@ -107,14 +166,17 @@ programmatic access is separate from owning a corpus.
 - **GetFTR.** Entitlement-aware linking from discovery tools to full text.
 - **Google Scholar.** Search, citing/related papers, alerts, saved libraries, formatted citations, and links to accessible copies.
 - **Iris.ai / RSpace.** Research discovery, concept/topic analysis, and full-text chat. [RSpace 1.3](https://iris.ai/blog/announcement-new-features-in-r-space-1-3) documents OpenAlex integration, research monitoring, saved datasets, and collaborative versioning. Its [Analyze tool](https://iris.ai/blog/tech-deep-dive-topic-modelling-with-the-analyze-tool) extracts concepts for filtering; this does not establish autonomous citation traversal.
+- **K-Dense / Web + BYOK.** Hosted and local scientific workbenches. The row spans both products: literature analysis and citation checks, BYOK's saved research/notebook files, and Web's documented WebMCP interface. Their open scientific-skill library is also an input to other products. Product-specific differences are retained in the workbench table.
 - **The Lens.** Scholarly and patent discovery, citation links, collections, and analytics; [API documentation](https://docs.api.lens.org/) covers corpus access.
 - **Litmaps.** Citation maps and saved research collections, monitoring, and shared maps; also integrates with Zotero.
 - **Mendeley.** PDF organization and annotation, AI reading, and shared group libraries. [Mendeley Cite](https://www.mendeley.com/reference-management/mendeley-cite) handles citations in Word.
 - **Mistral / Vibe + Studio.** Vibe (formerly Le Chat) offers deep research and shared workspaces. [Agentic Search](https://mistral.ai/news/agentic-search/) provides iterative document search/reading through Search Toolkit and Libraries. Scholarly discovery is marked as an integration through Wiley Scholar Gateway. This is a general research/deployment platform; specific FDE engagements and scholarly citation-graph capabilities remain unestablished here.
 - **Open Knowledge Maps.** Topic maps and concept-based research overviews.
+- **Open Science Desktop (AI4S).** Literature surveys and manuscript review, including DOI resolution, inside an execution workbench. Files, notes, and provenance stay with the project. SDK/agent interfaces explain API/data; the reviewed documentation does not establish an owned scholarly corpus or autonomous citation-graph traversal.
 - **OpenAIRE Graph.** Linked research information, graph exploration, datasets, and APIs.
 - **OpenAlex.** Scholarly metadata and research relationships; [documentation](https://help.openalex.org/) covers data and API access.
 - **OpenCitations.** Open bibliographic and citation lookup and data infrastructure.
+- **OpenScience (Synthetic Sciences).** Its README describes literature review, reference checking, saved evidence, and scientific skills. Its public runtime/SDK supports applications driving the agent. Scientific views and local execution extend its overlap beyond the literature columns; no owned scholarly corpus is established here.
 - **Paperpile.** [Search and collection](https://paperpile.com/features/collect-papers/) use external scholarly databases and retrieve PDFs. Its [AI integration](https://paperpile.com/blog/pdf-ai-assistant/) sends PDFs and prompts to external assistants; marked as an integration, not an in-product synthesis engine.
 - **Papers / ReadCube.** Search, AI reading and extraction, monitoring, shared libraries, SmartCite, and document delivery; features span multiple plans.
 - **Papers with Code (.co).** Machine-learning papers, methods, benchmarks, datasets, and implementations. This entry refers specifically to the supplied .co site.
