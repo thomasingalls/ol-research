@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 pub struct ChatRequest {
@@ -10,7 +10,7 @@ pub struct ChatRequest {
     pub messages: Vec<ChatMessage>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 pub struct ChatMessage {
@@ -19,7 +19,7 @@ pub struct ChatMessage {
     pub content: Vec<ContentPart>,
 }
 
-#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(test, derive(ts_rs::TS))]
 pub enum Role {
@@ -27,7 +27,7 @@ pub enum Role {
     Assistant,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 pub enum ContentPart {
@@ -226,6 +226,101 @@ pub enum FinishReason {
     Length,
 }
 
+/// Version-one browser history projection. This is not an agent execution checkpoint.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+pub struct ChatHistory {
+    pub head_id: Option<String>,
+    pub messages: Vec<SavedMessage>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+pub struct SavedMessage {
+    pub parent_id: Option<String>,
+    pub message: ChatMessage,
+    pub created_at: String,
+    pub status: Option<SavedStatus>,
+    pub model_message_id: Option<String>,
+    pub part_ids: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+pub enum SavedStatus {
+    Complete {
+        reason: CompleteReason,
+    },
+    Incomplete {
+        reason: IncompleteReason,
+        error: Option<String>,
+    },
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(test, derive(ts_rs::TS))]
+pub enum CompleteReason {
+    Stop,
+    Unknown,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(test, derive(ts_rs::TS))]
+pub enum IncompleteReason {
+    Length,
+    Cancelled,
+    Error,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+pub struct CreateSession {
+    pub title: String,
+}
+
+#[derive(Debug, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+pub struct ChatSession {
+    pub id: String,
+    pub title: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+pub struct SessionPage {
+    pub sessions: Vec<ChatSession>,
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+pub struct HistoryResponse {
+    pub revision: i64,
+    pub history: ChatHistory,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+pub struct SaveHistory {
+    pub checkpoint_id: String,
+    pub expected_revision: i64,
+    pub history: ChatHistory,
+}
+
+#[derive(Debug, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+pub struct SavedRevision {
+    pub revision: i64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -235,6 +330,17 @@ mod tests {
     fn bindings() -> String {
         let cfg = Config::default().with_large_int("number");
         let declarations = [
+            ChatHistory::decl(&cfg),
+            SavedMessage::decl(&cfg),
+            SavedStatus::decl(&cfg),
+            CompleteReason::decl(&cfg),
+            IncompleteReason::decl(&cfg),
+            CreateSession::decl(&cfg),
+            ChatSession::decl(&cfg),
+            SessionPage::decl(&cfg),
+            HistoryResponse::decl(&cfg),
+            SaveHistory::decl(&cfg),
+            SavedRevision::decl(&cfg),
             ChatRequest::decl(&cfg),
             ChatMessage::decl(&cfg),
             Role::decl(&cfg),

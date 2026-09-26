@@ -1620,13 +1620,17 @@ version = "0.1.0"
 dependencies = [
  "async-stream",
  "axum",
+ "chrono",
  "proptest",
  "reqwest",
  "serde",
  "serde_json",
+ "sqlx",
  "tokio",
  "tokio-stream",
  "ts-rs",
+ "uuid",
+ "workbench-store",
 ]
 
 [[package]]

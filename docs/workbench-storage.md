@@ -5,10 +5,12 @@ from the [workbench design](research-workbench-design.md): a local Postgres
 container, SQLx pool and migrations, and Rust persistence APIs for projects,
 sessions and native checkpoints.
 
-**The chat endpoint/UI does not use this store yet.** Reloading the current
-chat still loses its browser history. There is no rpi dependency, execution
-lease, run scheduler, Temporal integration, VM allocation or artifact store
-in this slice. Database revisions prevent conflicting checkpoint commits;
+The chat API and assistant-ui now use this store for a versioned conversation
+history projection: messages, edit/regeneration branches and selected head
+survive reloads. See [chat history](chat-api.md#persisted-conversations) for
+its write boundaries and failure behavior. This is **not native agent state**
+or durable execution. There is no rpi dependency, execution lease, run
+scheduler, Temporal integration, VM allocation or artifact store. Database revisions prevent conflicting checkpoint commits;
 they do not stop an obsolete executor from performing external tool calls.
 
 ## Local setup
@@ -139,7 +141,11 @@ append/delta storage can be introduced when the runner's real format is known.
 No cascade deletion or retention policy is implemented. No assumptions about
 model message roles, tool schemas, compaction or rpi's wire format are baked
 into these tables. Run identities, execution ownership, handoff checkpoints,
-UI projections and artifact provenance remain subsequent slices.
+artifact provenance and native runner integration remain subsequent slices.
+The current chat projection is explicitly tagged `ol-rht-chat-history`,
+version `1`, with runner `ol-rht-chat` and its package version. A future
+native runner needs its own format and reader; the chat API refuses to
+read or overwrite an unsupported envelope.
 
 ## Queries, migrations and tests
 
@@ -171,7 +177,12 @@ tests; `just db-test` runs them and fails if the database is unavailable.
 database-creation privileges. It does not inherit `OL_RHT_DATABASE_URL`.
 Failed-test databases may be retained by SQLx for diagnosis.
 
-Coverage includes migration repetition, idempotent creation, project scoping,
+The recipe runs both the storage crate and chat API database suites.
+Chat tests cover HTTP creation/listing, reload after API restart, full
+branch-tree round trips, scoping, revision conflicts, delayed retries,
+malformed/oversized history and unsupported formats.
+
+Storage coverage includes migration repetition, idempotent creation, project scoping,
 pagination, exact-byte restoration after reconnect, delayed and concurrent
 retries, competing writers, atomic rollback, invalid inputs and a property
 test over arbitrary binary payloads. These tests do not require a model,

@@ -4,6 +4,7 @@
 
 mod completion;
 mod corpus;
+mod history;
 mod paper;
 pub mod protocol;
 mod search;
@@ -97,6 +98,7 @@ fn local_endpoint(base: &str, path: &str) -> Result<reqwest::Url, String> {
 struct App {
     config: Config,
     client: reqwest::Client,
+    storage: Option<history::Storage>,
 }
 
 /// The standalone chat router. Search needs the corpus HTTP service.
@@ -104,6 +106,26 @@ struct App {
 /// # Errors
 /// An HTTP client could not be constructed.
 pub fn router(config: Config) -> Result<Router, reqwest::Error> {
+    build_router(config, None)
+}
+
+/// Chat plus versioned history, scoped to a caller-provisioned project.
+/// The loopback entry point supplies one local development project; this is not authentication.
+///
+/// # Errors
+/// An HTTP client could not be constructed.
+pub fn router_with_storage(
+    config: Config,
+    store: workbench_store::Store,
+    project_id: uuid::Uuid,
+) -> Result<Router, reqwest::Error> {
+    build_router(config, Some(history::Storage { store, project_id }))
+}
+
+fn build_router(
+    config: Config,
+    storage: Option<history::Storage>,
+) -> Result<Router, reqwest::Error> {
     let client = reqwest::Client::builder()
         .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
@@ -115,7 +137,12 @@ pub fn router(config: Config) -> Result<Router, reqwest::Error> {
         .route("/health", get(|| async { "ok" }))
         .route("/v1/chat", post(chat))
         .layer(DefaultBodyLimit::max(256 * 1024))
-        .with_state(Arc::new(App { config, client })))
+        .merge(history::routes())
+        .with_state(Arc::new(App {
+            config,
+            client,
+            storage,
+        })))
 }
 
 #[allow(clippy::unused_async)]

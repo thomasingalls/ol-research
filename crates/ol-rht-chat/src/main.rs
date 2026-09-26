@@ -37,7 +37,17 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     if !address.ip().is_loopback() {
         return Err("the development listener must be on loopback".into());
     }
-    let router = ol_rht_chat::router(Config::local(&upstream, &model)?.with_corpus(&corpus)?)?;
+    let database_url = std::env::var("OL_RHT_DATABASE_URL")
+        .map_err(|_| "OL_RHT_DATABASE_URL is required; use just chat-api for the local database")?;
+    let store = workbench_store::Store::connect(&database_url).await?;
+    // One development project, shared across restarts. Migrations remain explicit.
+    let project_id = uuid::Uuid::from_u128(0x5d932c16_f172_4163_89b6_3cedc36d7a30);
+    store.create_project(project_id, "Local chat").await?;
+    let router = ol_rht_chat::router_with_storage(
+        Config::local(&upstream, &model)?.with_corpus(&corpus)?,
+        store,
+        project_id,
+    )?;
     let listener = tokio::net::TcpListener::bind(address).await?;
     eprintln!("ol-rht-chat: http://{address}/v1/chat → {upstream}, model {model} (local dev)");
     axum::serve(listener, router).await?;

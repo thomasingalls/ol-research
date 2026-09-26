@@ -74,7 +74,7 @@ chat-model:
 
 # Local chat API on :50053; run beside chat-model and web, plus serve for corpus tools.
 chat-api:
-    cargo run -p ol-rht-chat
+    @OL_RHT_DATABASE_URL={{quote(database_url)}} cargo run -p ol-rht-chat
 
 # Regenerate the browser's chat request/event contract from Rust.
 chat-types:
@@ -135,7 +135,7 @@ db-prepare-check:
 
 # Real Postgres tests, each in an isolated database; fails if Postgres is unavailable.
 db-test:
-    @DATABASE_URL={{quote(database_test_url)}} cargo test -p workbench-store --test postgres -- --ignored
+    @DATABASE_URL={{quote(database_test_url)}} cargo test -p workbench-store -p ol-rht-chat --test postgres -- --ignored
 
 # pnpm-workspace.yaml holds packages back two weeks (minimumReleaseAge).
 # Do not pass a flag that overrides it.

@@ -1,4 +1,15 @@
 // Generated from crates/ol-rht-chat/src/protocol.rs. Run `just chat-types`.
+export type ChatHistory = { head_id: string | null, messages: Array<SavedMessage>, };
+export type SavedMessage = { parent_id: string | null, message: ChatMessage, created_at: string, status: SavedStatus | null, model_message_id: string | null, part_ids: Array<string>, };
+export type SavedStatus = { "type": "complete", reason: CompleteReason, } | { "type": "incomplete", reason: IncompleteReason, error: string | null, };
+export type CompleteReason = "stop" | "unknown";
+export type IncompleteReason = "length" | "cancelled" | "error";
+export type CreateSession = { title: string, };
+export type ChatSession = { id: string, title: string, created_at: string, };
+export type SessionPage = { sessions: Array<ChatSession>, next_cursor: string | null, };
+export type HistoryResponse = { revision: number, history: ChatHistory, };
+export type SaveHistory = { checkpoint_id: string, expected_revision: number, history: ChatHistory, };
+export type SavedRevision = { revision: number, };
 export type ChatRequest = {
 /**
  * The selected branch, in chronological order; never the whole branch tree.

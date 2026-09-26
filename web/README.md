@@ -389,7 +389,8 @@ The [research workbench design](../docs/research-workbench-design.md)
 records the proposed persistence, runner and artifact architecture beyond
 this first chat implementation, including open decisions and demo criteria.
 The [Postgres storage foundation](../docs/workbench-storage.md) is implemented
-separately; the browser chat is not connected to persisted sessions yet.
+and now backs a versioned chat-history API. Conversation branches and selected
+head survive reloads; native runner state and durable execution remain separate.
 
 The UI source is in `src/components/assistant-ui/elements`; its runtime is
 an ordinary dependency (`@assistant-ui/react`, with
@@ -429,8 +430,14 @@ to `/v1/chat`, decodes typed NDJSON events, and yields cumulative ordered
 parts to assistant-ui. Rust is the source of the request/event types in
 `src/generated/chat.ts`; regenerate with `just chat-types`. Assistant-ui
 owns the composer, messages, edit branches and regeneration.
+`src/lib/chat-history.ts` connects its history adapter to Postgres through
+Rust: it saves the full tree and selected head, gates generation on the user
+message's save, and exposes save/retry/conflict status. Session selection is
+stored in the `/chat?session=…` URL. Failed saves retain an exportable local
+snapshot; they never silently overwrite a newer revision.
 
-Run `just chat-model`, `just chat-api` and `just web` in separate terminals,
+Run `just db-up db-migrate` first, then `just chat-model`, `just chat-api` and
+`just web` in separate terminals,
 then open `/chat`. The first uses the cached Gemma E2B model with llama.cpp
 in offline mode; the second starts `ol-rht-chat` on loopback port 50053.
 Vite proxies `/v1/chat` there **during development only**. Production serves
@@ -449,9 +456,13 @@ Check that an empty/whitespace draft cannot send, Enter sends, Shift+Enter
 adds a line, and IME composition does not send. Stop should freeze the
 partial answer **and free the llama.cpp generation slot**. Refresh creates
 another response branch; editing preserves the earlier branch. Leaving
-Chat and returning, or reloading, starts an empty conversation. Attachments
+Chat and reopening the same session URL, or reloading after `Saved`, restores
+that conversation. Selecting **New chat** keeps earlier conversations.
+A running reply saves on completion/Stop; abrupt closure before that save
+can lose the reply. This is history persistence, not run resumption. Attachments
 and voice controls stay hidden until their adapters exist.
 
-`pnpm test:chat` runs the stream/adapter tests without a model. The backend
+`pnpm test:chat` runs stream and history-adapter tests without a model.
+`just db-test` covers the storage and chat API against isolated Postgres databases. The backend
 tests also use a local fake; `just chat-check` runs both. The Node tests
 use native TypeScript stripping (Node 22.18+).

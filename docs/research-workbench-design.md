@@ -7,8 +7,9 @@ product. It distinguishes the user's requirements, inspected implementation,
 external documentation, and proposed architecture. The first
 [Postgres/SQLx storage slice](workbench-storage.md) is now implemented:
 local container, migrations, project/session records and native checkpoints.
-It is not connected to the chat endpoint. rpi/Pi integration, Temporal
-workflows and VM handoff are not built. The concrete architecture still
+A subsequent slice connects assistant-ui's branch history to the store through
+a versioned chat API. It saves a UI projection, not native agent execution
+state. rpi/Pi integration, Temporal workflows and VM handoff are not built. The concrete architecture still
 needs implementation trials; recording it does not settle every choice below.
 
 **Latest clarification, 2026-09-26:** prefer evaluating a vendored, customized
@@ -81,14 +82,17 @@ and corpus provenance. The model formats citations; titles link to a supplied
 full-text destination when available, with publisher/local fallbacks. Links
 open in a new tab. Full text is not returned by the current tool contract.
 
-History and edit/regeneration branches live in the browser. There is no
-persisted conversation, durable run service, sandbox runner, artifact store
-or reconnection protocol. The HTTP response owns generation; Stop or
+History and edit/regeneration branches are now persisted in Postgres through
+a versioned chat-history API. The browser still owns the runtime and commits
+terminal replies; an in-flight reply can be lost before its save. There is
+no durable run service, sandbox runner, artifact store or reconnection protocol. The HTTP response owns generation; Stop or
 disconnect drops the work. The current three-minute run limit and six-tool
 budget are prototype limits, not workbench requirements. The repository has
 an independent SQLx storage crate with a local Postgres container, described
-in the [storage implementation](workbench-storage.md). It does not yet
-change the chat endpoint's lifecycle or persist its conversations.
+in the [storage implementation](workbench-storage.md). The history integration
+does not change generation's lifecycle or make its UI representation a native
+agent session. [Chat history](chat-api.md#persisted-conversations) documents
+save boundaries, optimistic conflicts and the missing recovery guarantees.
 
 Do not confuse these representations:
 

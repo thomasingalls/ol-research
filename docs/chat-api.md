@@ -8,8 +8,8 @@ The [research workbench design](research-workbench-design.md) records the
 subsequent persistence and execution discussion: Postgres/SQLx, a possible
 vendored rpi, a Pi baseline, API-to-VM handoff, Temporal, durable workspaces
 and artifact provenance. The [Postgres storage foundation](workbench-storage.md)
-is implemented independently; this chat endpoint is not connected to it yet.
-Runner integration, handoff and the rest remain proposals.
+now backs the chat history API and browser history adapter. Native runner
+integration, handoff and the rest remain proposals.
 
 The application can now talk to a local model through a small Rust service:
 
@@ -24,14 +24,20 @@ assistant-ui LocalRuntime
 
 `ol-rht-chat` calls the existing corpus HTTP API; it does not open the store
 or index itself. Its tools are `search` and `get_paper`, executed by Rust.
-There is no stored conversation, authentication system, upload service, approval
-workflow, reconnection protocol or cloud provider configuration.
-The browser keeps the selected conversation and its edit/regeneration
-branches until the route is left or reloaded.
+Conversations and edit/regeneration branches are stored in Postgres.
+There is no authentication system, upload service, approval workflow,
+run reconnection protocol or cloud provider configuration. Generation is
+still owned by the browser's HTTP connection.
 
 ## Start it
 
-From this workspace, in four terminals:
+Start the local database and apply migrations explicitly first:
+
+```sh
+just db-up db-migrate
+```
+
+Then, from this workspace, in four terminals:
 
 ```sh
 just serve
@@ -40,7 +46,9 @@ just chat-api
 just web
 ```
 
-Open the frontend's `/chat` route. The corpus service (`just serve`) is
+Open the frontend's `/chat` route and choose **New chat**, or reopen a
+conversation from the selector. Its session ID lives in `?session=…`, so
+reloading or reopening that URL restores it. The corpus service (`just serve`) is
 required for both tools. Without it, plain conversation still works, and a
 corpus request produces a visible tool error that is also returned to the model.
 The existing footer queries the corpus service's `/v1/epoch` separately.
@@ -62,6 +70,9 @@ The cached file used for the initial test was
 `66a399f68ddd113b06dff02fca9523e55465d11d`. That absolute cache path is
 machine-specific; the recipe uses the repository/quantization cache lookup.
 
+`just chat-api` supplies the local `OL_RHT_DATABASE_URL` unless explicitly
+overridden. Calling the binary directly requires this variable; there is no
+silent fallback to browser-only history and startup never applies migrations.
 The chat server also accepts explicit settings:
 
 ```sh
@@ -75,13 +86,13 @@ cargo run -p ol-rht-chat -- \
 Its listener, model URL and corpus URL are restricted to loopback for this
 development step. The client disables environment proxies and redirects.
 The only authorization value is the deliberately inert `local-dev-only`,
-shared with the llama-server recipe. It reads no provider credentials or
-secret environment variables. No key is sent to or bundled in the browser.
+shared with the llama-server recipe. It reads no model provider credentials. `OL_RHT_DATABASE_URL` is a separate
+application database setting, used only by Rust. No key is sent to or bundled in the browser.
 Real provider access remains a separate decision.
 
 **Vite is only the development proxy, not a production requirement.**
 `pnpm build` produces static frontend assets. In production, serve those
-assets normally and route `/v1/chat` to the Rust chat service using the
+assets normally and route `/v1/chat` and its subpaths to the Rust chat service using the
 application server or a reverse proxy. The proxy must stream responses
 without buffering and propagate disconnects. Neither Vite nor a Node
 frontend server needs to run in production. The browser uses a relative
@@ -158,6 +169,78 @@ survives. Source attribution is available in each result card. The browser
 only renders these tool parts; it does not execute tools or call the corpus
 on the model's behalf.
 
+## Persisted conversations
+
+The browser uses assistant-ui's `ThreadHistoryAdapter`. A small codec maps
+its branch repository to application-owned Rust/TypeScript types, independent
+of the SQLx storage crate. It saves the whole tree, not just the branch sent
+to the model. This includes message IDs and parents, selected head, dates,
+text/reasoning, search/paper arguments and results with provenance, stream
+message/part IDs, and complete, token-limited, cancelled or error status.
+An unanswered tool remains unanswered on reload; loading never executes it.
+
+The current envelope is `runner=ol-rht-chat`, `runner_version=<package-version>`, `format=ol-rht-chat-history`, `format_version=1`, with the storage
+session UUID as `native_session_id`. These bytes are **a chat UI projection**,
+not a native rpi/Pi session, exact model context, execution journal or
+recovery checkpoint. That distinction remains part of the workbench design.
+No new tables or schema migration were needed for this integration.
+
+All endpoints below are under `/v1/chat/sessions` and send `Cache-Control: no-store`:
+
+| Method/path | Behavior |
+|---|---|
+| `GET /v1/chat/sessions?after=<uuid>` | Up to 50 summaries and a nullable `next_cursor`; UUID keyset pagination |
+| `PUT /v1/chat/sessions/<session-uuid>` | Create with `{ "title": "…" }`; identical ID/title retries are idempotent |
+| `GET /v1/chat/sessions/<session-uuid>/history` | `{ "revision": n, "history": { "head_id": "…", "messages": […] } }`; an empty session is revision 0 |
+| `PUT /v1/chat/sessions/<session-uuid>/history` | Save `{ "checkpoint_id": "uuid", "expected_revision": n, "history": … }`; return the committed revision |
+
+The loopback binary provisions one stable **local development project**.
+It has no users or project picker. Internal reads/writes are project-scoped;
+that does not provide authentication or authorization for deployment. The
+server refuses unknown runner/format envelopes rather than guessing or
+replacing their contents. Future changes to this format need an explicit
+reader/migration decision, not just a dependency upgrade.
+
+History requests are capped at 2 MiB, with at most 2048 messages and 128
+parts per message. Parents must precede children; IDs are unique and the
+selected head must be a leaf. Dates, roles, statuses and tool pairings are
+validated. These history limits are separate from the smaller selected-model
+context limits below; no automatic compaction or retention has been added.
+The browser lists loaded summaries by creation date and can fetch more pages.
+New chat titles currently use the creation time; rename/delete are later work.
+
+**Save boundaries and errors:**
+
+- The user message is committed before the browser starts a model request.
+  Assistant-ui invokes append and generation concurrently, so the model
+  adapter explicitly waits for the history write.
+- Completed replies and partial replies after Stop or a handled stream error
+  are saved with their terminal status. Switching branches saves the selected
+  head. The UI displays `Saving…`, `Saved`, or a visible failure.
+- Writes are serialized per mounted conversation. Retries retain the exact
+  checkpoint UUID, expected revision and snapshot, including after an uncertain
+  network failure. A newer local snapshot follows only after that write is
+  acknowledged. Saves have a 15-second client deadline.
+- HTTP 409 leaves local changes intact and blocks further saves/generation.
+  The UI offers a JSON export and explicit discard/reload. It never silently
+  replaces local history or retries stale bytes with a newer revision.
+  Other failures offer **Retry save**; the JSON export also works offline.
+- Navigation warns while a reply is running or changes are unsaved. A new
+  conversation/switch is disabled during that interval. Unsaved composer
+  drafts are not part of history.
+
+**Limits of this slice:** a reply is not checkpointed token by token. Closing
+or crashing the browser before its terminal save can lose that reply,
+including completed tools within it; the previously saved user message remains.
+A failed save stays in browser memory until retried/exported, not in a durable
+local outbox. The model may finish before its browser save succeeds. Reloading
+does not resume generation. There is no execution lease, background run,
+server-authoritative tool journal, multi-user collaboration or automatic
+conflict merge. Optimistic revisions prevent lost history updates; they do
+not guarantee only one executor. Generation and context selection still use
+the current transport below. Durable runs belong to the subsequent runner/
+execution slice, without treating this projection as its native state.
+
 ## Contract
 
 `POST /v1/chat` accepts JSON describing the **selected branch**:
@@ -187,7 +270,7 @@ history, the service concatenates consecutive text around tool calls and
 leaves out previous reasoning. This avoids replaying reasoning as visible
 answer text to a template that may not support reasoning history. A stopped
 assistant message containing only reasoning contributes no upstream answer.
-The original parts stay in the browser's conversation.
+The original parts stay in the conversation and its saved history.
 
 A history tool part has `type: "tool_call"`, `tool_call_id`, a validated
 `call` (`name` and `args`) and a `result` (`name` and `data`), or `null` for
@@ -196,13 +279,13 @@ and results are replayed as paired assistant/tool messages, never executed
 again merely because they are in history. Unresolved calls are omitted
 from model history. Editing or regenerating can request fresh tool calls,
 as it generates a new assistant branch. This is client-supplied history,
-not a durable or authenticated execution log.
+persisted as a UI history projection, not an authenticated execution log.
 
 Limits are 128 messages, 128 parts per message, 64 KiB of total text
 (including reasoning and serialized tool arguments/results), and a 256 KiB
 JSON request body. These are transport limits, not a tokenizer or context-window estimator. If llama.cpp refuses
 an oversized context, the UI reports the refusal; it does not silently
-discard older messages. Starting a new chat clears the history.
+discard older messages. Starting a new chat creates a separate session; earlier sessions remain available.
 
 A valid request gets `application/x-ndjson`: one JSON record per line.
 HTTP chunk boundaries have no meaning. Example:
@@ -279,12 +362,13 @@ operation instead of relying on this connection lifetime.
 The UI still supports edits, response regeneration and branch navigation.
 An edit sends the newly selected history, and a regeneration sends history
 up to the user message being answered. No abandoned branch is sent merely
-because it remains in the browser's branch tree.
+because it remains in the saved branch tree.
 
 ## Checks
 
 ```sh
 just chat-check
+just db-test  # isolated Postgres databases; requires db-up
 cargo clippy -p ol-rht-chat --all-targets -- -D warnings
 cargo fmt -p ol-rht-chat -- --check
 cd web && pnpm build
@@ -304,7 +388,11 @@ interleaved parts, immutable updates, finish reasons, error records, bad
 ordering, HTTP failures, reader cancellation, tool lifecycles, result
 validation, matched tool names and tool history on follow-ups. They use Node's built-in
 TypeScript stripping (Node 22.18+; development tested on Node 26), with no
-additional test dependency.
+additional test dependency. History tests exercise codec round trips, branch
+selection, stopped/error status, serialized writes, uncertain retries,
+conflicts, the save-before-model barrier and restored tool history. `just db-test` additionally runs the chat API against real Postgres, including API
+restart, pagination/scoping, concurrent writes, malformed input, body limits,
+unsupported formats and unavailable storage.
 
 For a live smoke check, send a short prompt in `/chat`, follow up with a
 question about it, edit it, and regenerate a response. Then request a long
@@ -333,3 +421,13 @@ about 171 ms in the observed run, retaining the completed search card.
 
 Upstream reference: [llama.cpp server documentation](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md).
 The application API is intentionally smaller than that server's API.
+
+The persistence browser check on September 26 used a separate local test
+database and the existing cached Gemma server. It passed save/reload, a
+follow-up using restored context, edited/regenerated branches, restoration of
+a previously selected branch, Stop with a persisted cancelled reply, and a
+stale second-tab conflict that prevented its model request. Additional
+browser checks covered a lost commit acknowledgement, identical retry,
+restored tool cards, switching conversations, and retry after a failed load.
+A 320px layout check passed with no browser exceptions. These checks validate conversation
+history, not durable execution or crash recovery.

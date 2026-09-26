@@ -1,4 +1,7 @@
-import { AssistantRuntimeProvider, useLocalRuntime } from "@assistant-ui/react"
+import { AssistantRuntimeProvider, useAuiState, useLocalRuntime } from "@assistant-ui/react"
+import { useEffect, useRef, useState, useSyncExternalStore } from "react"
+import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query"
+import { useBlocker } from "@tanstack/react-router"
 import { MessagesSquareIcon } from "lucide-react"
 import { Thread } from "@/components/assistant-ui/elements/thread.aui"
 import {
@@ -10,26 +13,126 @@ import {
 } from "@/components/ui/empty"
 import { chatAdapter } from "@/lib/chat-adapter"
 import { ChatTool, ChatToolGroup } from "@/components/chat-tools"
+import { Button } from "@/components/ui/button"
+import { ChatHistoryStore, createSession, decodeHistory, listSessions, loadHistory } from "@/lib/chat-history"
+import type { HistoryResponse } from "@/generated/chat"
+import { chatRoute } from "@/routes/chat"
 
-/** A route-scoped runtime: leaving Chat discards its in-memory conversation. */
 export function Chat() {
-  const runtime = useLocalRuntime(chatAdapter)
+  const { session } = chatRoute.useSearch()
+  const navigate = chatRoute.useNavigate()
+  const client = useQueryClient()
+  const [busy, setBusy] = useState(false)
+  const [creating, setCreating] = useState(false)
+  const [createError, setCreateError] = useState<string>()
+  const creation = useRef<{ id: string, title: string } | undefined>(undefined)
+  const sessions = useInfiniteQuery({
+    queryKey: ["chat-sessions"], initialPageParam: undefined as string | undefined,
+    queryFn: ({ pageParam }) => listSessions(pageParam),
+    getNextPageParam: page => page.next_cursor ?? undefined,
+  })
+  const history = useQuery({
+    queryKey: ["chat-history", session], enabled: !!session, retry: false,
+    refetchOnWindowFocus: false, refetchOnReconnect: false, refetchOnMount: "always",
+    queryFn: async () => {
+      const loaded = await loadHistory(session!)
+      decodeHistory(loaded.history)
+      if (!Number.isSafeInteger(loaded.revision) || loaded.revision < 0) throw new Error("Invalid history revision.")
+      return loaded
+    },
+  })
+  const choices = sessions.data?.pages.flatMap(page => page.sessions).sort((a, b) => b.created_at.localeCompare(a.created_at)) ?? []
+
+  async function newChat() {
+    setCreating(true)
+    setCreateError(undefined)
+    creation.current ??= { id: crypto.randomUUID(), title: `Chat · ${new Date().toLocaleString()}` }
+    try {
+      const created = await createSession(creation.current.id, creation.current.title)
+      creation.current = undefined
+      await client.invalidateQueries({ queryKey: ["chat-sessions"] })
+      await navigate({ search: { session: created.id } })
+    } catch (error) {
+      setCreateError(error instanceof Error ? error.message : String(error))
+    } finally { setCreating(false) }
+  }
 
   return (
+    <section aria-label="Chat" className="flex h-[calc(100dvh-12rem)] min-h-80 flex-col xl:h-[calc(100dvh-7rem)]">
+      <div className="flex flex-wrap items-center gap-2 border-b px-4 py-2">
+        <label className="sr-only" htmlFor="chat-session">Conversation</label>
+        <select id="chat-session" className="min-w-0 max-w-72 rounded-lg border bg-background px-2 py-1 text-sm"
+          value={session ?? ""} disabled={busy || creating}
+          onChange={event => void navigate({ search: { session: event.target.value || undefined } })}>
+          <option value="">Choose a conversation</option>
+          {session && !choices.some(choice => choice.id === session) && <option value={session}>Current conversation</option>}
+          {choices.map(choice => <option key={choice.id} value={choice.id}>{choice.title}</option>)}
+        </select>
+        <Button variant="outline" disabled={busy || creating} onClick={() => void newChat()}>{creating ? "Creating…" : createError ? "Retry new chat" : "New chat"}</Button>
+        {sessions.hasNextPage && <Button variant="ghost" disabled={sessions.isFetchingNextPage} onClick={() => void sessions.fetchNextPage()}>More conversations</Button>}
+        <span className="text-muted-foreground ml-auto text-xs">Local model · Corpus tools</span>
+      </div>
+      {(sessions.error || createError) && <div role="alert" className="px-4 py-2 text-sm">
+        {createError ?? sessions.error?.message}
+        {sessions.error && <Button variant="link" onClick={() => void sessions.refetch()}>Retry list</Button>}
+      </div>}
+      {!session ? <ChatWelcome /> : history.isFetching ? <p role="status" className="p-4 text-sm">Loading conversation…</p>
+        : history.error ? <div role="alert" className="p-4 text-sm">{history.error.message}<Button variant="link" onClick={() => void history.refetch()}>Retry load</Button></div>
+        : history.data ? <SavedChat key={session} session={session} initial={history.data} onBusy={setBusy} reload={() => void history.refetch()} /> : null}
+    </section>
+  )
+}
+
+function SavedChat({ session, initial, onBusy, reload }: {
+  session: string, initial: HistoryResponse, onBusy: (busy: boolean) => void, reload: () => void,
+}) {
+  const [history] = useState(() => new ChatHistoryStore(session, initial))
+  const [model] = useState(() => history.modelAdapter(chatAdapter))
+  const runtime = useLocalRuntime(model, { adapters: { history: history.adapter } })
+  return (
     <AssistantRuntimeProvider runtime={runtime}>
-      <section
-        aria-label="Chat"
-        className="flex h-[calc(100dvh-12rem)] min-h-80 flex-col xl:h-[calc(100dvh-7rem)]"
-      >
-        <p className="text-muted-foreground px-4 py-2 text-center text-xs">
-          Local model · Corpus tools · Messages aren’t saved
-        </p>
-        <div className="min-h-0 flex-1">
-          <Thread components={{ Welcome: ChatWelcome, ToolFallback: ChatTool, ToolGroup: ChatToolGroup }} />
-        </div>
-      </section>
+      <HistoryStatus history={history} onBusy={onBusy} reload={reload} />
+      <div className="min-h-0 flex-1">
+        <Thread components={{ Welcome: ChatWelcome, ToolFallback: ChatTool, ToolGroup: ChatToolGroup }} />
+      </div>
     </AssistantRuntimeProvider>
   )
+}
+
+function HistoryStatus({ history, onBusy, reload }: { history: ChatHistoryStore, onBusy: (busy: boolean) => void, reload: () => void }) {
+  const state = useSyncExternalStore(history.subscribe, history.getSnapshot)
+  const running = useAuiState(s => s.thread.isRunning)
+  const loading = useAuiState(s => s.thread.isLoading)
+  const head = useAuiState(s => s.thread.messages.at(-1)?.id ?? null)
+  const busy = running || state.phase !== "saved"
+  useEffect(() => { onBusy(busy); return () => onBusy(false) }, [busy, onBusy])
+  useEffect(() => { if (!running && !loading) history.selectHead(head) }, [history, head, running, loading])
+  const blocker = useBlocker({ shouldBlockFn: () => busy, enableBeforeUnload: busy, withResolver: true })
+
+  function download() {
+    const url = URL.createObjectURL(new Blob([history.export()], { type: "application/json" }))
+    const anchor = document.createElement("a")
+    anchor.href = url
+    anchor.download = "chat-history.json"
+    anchor.click()
+    setTimeout(() => URL.revokeObjectURL(url), 0)
+  }
+
+  return <div className="px-4 py-2 text-sm">
+    {state.phase === "error" ? <div role="alert" className="flex flex-wrap items-center gap-2">
+      <span>Not saved: {state.message}</span>
+      {!state.conflict && <Button variant="outline" onClick={() => void history.retry().catch(() => {})}>Retry save</Button>}
+      <Button variant="outline" onClick={download}>Export local history</Button>
+      <Button variant="ghost" disabled={running} onClick={reload}>Discard local changes and reload</Button>
+    </div> : <p role="status" className="text-muted-foreground text-center text-xs">
+      {running ? "Reply in progress · saved when finished or stopped" : state.phase === "saving" ? "Saving…" : "Saved"}
+    </p>}
+    {blocker.status === "blocked" && <div role="alert" className="mt-2 flex flex-wrap items-center gap-2">
+      <span>This conversation has a reply in progress or unsaved changes. Leaving may lose them.</span>
+      <Button variant="outline" onClick={blocker.reset}>Stay</Button>
+      <Button variant="ghost" onClick={blocker.proceed}>Leave anyway</Button>
+    </div>}
+  </div>
 }
 
 function ChatWelcome() {

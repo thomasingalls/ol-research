@@ -13,8 +13,12 @@ serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 tokio-stream.workspace = true
+workbench-store.workspace = true
+uuid.workspace = true
+chrono.workspace = true
 
 [dev-dependencies]
+sqlx.workspace = true
 tokio = { workspace = true, features = ["io-util"] }
 proptest.workspace = true
 ts-rs.workspace = true

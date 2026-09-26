@@ -1,5 +1,5 @@
-import type { ChatModelAdapter, ThreadAssistantMessagePart } from "@assistant-ui/react"
-import type { ChatEvent, ChatRequest, ContentPart, SearchArgs, SearchResult, PaperArgs, PaperResult, ToolCall, ToolResult } from "@/generated/chat"
+import type { ChatModelAdapter, ThreadAssistantMessagePart, ThreadMessage } from "@assistant-ui/react"
+import type { ChatEvent, ChatMessage, ChatRequest, ContentPart, SearchArgs, SearchResult, PaperArgs, PaperResult, ToolCall, ToolResult } from "@/generated/chat"
 
 /** Read records independently of HTTP chunk boundaries, including split UTF-8. */
 export async function* readChatEvents(body: ReadableStream<Uint8Array>) {
@@ -144,32 +144,7 @@ function parseEvent(line: string): ChatEvent {
  */
 export const chatAdapter: ChatModelAdapter = {
   async *run({ messages, abortSignal }) {
-    const request: ChatRequest = {
-      messages: messages.map((message) => {
-        if (message.role !== "user" && message.role !== "assistant") {
-          throw new Error("Only user and assistant messages are supported yet.")
-        }
-        if (message.role === "user" && message.attachments.length > 0) {
-          throw new Error("File uploads are not connected yet.")
-        }
-        return {
-          id: message.id,
-          role: message.role,
-          content: message.content.map((part): ContentPart => {
-            if (part.type === "tool-call") {
-              const call = { name: part.toolName, args: part.args }
-              const result = part.result === undefined ? null : { name: part.toolName, data: part.result }
-              if (!isToolCall(call) || (result !== null && !isToolResult(result))) throw new Error("Invalid stored tool call or result.")
-              return { type: "tool_call", tool_call_id: part.toolCallId, call, result }
-            }
-            if (part.type !== "text" && part.type !== "reasoning") {
-              throw new Error(`Sending ${part.type} parts is not supported yet.`)
-            }
-            return { type: part.type, text: part.text }
-          }),
-        }
-      }),
-    }
+    const request: ChatRequest = { messages: messages.map(toChatMessage) }
     let response: Response
     try {
       response = await fetch("/v1/chat", {
@@ -251,4 +226,30 @@ export const chatAdapter: ChatModelAdapter = {
     }
     if (!finished) throw new Error("Chat disconnected before finishing. The reply may be incomplete.")
   },
+}
+
+/** Shared by model requests and the versioned history codec. */
+export function toChatMessage(message: ThreadMessage): ChatMessage {
+  if (message.role !== "user" && message.role !== "assistant") {
+    throw new Error("Only user and assistant messages are supported yet.")
+  }
+  if (message.role === "user" && message.attachments.length > 0) {
+    throw new Error("File uploads are not connected yet.")
+  }
+  return {
+    id: message.id,
+    role: message.role,
+    content: message.content.map((part): ContentPart => {
+      if (part.type === "tool-call") {
+        const call = { name: part.toolName, args: part.args }
+        const result = part.result === undefined ? null : { name: part.toolName, data: part.result }
+        if (!isToolCall(call) || (result !== null && !isToolResult(result))) throw new Error("Invalid stored tool call or result.")
+        return { type: "tool_call", tool_call_id: part.toolCallId, call, result }
+      }
+      if (part.type !== "text" && part.type !== "reasoning") {
+        throw new Error(`Sending ${part.type} parts is not supported yet.`)
+      }
+      return { type: part.type, text: part.text }
+    }),
+  }
 }
