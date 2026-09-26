@@ -596,6 +596,14 @@ beyond that is outside the resolution. By the arithmetic, the heap
 after registry assignment should come to about 13–14 GiB at the eighth
 (D) where it was 26.4.
 
+The five changes of 2026-09-26 together, on a store of the laptop's
+two PubMed baseline files, its five update files and Crossref's
+100-shard sample, all normalized at model 10 (`target/scratch/
+harness-src`, the harnesses' store now): the full/incremental harness,
+`pubmed26n1334` held out and merged as a batch, 0 differences in
+511,014 ids; the update-files harness, 1335 to 1339 batched in order,
+0 differences in 1,836,438 ids (M).
+
 ## Walls behind this one
 
 - **Time.** Pass 1 decodes on one thread: 26 minutes for 36.5 GiB. The
