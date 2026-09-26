@@ -2,7 +2,7 @@
 
 **Status:** draft 1, 2026-09-26. E1 built, its arithmetic matching
 `trec_eval` 10.0; E2 scrapped the same day (§9); E3, the published sets,
-next.
+under way: loaders and suites built, not yet run on the box.
 **Inputs:** the conversation of 2026-09-26 that put measurement ahead of
 every search improvement; [serving plan](serving-plan.md) §11 items 11,
 36 and 37 (what search leaves open); [text analysis](inbox/text-analysis.md)
@@ -89,8 +89,9 @@ known-item finding is a mechanism to design (§10, item 7); citations are
 a hypothesis about ranking, to be tested as a treatment against a key
 that knows nothing of them, never used as the key — measuring a citation
 treatment by citations would show improvement by construction (§3.4);
-and MeSH as query is set aside behind the published sets; its design, settled the same day, is in §9's log should
-biomedicine's breadth ever need it.
+and MeSH as query is set aside behind the published sets; its design,
+settled the same day, is in §9's log should biomedicine's breadth ever
+need it.
 
 **Published, judged by people — these lead.** None of them steers
 tuning alone: they run side by side, each its own row, and the
@@ -345,8 +346,16 @@ near 0.
 Nothing here is committed: suites and runs are derived from data (the
 store's rule).
 
-- A **queries file** is tab-separated lines, `id<TAB>text`, the text as
-  typed.
+- A **suite** is a directory: `queries.tsv` (`id<TAB>text`, the text as
+  typed), `key.qrels`, `filters.tsv` (`id<TAB>year<TAB>work`, `-` for
+  none: the year a restricted run keeps works up to, and a work never in
+  that query's results — RELISH's seed), `halves.tsv` (`id<TAB>working`
+  or `test`) when the suite is halved, and `about.json`: the set's files
+  with their digests, the epoch its PMIDs were found in, the query field,
+  what the corpus holds of the key by grade, and every query left out
+  with why.
+- A **queries file** alone, tab-separated lines as above, runs too, with
+  no filters.
 - An **answer key** is TREC's qrels, `query 0 work grade`, the work named
   by its public id (`ol:…`), never a `WorkId`: a key outlives a merge,
   and a `WorkId` never leaves the system.
@@ -354,28 +363,52 @@ store's rule).
   as `trec_eval` orders it (§5), with a sidecar `<run>.about` naming the
   epoch, the search index's version and mapping, the queries file's
   digest and the depth.
-- In the store: `evaluation/suites/<suite>/v<n>/` (queries, key, split) and
+- In the store: the sets' files as fetched in `raw/evaluation/<set>/`
+  (the homelab's `job-fetch-evaluation-v1`, with `SOURCES.tsv`),
+  `evaluation/suites/<suite>/v<n>/` and
   `evaluation/runs/<suite>/v<n>/epoch-<e>/<label>` (run, sidecar, report).
 
 Commands:
 
-- `ol-rht evaluate run <queries> --out <run> [--store <root>] [--limit
-  <depth>]` runs every query through the store's search — the query
-  parser and translation the search box uses, in process, no time limit
-  and no page cap — and writes the run.
-- `ol-rht evaluate score <key> <run>` prints the report.
-- `ol-rht evaluate compare <key> <base run> <new run>` prints both and the
-  intervals on their differences.
+- `ol-rht evaluate load <trec-pm <topics> <qrels> | relish
+  <RELISH_v1.json.gz>> --out <suite> [--store <root>]` reads a published
+  set's own files into a suite: its queries, its key with every PMID found
+  through the store's names (a PMID no single work carries stays in the
+  key as `pmid:<n>`, so a judged work the corpus lacks counts as missed),
+  its filters, its halves, and `about.json`; with `--held-out` the whole
+  suite is its test half.
+- `ol-rht evaluate run <suite | queries> --out <run> [--store <root>]
+  [--limit <depth>] [--workers N] [--restricted]` runs every query through
+  the store's search — the query parser and translation the search box
+  uses, in process, no time limit and no page cap — and writes the run,
+  a query's excluded work always left out and, with `--restricted`, every
+  work published after its year or of no known year.
+- `ol-rht evaluate score <suite | key> <run> [--test]` prints the
+  report; of a suite, the working half (or the whole of one too small to
+  halve, and nothing of one held out), open and condensed; with `--test`,
+  the test half, at a milestone.
+- `ol-rht evaluate compare <suite | key> <base run> <new run> [--test]`
+  prints both and the intervals on their differences, and the verdict
+  over open and condensed.
 
 ## 7. What is frozen
 
-- **The split.** Each suite's queries, with their keys, split once by a
-  seeded coin into a working half and a test half, the split written
-  into the suite's directory and never redrawn.
+- **The split.** Each suite's queries, with their keys, shuffled once
+  from a fixed seed and split into a working half and a test half, the
+  split written into the suite's directory and never redrawn — when each
+  half keeps 30 queries with a relevant work, the floor of §4.1. A suite
+  under 60 such queries is kept whole — every TREC year (31 to 40
+  topics) — or held out whole (`evaluate load --held-out`): its every
+  query the test half. RELISH, some 3,200 seeds, is halved. The TREC
+  years split by year instead (the user, 2026-09-26: "go with 2019
+  working, 2020 held out"): Precision Medicine 2019 is worked on whole,
+  2020 held out whole (§10, item 9).
 - **The working half** is for looking at anything: failures per query,
   examples, variants tried.
 - **The test half** runs at milestones — before a new index version
-  replaces the live one — and only its totals are read. Once anyone
+  replaces the live one — and only its totals are read (`evaluate score
+  --test`, `evaluate compare --test`; without it a held-out suite reports
+  nothing). Once anyone
   studies its failures one by one it is spent, and a new split is drawn
   as a new suite version.
 - **The suites** are loaded once from the published files, into a
@@ -397,7 +430,17 @@ Commands:
   What it would have built that E3 still needs moves there: suites as
   directories, slices and halves read by `evaluate score`, plain Jobs,
   a first small run to learn what a search costs.
-- **E3. The published sets — next.** TREC Precision Medicine and RELISH
+- **E3. The published sets — under way.** Built 2026-09-26: the readers
+  of TREC Precision Medicine's topics and RELISH's JSON (their counts
+  checked on the delivered files), suites on disk with their halves,
+  `evaluate load`, runs of a suite with its filters and `--restricted`,
+  the condensed scoring (matching `trec_eval -J`), and reports and
+  comparisons of a suite. Not built: slices, and the run's summary JSON
+  for the homelab's proposed table. The smallest difference a set can
+  detect is read, for now, as the half-width of each interval in its
+  first report. Next: an image with them, and Jobs to load, run and
+  score on the box.
+  The plan as written before: TREC Precision Medicine and RELISH
   first, then TREC-COVID, TREC Genomics 2004–05 and TREC Clinical
   Decision Support; the user downloads them; each gets a loader into a
   suite (§6) — its topics as queries, its key with PMIDs resolved to
@@ -468,6 +511,12 @@ Commands:
   blind. Known-item finding becomes a question for the search's design
   (§10, item 7); recent topical loses its key (§10, item 6); breadth now
   rests on the published sets (§12, item 8).
+- **2026-09-26, the halves of the published sets.** A suite is halved
+  only when each half keeps 30 queries with a relevant work; RELISH is,
+  the TREC years are not. The user's call on the TREC years: Precision
+  Medicine 2019 worked on whole, 2020 held out whole (§7, §10 item 9);
+  `evaluate load --held-out` and `evaluate score --test` built the same
+  day.
 - **2026-09-26, the published sets and known-item.** The published sets
   lead because they are curated and today's search is poor enough that
   foundational changes risk little against them, the user wary of
@@ -535,6 +584,13 @@ Commands:
    pool without knowing which run gave what. Independent of the
    treatment, as §3.4 requires, and the one key that sees what a new
    treatment surfaces, so it also answers the pooling bias. Not started.
+9. ~~**The whole TREC years: looked at or held out.**~~ *Decided
+   2026-09-26:* by year — Precision Medicine 2019 is the working set,
+   2020 held out whole and read only in total at milestones, the usual
+   practice of tuning on earlier years and testing on later ones; each
+   keeps enough topics for intervals (40 and 31). The user: "go with 2019
+   working, 2020 held out". Later sets are placed the same way when they
+   come.
 
 ## 11. Methods held for later
 
@@ -684,3 +740,31 @@ sizes from a pilot — went with it.
     several sets side by side, each its own row, and the frozen test
     halves; lifted by judgments of our own (§10, item 8) when the gains
     get subtle.
+15. **One field of a topic is the query**, the one closest to what a
+    person types (the user's go, 2026-09-26): TREC Precision Medicine's
+    disease and gene — and in 2020, whose topics each ask about one
+    treatment, the treatment too — and for RELISH the seed paper's
+    title. The sets' fuller fields (a patient's demographics, a
+    narrative, a seed's abstract) are left out, so a figure here is not
+    a published run's, which mostly used more; and an abstract as the
+    query waits on any-word matching (serving plan §11 item 11). Lifted
+    by running a set again with another field, as its own row.
+16. **RELISH: one annotation per seed**, the first in the file. 84 of its
+    3,278 annotations are a second person's on a seed already annotated
+    (seed 29463761's two annotators graded the same 60 candidates 19, 41,
+    0 and 21, 22, 17 relevant, partial, irrelevant); they are left out,
+    counted in `about.json`, and with them what their disagreement says
+    (item 5).
+17. **RELISH's query is the seed's title as our works index holds it**,
+    not as RELISH's annotators saw it; a seed the corpus lacks, holds only
+    as cited, or holds without a title is left out, with why.
+18. **The restricted run asks for twice its depth** and keeps the first
+    works published by the set's year; a work of no known year is left
+    out, and a query whose first 2,000 were mostly newer ends short of
+    1,000 — counted in the run's `.about` as `short_of_depth`.
+19. **A set under 60 queries is not halved.** Precision Medicine 2019 is
+    worked on whole, so it is tuned to and is no check on itself; the
+    check is 2020, held out whole — the other year of the same track, so
+    an improvement fitted to precision oncology's topics would pass both.
+    RELISH's test half and the other sets are the guard against that
+    (§10, item 9).
