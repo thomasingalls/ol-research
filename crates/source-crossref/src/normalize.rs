@@ -67,6 +67,12 @@ pub struct Work<'n> {
     /// The work's DOI, lowercased.
     #[serde(borrow)]
     pub doi: Doi<'n>,
+    /// The DOI spelled in ASCII, where it has letters beyond ASCII
+    /// ([`Doi::ascii_spelling`]): a name the merge gives the work beside
+    /// its own, so a publisher's ASCII twin of it (`día` and `dia`) is the
+    /// same work and a citation of either lands on it.
+    #[serde(borrow)]
+    pub ascii_doi: Option<Doi<'n>>,
     /// `prefix`: the DOI's current owner, which differs from the DOI's own
     /// registrant on 7 % of works.
     pub owner: Registrant,
@@ -1303,6 +1309,7 @@ pub fn normalize<'n, K: Sink<'n, Crossref>>(w: &'n Native<'_>, emit: &mut K) -> 
             .flat_map(|a| a.iter())
             .map(|t| &**t)
             .collect(),
+        ascii_doi: doi.ascii_spelling(),
         doi: doi.clone(),
     });
 

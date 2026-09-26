@@ -138,8 +138,10 @@
 /// every source: a letter beyond ASCII is the DOI of record, lowercased;
 /// every Unicode dash is read as `-`, whitespace at an end dropped, and a
 /// letter written as its UTF-8 bytes read as Latin-1 repaired — each
-/// reading counted ([`doi::Readings`]); and a Crossref record keeps its
-/// `aliases`, other DOIs the registry holds for the work. Nothing
+/// reading counted ([`doi::Readings`]); a Crossref record keeps its
+/// `aliases`, other DOIs the registry holds for the work, and its DOI's
+/// ASCII spelling ([`Doi::ascii_spelling`]), a name of the work too, so a
+/// publisher's ASCII twin of an accented DOI is the same work. Nothing
 /// was ever normalized under the version 10 builds before
 /// those (only surveyed), so they are version 10 too. Output under version
 /// 9 is rebuilt, not patched.
@@ -149,6 +151,7 @@ pub mod claim;
 pub mod code;
 pub mod date;
 pub mod doi;
+mod doi_ascii;
 mod human;
 pub mod id;
 pub mod isbn;

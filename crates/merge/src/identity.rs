@@ -1565,10 +1565,19 @@ impl Identity {
                 })
                 .collect();
             if dois.len() > 1 {
-                if dois.iter().any(|a| {
-                    dois.iter()
-                        .any(|b| a != b && a.replace("//", "/") == b.replace("//", "/"))
-                }) {
+                // One DOI spelled twice: APA's legacy `//`, or a letter
+                // beyond ASCII and its ASCII twin (`mentál`, `mental`).
+                let spelled = |d: &str| {
+                    let d = d.replace("//", "/");
+                    model::Doi::parse(&d)
+                        .ok()
+                        .and_then(|doi| doi.ascii_spelling())
+                        .map_or(d.clone(), |ascii| ascii.as_str().to_owned())
+                };
+                if dois
+                    .iter()
+                    .any(|a| dois.iter().any(|b| a != b && spelled(a) == spelled(b)))
+                {
                     labels.spelling = true;
                 } else {
                     labels.two_dois = true;
@@ -1588,7 +1597,10 @@ impl Identity {
     }
 
     /// The precedence of §3.4: one promoted name per namespace, the rest
-    /// aliases; shared names stay shared.
+    /// aliases; shared names stay shared. Among DOIs of one rank, one
+    /// with letters beyond ASCII is shown before its ASCII twin (the
+    /// user, 2026-09-26: "the accented one should be displayed when
+    /// available"), and then the lower spelling.
     fn promote(&self, work: &mut Work) {
         for key in Key::ALL {
             let candidates: SmallVec<[usize; 4]> = work
@@ -1614,7 +1626,9 @@ impl Identity {
                     // publisher, through whichever record carries it.
                     Key::Pmc | Key::OpenAlex | Key::Publisher => 0,
                 };
-                (rank, self.arena.get(n.name).clone())
+                let name = self.arena.get(n.name).clone();
+                let ascii = matches!(&*name, OwnedName::Doi(d) if d.is_ascii());
+                (rank, ascii, name)
             }) else {
                 continue;
             };
@@ -2474,6 +2488,54 @@ mod tests {
             "PubMed's spelling outranks OpenAlex's when Crossref holds neither"
         );
         assert_eq!(shapes(&res), [("doi spellings".to_owned(), 1)]);
+    }
+
+    /// Akadémiai Kiadó registered `mentál` and `mental` for one article
+    /// (Crossref's March 2026 file): the accented record gives its DOI's
+    /// ASCII spelling as a name, the two are one work, and the accented
+    /// DOI is shown.
+    #[test]
+    fn an_accented_doi_and_its_ascii_twin_are_one_work_the_accented_shown() {
+        let mut id = Identity::new();
+        let titles = Titles {
+            title: Some("A koherencia mint a lelki és testi egészség alapvető tényezője"),
+            vernacular: None,
+        };
+        let accented = [
+            Assertion {
+                name: Name::Doi("10.1556/ment\u{e1}l.5.2004.1.1"),
+                field: "doi",
+                native: true,
+            },
+            Assertion {
+                name: Name::Doi("10.1556/mental.5.2004.1.1"),
+                field: "doi_ascii",
+                native: false,
+            },
+        ];
+        id.push(SourceId::Crossref, &accented, titles).unwrap();
+        crossref(
+            &mut id,
+            "10.1556/mental.5.2004.1.1",
+            "A koherencia mint a lelki és testi egészség alapvető tényezője",
+        );
+        id.mark();
+        let res = id.resolve(false).unwrap();
+        assert_eq!(
+            works(&res),
+            [vec![
+                "doi:10.1556/mental.5.2004.1.1=alias",
+                "doi:10.1556/ment\u{e1}l.5.2004.1.1=promoted",
+            ]]
+        );
+        assert_eq!(
+            res.works[0].duplicates,
+            [SourceId::Crossref].into_iter().collect()
+        );
+        assert_eq!(
+            shapes(&res),
+            [("duplicate records (crossref) + doi spellings".to_owned(), 1)]
+        );
     }
 
     #[test]

@@ -301,6 +301,40 @@ impl<'a> Doi<'a> {
         Registrant::from_digits(&s[3..s.find('/').unwrap_or(s.len())]).unwrap_or(Registrant(0))
     }
 
+    /// The DOI spelled in ASCII, where it has letters beyond ASCII and
+    /// every one of them has an ASCII spelling (`é` `e`, `ß` `ss`; the
+    /// table in `doi_ascii`): `10.3166/réseaux.151.37-62` is
+    /// `10.3166/reseaux.151.37-62`. `None` for an ASCII DOI, and for one
+    /// with a letter the table does not spell, a Greek or a Han one.
+    ///
+    /// Publishers registered some such spellings as DOIs of their own: of
+    /// the 99 DOIs of Crossref's March 2026 file with a letter beyond
+    /// ASCII, 16 have an ASCII twin with the same title, and one more with
+    /// the same article's title written otherwise (`babel.54.1.04día`,
+    /// homelab `ol-rht-census-doi-spellings-v1`, 2026-09-26). The merge
+    /// gives a work its DOI's ASCII spelling as a name of its own, so the
+    /// twins are one work and a citation of either lands on it (the
+    /// user's decision; model version 10).
+    #[must_use]
+    pub fn ascii_spelling(&self) -> Option<Doi<'static>> {
+        let s = self.as_str();
+        if s.is_ascii() {
+            return None;
+        }
+        let mut out = String::with_capacity(s.len());
+        for c in s.chars() {
+            if c.is_ascii() {
+                out.push(c);
+            } else {
+                let i = crate::doi_ascii::TABLE
+                    .binary_search_by(|(k, _)| k.cmp(&c))
+                    .ok()?;
+                out.push_str(crate::doi_ascii::TABLE[i].1);
+            }
+        }
+        Some(Doi(Cow::Owned(out)))
+    }
+
     /// True when no copy was needed: an ASCII suffix, nothing to lowercase
     /// or read.
     #[must_use]
@@ -516,6 +550,46 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["a dash read as a hyphen", "whitespace at an end dropped"]
         );
+    }
+
+    #[test]
+    fn a_letter_beyond_ascii_has_an_ascii_spelling() {
+        let spelled = |s| {
+            Doi::parse(s)
+                .unwrap()
+                .ascii_spelling()
+                .map(|d| d.as_str().to_owned())
+        };
+        assert_eq!(
+            spelled("10.3166/r\u{e9}seaux.151.37-62").as_deref(),
+            Some("10.3166/reseaux.151.37-62")
+        );
+        assert_eq!(
+            spelled("10.1075/babel.54.1.04d\u{ed}a").as_deref(),
+            Some("10.1075/babel.54.1.04dia")
+        );
+        assert_eq!(
+            spelled("10.1234/stra\u{df}e").as_deref(),
+            Some("10.1234/strasse")
+        );
+        assert_eq!(spelled("10.1234/plain"), None, "already ASCII");
+        assert_eq!(spelled("10.1234/\u{3b1}"), None, "a Greek letter has none");
+    }
+
+    #[test]
+    fn the_ascii_table_is_sorted_lowercase_letters_to_ascii_letters() {
+        let table = &crate::doi_ascii::TABLE;
+        for w in table.windows(2) {
+            assert!(w[0].0 < w[1].0, "{:?} before {:?}", w[0].0, w[1].0);
+        }
+        for (c, spelled) in table {
+            assert!(c.is_alphabetic() && !c.is_ascii(), "{c:?}");
+            assert_eq!(c.to_lowercase().collect::<String>(), c.to_string(), "{c:?}");
+            assert!(
+                !spelled.is_empty() && spelled.bytes().all(|b| b.is_ascii_lowercase()),
+                "{c:?} {spelled:?}"
+            );
+        }
     }
 
     #[test]

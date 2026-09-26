@@ -2071,6 +2071,32 @@ cross-IDs and a second edge namespace early.
   a number, as an exclusion is. Crossref's own `aliases` (138 of the
   dumped records; a figshare item's `.v1`) were parsed and dropped, and
   are now kept, each a name the merge gives the work.
+- 2026-09-26, still model 10: an accented DOI's ASCII twin is the same
+  work (the user: "i don't like that ascii twins count as separate works,
+  or counting these records twice"). The census of the whole file
+  (homelab `ol-rht-census-doi-spellings-v1`, two passes) found 215
+  records whose own DOI is not ASCII — 113 with a dash, 99 with a
+  letter, 2 with a space, 1 broken encoding — and looked for each one's
+  ASCII spelling (M): 99 of the dash ones have a twin, every one with
+  its title; 16 of the letter ones have a twin with the same title and
+  one with the same article's title written otherwise (Benjamins'
+  `babel.54.1.04día`, escaped HTML against a typo); none has a twin that
+  is another article. A Crossref record keeps its DOI's ASCII spelling
+  (`model::Doi::ascii_spelling`, a table of 294 Latin letters from
+  Unicode's decompositions, `ß` `ss`), and the merge takes it as a name
+  of the work, `doi_ascii`, so twins are one work by the rules already
+  there — records of one source sharing a name, their titles agreeing —
+  and a citation or a lookup by either spelling lands on it; the title
+  check stays the guard against a false join. On a scratch merge of
+  three pairs from the census: two works each holding both records and
+  both DOIs, and the en-dash registration a copy of its twin's record.
+  Of the two spellings the accented one is shown (merge plan §3.4, the
+  user: "the accented one should be displayed when available").
+  The same merge found that a Crossref reference, which names its
+  journal, could not be fingerprinted (merge v15's `build::fingerprint`
+  serialized the interned journal outside any file being written); the
+  fingerprint takes the owned citation now, and prints a PubMed
+  reference, which names none, as before.
 
 ## 11. Dependencies
 

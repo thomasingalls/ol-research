@@ -859,8 +859,24 @@ fn an_en_dash_in_a_records_doi_is_a_hyphen_and_counted() {
 #[test]
 fn an_accented_letter_is_the_doi_of_record() {
     let out = collect("doi_accented");
-    assert_eq!(out.works[0].doi.as_str(), "10.1556/ment\u{e1}l.5.2004.1.1");
+    let w = &out.works[0];
+    assert_eq!(w.doi.as_str(), "10.1556/ment\u{e1}l.5.2004.1.1");
     assert!(out.corrected.is_empty());
+    // Its ASCII spelling, which Akadémiai Kiadó registered too, is a name
+    // the merge gives the work: the census found the twin, one article.
+    assert_eq!(
+        w.ascii_doi.as_ref().map(Doi::as_str),
+        Some("10.1556/mental.5.2004.1.1")
+    );
+    let mut names = Vec::new();
+    <source_crossref::Crossref as merge::Contributor>::names(w, &mut |a| {
+        names.push((a.name.to_string(), a.field, a.native));
+    });
+    assert!(names.contains(&(
+        "doi:10.1556/mental.5.2004.1.1".to_owned(),
+        "doi_ascii",
+        false
+    )));
 }
 
 /// 10.3354/meps7782 and a non-breaking space, shard 29882 line 4840: an

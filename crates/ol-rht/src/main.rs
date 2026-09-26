@@ -5745,6 +5745,8 @@ struct CrossrefStats {
     corrected: BTreeMap<(&'static str, &'static str), u64>,
     /// `aliases`: valid, malformed.
     aliases: [u64; 2],
+    /// Works whose DOI has an ASCII spelling of its own.
+    ascii_dois: u64,
     doi_lowercased: u64,
     owner_differs: u64,
     /// What `alternative-id` became as a name (merge plan §3.1).
@@ -5879,6 +5881,7 @@ impl<'n> Sink<'n, Crossref> for CrossrefStats {
                 }
             }
         }
+        self.ascii_dois += u64::from(w.ascii_doi.is_some());
         self.unowned[0] += u64::from(w.member.is_none());
         self.unowned[1] += u64::from(w.publisher.is_none());
     }
@@ -5966,8 +5969,8 @@ impl StatsReport for CrossrefStats {
             eprintln!("  read as other than written {:?}", self.corrected);
         }
         eprintln!(
-            "  aliases {} malformed {}",
-            self.aliases[0], self.aliases[1]
+            "  aliases {} malformed {}  DOIs with an ASCII spelling {}",
+            self.aliases[0], self.aliases[1], self.ascii_dois
         );
         eprintln!("  relations {:?}", self.relations);
         eprintln!(
@@ -6342,7 +6345,7 @@ impl Merge for PubmedStats {
 
 impl Merge for CrossrefStats {
     fn merge(&mut self, other: Self) {
-        absorb_all!(self, other: CrossrefStats { works, deletions, types, untyped, excluded, set_aside, corrected, aliases, doi_lowercased, owner_differs, publisher, issued, title, alternate_titles, subtitle_empty, abstracts, persons, orgs, with_orcid, orcid_malformed, institutions, issns, isbns, languages, references, reference_doi, reference_empty, updates, update_words, relations, licenses, license_starts, dates, version_part, unowned, malformed_samples });
+        absorb_all!(self, other: CrossrefStats { works, deletions, types, untyped, excluded, set_aside, corrected, aliases, ascii_dois, doi_lowercased, owner_differs, publisher, issued, title, alternate_titles, subtitle_empty, abstracts, persons, orgs, with_orcid, orcid_malformed, institutions, issns, isbns, languages, references, reference_doi, reference_empty, updates, update_words, relations, licenses, license_starts, dates, version_part, unowned, malformed_samples });
     }
 }
 
