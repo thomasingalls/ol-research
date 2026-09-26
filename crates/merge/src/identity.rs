@@ -2051,6 +2051,17 @@ impl Works {
         (0..self.len()).map(|w| self.get(w))
     }
 
+    /// Bytes held, by the lists' capacities.
+    #[must_use]
+    pub fn bytes(&self) -> usize {
+        use std::mem::size_of;
+        self.records.capacity() * size_of::<RecordIx>()
+            + self.names.capacity() * size_of::<WorkName>()
+            + self.rejected.capacity() * size_of::<Rejection>()
+            + self.starts.capacity() * size_of::<[u32; 3]>()
+            + self.flags.capacity() * size_of::<(Sources, bool)>()
+    }
+
     /// Adds `work` after the last.
     #[allow(clippy::cast_possible_truncation)] // fewer than 2^32 of each in a run
     pub fn push(&mut self, work: &Work) {
@@ -2387,6 +2398,28 @@ impl Resolution {
         StubWorks { starts, names }
     }
 
+    /// What the resolution holds, part by part, in bytes by the lists'
+    /// capacities: what a full merge carries into pass 2, printed so that a
+    /// run on the corpus says where its heap is (the merge's memory,
+    /// 2026-09-26). A name's text outside a dictionary and a record's
+    /// assertions past its five inline are not counted.
+    #[must_use]
+    pub fn held(&self) -> Held {
+        use std::mem::size_of;
+        let arena = |arena: &Arena| {
+            arena.dictionary().map_or_else(
+                || arena.len() * size_of::<OwnedName>(),
+                crate::dictionary::Dictionary::bytes,
+            )
+        };
+        Held {
+            names: arena(&self.arena) + self.natives.capacity() * size_of::<RecordIx>(),
+            stubs: arena(&self.stubs) + self.stub_parent.capacity() * size_of::<NameIx>(),
+            records: self.records.capacity() * size_of::<Record>(),
+            works: self.works.bytes(),
+        }
+    }
+
     /// Numbers the stubs' names in name order, as a dictionary numbers the
     /// arena's under a full merge, and keeps them in one: about 13 bytes a
     /// name where the hashed arena kept 109 (the merge's memory,
@@ -2429,6 +2462,34 @@ impl Resolution {
         self.stub_parent = parent;
         self.stubs = numbered;
         Ok(())
+    }
+}
+
+/// What a [`Resolution`] holds, in bytes ([`Resolution::held`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Held {
+    /// The names, and which record each is native to.
+    pub names: usize,
+    /// The stubs' names and their grouping.
+    pub stubs: usize,
+    #[allow(missing_docs)]
+    pub records: usize,
+    #[allow(missing_docs)]
+    pub works: usize,
+}
+
+impl fmt::Display for Held {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        #[allow(clippy::cast_precision_loss)] // a report
+        let gib = |bytes: usize| bytes as f64 / f64::from(1u32 << 30);
+        write!(
+            f,
+            "names {:.2} GiB, stub names {:.2} GiB, records {:.2} GiB, works {:.2} GiB",
+            gib(self.names),
+            gib(self.stubs),
+            gib(self.records),
+            gib(self.works)
+        )
     }
 }
 

@@ -578,6 +578,24 @@ after the copies read, whose own peak still holds the table by name
 while it reads. The incremental merge and the test fixture never
 settle, and ask by name as before.
 
+**What is still not accounted for.** The per-item costs above were
+measured on small tables, and a hash table at the eighth's size sits
+emptier: hashbrown rounds 62.4 million entries up to 134 million slots.
+Sized by the entry sizes (M, `size_of`: 48 bytes a copy's entry, 56 a
+record, 8 a work's name, 20 a rejection) and the tables' rounding, the
+eighth's heap after registry assignment comes to about 22 GB (D) — the
+copies about 7.1 of it, not 4.8 — against the 26.4 GiB, 28.4 GB, the
+survey printed (M). About 6 GB is still nobody's: not the counts and
+examples in `Stats` and `Components`, and not the sets' symbol tables,
+which go with their readers. The table by name and the hashed stubs
+are gone now, which is where the rounding was, so the next survey will
+show how much of the 6 GB went with them: it prints, once the stubs are
+numbered, what the resolution holds part by part (`Resolution::held`,
+by the lists' capacities), and the heap beside it; what the heap holds
+beyond that is outside the resolution. By the arithmetic, the heap
+after registry assignment should come to about 13–14 GiB at the eighth
+(D) where it was 26.4.
+
 ## Walls behind this one
 
 - **Time.** Pass 1 decodes on one thread: 26 minutes for 36.5 GiB. The

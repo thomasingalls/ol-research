@@ -1392,10 +1392,11 @@ fn merge_sort_stubs(what: &str, res: &mut Resolution) -> Result<(), ExitCode> {
             ExitCode::FAILURE
         })?;
     eprintln!(
-        "{what}: {} stub names in a dictionary of {} MiB in {:.1} s; {}",
+        "{what}: {} stub names in a dictionary of {} MiB in {:.1} s; the resolution holds {}; {}",
         res.stubs.len(),
         res.stubs.dictionary().map_or(0, |d| d.bytes() >> 20),
         sorting.elapsed().as_secs_f64(),
+        res.held(),
         heap()
     );
     Ok(())
