@@ -82,6 +82,8 @@ pub enum Kind {
     OriginalReportIn,
     ReprintIn,
     ReprintOf,
+    /// PubMed's `Cites`, and Crossref's `cites` among its `relation`
+    /// types.
     Cites,
     // Crossref `relation` types (the deposit schema's inter-work
     // relations, plus `is-cited-by` and `is-component-of` seen in data).

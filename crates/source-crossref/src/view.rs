@@ -165,7 +165,9 @@ pub const fn update_relation(kind: UpdateType, notice: bool) -> Kind {
 }
 
 /// A `relation` type as the merge's relation kind: the deposit schema's
-/// inter-work relations, two more the data showed, and update words.
+/// inter-work relations, three more the data showed (`is-cited-by`,
+/// `is-component-of`, and `cites`, PubMed's word too, on 165 records of
+/// the March 2026 file), and update words.
 /// Crossref copies a work's `updated-by` into its `relation` under the
 /// update's word, asserted by the object, the notice: those read as what
 /// the word means ([`UpdateWord::meaning`]), and a comment so asserted is
@@ -204,6 +206,7 @@ pub fn relation_kind(kind: &str, by: RelationAssertedBy) -> Option<Kind> {
         "is-referenced-by" => Kind::IsReferencedBy,
         "references" => Kind::References,
         "is-cited-by" => Kind::IsCitedBy,
+        "cites" => Kind::Cites,
         "is-version-of" => Kind::IsVersionOf,
         "has-version" => Kind::HasVersion,
         "is-same-as" => Kind::IsSameAs,
@@ -512,6 +515,100 @@ mod tests {
             "which way it points is not said"
         );
         assert_eq!(object("article"), None, "set aside, never here");
+    }
+
+    /// Every `relation` type the March 2026 file writes, as the normalize
+    /// of the whole file counted them (homelab
+    /// `ol-rht-normalize-crossref-v1`, 2026-09-26), maps: a type that did
+    /// not would stop a merge of record. `cites`, on 165 records, was the
+    /// one the merge survey over an eighth of the file found missing
+    /// (`ol-rht-merge-survey-v6`). The update words among them are read
+    /// as asserted by the notice, as the file's copies of `updated-by`
+    /// are; a comment the work itself asserts still maps to nothing.
+    #[test]
+    fn every_relation_type_of_the_march_2026_file_maps() {
+        assert_eq!(
+            relation_kind("cites", RelationAssertedBy::Subject),
+            Some(Kind::Cites)
+        );
+        for word in [
+            "addendum",
+            "based-on-data",
+            "cites",
+            "clarification",
+            "comment",
+            "compiles",
+            "continues",
+            "corrected",
+            "corrected-article",
+            "correction",
+            "correspondence",
+            "corrigendum",
+            "documents",
+            "err",
+            "erratum",
+            "expression-of-concern",
+            "expression_of_concern",
+            "finances",
+            "has-comment",
+            "has-derivation",
+            "has-expression",
+            "has-format",
+            "has-manifestation",
+            "has-manuscript",
+            "has-part",
+            "has-preprint",
+            "has-related-material",
+            "has-reply",
+            "has-review",
+            "has-translation",
+            "has-version",
+            "is-based-on",
+            "is-basis-for",
+            "is-cited-by",
+            "is-comment-on",
+            "is-compiled-by",
+            "is-component-of",
+            "is-continued-by",
+            "is-data-basis-for",
+            "is-derived-from",
+            "is-documented-by",
+            "is-expression-of",
+            "is-financed-by",
+            "is-format-of",
+            "is-identical-to",
+            "is-manifestation-of",
+            "is-manuscript-of",
+            "is-original-form-of",
+            "is-part-of",
+            "is-preprint-of",
+            "is-referenced-by",
+            "is-related-material",
+            "is-replaced-by",
+            "is-reply-to",
+            "is-required-by",
+            "is-review-of",
+            "is-same-as",
+            "is-supplement-to",
+            "is-supplemented-by",
+            "is-translation-of",
+            "is-variant-form-of",
+            "is-version-of",
+            "new_edition",
+            "new_version",
+            "publisher-note",
+            "references",
+            "removal",
+            "replaces",
+            "requires",
+            "retraction",
+            "withdrawal",
+        ] {
+            assert!(
+                relation_kind(word, RelationAssertedBy::Object).is_some(),
+                "{word}"
+            );
+        }
     }
 
     #[test]

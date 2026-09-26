@@ -434,6 +434,47 @@ byte (the reports' examples excepted at 2a), a second merge that reuses
 every id, and the full/incremental harness, whose store has to be
 normalized again at model 8 first.
 
+## PubMed and an eighth of Crossref, measured 2026-09-26
+
+The first run with Crossref in it: `ol-rht merge --survey` over the
+whole PubMed baseline (39,994,988 records) and every eighth shard of
+Crossref's March 2026 file (22,439,985 records, 341,523,302
+references), both at model 10, against the registry of record
+(42,066,697 lines), in a scratch store of links to the sets (homelab
+`ol-rht-merge-survey-v6`, ol-rht 7d2ef1b, merge version 15). Beside it,
+the PubMed merge of record at model 9 (`ol-rht-merge-corpus-v2`, the
+same merge version). Heap from the run's own phase lines, in GiB, the
+peak so far in brackets (M); the last column scales the eighth's growth
+by eight (E):
+
+| phase | PubMed | + ⅛ Crossref | growth | whole file (E) |
+|---|---|---|---|---|
+| copies read | 3.78 (4.92) | 7.51 (9.84) | +3.73 | 33.6 |
+| records and names read | 8.65 (10.31) | 12.55 (14.03) | +3.90 | 39.8 |
+| identity resolved | 15.74 (22.01) | 25.58 (34.19) | +9.84 (+12.18) | 94.5 (119.5) |
+| names table built | 17.06 (24.82) | 30.81 (43.06) | +13.75 (+18.24) | 127.1 (170.7) |
+| merged rows, peak | 38.03 | 52.10 | +14.07 | 150.6 |
+
+Beside the heap (M): distinct record names 91,073,972 → 111,413,496,
+and 25,397,773 stub works from names Crossref's references cite and no
+record holds; rows spilled 916 million (38.4 GiB) → 1,531 million (71.1
+GiB), under /tmp on the node's disk; 60 → 96 minutes; the container's
+peak 55.2 → 80 GiB, its limit, reached by the spill's page cache, which
+the kernel took back — the heap never came near it.
+
+What grows is the heap carried into pass 2: +13.75 GiB for the eighth's
+22.4 million records, 20.3 million record names and 25.4 million stub
+names. Pass 2's own share over it stays about 21 GiB (38.0 − 17.1 and
+52.1 − 30.8), bounded by the spill range. Scaling by eight overstates
+the whole file: a name cited from every eighth is one name, and a stub
+of one eighth is often a record of another. But at half that growth
+pass 2 still peaks near 94 GiB (E), against the ~100 GB ol-rht may take
+of the box, and at the full growth near 150 GiB, past the box's 128. So
+the whole file waits on this plan, and the first thing to measure is
+which structures hold the heap carried into pass 2. The whole file's
+spill, about 300 GiB (E), fits the node's 1.8 TB; its time, about 5.8
+hours (E), is the first wall below.
+
 ## Walls behind this one
 
 - **Time.** Pass 1 decodes on one thread: 26 minutes for 36.5 GiB. The

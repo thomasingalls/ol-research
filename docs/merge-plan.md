@@ -1371,6 +1371,21 @@ stays.
   And a relation keeps its cited-as row whatever it names, a stub
   included: a relation leaves no citer on a stub, and without the row a
   batch that moves the name could not find who relates to it.
+- 2026-09-26, no version: Crossref's `cites` is the relation kind
+  `cites`, PubMed's word already (the user's go-ahead). The merge survey
+  over the PubMed baseline and an eighth of Crossref's March 2026 file,
+  both at model 10 (homelab `ol-rht-merge-survey-v6`, ol-rht 7d2ef1b),
+  ran to the end in 96 minutes and found one thing that would stop a
+  merge of record: `relations.kind: "cites" is not in the table`, 16
+  records (165 in the whole file, by the normalize's counts). Every
+  other of the 71 relation types the whole file writes maps, a test now
+  says so; `comment` (2) and `correspondence` (1) still stop a run where
+  the work itself asserts them, since which way they point is not said.
+  No merge version: a record carrying `cites` stopped every merge before
+  this, so no merged set under 15 reads differently. The same survey
+  measured what the whole file would cost in memory ([the merge's
+  memory](inbox/merge-memory.md)), which it does not yet fit, and found
+  the first identity changes under ids of record (§11 item 27).
 
 ## 11. Open items
 
@@ -1909,6 +1924,18 @@ stays.
     the normalized layer as a `Claim::Malformed`, so keeping it — an
     unresolved row that carries the name as written — needs no
     re-normalizing; it is a merged-layout change. Not built.
+27. **Which ids a new source merges and splits — before the first merge
+    of record with Crossref.** The merge survey over the PubMed baseline
+    and an eighth of Crossref's March 2026 file (2026-09-26, homelab
+    `ol-rht-merge-survey-v6`) is the first run to change identity under
+    ids of record: 521 works merged and 1,563 split in the registry's
+    terms, 264,306 names attached, none dropped (M), where the corpus
+    merges of the PubMed baseline alone had none. The report counts them and names
+    none. It should print examples of each, as it does for conflict
+    components: the ids, the names that moved and the records behind
+    them, so the user can see what Crossref's evidence changes before a
+    merge of record writes it (the user: "hey fun, system is working.
+    looking forward to that report when we get there"). Not built.
 21. ~~**The public id.**~~ Built 2026-09-16 (serving plan SP3):
     `merge::public` mints one for every id lacking it when `merge` is
     given `--public-key <file>` — a keyed BLAKE3 hash of the id, `ol:`
