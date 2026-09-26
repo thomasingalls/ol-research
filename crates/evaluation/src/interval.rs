@@ -18,7 +18,9 @@ pub const SEED: u64 = 0x6f6c_2d72_6874_0001;
 /// against the textbook interval for a mean, about 6% narrower at 30
 /// queries and about 18% at 10, and at two it collapses to a point.
 /// Below the floor a mean is printed without one, and two runs get no
-/// verdict.
+/// verdict. The methods that would speak below it — the randomization
+/// test above all, then the bias-corrected resampling interval — are
+/// written down, not built, in the evaluation plan's §11.
 pub const MIN_QUERIES: usize = 30;
 
 /// A 95% interval.
