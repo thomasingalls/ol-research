@@ -1146,6 +1146,8 @@ dependencies = [
 name = "ol-rht"
 version = "0.1.0"
 dependencies = [
+ "blake3",
+ "evaluation",
  "graph",
  "ingest",
  "merge",

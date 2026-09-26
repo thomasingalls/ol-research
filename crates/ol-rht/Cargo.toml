@@ -5,6 +5,8 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+blake3.workspace = true
+evaluation.workspace = true
 graph.workspace = true
 ingest.workspace = true
 merge.workspace = true

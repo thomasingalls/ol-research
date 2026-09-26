@@ -143,7 +143,10 @@ const USAGE: &str = "usage:
   ol-rht query search <words>... [--store <root>] [--limit N]
   ol-rht query expand <name|#id>... [--store <root>] [--limit N] [--walk <references|citers|both>]
   ol-rht query related <name|#id> --by <cites-same|cited-alongside> [--store <root>] [--limit N]
-  ol-rht query path <name|#id> <name|#id> [--store <root>] [--depth N] [--limit N]";
+  ol-rht query path <name|#id> <name|#id> [--store <root>] [--depth N] [--limit N]
+  ol-rht evaluate run <queries> --out <run> [--store <root>] [--limit depth] [--workers N]
+  ol-rht evaluate score <key> <run>
+  ol-rht evaluate compare <key> <base run> <new run>";
 
 /// Who we say we are; `--mailto` adds an address inside the parenthesis.
 const USER_AGENT: &str = "ol-rht/0.1 (citation-graph ingestion";
@@ -229,6 +232,9 @@ fn main() -> ExitCode {
                 ("query", "expand") => query_expand(&opts),
                 ("query", "related") => query_related(&opts),
                 ("query", "path") => query_path(&opts),
+                ("evaluate", "run") => evaluate_run(&opts),
+                ("evaluate", "score") => evaluate_score(&opts),
+                ("evaluate", "compare") => evaluate_compare(&opts),
                 _ => usage(),
             }
         }
@@ -3823,6 +3829,332 @@ fn query_search(opts: &Options) -> ExitCode {
     })();
     match printed {
         Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("{what}: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// How deep a run goes unless `--limit` says (evaluation plan §3.3).
+const RUN_DEPTH: usize = 1000;
+
+/// One query's part of a run: the works returned with their scores, and
+/// how long the search took.
+type Searched = Result<(Vec<evaluation::trec::Scored>, std::time::Duration), String>;
+
+/// `evaluate run <queries> --out <run>`: every query of a suite through
+/// the store's search, in process — the parser and the translation the
+/// search box uses, with no time limit and no page cap — written as a
+/// TREC run, and beside it `<run>.about` naming what was searched
+/// (evaluation plan §6). The queries are searched in parallel and
+/// written in the file's order, so the run never depends on which search
+/// finished first. A run is kept: an existing `--out` is refused.
+// Read, search, stamp, write: one step after another, and long together.
+#[allow(clippy::too_many_lines)]
+fn evaluate_run(opts: &Options) -> ExitCode {
+    let what = "evaluate run";
+    let ([queries_path], Some(out)) = (opts.paths.as_slice(), opts.out.as_ref()) else {
+        return usage();
+    };
+    if opts.mailto.is_some()
+        || opts.seed.is_some()
+        || opts.by.is_some()
+        || opts.related.is_some()
+        || opts.walk.is_some()
+        || opts.depth.is_some()
+        || opts.survey
+        || opts.limit == Some(0)
+    {
+        return usage();
+    }
+    let depth = opts
+        .limit
+        .map_or(RUN_DEPTH, |n| usize::try_from(n).unwrap_or(usize::MAX));
+    let about_path = PathBuf::from(format!("{}.about", out.display()));
+    for path in [out, &about_path] {
+        if path.exists() {
+            eprintln!(
+                "{what}: {} exists; a run is kept, so name a new one",
+                path.display()
+            );
+            return ExitCode::FAILURE;
+        }
+    }
+    let text = match std::fs::read_to_string(queries_path) {
+        Ok(text) => text,
+        Err(e) => {
+            eprintln!("{what}: {}: {e}", queries_path.display());
+            return ExitCode::FAILURE;
+        }
+    };
+    let queries = match evaluation::trec::read_queries(&text) {
+        Ok(queries) => queries,
+        Err(e) => {
+            eprintln!("{what}: {}: {e}", queries_path.display());
+            return ExitCode::FAILURE;
+        }
+    };
+    let mut asked = Vec::with_capacity(queries.len());
+    for (id, query) in &queries {
+        match query_parser::parse(query) {
+            Ok(parsed) => asked.push(parsed),
+            Err(e) => {
+                eprintln!("{what}: query {id}: {e}");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+    let store = opts.store();
+    let serving = match serve::Serving::open(&store) {
+        Ok(serving) => serving,
+        Err(e) => {
+            eprintln!("{what}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let started = std::time::Instant::now();
+    let searched = evaluate_search(&serving, &asked, depth, opts.workers());
+    let mut run = evaluation::trec::Run::default();
+    let mut slowest: Option<(std::time::Duration, &str)> = None;
+    let mut returned = 0_usize;
+    let mut empty = 0_usize;
+    for ((id, _), result) in queries.iter().zip(searched) {
+        let (mut works, took) = match result {
+            Ok(done) => done,
+            Err(e) => {
+                eprintln!("{what}: query {id}: {e}");
+                return ExitCode::FAILURE;
+            }
+        };
+        if slowest.is_none_or(|(t, _)| took > t) {
+            slowest = Some((took, id));
+        }
+        returned += works.len();
+        if works.is_empty() {
+            empty += 1;
+        }
+        evaluation::trec::order(&mut works);
+        run.queries.insert(id.clone(), works);
+    }
+    let elapsed = started.elapsed();
+
+    let epoch = serving.epoch();
+    let index = serving.search_index();
+    let absorbed = match index.batch() {
+        Ok(batch) => batch,
+        Err(e) => {
+            eprintln!("{what}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let about = serde_json::json!({
+        "queries": queries_path.display().to_string(),
+        "queries_blake3": blake3::hash(text.as_bytes()).to_hex().to_string(),
+        "queries_count": queries.len(),
+        "depth": depth,
+        "epoch": epoch,
+        "search": index.manifest(),
+        "search_absorbed_batch": absorbed,
+        "ol_rht": env!("CARGO_PKG_VERSION"),
+    });
+    let tag = format!("ol-rht-epoch{}", epoch.epoch);
+    if let Err(e) = evaluate_write(out, &about_path, &run, &tag, &about) {
+        eprintln!("{what}: {e}");
+        return ExitCode::FAILURE;
+    }
+    println!(
+        "{what}: {} queries, {returned} works returned, {empty} queries with none, \
+         depth {depth}, epoch {}, {:.1} s",
+        queries.len(),
+        epoch.epoch,
+        elapsed.as_secs_f64()
+    );
+    if let Some((took, id)) = slowest {
+        println!(
+            "  slowest: query {id}, {:.1} ms",
+            took.as_secs_f64() * 1000.0
+        );
+    }
+    println!("  run: {}", out.display());
+    ExitCode::SUCCESS
+}
+
+/// Searches every query on `workers` threads, taking the next query as
+/// each finishes one, and returns the answers in the queries' order.
+fn evaluate_search(
+    serving: &serve::Serving,
+    asked: &[query_parser::Query],
+    depth: usize,
+    workers: usize,
+) -> Vec<Searched> {
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let mut answered: Vec<(usize, Searched)> = std::thread::scope(|scope| {
+        let threads: Vec<_> = (0..workers.max(1))
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut mine = Vec::new();
+                    loop {
+                        let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let Some(query) = asked.get(i) else {
+                            break mine;
+                        };
+                        mine.push((i, evaluate_one(serving, query, depth)));
+                    }
+                })
+            })
+            .collect();
+        threads
+            .into_iter()
+            .flat_map(|t| t.join().expect("a search thread panicked"))
+            .collect()
+    });
+    answered.sort_unstable_by_key(|(i, _)| *i);
+    answered.into_iter().map(|(_, a)| a).collect()
+}
+
+/// One query's works, each named by its public id.
+fn evaluate_one(serving: &serve::Serving, query: &query_parser::Query, depth: usize) -> Searched {
+    let started = std::time::Instant::now();
+    let hits = serving
+        .search_facets(query, depth, 0, None)
+        .map_err(|e| e.to_string())?;
+    let took = started.elapsed();
+    let mut works = Vec::with_capacity(hits.hits.len());
+    for hit in hits.hits {
+        let Some(public) = serving.public_of(hit.id) else {
+            return Err(format!(
+                "work {} has no public id; a run names works by public id only",
+                hit.id
+            ));
+        };
+        works.push(evaluation::trec::Scored {
+            work: public,
+            score: f64::from(hit.score),
+        });
+    }
+    Ok((works, took))
+}
+
+/// Writes the run and its sidecar through `.partial` names, renamed only
+/// once both are whole, so a failed run leaves nothing behind.
+fn evaluate_write(
+    out: &Path,
+    about_path: &Path,
+    run: &evaluation::trec::Run,
+    tag: &str,
+    about: &serde_json::Value,
+) -> io::Result<()> {
+    let run_partial = PathBuf::from(format!("{}.partial", out.display()));
+    let about_partial = PathBuf::from(format!("{}.partial", about_path.display()));
+    let written = (|| -> io::Result<()> {
+        let mut file = io::BufWriter::new(std::fs::File::create(&run_partial)?);
+        run.write(tag, &mut file)?;
+        file.into_inner()
+            .map_err(io::IntoInnerError::into_error)?
+            .sync_all()?;
+        let mut text = serde_json::to_string_pretty(about).map_err(io::Error::other)?;
+        text.push('\n');
+        std::fs::write(&about_partial, text)?;
+        std::fs::rename(&run_partial, out)?;
+        std::fs::rename(&about_partial, about_path)
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&run_partial);
+        let _ = std::fs::remove_file(&about_partial);
+    }
+    written
+}
+
+/// The options `evaluate score` and `evaluate compare` do not take: they
+/// read files and nothing else.
+fn evaluate_reads_only(opts: &Options) -> bool {
+    opts.limit.is_none()
+        && opts.workers.is_none()
+        && opts.out.is_none()
+        && opts.store.is_none()
+        && opts.mailto.is_none()
+        && opts.seed.is_none()
+        && opts.by.is_none()
+        && opts.related.is_none()
+        && opts.walk.is_none()
+        && opts.depth.is_none()
+        && !opts.survey
+}
+
+/// Reads an answer key and runs, naming the file that fails.
+fn evaluate_read(
+    key: &Path,
+    runs: &[PathBuf],
+) -> Result<(evaluation::trec::Key, Vec<evaluation::trec::Run>), String> {
+    let read =
+        |path: &Path| std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()));
+    let key =
+        evaluation::trec::Key::read(&read(key)?).map_err(|e| format!("{}: {e}", key.display()))?;
+    let runs = runs
+        .iter()
+        .map(|path| {
+            evaluation::trec::Run::read(&read(path)?)
+                .map_err(|e| format!("{}: {e}", path.display()))
+        })
+        .collect::<Result<_, _>>()?;
+    Ok((key, runs))
+}
+
+/// `evaluate score <key> <run>`: the run's report (evaluation plan §4).
+fn evaluate_score(opts: &Options) -> ExitCode {
+    let what = "evaluate score";
+    let [key, run] = opts.paths.as_slice() else {
+        return usage();
+    };
+    if !evaluate_reads_only(opts) {
+        return usage();
+    }
+    let (key, runs) = match evaluate_read(key, std::slice::from_ref(run)) {
+        Ok(read) => read,
+        Err(e) => {
+            eprintln!("{what}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let mut out = io::BufWriter::new(io::stdout().lock());
+    match evaluation::report::score(&key, &runs[0], &mut out).and_then(|()| out.flush()) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("{what}: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// `evaluate compare <key> <base run> <new run>`: both runs query by
+/// query, the interval of every difference, and the acceptance rule's
+/// verdict (evaluation plan §4) — exit 1 when the new run is refused, and
+/// when a level has too few queries for the rule to speak.
+fn evaluate_compare(opts: &Options) -> ExitCode {
+    let what = "evaluate compare";
+    let [key, base, new] = opts.paths.as_slice() else {
+        return usage();
+    };
+    if !evaluate_reads_only(opts) {
+        return usage();
+    }
+    let (key, runs) = match evaluate_read(key, &[base.clone(), new.clone()]) {
+        Ok(read) => read,
+        Err(e) => {
+            eprintln!("{what}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let mut out = io::BufWriter::new(io::stdout().lock());
+    let verdict = evaluation::report::compare(&key, &runs[0], &runs[1], &mut out)
+        .and_then(|verdict| out.flush().map(|()| verdict));
+    match verdict {
+        Ok(evaluation::report::Verdict::Passes) => ExitCode::SUCCESS,
+        Ok(evaluation::report::Verdict::Refused | evaluation::report::Verdict::TooFewQueries) => {
+            ExitCode::FAILURE
+        }
         Err(e) => {
             eprintln!("{what}: {e}");
             ExitCode::FAILURE
