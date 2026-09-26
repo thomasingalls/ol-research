@@ -54,18 +54,26 @@ pub trait Source: Sized {
     /// byte stream — the file itself, or an inflating decoder over it, or
     /// a download in flight — and hands each to `each`, borrowed from a
     /// buffer that is reused for the next. `each` returning `Break` ends
-    /// the read before the next record is parsed; the first record that
-    /// does not parse ends it with the error, and what follows is never
+    /// the read before the next record is parsed.
+    ///
+    /// A record that does not parse is handed to `each` as its error when
+    /// the framing found where the record ends before parsing it — a line
+    /// of a lines file, one result of an API page — because the next
+    /// record starts there all the same, and whether to read it is
+    /// `each`'s answer, as for any record. Where the framing cannot find
+    /// that end — an XML stream, whose reader is lost inside the record —
+    /// the read ends with the error instead, and what follows is never
     /// read.
     ///
     /// # Errors
     ///
     /// The stream (I/O, gzip, bytes that are not UTF-8), or a record that
-    /// did not parse: structural strictness (plan §6).
+    /// did not parse where nothing after it can be read: structural
+    /// strictness (plan §6).
     fn records<R, F>(input: R, each: F) -> Result<(), ReadError<Self::ParseError>>
     where
         R: BufRead,
-        F: FnMut(&Self::Native<'_>) -> ControlFlow<()>;
+        F: FnMut(Result<&Self::Native<'_>, Self::ParseError>) -> ControlFlow<()>;
 
     /// A normalized work's native name as the merge writes it
     /// (`pmid:123`): what the set's [`crate::binary::Index`] is keyed by,

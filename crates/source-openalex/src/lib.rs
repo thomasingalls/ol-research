@@ -145,7 +145,7 @@ impl ingest::Source for OpenAlex {
 
     fn records<R: BufRead, F>(input: R, each: F) -> Result<(), ingest::ReadError<Error>>
     where
-        F: FnMut(&Work<'_>) -> ControlFlow<()>,
+        F: FnMut(Result<&Work<'_>, Error>) -> ControlFlow<()>,
     {
         records(input, each)
     }

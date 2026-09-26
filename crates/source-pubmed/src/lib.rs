@@ -205,11 +205,14 @@ impl ingest::Source for Pubmed {
     type ParseError = Error;
     type NormalizeError = normalize::Error;
 
-    fn records<R: BufRead, F>(input: R, each: F) -> Result<(), ingest::ReadError<Error>>
+    /// Every record that does not parse ends the read: the XML reader is
+    /// lost inside it, and the next `<PubmedArticle>` cannot be found
+    /// from there with any confidence.
+    fn records<R: BufRead, F>(input: R, mut each: F) -> Result<(), ingest::ReadError<Error>>
     where
-        F: FnMut(&record::Record<'_>) -> ControlFlow<()>,
+        F: FnMut(Result<&record::Record<'_>, Error>) -> ControlFlow<()>,
     {
-        records(input, each)
+        records(input, |record| each(Ok(record)))
     }
 
     /// The work's native name as the merge writes it, for the set's index.

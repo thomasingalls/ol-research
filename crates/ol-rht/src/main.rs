@@ -70,10 +70,13 @@
 //! `--survey` (plan §6) keeps going past records this build cannot read
 //! and reports every distinct failure signature with counts and examples;
 //! it writes no output and exits non-zero when anything failed. A record
-//! that does not normalize costs that record; a record that does not
-//! parse costs the rest of its file, which the report names as abandoned,
-//! because nothing after it in that byte stream can be trusted to be a
-//! record boundary. Without `--survey` the first of either stops the run.
+//! that does not normalize costs that record, and so does one that does
+//! not parse in a lines file or an API page (Crossref, OpenAlex), where
+//! the next record starts on the next line or item regardless. A PubMed
+//! record that does not parse costs the rest of its file, which the
+//! report names as abandoned, because nothing after it in that XML stream
+//! can be trusted to be a record boundary. Without `--survey` the first
+//! failure of any kind stops the run.
 //! `--store` is the root of the store of record, `data` by default.
 //! `--mailto <address>` puts an address in the User-Agent for sources
 //! that reward it; none is sent unless given.

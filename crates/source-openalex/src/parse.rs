@@ -73,30 +73,33 @@ pub fn line(number: usize, text: &str) -> Result<Work<'_>, Error> {
 /// file with a work. A page is one document, held whole while its
 /// results are parsed one by one (numbered from one, as lines are); lines
 /// are read one at a time from a buffer reused for the next. Blank lines
-/// are skipped.
+/// are skipped. A result or line that does not parse is handed to `each`
+/// as its error, and the next is read if `each` goes on: each is framed
+/// before it is parsed, so one cannot spoil the next.
 ///
 /// # Errors
 ///
-/// The stream's, a page that is not one page of works, or the first
-/// result or line that does not parse.
+/// The stream's, or a page that is not one page of works.
 pub fn records<R: BufRead, F>(mut input: R, mut each: F) -> Result<(), ReadError<Error>>
 where
-    F: FnMut(&Work<'_>) -> ControlFlow<()>,
+    F: FnMut(Result<&Work<'_>, Error>) -> ControlFlow<()>,
 {
+    let mut one = |work: Result<Work<'_>, Error>| match work {
+        Ok(work) => each(Ok(&work)),
+        Err(e) => each(Err(e)),
+    };
     if frame::starts_with(&mut input, b"{\"meta\"")? {
         let mut buf = Vec::new();
         input.read_to_end(&mut buf)?;
         let page = page(frame::utf8(&buf)?).map_err(ReadError::Parse)?;
         for (index, raw) in page.results.iter().enumerate() {
-            if each(&line(index + 1, raw.get()).map_err(ReadError::Parse)?).is_break() {
+            if one(line(index + 1, raw.get())).is_break() {
                 break;
             }
         }
         Ok(())
     } else {
-        frame::lines(input, |number, text| {
-            line(number, text).map(|work| each(&work))
-        })
+        frame::lines(input, |number, text| Ok(one(line(number, text))))
     }
 }
 
@@ -187,5 +190,22 @@ mod tests {
         })
         .unwrap();
         assert_eq!(seen, 1, "break stops before the next result");
+    }
+
+    #[test]
+    fn a_line_or_result_that_does_not_parse_is_handed_over_and_the_next_read() {
+        let work = WORK.trim();
+        let bad = work.replacen('{', "{\"no_such_field\":1,", 1);
+        let lines = format!("{work}\n{bad}\n{work}\n");
+        let page = page(3, &[work, &bad, work], "");
+        for input in [lines, page] {
+            let mut seen = Vec::new();
+            records(Cursor::new(&input), |work| {
+                seen.push(work.map(|_| ()).map_err(|e| e.line));
+                ControlFlow::Continue(())
+            })
+            .unwrap();
+            assert_eq!(seen, [Ok(()), Err(2), Ok(())], "{input}");
+        }
     }
 }

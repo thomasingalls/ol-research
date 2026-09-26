@@ -902,12 +902,14 @@ Two ergonomic details that do not weaken the contract: `--limit N` for fast
 iteration, and opt-in `--survey`, which scans everything, writes no output,
 and reports every distinct failure signature with counts and samples, so one
 run surfaces many warts instead of one. Default is stop-at-first. A survey
-surveys parse failures too (2026-09-23), at the price of the rest of the
-file the failure was in: the reader's place in the byte stream is no longer
-a record boundary, so the file is abandoned and the next taken. Every
-abandoned file and the record it was abandoned at is named in the report,
-because a survey that quietly skipped most of a file would be worse than
-one that stopped.
+surveys parse failures too (2026-09-23). In a lines file or an API page
+(Crossref, OpenAlex) a record is framed — its line or its item cut out —
+before it is parsed, so one that does not parse costs that record and the
+survey reads the next (2026-09-26). In PubMed's XML the reader's place in
+the byte stream is no longer a record boundary, so the file is abandoned
+and the next taken. Every abandoned file and the record it was abandoned
+at is named in the report, because a survey that quietly skipped most of
+a file would be worse than one that stopped.
 
 ## 7. POC acquisition
 
@@ -1787,6 +1789,23 @@ cross-IDs and a second edge namespace early.
   (M: the two baseline files 65.8 to 70.3 MiB) and an index is about
   65 KB for 30,000 works. Neither the model nor the layout version moves:
   every file reads as it did, and a set normalized before has no index.
+- 2026-09-26, a survey reads past a line that does not parse — the
+  user's call. The first survey of Crossref's whole March 2026 file
+  (homelab `ol-rht-survey-crossref-v1`, model 9) read 132,819,641
+  records and abandoned 24,545 of its 35,908 shards at their first parse
+  failure (M), leaving an estimated 46 M records unread, and a record
+  with two warts showed only the first: 1,052 of the licenses with no
+  start sat behind a Wikidata id or an affiliation's acronym (M, over
+  the records those shards stopped at, dumped by homelab
+  `ol-rht-dump-crossref-v1`). The 2026-09-23 rule abandoned a file
+  because the reader's place is lost, which is PubMed's XML and not a
+  lines file: Crossref and OpenAlex cut a line, or a page's item, out
+  before parsing it, so the next record starts where it did.
+  `Source::records` now hands such a failure to the runner beside the
+  records, and a survey tallies it and reads on; PubMed's still ends
+  the read. Every run that is not a survey stops at it, as before. Over
+  the dump's 33,476 records a survey now reads all of them and abandons
+  nothing (M: 26,262 failed, 42 signatures).
 
 ## 11. Dependencies
 
