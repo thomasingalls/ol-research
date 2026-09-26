@@ -5744,6 +5744,7 @@ struct CrossrefStats {
     persons: u64,
     orgs: u64,
     with_orcid: u64,
+    orcid_malformed: u64,
     /// `<institution>`s: authors' affiliations, then works' own.
     institutions: [InstitutionCounts; 2],
     issns: u64,
@@ -5803,7 +5804,14 @@ impl<'n> Sink<'n, Crossref> for CrossrefStats {
                 source_crossref::normalize::AuthorName::Person { .. } => self.persons += 1,
                 source_crossref::normalize::AuthorName::Org(_) => self.orgs += 1,
             }
-            self.with_orcid += u64::from(a.orcid.is_some());
+            match &a.orcid {
+                None => {}
+                Some(Claim::Valid(_)) => self.with_orcid += 1,
+                Some(Claim::Malformed { raw, error }) => {
+                    self.orcid_malformed += 1;
+                    sample(&mut self.malformed_samples, raw, error);
+                }
+            }
             for i in &a.affiliations {
                 self.institutions[0].see(i, &mut self.malformed_samples);
             }
@@ -5909,8 +5917,8 @@ impl StatsReport for CrossrefStats {
             self.abstracts[0], self.abstracts[1], self.abstracts[2]
         );
         eprintln!(
-            "  authors persons {} orgs {} with orcid {}",
-            self.persons, self.orgs, self.with_orcid
+            "  authors persons {} orgs {} with orcid {} malformed {}",
+            self.persons, self.orgs, self.with_orcid, self.orcid_malformed
         );
         eprintln!(
             "  affiliations {}  the works' own institutions {}",
@@ -6292,7 +6300,7 @@ impl Merge for PubmedStats {
 
 impl Merge for CrossrefStats {
     fn merge(&mut self, other: Self) {
-        absorb_all!(self, other: CrossrefStats { works, deletions, types, untyped, excluded, set_aside, doi_lowercased, owner_differs, publisher, issued, title, alternate_titles, subtitle_empty, abstracts, persons, orgs, with_orcid, institutions, issns, isbns, languages, references, reference_doi, reference_empty, updates, update_words, relations, licenses, license_starts, dates, version_part, unowned, malformed_samples });
+        absorb_all!(self, other: CrossrefStats { works, deletions, types, untyped, excluded, set_aside, doi_lowercased, owner_differs, publisher, issued, title, alternate_titles, subtitle_empty, abstracts, persons, orgs, with_orcid, orcid_malformed, institutions, issns, isbns, languages, references, reference_doi, reference_empty, updates, update_words, relations, licenses, license_starts, dates, version_part, unowned, malformed_samples });
     }
 }
 

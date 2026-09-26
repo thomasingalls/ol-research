@@ -109,8 +109,9 @@ wart is a claim the POC run confirms or refutes, not a commitment.
   and `timestamp` agree; `URL` is exactly `https://doi.org/` + DOI;
   `references-count` equals the array; `published` equals `issued`. Those
   are strict types and enforced invariants in the normalizer — but for
-  the ISSN and, since the whole March 2026 file was surveyed, the ISBN,
-  which a few publishers get wrong and which are claims (§10). `prefix` is
+  the ISSN and, since the whole March 2026 file was surveyed, the ISBN and
+  the ORCID, which a few publishers get wrong and which are claims (§10).
+  `prefix` is
   the DOI's *current owner*, not its registrant — they differ on 67 works,
   because DOIs move between publishers. 47 reference DOIs (0.2 %) carry a
   Unicode hyphen (U+2010) for an ASCII one: the `Claim<Doi>` category
@@ -2032,6 +2033,14 @@ cross-IDs and a second edge namespace early.
   kept as written beside why and never matched on, and the record
   normalizes. The sample's 186 of 2026-09-15 all passed, which is why it
   was strict.
+- 2026-09-26, still model 10: a language may be ISO 639-2's three-letter
+  terminologic code (303 records: `spa` on two Peruvian publishers',
+  `eng`), read as the language it names; a bibliographic-only code
+  (`fre`) has not been seen and still stops the run. An author's ORCID
+  written `http://orcid.org/` (8) is the same iD, and one whose check
+  character fails (1) is a claim, as the other ids with checks are.
+  Every one of the 234 records the whole-file survey named as examples
+  now normalizes.
 
 ## 11. Dependencies
 

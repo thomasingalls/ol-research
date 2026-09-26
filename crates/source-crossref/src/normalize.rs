@@ -56,6 +56,8 @@ pub type RorClaim<'n> = Claim<'n, Ror, RorError>;
 /// stray `9` in front. Kept as written beside why, as an ISSN is (the
 /// user's call), and never matched on.
 pub type IsbnClaim<'n> = Claim<'n, Isbn, IsbnError>;
+/// An ORCID iD as the source wrote it, or why it is none.
+pub type OrcidClaim<'n> = Claim<'n, Orcid, OrcidError>;
 /// An ISNI as the source wrote it, or why its check character is wrong.
 pub type IsniClaim<'n> = Claim<'n, Isni, IsniError>;
 
@@ -135,7 +137,11 @@ pub struct Work<'n> {
     /// `publisher`; absent with `member`.
     #[serde(borrow)]
     pub publisher: Option<Interned<'n>>,
-    /// `language`, ISO 639-1.
+    /// `language`: ISO 639-1, or ISO 639-2's terminologic code on 303
+    /// records of the March 2026 file (`spa` on the Universidad Nacional
+    /// Mayor de San Marcos's and the Instituto Nacional Materno
+    /// Perinatal's, `eng`; 2026-09-26). A bibliographic-only code (`fre`)
+    /// has not been seen, and stops the run.
     pub language: Option<Lang>,
     /// `author[]`.
     #[serde(borrow)]
@@ -171,8 +177,11 @@ pub struct Author<'n> {
     #[allow(missing_docs)]
     #[serde(borrow)]
     pub name: AuthorName<'n>,
-    #[allow(missing_docs)]
-    pub orcid: Option<Orcid>,
+    /// A claim: 8 records of the March 2026 file write `http://orcid.org/`,
+    /// read as the same iD, and one carries an iD whose check character
+    /// fails (10.64522/v4i4.02), kept as written beside why (2026-09-26).
+    #[serde(borrow)]
+    pub orcid: Option<OrcidClaim<'n>>,
     /// `authenticated-orcid`.
     pub authenticated_orcid: Option<bool>,
     #[allow(missing_docs)]
@@ -463,7 +472,6 @@ pub struct Error {
 #[allow(missing_docs)]
 pub enum ErrorKind {
     Doi(DoiError),
-    Orcid(OrcidError),
     Isni(IsniError),
     Issn(IssnError),
     Date(DateError),
@@ -490,7 +498,6 @@ impl fmt::Display for ErrorKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ErrorKind::Doi(e) => write!(f, "{e}"),
-            ErrorKind::Orcid(e) => write!(f, "{e}"),
             ErrorKind::Isni(e) => write!(f, "{e}"),
             ErrorKind::Issn(e) => write!(f, "{e}"),
             ErrorKind::Date(e) => write!(f, "{e}"),
@@ -729,14 +736,13 @@ impl Ctx {
                 });
             }
         };
-        let orcid = c
-            .orcid
-            .as_deref()
-            .map(|o| {
-                Orcid::from_https_url(o)
-                    .map_err(|e| self.err("author.ORCID", o, ErrorKind::Orcid(e)))
-            })
-            .transpose()?;
+        let orcid = c.orcid.as_deref().map(|o| {
+            let read = match Orcid::from_https_url(o) {
+                Err(OrcidError::BadPrefix) => Orcid::from_http_url(o),
+                read => read,
+            };
+            Claim::from_parse(o, read)
+        });
         let mut affiliations = Few::new();
         for a in &c.affiliation {
             // The schema gives a country to a grant investigator's
@@ -1134,7 +1140,11 @@ pub fn normalize<'n, K: Sink<'n, Crossref>>(w: &'n Native<'_>, emit: &mut K) -> 
     let language = w
         .language
         .as_deref()
-        .map(|l| Lang::from_alpha_2(l).map_err(|e| ctx.err("language", l, ErrorKind::Lang(e))))
+        .map(|l| {
+            Lang::from_alpha_2(l)
+                .or_else(|_| Lang::from_terminologic(l))
+                .map_err(|e| ctx.err("language", l, ErrorKind::Lang(e)))
+        })
         .transpose()?;
     let authors = w
         .author

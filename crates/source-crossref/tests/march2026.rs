@@ -7,7 +7,9 @@ use ingest::Sink;
 use merge::OwnedName;
 use merge::kind::Genre;
 use merge::relation::{Kind, Related, Update};
-use model::{Claim, Date, Doi, IsbnError, IsniError, PartialDate, RorError, Table};
+use model::{
+    Claim, Date, Doi, IsbnError, IsniError, Lang, OrcidError, PartialDate, RorError, Table,
+};
 use source_crossref::normalize::{
     DateKind, Dated, Institution, LicenseStart, Reference, Work, normalize,
 };
@@ -795,5 +797,43 @@ fn a_twelve_digit_isbn_is_a_claim() {
     assert_eq!(
         bad_isbns("isbn_twelve_digits"),
         [("978094060069", IsbnError::Shape)]
+    );
+}
+
+/// 10.33421/inmp.2023386, shard 20 line 2059: the Instituto Nacional
+/// Materno Perinatal writes `spa`, a three-letter code, where most write
+/// two letters; read as Spanish, as on 303 records of the file.
+#[test]
+fn a_three_letter_language_code_is_read() {
+    assert_eq!(
+        run("language_alpha_3").language,
+        Some(Lang::from_alpha_2("es").unwrap())
+    );
+}
+
+/// 10.31234/osf.io/5y6pz, shard 15157 line 1326: an ORCID written
+/// `http://orcid.org/…`, the same iD.
+#[test]
+fn an_http_orcid_is_the_same_id() {
+    let w = run("orcid_http");
+    let orcid = w.authors.iter().find_map(|a| a.orcid).unwrap();
+    assert_eq!(
+        orcid.valid().map(ToString::to_string).as_deref(),
+        Some("0000-0001-5255-015X")
+    );
+}
+
+/// 10.64522/v4i4.02, shard 391 line 4798: an ORCID whose check character
+/// fails: kept as written beside why, and the record normalizes.
+#[test]
+fn an_orcid_whose_check_character_fails_is_a_claim() {
+    let w = run("orcid_bad_checksum");
+    let orcid = w.authors.iter().find_map(|a| a.orcid).unwrap();
+    assert_eq!(
+        orcid,
+        Claim::Malformed {
+            raw: "https://orcid.org/0009-0006-8265-3868",
+            error: OrcidError::Checksum
+        }
     );
 }
