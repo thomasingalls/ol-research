@@ -246,9 +246,12 @@ pub struct Work<'a> {
     #[serde(borrow)]
     #[allow(missing_docs)]
     pub content_domain: Option<ContentDomain<'a>>,
+    /// Where the DOI resolves; absent on 195 records of the March 2026
+    /// file (2026-09-26) — Elsevier's, Springer's, Taylor & Francis's,
+    /// JSTOR's among them, deposited 2016 to 2022, most with full-text
+    /// `link`s still. Read, not kept.
     #[serde(borrow)]
-    #[allow(missing_docs)]
-    pub resource: Resource<'a>,
+    pub resource: Option<Resource<'a>>,
     #[serde(borrow)]
     #[allow(missing_docs)]
     pub journal_issue: Option<JournalIssue<'a>>,
@@ -629,9 +632,12 @@ pub struct LabelledUrl<'a> {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct JournalIssue<'a> {
+    /// Absent where the object holds only the issue's dates — 289 of the
+    /// records the March 2026 file's survey named or stopped at
+    /// (2026-09-26; `JoVE`'s, Tsinghua University Press's, Permanyer's), none
+    /// with an `issue` of its own either. Read, not kept.
     #[serde(borrow)]
-    #[allow(missing_docs)]
-    pub issue: Text<'a>,
+    pub issue: Option<Text<'a>>,
     #[allow(missing_docs)]
     pub published_print: Option<PartialDate>,
     #[allow(missing_docs)]

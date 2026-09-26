@@ -706,7 +706,7 @@ fn an_author_with_only_a_given_name_stops_the_run() {
 #[test]
 fn a_null_landing_link_is_read() {
     let native = native("resource_url_null");
-    assert_eq!(native.resource.primary.url, None);
+    assert_eq!(native.resource.as_ref().unwrap().primary.url, None);
     run("resource_url_null");
 }
 
@@ -715,7 +715,13 @@ fn a_null_landing_link_is_read() {
 #[test]
 fn a_null_secondary_link_is_read() {
     let native = native("resource_secondary_null");
-    let secondary = &native.resource.secondary.as_deref().unwrap()[0];
+    let secondary = &native
+        .resource
+        .as_ref()
+        .unwrap()
+        .secondary
+        .as_deref()
+        .unwrap()[0];
     assert_eq!((&secondary.url, &secondary.label), (&None, &None));
     run("resource_secondary_null");
 }
@@ -729,4 +735,22 @@ fn a_record_that_names_no_member_has_none() {
     let w = run("member_absent");
     assert_eq!((w.member, w.publisher), (None, None));
     assert_eq!(w.owner.to_string(), "10.65765");
+}
+
+/// 10.46318/thrips.1.1999.6-9, shard 13258 line 4783: a `journal-issue`
+/// holding only its date, no number, as on 6,255 records of the file.
+#[test]
+fn a_journal_issue_may_hold_only_its_date() {
+    let native = native("journal_issue_dates_only");
+    let issue = native.journal_issue.as_ref().unwrap();
+    assert!(issue.issue.is_none() && issue.published_online.is_some());
+    run("journal_issue_dates_only");
+}
+
+/// 10.2307/3430260, shard 31462 line 3323: a JSTOR article with no
+/// `resource` at all, as 195 records of the file have.
+#[test]
+fn a_record_may_have_no_resource() {
+    assert!(native("resource_absent").resource.is_none());
+    run("resource_absent");
 }

@@ -2014,6 +2014,13 @@ cross-IDs and a second edge namespace early.
   the record does not say them. The owner is still known, from `prefix`.
   The member is not looked up from the prefix: that would be another
   source's word, for a lookup table of its own if it is ever wanted.
+- 2026-09-26, still model 10: a journal issue with no number (6,255
+  records: `journal-issue` holding only the issue's dates, JoVE's,
+  Tsinghua's, Permanyer's), and a record with no `resource` at all (195:
+  Elsevier's, Springer's, JSTOR's, deposited 2016 to 2022, most with
+  full-text links still). Neither is kept by the normalizer; both are
+  read as absent. Of the 33,476 records the first dump holds, 4 now
+  fail: two ISBNs, one language, one author with only a given name.
 
 ## 11. Dependencies
 
