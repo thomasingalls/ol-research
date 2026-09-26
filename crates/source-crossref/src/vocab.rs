@@ -376,6 +376,13 @@ pub enum UpdateWord {
     /// Crossref's test prefix, `10.5555`.
     #[serde(rename = "interesting_update")]
     InterestingUpdate,
+    /// Retraction Watch's, not a publisher's: on one Spandidos notice and
+    /// the article it updates (10.3892/etm.2024.12720, 10.3892/etm.2018.6349),
+    /// `68818` as both type and label beside `record-id: 69356` — an update
+    /// whose kind the record does not say (the survey of the March 2026
+    /// file, 2026-09-26).
+    #[serde(rename = "68818")]
+    RetractionWatch68818,
 }
 
 /// What an [`UpdateWord`] says.
@@ -383,10 +390,11 @@ pub enum UpdateWord {
 pub enum Meaning {
     /// An update, of this type.
     Update(UpdateType),
-    /// No update at all — a section heading, a print date, the publisher
-    /// not knowing: set aside and counted, not kept (the user, 2026-09-26:
-    /// "drop and count").
-    NotAnUpdate,
+    /// Nothing the model can keep as an update — no update at all (a
+    /// section heading, a print date, the publisher not knowing) or one
+    /// whose kind the record does not say: set aside and counted, not
+    /// kept (the user, 2026-09-26: "drop and count").
+    SetAside,
     /// A test deposit's: only on a record the checked-in exclusion list
     /// keeps out ([`crate::exclusions`]).
     TestDeposit,
@@ -394,7 +402,7 @@ pub enum Meaning {
 
 impl UpdateWord {
     /// Every word, for the tests that keep the table whole.
-    pub const ALL: [Self; 33] = [
+    pub const ALL: [Self; 34] = [
         Self::Addendum,
         Self::Clarification,
         Self::Correction,
@@ -428,6 +436,7 @@ impl UpdateWord {
         Self::SampleUpdate,
         Self::ThisIsSomeUpdate23,
         Self::InterestingUpdate,
+        Self::RetractionWatch68818,
     ];
 
     /// What the word means. The twelve Crossmark words are themselves;
@@ -463,7 +472,8 @@ impl UpdateWord {
             | Self::Article
             | Self::TgReport
             | Self::BookReview
-            | Self::PointCounterpoint => return Meaning::NotAnUpdate,
+            | Self::PointCounterpoint
+            | Self::RetractionWatch68818 => return Meaning::SetAside,
             Self::SampleUpdate | Self::ThisIsSomeUpdate23 | Self::InterestingUpdate => {
                 return Meaning::TestDeposit;
             }
@@ -528,6 +538,7 @@ impl UpdateWord {
             Self::SampleUpdate => "sample_update",
             Self::ThisIsSomeUpdate23 => "this_is_some_update_23",
             Self::InterestingUpdate => "interesting_update",
+            Self::RetractionWatch68818 => "68818",
         }
     }
 
@@ -538,6 +549,17 @@ impl UpdateWord {
     pub fn from_word(text: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|w| w.as_str() == text)
     }
+}
+
+/// `status.type` on posted content: what became of it (Crossref's posted
+/// content schema). eLife writes `withdrawn` on a retracted reviewed
+/// preprint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+#[allow(missing_docs)]
+pub enum StatusType {
+    Withdrawn,
+    Removed,
 }
 
 /// `subtype` of posted content.
@@ -667,8 +689,13 @@ mod tests {
             read(UpdateWord::CorrectedArticle),
             Some(UpdateType::Correction)
         );
-        for w in [UpdateWord::Article, UpdateWord::Print, UpdateWord::Unknown] {
-            assert_eq!(w.meaning(), Meaning::NotAnUpdate, "{}", w.as_str());
+        for w in [
+            UpdateWord::Article,
+            UpdateWord::Print,
+            UpdateWord::Unknown,
+            UpdateWord::RetractionWatch68818,
+        ] {
+            assert_eq!(w.meaning(), Meaning::SetAside, "{}", w.as_str());
         }
         assert_eq!(UpdateWord::SampleUpdate.meaning(), Meaning::TestDeposit);
         assert_eq!(

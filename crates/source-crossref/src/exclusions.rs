@@ -10,9 +10,12 @@
 //! prefix, `10.5555`, each carrying an update word no publisher meant
 //! (`sample_update`, `this_is_some_update_23`, `interesting_update`) —
 //! the three among the records the March 2026 file's survey stopped at
-//! (2026-09-26, homelab `ol-rht-dump-crossref-v1`; the user's call). Other
-//! test deposits the survey has not reached will stop it, as a test word
-//! on a record not listed here, and join the list from the same evidence.
+//! (2026-09-26, homelab `ol-rht-dump-crossref-v1`; the user's call), and
+//! the three more the survey of the whole file then stopped at as a test
+//! word on a record not listed (`ol-rht-survey-crossref-v2`), their lines
+//! found by DOI (`ol-rht-dump-crossref-v2`), and one more behind them. A
+//! test deposit not listed stops a run the same way, and joins the list
+//! from the same evidence.
 
 use model::{DateTime, Doi};
 
@@ -24,7 +27,19 @@ struct Excluded {
 
 const TEST: &str = "a test deposit";
 
-const EXCLUDED: [Excluded; 3] = [
+const EXCLUDED: [Excluded; 7] = [
+    // Shard 25809, line 4647: updated by b and c, `sample_update`.
+    Excluded {
+        doi: "10.3410/f1000devtestarticlea",
+        deposited: "2012-05-31T08:39:41Z",
+        reason: TEST,
+    },
+    // Shard 25810, line 4698.
+    Excluded {
+        doi: "10.3410/f1000devtestarticleb",
+        deposited: "2012-05-31T08:42:21Z",
+        reason: TEST,
+    },
     // Shard 25811, line 4698.
     Excluded {
         doi: "10.3410/f1000devtestarticlec",
@@ -41,6 +56,20 @@ const EXCLUDED: [Excluded; 3] = [
     Excluded {
         doi: "10.5555/26262626x",
         deposited: "2019-07-25T14:55:16Z",
+        reason: TEST,
+    },
+    // Shard 26154, line 4935: updated by 26262626x, `interesting_update`.
+    Excluded {
+        doi: "10.5555/12345680",
+        deposited: "2025-11-14T10:59:00Z",
+        reason: TEST,
+    },
+    // Shard 10373, line 4764: a dissertation by "Test accounts" whose
+    // affiliation carries an ISNI that fails its check character and a
+    // Wikidata property, `P5188229`, where an item goes.
+    Excluded {
+        doi: "10.5555/diswikitest",
+        deposited: "2022-01-18T19:50:55Z",
         reason: TEST,
     },
 ];

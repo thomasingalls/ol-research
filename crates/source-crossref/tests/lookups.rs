@@ -62,7 +62,10 @@ fn an_affiliation_may_carry_an_isni_beside_its_ror() {
         .collect();
     assert!(!with_isni.is_empty());
     assert_eq!(
-        with_isni[0].isni.map(|i| i.id.to_string()).as_deref(),
+        with_isni[0]
+            .isni
+            .and_then(|i| i.id.valid().map(ToString::to_string))
+            .as_deref(),
         Some("0000000404370279")
     );
     assert!(

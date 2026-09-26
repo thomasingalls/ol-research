@@ -29,7 +29,7 @@ use crate::record::{
 };
 use crate::vocab::{
     AssertedBy, ContentVersion, IdKind, Meaning, RelationAssertedBy, RelationIdKind, Sequence,
-    SerialKind, UpdateType, UpdateWord, WorkType,
+    SerialKind, StatusType, UpdateType, UpdateWord, WorkType,
 };
 
 /// A list with room for its usual length inside the record itself (plan
@@ -49,6 +49,8 @@ pub type IssnClaim<'n> = Claim<'n, Issn, IssnError>;
 /// (10.25189/2675-4916.2023.v4.n1.id679, 2026-09-26). Kept as written
 /// beside why, as an ISSN is, and never matched on.
 pub type RorClaim<'n> = Claim<'n, Ror, RorError>;
+/// An ISNI as the source wrote it, or why its check character is wrong.
+pub type IsniClaim<'n> = Claim<'n, Isni, IsniError>;
 
 /// One Crossref work, normalized: the fields with evidence behind them.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -117,6 +119,9 @@ pub struct Work<'n> {
     /// text, not a number.
     #[serde(borrow)]
     pub version: Option<&'n str>,
+    /// `status`: posted content withdrawn or removed.
+    #[serde(borrow)]
+    pub status: Option<PostedStatus<'n>>,
     #[allow(missing_docs)]
     #[serde(borrow)]
     pub publisher: Interned<'n>,
@@ -205,8 +210,11 @@ pub struct Institution<'n> {
     #[serde(borrow)]
     pub ror: Option<Asserted<RorClaim<'n>>>,
     /// Beside the ROR on 40 affiliations of 34,536 looked-up works
-    /// (2026-09-15); checksum verified.
-    pub isni: Option<Asserted<Isni>>,
+    /// (2026-09-15). A claim, as a ROR is: two records of the March 2026
+    /// file carry one whose check character fails (10.46428/lbd.1, and
+    /// 10.5555/diswikitest on Crossref's test prefix; 2026-09-26).
+    #[serde(borrow)]
+    pub isni: Option<Asserted<IsniClaim<'n>>>,
     /// Beside the ROR and ISNI on university repositories' deposits.
     pub wikidata: Option<Asserted<Qid>>,
 }
@@ -239,6 +247,31 @@ pub struct TypedIsbn {
     pub kind: SerialKind,
     #[allow(missing_docs)]
     pub isbn: Isbn,
+}
+
+/// That posted content was withdrawn or removed, when, and the reasons
+/// given, as written (the user's lean towards keeping what a record says,
+/// 2026-09-26). The merge does not read it yet.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PostedStatus<'n> {
+    /// What became of it.
+    pub kind: StatusType,
+    /// When.
+    pub updated: PartialDate,
+    /// Why.
+    #[serde(borrow)]
+    pub reasons: Few<Note<'n>, 1>,
+}
+
+/// A text with its language when the record gives one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Note<'n> {
+    #[allow(missing_docs)]
+    #[serde(borrow)]
+    pub text: &'n str,
+    /// As written: `en`, `eng`, `fr`.
+    #[serde(borrow)]
+    pub language: Option<&'n str>,
 }
 
 /// A date beside the publication dates, with what it is. Crossref gives
@@ -470,6 +503,9 @@ impl std::error::Error for Error {}
 
 struct Ctx {
     doi: Option<String>,
+    /// What the record's reading set aside, by field and value, for the
+    /// sink once the record is read ([`Sink::set_aside`]).
+    set_aside: std::cell::RefCell<Vec<(&'static str, &'static str)>>,
 }
 
 /// Where an `<institution>` sits: the field its failures name.
@@ -505,6 +541,15 @@ struct Parts<'n, 'a> {
 }
 
 impl<'n, 'a> Parts<'n, 'a> {
+    /// Nothing at all: `{}`.
+    const fn is_empty(&self) -> bool {
+        self.name.is_none()
+            && self.acronym.is_empty()
+            && self.place.is_empty()
+            && self.department.is_empty()
+            && self.id.is_empty()
+    }
+
     fn affiliation(a: &'n NativeAffiliation<'a>) -> Self {
         Self {
             name: a.name.as_ref(),
@@ -665,7 +710,9 @@ impl Ctx {
                     ErrorKind::Unmodelled("a country on a contributor's affiliation"),
                 ));
             }
-            affiliations.push(self.institution(Held::Affiliation, &Parts::affiliation(a))?);
+            if let Some(i) = self.institution(Held::Affiliation, &Parts::affiliation(a))? {
+                affiliations.push(i);
+            }
         }
         Ok(Author {
             name,
@@ -780,11 +827,21 @@ impl Ctx {
     }
 
     /// An `<institution>`: its texts as written, and each id checked for
-    /// its kind — a ROR as a claim, an ISNI and a Wikidata item strictly.
-    /// The schema requires a name or an id; a DOI, a second id of one
-    /// kind or an id Retraction Watch asserted has not been seen, and
-    /// stops the run.
-    fn institution<'n>(&self, held: Held, p: &Parts<'n, '_>) -> Result<Institution<'n>, Error> {
+    /// its kind — a ROR and an ISNI as claims, a Wikidata item strictly.
+    /// `None` for an empty one, `{}`, which says nothing and is set aside:
+    /// 5,806 records of the March 2026 file carry one, Maximum Academic
+    /// Press's above all (2026-09-26). The schema requires a name or an
+    /// id of any other; a DOI, a second id of one kind or an id Retraction
+    /// Watch asserted has not been seen, and stops the run.
+    fn institution<'n>(
+        &self,
+        held: Held,
+        p: &Parts<'n, '_>,
+    ) -> Result<Option<Institution<'n>>, Error> {
+        if p.is_empty() {
+            self.set_aside.borrow_mut().push((held.field(), "{}"));
+            return Ok(None);
+        }
         if p.name.is_none() && p.id.is_empty() {
             return Err(self.err(
                 held.field(),
@@ -810,7 +867,7 @@ impl Ctx {
                     .is_some(),
                 IdKind::Isni => isni
                     .replace(Asserted {
-                        id: Isni::from_https_url(raw).map_err(|e| fail(ErrorKind::Isni(e)))?,
+                        id: Claim::from_parse(raw, Isni::from_https_url(raw)),
                         by,
                     })
                     .is_some(),
@@ -831,7 +888,7 @@ impl Ctx {
             }
         }
         let texts = |list: &'n [Text<'_>]| list.iter().map(|t| Interned::Text(t)).collect();
-        Ok(Institution {
+        Ok(Some(Institution {
             name: p.name.map(|n| Interned::Text(n)),
             acronyms: texts(p.acronym),
             places: texts(p.place),
@@ -839,7 +896,7 @@ impl Ctx {
             ror,
             isni,
             wikidata,
-        })
+        }))
     }
 
     /// An update, read as what its word means ([`UpdateWord::meaning`]);
@@ -854,7 +911,7 @@ impl Ctx {
     ) -> Result<Option<Update<'n>>, Error> {
         let kind = match u.r#type.meaning() {
             Meaning::Update(kind) => kind,
-            Meaning::NotAnUpdate => return Ok(None),
+            Meaning::SetAside => return Ok(None),
             Meaning::TestDeposit => {
                 return Err(self.err(
                     field,
@@ -902,7 +959,10 @@ fn first<'n>(list: Option<&'n [Text<'_>]>) -> Option<&'n str> {
 /// emitter may already have received the work when a reference fails.
 #[allow(clippy::too_many_lines)] // one block per field group; the field set is the point
 pub fn normalize<'n, K: Sink<'n, Crossref>>(w: &'n Native<'_>, emit: &mut K) -> Result<(), Error> {
-    let mut ctx = Ctx { doi: None };
+    let mut ctx = Ctx {
+        doi: None,
+        set_aside: std::cell::RefCell::new(Vec::new()),
+    };
     let doi = Doi::parse(&w.doi).map_err(|e| ctx.err("DOI", &w.doi, ErrorKind::Doi(e)))?;
     ctx.doi = Some(doi.as_str().to_owned());
     if w.url.strip_prefix(Doi::URL_PREFIX) != Some(&*w.doi) {
@@ -951,6 +1011,30 @@ pub fn normalize<'n, K: Sink<'n, Crossref>>(w: &'n Native<'_>, emit: &mut K) -> 
     }
     let published_print = ctx.partial("published-print", w.published_print.as_ref())?;
     let published_online = ctx.partial("published-online", w.published_online.as_ref())?;
+    let status = match &w.status {
+        None => None,
+        Some(st) => Some(PostedStatus {
+            kind: st.r#type,
+            updated: ctx
+                .partial("status.updated", Some(&st.updated))?
+                .ok_or_else(|| {
+                    ctx.err(
+                        "status.updated",
+                        "",
+                        ErrorKind::Inconsistent("a status with no date"),
+                    )
+                })?,
+            reasons: st
+                .status_description
+                .iter()
+                .flatten()
+                .map(|d| Note {
+                    text: &d.description,
+                    language: d.language.as_deref(),
+                })
+                .collect(),
+        }),
+    };
     let mut dates = Few::new();
     for (kind, p) in [
         (DateKind::Posted, &w.posted),
@@ -1022,7 +1106,10 @@ pub fn normalize<'n, K: Sink<'n, Crossref>>(w: &'n Native<'_>, emit: &mut K) -> 
         .institution
         .iter()
         .flatten()
-        .map(|i| ctx.institution(Held::Institution, &Parts::institution(i)))
+        .filter_map(|i| {
+            ctx.institution(Held::Institution, &Parts::institution(i))
+                .transpose()
+        })
         .collect::<Result<_, _>>()?;
     let licenses = w
         .license
@@ -1057,7 +1144,7 @@ pub fn normalize<'n, K: Sink<'n, Crossref>>(w: &'n Native<'_>, emit: &mut K) -> 
         if let Some(word) = UpdateWord::from_word(kind) {
             match word.meaning() {
                 Meaning::Update(_) => {}
-                Meaning::NotAnUpdate => {
+                Meaning::SetAside => {
                     for _ in targets {
                         emit.set_aside(&doi, "relation", word.as_str());
                     }
@@ -1082,6 +1169,9 @@ pub fn normalize<'n, K: Sink<'n, Crossref>>(w: &'n Native<'_>, emit: &mut K) -> 
         }));
     }
 
+    for (field, value) in ctx.set_aside.take() {
+        emit.set_aside(&doi, field, value);
+    }
     emit.work(&Work {
         owner,
         member,
@@ -1111,6 +1201,7 @@ pub fn normalize<'n, K: Sink<'n, Crossref>>(w: &'n Native<'_>, emit: &mut K) -> 
         article_number: w.article_number.as_deref(),
         part_number: w.part_number.as_deref(),
         version: w.version.as_ref().map(|v| &*v.version),
+        status,
         publisher: Interned::Text(&w.publisher),
         language,
         authors,

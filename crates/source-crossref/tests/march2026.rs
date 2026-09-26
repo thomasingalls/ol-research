@@ -7,14 +7,14 @@ use ingest::Sink;
 use merge::OwnedName;
 use merge::kind::Genre;
 use merge::relation::{Kind, Related, Update};
-use model::{Claim, Date, Doi, PartialDate, RorError, Table};
+use model::{Claim, Date, Doi, IsniError, PartialDate, RorError, Table};
 use source_crossref::normalize::{
     DateKind, Dated, Institution, LicenseStart, Reference, Work, normalize,
 };
 use source_crossref::view;
 use source_crossref::vocab::{
-    AssertedBy, FundingType, ReferenceType, RelationIdKind, ReviewRecommendation, UpdateType,
-    UpdateWord,
+    AssertedBy, FundingType, ReferenceType, RelationIdKind, ReviewRecommendation, StatusType,
+    UpdateType, UpdateWord,
 };
 
 fn fixture(name: &str) -> String {
@@ -106,8 +106,9 @@ fn an_institution_carries_ror_isni_and_wikidata_with_who_asserted_them() {
             (Some("036jqmy94".to_owned()), AssertedBy::Publisher)
         );
         assert_eq!(
-            i.isni.map(|a| (a.id.to_string(), a.by)),
-            Some(("0000000419368294".to_owned(), AssertedBy::Publisher))
+            i.isni
+                .map(|a| (a.id.valid().map(ToString::to_string), a.by)),
+            Some((Some("0000000419368294".to_owned()), AssertedBy::Publisher))
         );
         assert_eq!(
             i.wikidata.map(|a| (a.id.to_string(), a.by)),
@@ -579,4 +580,94 @@ fn a_funder_can_be_named_by_its_ror_alone() {
         .funder;
     assert!(funder.name.is_none() && funder.id.is_some());
     run("grant_funder_by_ror");
+}
+
+/// 10.48130/emst-0026-0001, shard 11 line 3754: Maximum Academic Press
+/// writes an empty affiliation, `{}`, as 5,806 records of the file do
+/// (ol-rht-survey-crossref-v2): it says nothing, and is set aside.
+#[test]
+fn an_empty_affiliation_is_set_aside() {
+    let out = collect("affiliation_empty");
+    assert!(out.set_aside.contains(&("affiliation", "{}")));
+    let w = &out.works[0];
+    assert!(
+        w.authors
+            .iter()
+            .flat_map(|a| &a.affiliations)
+            .all(|a| a.name.is_some())
+    );
+}
+
+/// 10.3892/etm.2024.12720, shard 4300 line 3951: Retraction Watch's
+/// update typed `68818`, beside the publisher's own `retraction` to the
+/// same article: the one set aside, the other kept.
+#[test]
+fn retraction_watch_68818_is_set_aside_beside_the_retraction() {
+    let out = collect("update_retraction_watch_68818");
+    assert_eq!(out.set_aside, [("update-to", "68818")]);
+    let w = &out.works[0];
+    assert_eq!(
+        w.updates_to.iter().map(|u| u.kind).collect::<Vec<_>>(),
+        [UpdateType::Retraction]
+    );
+    assert_eq!(view::genre(w), Some(Genre::Retraction));
+}
+
+/// 10.32013/n338-2jwu, shard 3113 line 3656: posted content removed for
+/// a copyright violation, said in English and in French.
+#[test]
+fn removed_posted_content_keeps_its_status_and_reasons() {
+    let w = run("status_removed");
+    let st = w.status.as_ref().unwrap();
+    assert_eq!(st.kind, StatusType::Removed);
+    assert_eq!(st.updated, PartialDate::Day(day("2024-05-05")));
+    let reasons: Vec<_> = st.reasons.iter().map(|r| (r.text, r.language)).collect();
+    assert_eq!(
+        reasons,
+        [
+            ("copyright violation", Some("en")),
+            ("copyright violation", Some("fr"))
+        ]
+    );
+}
+
+/// 10.32013/76bl-jdvj, shard 3116 line 3617: posted content withdrawn.
+#[test]
+fn withdrawn_posted_content_keeps_its_status() {
+    let w = run("status_withdrawn");
+    assert_eq!(w.status.as_ref().unwrap().kind, StatusType::Withdrawn);
+    assert_eq!(w.version, Some("1"));
+}
+
+/// 10.35948/dilef/bibliopala/db/db0, shard 3217 line 3328: a version label
+/// with a note on it, "Prima edizione", read and not kept.
+#[test]
+fn a_version_description_is_read() {
+    let native = native("version_description");
+    let v = native.version.as_ref().unwrap();
+    assert_eq!(
+        &*v.version_description.as_deref().unwrap()[0].description,
+        "Prima edizione"
+    );
+    assert_eq!(run("version_description").version, Some("1"));
+}
+
+/// 10.46428/lbd.1, shard 5349 line 4138: an affiliation ISNI whose check
+/// character fails, `0000000019369676`: a claim, as a ROR is.
+#[test]
+fn an_isni_whose_check_character_fails_is_a_claim() {
+    let w = run("isni_bad_checksum");
+    let bad: Vec<_> = w
+        .authors
+        .iter()
+        .flat_map(|a| &a.affiliations)
+        .filter_map(|a| a.isni)
+        .filter(|i| i.id.is_malformed())
+        .collect();
+    assert!(!bad.is_empty());
+    assert!(bad.iter().all(|i| i.id
+        == Claim::Malformed {
+            raw: "https://www.isni.org/0000000019369676",
+            error: IsniError::Checksum
+        }));
 }

@@ -122,7 +122,8 @@ wart is a claim the POC run confirms or refutes, not a commitment.
   a name or an id, up to six each of acronyms, places and departments, and
   ids of three kinds, ROR, ISNI and Wikidata (`institution_id@type`, the
   same from 5.3.1 to 5.5.0). All of it is kept, each id with who asserted
-  it; a ROR is a claim, because one record's fails its checksum.
+  it; a ROR and an ISNI are claims, because a few records' fail their
+  checks. An empty one, `{}`, says nothing and is set aside.
 - Types (model 10). A record may have no `type` — 2,257 among those the
   survey stopped at, EMBL-EBI's dataset pages first — and its kind is then
   unknown: no form, no genre but a notice's. Crossmark's update type was
@@ -158,7 +159,10 @@ wart is a claim the POC run confirms or refutes, not a commitment.
   and not kept (its own pass, for citation matching). Crossmark policy
   pages — about 260 among the records the survey stopped at, typed or
   not — are not works and are normalized as if they were, until books and
-  their kin are taken on after articles. Grants are read and not kept;
+  their kin are taken on after articles. Posted content's `status`
+  (withdrawn, removed) is kept and the merge does not read it yet. Records
+  on Crossref's test prefix, `10.5555`, are normalized as works unless
+  one stops the run and joins the exclusion list. Grants are read and not kept;
   a grant's `issued` is the earliest of its award starts, and is kept as
   its publication date meanwhile. A conference's dates and a journal
   issue's are read and not kept. Crossref's live API writes `subtype:
@@ -1954,6 +1958,28 @@ cross-IDs and a second edge namespace early.
   a family name nor a name, 1,951 records with no `member`, 1,117 `null`
   strings (a resource's URL, mostly), 270 journal issues with no number,
   150 records with no `resource`, and one language.
+- 2026-09-26, the survey of the whole March 2026 file on model 10
+  (homelab `ol-rht-survey-crossref-v2`, reading past a line that does not
+  parse): 179,536,204 records from all 35,908 shards, none abandoned,
+  about 12.5 minutes a share (M). 355,035 fail, 0.2 %, in 33 signatures:
+  the next pass's — 303,155 authors with neither a family name nor a
+  name, 22,268 `null` strings, 15,535 records with no `member`, 6,255
+  journal issues with no number, 1,290 ISBNs, about 200 records whose own
+  DOI is not ASCII, 303 three-letter language codes, 195 with no
+  `resource`, 9 ORCIDs — and a few that model 10 itself caused or had not
+  seen, settled the same day, still as version 10 since nothing had been
+  normalized under it: 5,806 records carried an empty affiliation, `{}`
+  (Maximum Academic Press above all), which the new "a name or an id"
+  failed, and which is now set aside and counted; two ISNIs fail their
+  check character, and an ISNI is now a claim; posted content's `status`
+  (5 records: withdrawn or removed, when, why — eLife's retracted reviewed
+  preprints) is kept, and a version label's notes are read, not kept;
+  Retraction Watch's update typed `68818` (both sides of one Spandidos
+  retraction, beside the publisher's own `retraction`) is set aside; and
+  four more test deposits join the exclusion list, their March stamps
+  read off their lines (homelab `ol-rht-dump-crossref-v2`, which found
+  every DOI the survey named but those written with non-ASCII
+  characters: the file escapes them, `\u2013`, and the search did not).
 
 ## 11. Dependencies
 

@@ -14,7 +14,7 @@ use crate::date::{IndexedStamp, PartialDate, Stamp};
 use crate::vocab::{
     AssertedBy, ContentVersion, FundingType, IdKind, IntendedApplication, ReferenceType,
     RelationAssertedBy, RelationIdKind, ReviewRecommendation, ReviewStage, ReviewType, RoleName,
-    Sequence, SerialKind, Source, Subtype, UpdateWord, Vocabulary, WorkType,
+    Sequence, SerialKind, Source, StatusType, Subtype, UpdateWord, Vocabulary, WorkType,
 };
 
 /// A list with room for its usual length inside the record itself (plan
@@ -91,6 +91,11 @@ pub struct Work<'a> {
     /// stopped at it (2026-09-26).
     #[serde(borrow)]
     pub version: Option<VersionInfo<'a>>,
+    /// That posted content was withdrawn or removed, when, and why:
+    /// documented by Crossref, and on 5 records of the March 2026 file
+    /// (2026-09-26), eLife's retracted reviewed preprints among them.
+    #[serde(borrow)]
+    pub status: Option<PostedStatus<'a>>,
     /// Which part of a multi-volume set: `set_metadata/part_number`, 1–15
     /// characters as written (`1`, `06`, `33-6`); RSC's books above all.
     /// 100 shards stopped at it.
@@ -816,9 +821,9 @@ pub struct Investigator<'a> {
     pub role_end: Option<PartialDate>,
 }
 
-/// `version` on a work: its label, and the label's language.
+/// `version` on a work: its label, the label's language, and notes on it.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct VersionInfo<'a> {
     #[serde(borrow)]
     #[allow(missing_docs)]
@@ -826,6 +831,25 @@ pub struct VersionInfo<'a> {
     /// `en` on 6 of 226; read, not kept (the user, 2026-09-26).
     #[serde(borrow)]
     pub language: Option<Text<'a>>,
+    /// Notes on the version, each with its language when given ("this is
+    /// a version", "Prima edizione"): on 4 records of the March 2026
+    /// file. Read, not kept, as the label's language is not.
+    #[serde(borrow)]
+    pub version_description: Option<Few<Described<'a>, 1>>,
+}
+
+/// `status` on posted content.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct PostedStatus<'a> {
+    /// What became of it.
+    #[serde(rename = "type")]
+    pub r#type: StatusType,
+    /// When.
+    pub updated: PartialDate,
+    /// Why, each reason with its language when given (`null` on eLife's).
+    #[serde(borrow)]
+    pub status_description: Option<Few<Described<'a>, 1>>,
 }
 
 /// `project-title[]`.

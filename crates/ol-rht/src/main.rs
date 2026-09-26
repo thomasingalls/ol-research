@@ -5079,6 +5079,7 @@ struct InstitutionCounts {
     ror: u64,
     ror_malformed: u64,
     isni: u64,
+    isni_malformed: u64,
     wikidata: u64,
     acronym: u64,
     nameless: u64,
@@ -5095,7 +5096,14 @@ impl InstitutionCounts {
                 sample(samples, raw, &error);
             }
         }
-        self.isni += u64::from(i.isni.is_some());
+        match i.isni.map(|a| a.id) {
+            None => {}
+            Some(Claim::Valid(_)) => self.isni += 1,
+            Some(Claim::Malformed { raw, error }) => {
+                self.isni_malformed += 1;
+                sample(samples, raw, &error);
+            }
+        }
         self.wikidata += u64::from(i.wikidata.is_some());
         self.acronym += u64::from(!i.acronyms.is_empty());
         self.nameless += u64::from(i.name.is_none());
@@ -5108,6 +5116,7 @@ impl Absorb for InstitutionCounts {
         self.ror += o.ror;
         self.ror_malformed += o.ror_malformed;
         self.isni += o.isni;
+        self.isni_malformed += o.isni_malformed;
         self.wikidata += o.wikidata;
         self.acronym += o.acronym;
         self.nameless += o.nameless;
@@ -5118,11 +5127,12 @@ impl Display for InstitutionCounts {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "{} (ror {} malformed {}, isni {}, wikidata {}, with acronym {}, nameless {})",
+            "{} (ror {} malformed {}, isni {} malformed {}, wikidata {}, with acronym {}, nameless {})",
             self.all,
             self.ror,
             self.ror_malformed,
             self.isni,
+            self.isni_malformed,
             self.wikidata,
             self.acronym,
             self.nameless
