@@ -5,6 +5,7 @@
 use std::io::{self, Write};
 
 use crate::measure::{self, Evaluated, Measure};
+use crate::suite::{Suite, condensed};
 use crate::trec::{Key, Run};
 
 /// What the acceptance rule says of a new run against a base.
@@ -161,6 +162,81 @@ pub fn compare(key: &Key, base: &Run, new: &Run, out: &mut impl Write) -> io::Re
         )?;
         Verdict::Passes
     };
+    Ok(verdict)
+}
+
+/// Which of a suite's queries a report reads: the working half, or the
+/// whole of a suite too small to halve (evaluation plan §7).
+fn part(suite: &Suite, out: &mut impl Write) -> io::Result<()> {
+    let scored = suite.scored().len();
+    if suite.halves.is_empty() {
+        writeln!(
+            out,
+            "the whole suite, {scored} queries with a relevant work: too few to halve"
+        )
+    } else {
+        let working = suite
+            .scored()
+            .iter()
+            .filter(|q| suite.halves.get(*q) == Some(&crate::suite::Half::Working))
+            .count();
+        writeln!(
+            out,
+            "the working half: {working} of {scored} queries with a relevant work; the test half is not read"
+        )
+    }
+}
+
+/// Writes a suite's report of one run: the part of the suite read, then
+/// every result as returned (open), then with the results nobody judged
+/// taken out (condensed; evaluation plan §3.2).
+///
+/// # Errors
+///
+/// Writing.
+pub fn score_suite(suite: &Suite, run: &Run, out: &mut impl Write) -> io::Result<()> {
+    let key = suite.working_key();
+    part(suite, out)?;
+    writeln!(out)?;
+    writeln!(out, "open: every result as the search returned it")?;
+    score(&key, run, out)?;
+    writeln!(out)?;
+    writeln!(out, "condensed: the results nobody judged taken out")?;
+    score(&key, &condensed(run, &key), out)
+}
+
+/// Writes a suite's comparison of two runs, open and condensed, and
+/// returns the verdict over both: refused if either refuses.
+///
+/// # Errors
+///
+/// Writing.
+pub fn compare_suite(
+    suite: &Suite,
+    base: &Run,
+    new: &Run,
+    out: &mut impl Write,
+) -> io::Result<Verdict> {
+    let key = suite.working_key();
+    part(suite, out)?;
+    writeln!(out)?;
+    writeln!(out, "open: every result as the search returned it")?;
+    let open = compare(&key, base, new, out)?;
+    writeln!(out)?;
+    writeln!(out, "condensed: the results nobody judged taken out")?;
+    let tight = compare(&key, &condensed(base, &key), &condensed(new, &key), out)?;
+    let verdict = match (open, tight) {
+        (Verdict::Refused, _) | (_, Verdict::Refused) => Verdict::Refused,
+        (Verdict::TooFewQueries, _) | (_, Verdict::TooFewQueries) => Verdict::TooFewQueries,
+        (Verdict::Passes, Verdict::Passes) => Verdict::Passes,
+    };
+    let said = match verdict {
+        Verdict::Passes => "passes",
+        Verdict::Refused => "refused",
+        Verdict::TooFewQueries => "none",
+    };
+    writeln!(out)?;
+    writeln!(out, "verdict over both: {said}")?;
     Ok(verdict)
 }
 

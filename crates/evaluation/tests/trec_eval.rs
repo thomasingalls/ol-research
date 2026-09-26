@@ -23,6 +23,7 @@ use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use evaluation::measure::{self, DEPTHS, Measure};
+use evaluation::suite::condensed;
 use evaluation::trec::{Key, Run, Scored};
 use proptest::prelude::*;
 use proptest::test_runner::{TestCaseError, TestRunner};
@@ -167,6 +168,17 @@ fn assert_compared(compared: &AtomicUsize) {
 /// Every measure `trec_eval` has, query by query.
 #[test]
 fn the_measures_are_trec_evals() {
+    every_measure(false);
+}
+
+/// The same over the condensed list — the results nobody judged taken out
+/// (evaluation plan §3.2) — against `trec_eval -J`.
+#[test]
+fn the_condensed_measures_are_trec_evals_judged_only() {
+    every_measure(true);
+}
+
+fn every_measure(judged_only: bool) {
     let Some(bin) = binary() else {
         eprintln!("TREC_EVAL not set; skipping");
         return;
@@ -178,9 +190,17 @@ fn the_measures_are_trec_evals() {
         .run(&(arb_key(), arb_run(), 1_i64..=3), |(key, run, level)| {
             let level_text = level.to_string();
             let mut args: Vec<&str> = vec!["-c", "-q", "-l", &level_text];
+            if judged_only {
+                args.push("-J");
+            }
             args.extend(named_args.iter().map(String::as_str));
             let theirs = scored_by_trec_eval(&bin, &key, &run, &args);
-            let ours = measure::evaluate(&key, &run, level, &measures);
+            let scored = if judged_only {
+                condensed(&run, &key)
+            } else {
+                run.clone()
+            };
+            let ours = measure::evaluate(&key, &scored, level, &measures);
             for (m, measure) in measures.iter().enumerate() {
                 let name = measure.trec_eval().unwrap();
                 for (q, query) in ours.queries.iter().enumerate() {

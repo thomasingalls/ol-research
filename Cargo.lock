@@ -455,7 +455,11 @@ dependencies = [
 name = "evaluation"
 version = "0.1.0"
 dependencies = [
+ "flate2",
  "proptest",
+ "quick-xml",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

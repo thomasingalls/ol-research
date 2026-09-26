@@ -9,4 +9,6 @@
 pub mod interval;
 pub mod measure;
 pub mod report;
+pub mod sets;
+pub mod suite;
 pub mod trec;

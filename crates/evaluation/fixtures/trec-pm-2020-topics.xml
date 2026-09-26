@@ -1,0 +1,12 @@
+<topics task="2020 TREC Precision Medicine">
+  <topic number="1">
+    <disease>colorectal cancer</disease>
+    <gene>ABL1</gene>
+    <treatment>Regorafenib</treatment>
+  </topic>
+  <topic number="2">
+    <disease>non-small cell carcinoma</disease>
+    <gene>ALK</gene>
+    <treatment>Alectinib</treatment>
+  </topic>
+</topics>
