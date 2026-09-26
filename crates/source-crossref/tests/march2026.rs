@@ -509,3 +509,74 @@ fn a_license_that_breaks_crossrefs_rules_stops_the_run() {
     );
     assert!(e.contains("a delay with no publication date"), "{e}");
 }
+
+/// 10.23921/amp.2025v8i1.00076, shard 1483 line 3398: a version label,
+/// `1`, with its language, `en`; the label is kept as written, the
+/// language read and not kept.
+#[test]
+fn a_version_label_is_kept_as_written() {
+    let native = native("version_label");
+    let v = native.version.as_ref().unwrap();
+    assert_eq!((&*v.version, v.language.as_deref()), ("1", Some("en")));
+    assert_eq!(run("version_label").version, Some("1"));
+}
+
+/// 10.1039/9781782629368, shard 19845 line 707: an RSC edited book, part
+/// 2 of its set.
+#[test]
+fn a_part_number_is_kept_as_written() {
+    assert_eq!(run("part_number").part_number, Some("2"));
+}
+
+/// 10.54499/ceecinst/00016/2021/cp2828/ct0001, shard 5188 line 4503: an
+/// FCT grant whose funder's share has no percentage, and whose lead
+/// investigator gives another name. Read, not kept.
+#[test]
+fn a_funders_share_and_an_investigators_other_names_are_read() {
+    let native = native("grant_funding_share");
+    let project = &native.project.as_deref().unwrap()[0];
+    let share = project.funding.as_deref().unwrap()[0]
+        .award_amount
+        .as_ref()
+        .unwrap();
+    assert_eq!((&*share.currency, share.percentage), ("EUR", None));
+    let lead = &project.lead_investigator.as_deref().unwrap()[0];
+    assert_eq!(lead.alternate_name.as_deref().unwrap().len(), 1);
+    run("grant_funding_share");
+}
+
+/// 10.46936/10.25585/60000531, shard 11187 line 4513: a DOE grant with a
+/// co-lead investigator.
+#[test]
+fn a_grant_can_have_a_co_lead() {
+    let native = native("grant_co_lead");
+    let project = &native.project.as_deref().unwrap()[0];
+    assert_eq!(project.co_lead_investigator.as_deref().unwrap().len(), 1);
+    run("grant_co_lead");
+}
+
+/// 10.55247/apda.1360724.pc.gr.198309, shard 4687 line 4600: a project
+/// amount of 125,000 whose currency is `null`, not guessed.
+#[test]
+fn a_project_amount_can_have_no_currency() {
+    let native = native("grant_currency_null");
+    let amount = native.project.as_deref().unwrap()[0]
+        .award_amount
+        .as_ref()
+        .unwrap();
+    assert_eq!(amount.currency, None);
+    run("grant_currency_null");
+}
+
+/// 10.69777/362884, shard 2702 line 4841: a funder named by its ROR alone.
+#[test]
+fn a_funder_can_be_named_by_its_ror_alone() {
+    let native = native("grant_funder_by_ror");
+    let funder = &native.project.as_deref().unwrap()[0]
+        .funding
+        .as_deref()
+        .unwrap()[0]
+        .funder;
+    assert!(funder.name.is_none() && funder.id.is_some());
+    run("grant_funder_by_ror");
+}

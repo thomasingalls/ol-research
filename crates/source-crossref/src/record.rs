@@ -85,6 +85,17 @@ pub struct Work<'a> {
     /// it (2026-09-26), the Protein Data Bank's, OECD's and APA's first;
     /// it can come before `content-created`.
     pub content_updated: Option<PartialDate>,
+    /// The work's version label: deposit schema 5.4.0's `version_info`
+    /// (March 2025), free text of up to 100 characters — `v1` on Rogue
+    /// Scholar's posts, `1` on eLife's. 193 shards of the March 2026 file
+    /// stopped at it (2026-09-26).
+    #[serde(borrow)]
+    pub version: Option<VersionInfo<'a>>,
+    /// Which part of a multi-volume set: `set_metadata/part_number`, 1–15
+    /// characters as written (`1`, `06`, `33-6`); RSC's books above all.
+    /// 100 shards stopped at it.
+    #[serde(borrow)]
+    pub part_number: Option<Text<'a>>,
     /// A grant's own start (grant schema 0.2.0, `award-start-date` on the
     /// grant as a whole), beside each project's; 991 shards stopped at it.
     /// A grant's `issued` is the earliest of these starts. Read, not kept:
@@ -757,6 +768,14 @@ pub struct Project<'a> {
     #[serde(borrow)]
     #[allow(missing_docs)]
     pub lead_investigator: Option<Few<Investigator<'a>, 1>>,
+    /// The schema's `co-lead_investigator` role; 13 shards stopped at it.
+    #[serde(borrow)]
+    pub co_lead_investigator: Option<Few<Investigator<'a>, 1>>,
+    /// The schema's `award-dates` planned end; seen on the live API
+    /// (2026-09-26), not yet in the March 2026 file's dumped records.
+    pub award_planned_end: Option<PartialDate>,
+    /// Its planned start: the same element, not seen yet.
+    pub award_planned_start: Option<PartialDate>,
 }
 
 /// A grant investigator: a person without the `sequence` and `role` that
@@ -785,12 +804,28 @@ pub struct Investigator<'a> {
     #[serde(borrow)]
     #[allow(missing_docs)]
     pub affiliation: Option<Few<Affiliation<'a>, 2>>,
+    /// Other names the person goes by: a list, where Crossref's API docs
+    /// say a string; FCT's (Portugal) above all.
+    #[serde(borrow)]
+    pub alternate_name: Option<Few<Text<'a>, 1>>,
     /// When the person's part in the project began (grant schema 0.2.0,
     /// an investigator's `@start-date`); on 9 of the grants the March
     /// 2026 file's survey stopped at, behind `award-start`.
     pub role_start: Option<PartialDate>,
     /// When it ended.
     pub role_end: Option<PartialDate>,
+}
+
+/// `version` on a work: its label, and the label's language.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VersionInfo<'a> {
+    #[serde(borrow)]
+    #[allow(missing_docs)]
+    pub version: Text<'a>,
+    /// `en` on 6 of 226; read, not kept (the user, 2026-09-26).
+    #[serde(borrow)]
+    pub language: Option<Text<'a>>,
 }
 
 /// `project-title[]`.
@@ -817,20 +852,36 @@ pub struct Described<'a> {
     pub language: Option<Text<'a>>,
 }
 
-/// `award-amount`.
+/// `award-amount` on a project.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AwardAmount<'a> {
+    /// As Crossref writes it, a JSON double (`1.0E+7`, `1481283.8`).
+    pub amount: f64,
+    /// `null` beside a real amount on 89 of the 1,023 project amounts
+    /// among the grants the March 2026 file's survey stopped at
+    /// (2026-09-26): the amount with no currency said.
+    #[serde(borrow)]
+    pub currency: Option<Text<'a>>,
+}
+
+/// `award-amount` on a funding entry: one funder's share of the project,
+/// its own type so that a `percentage` on a project's amount still fails.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FundingAmount<'a> {
     #[allow(missing_docs)]
     pub amount: f64,
     #[serde(borrow)]
     #[allow(missing_docs)]
     pub currency: Text<'a>,
+    /// The share, `null` on 28 of 919.
+    pub percentage: Option<u32>,
 }
 
 /// `funding[]` on a project.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct Funding<'a> {
     #[serde(borrow)]
     #[allow(missing_docs)]
@@ -841,15 +892,20 @@ pub struct Funding<'a> {
     #[serde(rename = "type")]
     #[allow(missing_docs)]
     pub r#type: Option<FundingType>,
+    /// This funder's part of the money; 35 shards stopped at it, and 912
+    /// of the dumped grants carry it behind `award-start`.
+    #[serde(borrow)]
+    pub award_amount: Option<FundingAmount<'a>>,
 }
 
 /// `funding[].funder`.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FundingFunder<'a> {
+    /// Absent on 5 of 1,209, where the funder is named by its ROR alone
+    /// (grant schema 0.2.0 allows either).
     #[serde(borrow)]
-    #[allow(missing_docs)]
-    pub name: Text<'a>,
+    pub name: Option<Text<'a>>,
     #[serde(borrow)]
     #[allow(missing_docs)]
     pub id: Option<Few<Identifier<'a>, 1>>,

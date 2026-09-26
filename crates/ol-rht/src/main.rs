@@ -4894,6 +4894,8 @@ struct CrossrefStats {
     license_starts: [u64; 3],
     /// The dates beside the publication dates, by what each is.
     dates: BTreeMap<&'static str, u64>,
+    /// Works with a version label, and with a part number.
+    version_part: [u64; 2],
     malformed_samples: Vec<String>,
 }
 
@@ -4967,6 +4969,8 @@ impl<'n> Sink<'n, Crossref> for CrossrefStats {
         for d in &w.dates {
             *self.dates.entry(d.kind.field()).or_default() += 1;
         }
+        self.version_part[0] += u64::from(w.version.is_some());
+        self.version_part[1] += u64::from(w.part_number.is_some());
     }
 
     fn reference(&mut self, _from: &Doi<'n>, r: &source_crossref::normalize::Reference<'n>) {
@@ -5047,6 +5051,10 @@ impl StatsReport for CrossrefStats {
             self.licenses, self.license_starts[0], self.license_starts[1], self.license_starts[2]
         );
         eprintln!("  dates {:?}", self.dates);
+        eprintln!(
+            "  version labels {}  part numbers {}",
+            self.version_part[0], self.version_part[1]
+        );
         eprintln!("references {}", self.references);
         eprintln!(
             "  doi valid {} malformed {} none {}  empty {}",
@@ -5391,7 +5399,7 @@ impl Merge for PubmedStats {
 
 impl Merge for CrossrefStats {
     fn merge(&mut self, other: Self) {
-        absorb_all!(self, other: CrossrefStats { works, deletions, types, untyped, excluded, set_aside, doi_lowercased, owner_differs, publisher, issued, title, alternate_titles, subtitle_empty, abstracts, persons, orgs, with_orcid, institutions, issns, isbns, languages, references, reference_doi, reference_empty, updates, update_words, relations, licenses, license_starts, dates, malformed_samples });
+        absorb_all!(self, other: CrossrefStats { works, deletions, types, untyped, excluded, set_aside, doi_lowercased, owner_differs, publisher, issued, title, alternate_titles, subtitle_empty, abstracts, persons, orgs, with_orcid, institutions, issns, isbns, languages, references, reference_doi, reference_empty, updates, update_words, relations, licenses, license_starts, dates, version_part, malformed_samples });
     }
 }
 

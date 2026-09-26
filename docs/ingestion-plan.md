@@ -144,6 +144,13 @@ wart is a claim the POC run confirms or refutes, not a commitment.
   publication dates — `posted`, `accepted`, `approved`,
   `published-other`, `content-created`, `content-updated` — are kept, each
   with what it is.
+- Fields new in the March 2026 file (model 10): a work's `version`
+  (deposit schema 5.4.0's `version_info`: a label, kept as written, and
+  its language, read and not kept) and `part-number` (a set's part, kept
+  as written). A grant's projects carry more than the reader knew — a
+  funder's share of the money, co-lead investigators, investigators'
+  other names and dates, planned dates, funders named by a ROR alone,
+  amounts with no currency — all read, none kept.
 - Known gaps, kept on purpose and listed so they stay known: editors,
   chairs and translators are dropped, and their affiliations with them,
   though those carry the same ids (the user, 2026-09-26: fine "so long as
@@ -154,7 +161,9 @@ wart is a claim the POC run confirms or refutes, not a commitment.
   their kin are taken on after articles. Grants are read and not kept;
   a grant's `issued` is the earliest of its award starts, and is kept as
   its publication date meanwhile. A conference's dates and a journal
-  issue's are read and not kept.
+  issue's are read and not kept. Crossref's live API writes `subtype:
+  blog` on Rogue Scholar's posts (2026-09-26), where the March 2026 file
+  has them as `other`: the next file will stop there.
 - Terms: metadata is free to reuse and not subject to copyright; abstracts
   carry some limitations.
 
@@ -1922,6 +1931,29 @@ cross-IDs and a second edge namespace early.
   grants are not. Over the dumped records (M): no date failure left;
   9,525 starts from publication, 1,289 on a day; 11,060 `content-updated`
   and 1,115 `approved` kept.
+- 2026-09-26, model version 10, fields. The file has four top-level
+  fields the reader did not know, and the dumped records hold no fifth:
+  `content-updated` (the dates entry above), `award-start` (likewise),
+  `version` (193 shards: a label, `v1` on Rogue Scholar's posts, `1` on
+  eLife's, kept as written since the schema allows 100 characters of
+  free text; its language, `en` on 6 of 226, read and not kept) and
+  `part-number` (100 shards, RSC's sets above all: `1`, `06`, `33-6`,
+  kept as written). Behind `award-start` the grants held more: a
+  funder's share of the money with its percentage (35 shards, 912
+  dumped grants), co-lead investigators (13 shards), investigators'
+  other names (a list, where the API docs say a string), planned project
+  dates (seen on the live API, not yet in the file), funders named by a
+  ROR alone, and a project amount with a `null` currency beside a real
+  amount (89). All are read, typed, so that a new shape still stops the
+  run, and none is kept: grants are the user's to decide as a pass of
+  their own. Documented fields not seen in the data — `component-number`,
+  `free-to-read`, `status` — are not modelled; the first to appear stops
+  the run with its shape. Over the dumped records (M): every one of the
+  1,197 grants reads; 226 version labels and 103 part numbers kept. What
+  the dump still stops at is the next pass's: 3,009 authors with neither
+  a family name nor a name, 1,951 records with no `member`, 1,117 `null`
+  strings (a resource's URL, mostly), 270 journal issues with no number,
+  150 records with no `resource`, and one language.
 
 ## 11. Dependencies
 

@@ -110,6 +110,13 @@ pub struct Work<'n> {
     #[allow(missing_docs)]
     #[serde(borrow)]
     pub article_number: Option<&'n str>,
+    /// `part-number`: which part of a multi-volume set, as written.
+    #[serde(borrow)]
+    pub part_number: Option<&'n str>,
+    /// `version.version`: the work's version label, as written — free
+    /// text, not a number.
+    #[serde(borrow)]
+    pub version: Option<&'n str>,
     #[allow(missing_docs)]
     #[serde(borrow)]
     pub publisher: Interned<'n>,
@@ -1102,6 +1109,8 @@ pub fn normalize<'n, K: Sink<'n, Crossref>>(w: &'n Native<'_>, emit: &mut K) -> 
         issue: w.issue.as_deref(),
         page: w.page.as_deref(),
         article_number: w.article_number.as_deref(),
+        part_number: w.part_number.as_deref(),
+        version: w.version.as_ref().map(|v| &*v.version),
         publisher: Interned::Text(&w.publisher),
         language,
         authors,

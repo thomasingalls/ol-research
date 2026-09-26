@@ -126,7 +126,8 @@
 /// checked and dropped; and the dates beside the publication dates —
 /// approved, posted, accepted, published-other, a dataset's content
 /// created and updated (9,641 shards) — are kept with what each is.
-/// Output under version 9 is rebuilt, not patched.
+/// Fields: a work's version label and its part of a multi-volume set are
+/// kept as written. Output under version 9 is rebuilt, not patched.
 pub const VERSION: u32 = 10;
 
 pub mod claim;
