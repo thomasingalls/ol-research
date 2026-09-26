@@ -3,8 +3,9 @@
 //! Three lists have an authoritative source and are complete: [`WorkType`]
 //! (`https://api.crossref.org/types`, 30 entries), [`UpdateType`] (the
 //! Crossmark update types) and [`RelationIdKind`] (the identifier types of
-//! Crossref's deposit schema). The others are exactly the values observed in
-//! the first 1,000 works, which is the point.
+//! Crossref's deposit schema). So are [`IdKind`]'s institution kinds, the
+//! schema's `institution_id@type`. The others are exactly the values
+//! observed in the first 1,000 works, which is the point.
 
 use serde::{Deserialize, Serialize};
 
@@ -75,7 +76,9 @@ pub enum RelationAssertedBy {
     Object,
 }
 
-/// `id-type` on affiliation, funder and institution identifiers.
+/// `id-type` on affiliation, funder and institution identifiers. An
+/// institution's are the deposit schema's `institution_id@type`, the same
+/// three from 5.3.1 to 5.5.0: ROR, ISNI and Wikidata. A funder's is a DOI.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
 #[allow(missing_docs)]
 pub enum IdKind {
@@ -86,6 +89,11 @@ pub enum IdKind {
     /// 40 affiliation ids of 34,536 looked-up works (2026-09-15).
     #[serde(rename = "ISNI")]
     Isni,
+    /// A Wikidata item, written in lower case where the other two are in
+    /// capitals. 1,957 shards of the March 2026 file stopped at one
+    /// (2026-09-26), mostly university repositories' dissertations.
+    #[serde(rename = "wikidata")]
+    Wikidata,
 }
 
 /// `id-type` on a relation: the identifier types of the deposit schema.

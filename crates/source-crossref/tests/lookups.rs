@@ -62,8 +62,11 @@ fn an_affiliation_may_carry_an_isni_beside_its_ror() {
         .collect();
     assert!(!with_isni.is_empty());
     assert_eq!(
-        with_isni[0].isni.map(|i| i.to_string()).as_deref(),
+        with_isni[0].isni.map(|i| i.id.to_string()).as_deref(),
         Some("0000000404370279")
     );
-    assert!(with_isni[0].ror.is_some(), "beside the ROR");
+    assert!(
+        with_isni[0].ror.is_some_and(|r| r.id.valid().is_some()),
+        "beside the ROR"
+    );
 }

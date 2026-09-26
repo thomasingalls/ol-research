@@ -299,13 +299,18 @@ pub struct Role {
     pub vocabulary: Vocabulary,
 }
 
-/// An affiliation.
+/// An affiliation: the deposit schema's `<institution>`, the element a
+/// work's own [`Institution`] is too, so it has the same parts.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Affiliation<'a> {
     /// Absent on 4 of 1,249.
     #[serde(borrow)]
     pub name: Option<Text<'a>>,
+    /// `institution_acronym`, up to six; 892 shards of the March 2026 file
+    /// stopped at one (2026-09-26).
+    #[serde(borrow)]
+    pub acronym: Option<Few<Text<'a>, 1>>,
     #[serde(borrow)]
     #[allow(missing_docs)]
     pub department: Option<Few<Text<'a>, 1>>,

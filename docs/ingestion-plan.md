@@ -117,6 +117,16 @@ wart is a claim the POC run confirms or refutes, not a commitment.
   version 9 (§10). `updated-by` appears on affected works, so retraction status needs
   no inversion pass after all — §2's earlier claim about `update-to` stands
   for the notice side only.
+- Institutions (model 10). An author's affiliation and a work's own
+  `institution[]` are one element of the deposit schema, `<institution>`:
+  a name or an id, up to six each of acronyms, places and departments, and
+  ids of three kinds, ROR, ISNI and Wikidata (`institution_id@type`, the
+  same from 5.3.1 to 5.5.0). All of it is kept, each id with who asserted
+  it; a ROR is a claim, because one record's fails its checksum.
+- Known gaps, kept on purpose and listed so they stay known: editors,
+  chairs and translators are dropped, and their affiliations with them,
+  though those carry the same ids (the user, 2026-09-26: fine "so long as
+  we know we're missing important data").
 - Terms: metadata is free to reuse and not subject to copyright; abstracts
   carry some limitations.
 
@@ -1806,6 +1816,29 @@ cross-IDs and a second edge namespace early.
   the read. Every run that is not a survey stops at it, as before. Over
   the dump's 33,476 records a survey now reads all of them and abandons
   nothing (M: 26,262 failed, 42 signatures).
+- 2026-09-26, model version 10 — what the Crossref survey found, in four
+  parts the user decided the same day, one version for all of them.
+  Institutions first. 1,957 shards stopped at a Wikidata id
+  (`id-type: wikidata`) and 892 at an acronym on an author's affiliation;
+  the parser knew Wikidata nowhere and an acronym only on a work's own
+  institution, though both are one schema element. An affiliation and a
+  work's `institution[]` now normalize to one `Institution`: name,
+  acronyms, places and departments as written, and a ROR, an ISNI and a
+  Wikidata item (`model::Qid`, written `Q182973`: "keep the letters,
+  they're part of the id format"), each with who asserted it. The work's
+  own institutions were parsed and dropped before, and are kept now: they
+  name a dissertation's university, and most Wikidata ids sit there. A
+  ROR is a claim, as an ISSN is — one record carries `03npvkt06`, whose
+  checksum fails (10.25189/2675-4916.2023.v4.n1.id679); an ISNI and a
+  Wikidata item are strict. The schema's "a name or an id" is enforced,
+  and so is its country on a grant investigator's affiliation only; a DOI
+  as an institution id, a second id of one kind, or one Retraction Watch
+  asserted stops the run, and none has been seen. Over the dumped
+  records (M): 9,014 affiliations and 996 works' own institutions, 553
+  and 243 with a Wikidata item, none failing, two RORs malformed (one
+  record's two copies). The user sees ids for institutions, authors and
+  funders coming one day, as works have them, and kept "a name or an id"
+  with that in mind; not this pass.
 
 ## 11. Dependencies
 

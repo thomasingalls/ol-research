@@ -107,7 +107,17 @@
 /// that was malformed under version 8 is a name now, wherever a source
 /// writes it, which changes what normalized output holds. Output under
 /// version 8 is rebuilt, not patched.
-pub const VERSION: u32 = 9;
+///
+/// Version 10 (2026-09-26): what the survey of Crossref's whole March 2026
+/// file found (ingestion plan §10). Institutions: an author's affiliation
+/// and a work's own `institution[]` — one element of the deposit schema —
+/// normalize alike, keeping a name, acronyms, places and departments as
+/// written, and a ROR (a claim: one record's fails its checksum), an ISNI
+/// and a Wikidata item ([`Qid`]), each with who asserted it; 1,957 shards
+/// stopped at a Wikidata id and 892 at an affiliation's acronym. The
+/// work's own institutions were dropped before. Output under version 9 is
+/// rebuilt, not patched.
+pub const VERSION: u32 = 10;
 
 pub mod claim;
 pub mod code;
@@ -131,7 +141,7 @@ pub use date::{
     Quarter, Season, Seasons, TimeOfDay, VolumeMonth, Year,
 };
 pub use doi::{Doi, Error as DoiError, Registrant};
-pub use id::{OpenAlexId, ParseError, PmcId, Pmid};
+pub use id::{OpenAlexId, ParseError, PmcId, Pmid, Qid};
 pub use isbn::{Error as IsbnError, Isbn};
 pub use isni::{Error as IsniError, Isni};
 pub use issn::{Error as IssnError, Issn};

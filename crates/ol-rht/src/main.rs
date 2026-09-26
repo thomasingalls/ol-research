@@ -4335,10 +4335,10 @@ impl Absorb for u64 {
     }
 }
 
-impl<const N: usize> Absorb for [u64; N] {
+impl<T: Absorb, const N: usize> Absorb for [T; N] {
     fn absorb(&mut self, other: Self) {
         for (a, b) in self.iter_mut().zip(other) {
-            *a += b;
+            a.absorb(b);
         }
     }
 }
@@ -4870,7 +4870,8 @@ struct CrossrefStats {
     persons: u64,
     orgs: u64,
     with_orcid: u64,
-    affiliations_with_ror: u64,
+    /// `<institution>`s: authors' affiliations, then works' own.
+    institutions: [InstitutionCounts; 2],
     issns: u64,
     isbns: u64,
     languages: BTreeMap<&'static str, u64>,
@@ -4915,8 +4916,12 @@ impl<'n> Sink<'n, Crossref> for CrossrefStats {
                 source_crossref::normalize::AuthorName::Org(_) => self.orgs += 1,
             }
             self.with_orcid += u64::from(a.orcid.is_some());
-            self.affiliations_with_ror +=
-                a.affiliations.iter().filter(|x| x.ror.is_some()).count() as u64;
+            for i in &a.affiliations {
+                self.institutions[0].see(i, &mut self.malformed_samples);
+            }
+        }
+        for i in &w.institutions {
+            self.institutions[1].see(i, &mut self.malformed_samples);
         }
         self.issns += w.issns.len() as u64;
         self.isbns += w.isbns.len() as u64;
@@ -4979,8 +4984,12 @@ impl StatsReport for CrossrefStats {
             self.abstracts[0], self.abstracts[1], self.abstracts[2]
         );
         eprintln!(
-            "  authors persons {} orgs {} with orcid {}  affiliations with ror {}",
-            self.persons, self.orgs, self.with_orcid, self.affiliations_with_ror
+            "  authors persons {} orgs {} with orcid {}",
+            self.persons, self.orgs, self.with_orcid
+        );
+        eprintln!(
+            "  affiliations {}  the works' own institutions {}",
+            self.institutions[0], self.institutions[1]
         );
         eprintln!("  issns {}  isbns {}", self.issns, self.isbns);
         eprintln!("  languages {:?}", self.languages);
@@ -5001,6 +5010,64 @@ impl StatsReport for CrossrefStats {
                 eprintln!("    {s}");
             }
         }
+    }
+}
+
+/// What Crossref's `<institution>`s in one place carry.
+#[derive(Default, Clone, Copy)]
+struct InstitutionCounts {
+    all: u64,
+    ror: u64,
+    ror_malformed: u64,
+    isni: u64,
+    wikidata: u64,
+    acronym: u64,
+    nameless: u64,
+}
+
+impl InstitutionCounts {
+    fn see(&mut self, i: &source_crossref::normalize::Institution<'_>, samples: &mut Vec<String>) {
+        self.all += 1;
+        match i.ror.map(|r| r.id) {
+            None => {}
+            Some(Claim::Valid(_)) => self.ror += 1,
+            Some(Claim::Malformed { raw, error }) => {
+                self.ror_malformed += 1;
+                sample(samples, raw, &error);
+            }
+        }
+        self.isni += u64::from(i.isni.is_some());
+        self.wikidata += u64::from(i.wikidata.is_some());
+        self.acronym += u64::from(!i.acronyms.is_empty());
+        self.nameless += u64::from(i.name.is_none());
+    }
+}
+
+impl Absorb for InstitutionCounts {
+    fn absorb(&mut self, o: Self) {
+        self.all += o.all;
+        self.ror += o.ror;
+        self.ror_malformed += o.ror_malformed;
+        self.isni += o.isni;
+        self.wikidata += o.wikidata;
+        self.acronym += o.acronym;
+        self.nameless += o.nameless;
+    }
+}
+
+impl Display for InstitutionCounts {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} (ror {} malformed {}, isni {}, wikidata {}, with acronym {}, nameless {})",
+            self.all,
+            self.ror,
+            self.ror_malformed,
+            self.isni,
+            self.wikidata,
+            self.acronym,
+            self.nameless
+        )
     }
 }
 
@@ -5273,7 +5340,7 @@ impl Merge for PubmedStats {
 
 impl Merge for CrossrefStats {
     fn merge(&mut self, other: Self) {
-        absorb_all!(self, other: CrossrefStats { works, deletions, types, doi_lowercased, owner_differs, publisher, issued, title, alternate_titles, subtitle_empty, abstracts, persons, orgs, with_orcid, affiliations_with_ror, issns, isbns, languages, references, reference_doi, reference_empty, updates, relations, licenses, malformed_samples });
+        absorb_all!(self, other: CrossrefStats { works, deletions, types, doi_lowercased, owner_differs, publisher, issued, title, alternate_titles, subtitle_empty, abstracts, persons, orgs, with_orcid, institutions, issns, isbns, languages, references, reference_doi, reference_empty, updates, relations, licenses, malformed_samples });
     }
 }
 

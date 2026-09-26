@@ -17,12 +17,16 @@ use std::fmt;
 use ingest::Sink;
 use model::{
     Claim, Date, DateError, DateTime, Doi, DoiError, Interned, Isbn, IsbnError, Isni, IsniError,
-    Issn, IssnError, Lang, LangError, Orcid, OrcidError, ParseError, PartialDate, Registrant,
+    Issn, IssnError, Lang, LangError, Orcid, OrcidError, ParseError, PartialDate, Qid, Registrant,
+    Ror, RorError,
 };
 
 use crate::Crossref;
 use crate::date::{DateParts, PartialDate as PartialDateParts};
-use crate::record::{Contributor, Serial, Work as Native};
+use crate::record::{
+    Affiliation as NativeAffiliation, Contributor, Identifier, Institution as NativeInstitution,
+    Serial, Text, Work as Native,
+};
 use crate::vocab::{
     AssertedBy, ContentVersion, IdKind, RelationAssertedBy, RelationIdKind, Sequence, SerialKind,
     UpdateType, WorkType,
@@ -39,6 +43,12 @@ pub type DoiClaim<'n> = Claim<'n, Doi<'n>, DoiError>;
 /// of 15,165 works looked up by DOI carried one (2026-09-15), the policy
 /// §8 item 6 already applies at OpenAlex and PubMed.
 pub type IssnClaim<'n> = Claim<'n, Issn, IssnError>;
+/// A ROR id as the source wrote it, or why its checksum fails: one record
+/// of the March 2026 file carries two copies of `03npvkt06` for the
+/// Universidade Federal Fluminense, whose ROR is `02rjhbb08`
+/// (10.25189/2675-4916.2023.v4.n1.id679, 2026-09-26). Kept as written
+/// beside why, as an ISSN is, and never matched on.
+pub type RorClaim<'n> = Claim<'n, Ror, RorError>;
 
 /// One Crossref work, normalized: the fields with evidence behind them.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -105,6 +115,10 @@ pub struct Work<'n> {
     /// `author[]`.
     #[serde(borrow)]
     pub authors: Few<Author<'n>, 8>,
+    /// `institution[]`: the work's own, a dissertation's university or a
+    /// report's issuer — where most Wikidata ids sit.
+    #[serde(borrow)]
+    pub institutions: Few<Institution<'n>, 1>,
     /// `references-count`, checked against the reference array.
     pub references_count: Option<u32>,
     /// `is-referenced-by-count`.
@@ -140,7 +154,7 @@ pub struct Author<'n> {
     pub sequence: Sequence,
     #[allow(missing_docs)]
     #[serde(borrow)]
-    pub affiliations: Few<Affiliation<'n>, 2>,
+    pub affiliations: Few<Institution<'n>, 2>,
 }
 
 /// A person (`family`, maybe `given`) or an organisation (`name`).
@@ -158,18 +172,44 @@ pub enum AuthorName<'n> {
     Org(&'n str),
 }
 
-/// An affiliation: a name, a ROR id, or both.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Affiliation<'n> {
+/// An organisation as the deposit schema's `<institution>` describes it:
+/// an author's affiliation, or the work's own institution. The schema asks
+/// for a name or an id, and allows up to six each of acronyms, places and
+/// departments; all are kept as written (the user's call, 2026-09-26), as
+/// is who asserted each id.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Institution<'n> {
     #[allow(missing_docs)]
     #[serde(borrow)]
     pub name: Option<Interned<'n>>,
-    /// `https://ror.org/…`, unvalidated here.
+    /// `institution_acronym`.
     #[serde(borrow)]
-    pub ror: Option<&'n str>,
-    /// An ISNI beside the ROR, on 40 affiliations of 34,536 looked-up
-    /// works (2026-09-15), checksum verified.
-    pub isni: Option<Isni>,
+    pub acronyms: Few<Interned<'n>, 1>,
+    /// `institution_place`.
+    #[serde(borrow)]
+    pub places: Few<Interned<'n>, 1>,
+    /// `institution_department`.
+    #[serde(borrow)]
+    pub departments: Few<Interned<'n>, 1>,
+    #[allow(missing_docs)]
+    #[serde(borrow)]
+    pub ror: Option<Asserted<RorClaim<'n>>>,
+    /// Beside the ROR on 40 affiliations of 34,536 looked-up works
+    /// (2026-09-15); checksum verified.
+    pub isni: Option<Asserted<Isni>>,
+    /// Beside the ROR and ISNI on university repositories' deposits.
+    pub wikidata: Option<Asserted<Qid>>,
+}
+
+/// An identifier and who asserted it: `publisher` on every institution id
+/// among the records the March 2026 file's survey stopped at (16,044,
+/// 2026-09-26), `crossref` on some of the funder DOIs beside them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Asserted<T> {
+    #[allow(missing_docs)]
+    pub id: T,
+    #[allow(missing_docs)]
+    pub by: AssertedBy,
 }
 
 /// An ISSN with its kind.
@@ -345,6 +385,60 @@ struct Ctx {
     doi: Option<String>,
 }
 
+/// Where an `<institution>` sits: the field its failures name.
+#[derive(Clone, Copy)]
+enum Held {
+    Affiliation,
+    Institution,
+}
+
+impl Held {
+    const fn field(self) -> &'static str {
+        match self {
+            Self::Affiliation => "affiliation",
+            Self::Institution => "institution",
+        }
+    }
+
+    const fn id_field(self) -> &'static str {
+        match self {
+            Self::Affiliation => "affiliation.id",
+            Self::Institution => "institution.id",
+        }
+    }
+}
+
+/// The parts of an `<institution>`, from either place Crossref writes one.
+struct Parts<'n, 'a> {
+    name: Option<&'n Text<'a>>,
+    acronym: &'n [Text<'a>],
+    place: &'n [Text<'a>],
+    department: &'n [Text<'a>],
+    id: &'n [Identifier<'a>],
+}
+
+impl<'n, 'a> Parts<'n, 'a> {
+    fn affiliation(a: &'n NativeAffiliation<'a>) -> Self {
+        Self {
+            name: a.name.as_ref(),
+            acronym: a.acronym.as_deref().unwrap_or_default(),
+            place: a.place.as_deref().unwrap_or_default(),
+            department: a.department.as_deref().unwrap_or_default(),
+            id: a.id.as_deref().unwrap_or_default(),
+        }
+    }
+
+    fn institution(i: &'n NativeInstitution<'a>) -> Self {
+        Self {
+            name: i.name.as_ref(),
+            acronym: i.acronym.as_deref().unwrap_or_default(),
+            place: i.place.as_deref().unwrap_or_default(),
+            department: i.department.as_deref().unwrap_or_default(),
+            id: i.id.as_deref().unwrap_or_default(),
+        }
+    }
+}
+
 impl Ctx {
     fn err(&self, field: &'static str, raw: &str, kind: ErrorKind) -> Error {
         Error {
@@ -412,7 +506,7 @@ impl Ctx {
         &self,
         field: &'static str,
         typed: Option<&'n [Serial<'_>]>,
-        plain: Option<&'n [crate::record::Text<'_>]>,
+        plain: Option<&'n [Text<'_>]>,
         parse: impl Fn(&'n str) -> Result<T, ErrorKind>,
     ) -> Result<Vec<(SerialKind, T)>, Error> {
         let typed = typed.unwrap_or_default();
@@ -475,37 +569,16 @@ impl Ctx {
             .transpose()?;
         let mut affiliations = Few::new();
         for a in &c.affiliation {
-            let (mut ror, mut isni) = (None, None);
-            for id in a.id.as_deref().unwrap_or_default() {
-                let taken =
-                    match id.id_type {
-                        IdKind::Ror => ror.replace(&*id.id).is_some(),
-                        IdKind::Isni => isni
-                            .replace(Isni::from_https_url(&id.id).map_err(|e| {
-                                self.err("affiliation.id", &id.id, ErrorKind::Isni(e))
-                            })?)
-                            .is_some(),
-                        IdKind::Doi => {
-                            return Err(self.err(
-                                "affiliation.id",
-                                &id.id,
-                                ErrorKind::Unmodelled("a DOI as an affiliation id"),
-                            ));
-                        }
-                    };
-                if taken {
-                    return Err(self.err(
-                        "affiliation.id",
-                        &id.id,
-                        ErrorKind::Unmodelled("more than one affiliation id of one kind"),
-                    ));
-                }
+            // The schema gives a country to a grant investigator's
+            // affiliation only.
+            if let Some(country) = a.country.as_deref() {
+                return Err(self.err(
+                    "affiliation.country",
+                    country,
+                    ErrorKind::Unmodelled("a country on a contributor's affiliation"),
+                ));
             }
-            affiliations.push(Affiliation {
-                name: a.name.as_deref().map(Interned::Text),
-                ror,
-                isni,
-            });
+            affiliations.push(self.institution(Held::Affiliation, &Parts::affiliation(a))?);
         }
         Ok(Author {
             name,
@@ -513,6 +586,69 @@ impl Ctx {
             authenticated_orcid: c.authenticated_orcid,
             sequence: c.sequence,
             affiliations,
+        })
+    }
+
+    /// An `<institution>`: its texts as written, and each id checked for
+    /// its kind — a ROR as a claim, an ISNI and a Wikidata item strictly.
+    /// The schema requires a name or an id; a DOI, a second id of one
+    /// kind or an id Retraction Watch asserted has not been seen, and
+    /// stops the run.
+    fn institution<'n>(&self, held: Held, p: &Parts<'n, '_>) -> Result<Institution<'n>, Error> {
+        if p.name.is_none() && p.id.is_empty() {
+            return Err(self.err(
+                held.field(),
+                "",
+                ErrorKind::Inconsistent("neither a name nor an id"),
+            ));
+        }
+        let (mut ror, mut isni, mut wikidata) = (None, None, None);
+        for id in p.id {
+            let (raw, by): (&'n str, _) = (&id.id, id.asserted_by);
+            let fail = |kind| self.err(held.id_field(), raw, kind);
+            if by == AssertedBy::RetractionWatch {
+                return Err(fail(ErrorKind::Unmodelled(
+                    "an institution id asserted by Retraction Watch",
+                )));
+            }
+            let taken = match id.id_type {
+                IdKind::Ror => ror
+                    .replace(Asserted {
+                        id: Claim::from_parse(raw, Ror::from_url(raw)),
+                        by,
+                    })
+                    .is_some(),
+                IdKind::Isni => isni
+                    .replace(Asserted {
+                        id: Isni::from_https_url(raw).map_err(|e| fail(ErrorKind::Isni(e)))?,
+                        by,
+                    })
+                    .is_some(),
+                IdKind::Wikidata => wikidata
+                    .replace(Asserted {
+                        id: Qid::from_entity_url(raw).map_err(|e| fail(ErrorKind::Id(e)))?,
+                        by,
+                    })
+                    .is_some(),
+                IdKind::Doi => {
+                    return Err(fail(ErrorKind::Unmodelled("a DOI as an institution id")));
+                }
+            };
+            if taken {
+                return Err(fail(ErrorKind::Unmodelled(
+                    "more than one institution id of one kind",
+                )));
+            }
+        }
+        let texts = |list: &'n [Text<'_>]| list.iter().map(|t| Interned::Text(t)).collect();
+        Ok(Institution {
+            name: p.name.map(|n| Interned::Text(n)),
+            acronyms: texts(p.acronym),
+            places: texts(p.place),
+            departments: texts(p.department),
+            ror,
+            isni,
+            wikidata,
         })
     }
 
@@ -534,7 +670,7 @@ impl Ctx {
     }
 }
 
-fn first<'n>(list: Option<&'n [crate::record::Text<'_>]>) -> Option<&'n str> {
+fn first<'n>(list: Option<&'n [Text<'_>]>) -> Option<&'n str> {
     list.and_then(|l| l.first()).map(|t| &**t)
 }
 
@@ -645,6 +781,12 @@ pub fn normalize<'n, K: Sink<'n, Crossref>>(w: &'n Native<'_>, emit: &mut K) -> 
         .iter()
         .map(|c| ctx.author(c))
         .collect::<Result<_, _>>()?;
+    let institutions = w
+        .institution
+        .iter()
+        .flatten()
+        .map(|i| ctx.institution(Held::Institution, &Parts::institution(i)))
+        .collect::<Result<_, _>>()?;
     let licenses = w
         .license
         .as_deref()
@@ -721,6 +863,7 @@ pub fn normalize<'n, K: Sink<'n, Crossref>>(w: &'n Native<'_>, emit: &mut K) -> 
         publisher: Interned::Text(&w.publisher),
         language,
         authors,
+        institutions,
         references_count: w.references_count,
         cited_by_count: w.is_referenced_by_count,
         licenses,
