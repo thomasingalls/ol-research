@@ -993,6 +993,9 @@ pub struct Builder {
     name_work: Vec<Packed>,
     stub_name_work: Vec<Option<WorkId>>,
     record_work: Vec<usize>,
+    /// Every record's view by index, in a pass that holds them: made
+    /// whole on the first view kept ([`hold_views`](Self::hold_views)),
+    /// and never under a spill.
     views: Vec<Option<Owned>>,
     edges: Vec<RawEdge>,
     relations: Vec<Relation>,
@@ -1059,7 +1062,6 @@ impl Builder {
         if stub_name_work.iter().any(Option::is_none) {
             return Err(Error::Invariant("a stub name is in no stub".to_owned()));
         }
-        let views = vec![None; res.records.len()];
         Ok(Self {
             res,
             ids,
@@ -1067,7 +1069,7 @@ impl Builder {
             name_work,
             stub_name_work,
             record_work,
-            views,
+            views: Vec::new(),
             edges: Vec::new(),
             relations: Vec::new(),
             cited_as: Vec::new(),
@@ -1172,6 +1174,7 @@ impl Builder {
             self.keep(from, Row::View(rix, owned));
             return;
         }
+        self.hold_views();
         let slot = &mut self.views[rix as usize];
         *slot = Some(match slot.take() {
             None => {
@@ -1342,8 +1345,20 @@ impl Builder {
         let Some((rix, _)) = self.record_of(native) else {
             return false;
         };
+        self.hold_views();
         self.views[rix as usize] = Some(Owned::of(view));
         true
+    }
+
+    /// Makes the list of views a pass that holds them keeps, a slot a
+    /// record, before its first view. A pass that spills keeps none, and
+    /// the list — 200 bytes a record, every one written — was made for it
+    /// all the same until 2026-09-26: 11.6 GiB of the peak on the PubMed
+    /// baseline and an eighth of Crossref (the merge's memory).
+    fn hold_views(&mut self) {
+        if self.views.is_empty() {
+            self.views = vec![None; self.res.records.len()];
+        }
     }
 
     /// Notes that a reference of `from`'s record of `source` gave a stub
@@ -2720,6 +2735,21 @@ mod tests {
         let beta = ids.held[res.works.iter().position(|w| w.records.len() == 1).unwrap()];
         let stub = ids.stubs[0];
         (Builder::new(res, ids).unwrap(), [alpha, beta, stub])
+    }
+
+    /// The list of views is made by the first view a pass holds, not by
+    /// `new`: a pass that spills never holds one, and the list cost it 200
+    /// bytes a record all the same (the merge's memory, 2026-09-26).
+    #[test]
+    fn only_a_pass_that_holds_views_makes_their_list() {
+        let (mut b, _) = scenario();
+        assert!(b.views.is_empty());
+        assert!(b.view(Name::Pmid(pmid(1)), &View::default()));
+        assert_eq!(b.views.len(), b.res.records.len());
+        assert_eq!(b.views.iter().flatten().count(), 1);
+        assert!(b.view(Name::Doi("10.1000/b"), &View::default()));
+        assert_eq!(b.views.len(), b.res.records.len(), "made once");
+        assert_eq!(b.views.iter().flatten().count(), 2);
     }
 
     #[test]

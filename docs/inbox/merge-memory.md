@@ -475,6 +475,46 @@ which structures hold the heap carried into pass 2. The whole file's
 spill, about 300 GiB (E), fits the node's 1.8 TB; its time, about 5.8
 hours (E), is the first wall below.
 
+**Where the heap into pass 2 goes** (2026-09-26). A probe, not kept in
+the repository, dropped each structure alive after registry assignment
+and inside `Builder::new` on the laptop's store — two PubMed baseline
+files and Crossref's 100-shard sample, 44,989 records, 465,870 stub
+works from 561,996 stub names — and read the counting allocator after
+each (M per item; D at the eighth, by its counts):
+
+| structure | per item (M) | at the eighth (D) |
+|---|---|---|
+| `res.works` | 104 B a work | 6.1 GB |
+| `res.records` | 56 B a record, and the list's spare capacity | 3.8–5.1 GB |
+| `Copies` | 77 B a record | 4.8 GB |
+| `res.stubs`, the stub names, still hashed | 109 B a stub name | 2.8 GB |
+| `Builder`'s `stub_works`, each stub's names as owned names | 138 B a stub work | 3.5 GB |
+| `res.arena`, the dictionary | 12.6 B a name | 1.4 GB |
+| natives, stub parents, ids, the names and records tables | 4–9 B an item | about 1.5 GB |
+
+That is about 20 of the 26.4 GiB the survey measured after the registry
+(D against M); the rest is most likely what grows with the conflict
+components, 212,327 on the box against 12 on the laptop, and the
+tables' slack at that size, which only a probe at that size can
+settle. Two of these are new with Crossref: the stub names and the
+stubs' name lists, 25.4 million stubs at the eighth where PubMed alone
+had 2.0 million, since the stubs never went through the dictionary.
+Two are this plan's "not done": the works as flat arrays (2d) and
+`Copies` keyed by a name's number (2c).
+
+And one was waste. `Builder::new` made a view slot for every record,
+200 bytes each, written, and `spill_to` threw the list away before any
+view was read: a full merge has spilled since step 1, so it cost the
+peak and bought nothing — 11.6 GiB at the eighth (D), the jump from
+34.19 to 43.06 GiB its survey printed between registry assignment and
+the names table, and about 41 GiB for the whole file (E). *Built
+2026-09-26* (the user: "go ahead"): the list is made by a pass that
+holds views, on the first view it keeps, and never under a spill. On
+the laptop's store a real merge with and without it writes the same 56
+merged files and the same registry, byte for byte, and the same report;
+the journal line differs in its time alone, and the run makes one
+allocation fewer.
+
 ## Walls behind this one
 
 - **Time.** Pass 1 decodes on one thread: 26 minutes for 36.5 GiB. The
