@@ -114,7 +114,21 @@ pub fn halves(scored: &[String]) -> BTreeMap<String, Half> {
         .collect()
 }
 
+/// Every query in the test half: a suite held out whole, read only in
+/// total at milestones (evaluation plan §7) — as TREC Precision Medicine
+/// 2020 is, while 2019 is worked on (the user's call, 2026-09-26).
+#[must_use]
+pub fn held_out(scored: &[String]) -> BTreeMap<String, Half> {
+    scored.iter().map(|q| (q.clone(), Half::Test)).collect()
+}
+
 impl Suite {
+    /// Whether the whole suite is its test half.
+    #[must_use]
+    pub fn is_held_out(&self) -> bool {
+        !self.halves.is_empty() && self.halves.values().all(|h| *h == Half::Test)
+    }
+
     /// The queries the key has a relevant work for at any grade, in the
     /// queries file's order: the ones a report can average.
     #[must_use]
@@ -131,19 +145,22 @@ impl Suite {
             .collect()
     }
 
-    /// The key over the working half, or the whole key when the suite is
-    /// kept whole.
+    /// The key over one half. A suite kept whole is all working half and
+    /// has no test half.
     #[must_use]
-    pub fn working_key(&self) -> Key {
+    pub fn key_over(&self, half: Half) -> Key {
         if self.halves.is_empty() {
-            return self.key.clone();
+            return match half {
+                Half::Working => self.key.clone(),
+                Half::Test => Key::default(),
+            };
         }
         Key {
             queries: self
                 .key
                 .queries
                 .iter()
-                .filter(|(q, _)| self.halves.get(*q) == Some(&Half::Working))
+                .filter(|(q, _)| self.halves.get(*q) == Some(&half))
                 .map(|(q, j)| (q.clone(), j.clone()))
                 .collect(),
         }
@@ -363,8 +380,30 @@ mod tests {
         assert!(suite.write(&dir).is_err(), "a suite is never written over");
         let back = Suite::read(&dir).unwrap();
         assert_eq!(back, suite);
-        assert_eq!(back.working_key().queries.len(), 30);
+        assert_eq!(back.key_over(Half::Working).queries.len(), 30);
+        assert_eq!(back.key_over(Half::Test).queries.len(), 30);
+        assert!(!back.is_held_out());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_held_out_suite_is_all_test_half() {
+        let mut suite = Suite {
+            queries: vec![
+                ("1".to_owned(), "a".to_owned()),
+                ("2".to_owned(), "b".to_owned()),
+            ],
+            key: Key::read("1 0 x 1\n2 0 y 1\n").unwrap(),
+            ..Suite::default()
+        };
+        assert!(
+            suite.key_over(Half::Test).queries.is_empty(),
+            "kept whole: no test half"
+        );
+        suite.halves = held_out(&suite.scored());
+        assert!(suite.is_held_out());
+        assert!(suite.key_over(Half::Working).queries.is_empty());
+        assert_eq!(suite.key_over(Half::Test).queries.len(), 2);
     }
 
     #[test]

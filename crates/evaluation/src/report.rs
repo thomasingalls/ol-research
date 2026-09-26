@@ -5,7 +5,7 @@
 use std::io::{self, Write};
 
 use crate::measure::{self, Evaluated, Measure};
-use crate::suite::{Suite, condensed};
+use crate::suite::{Half, Suite, condensed};
 use crate::trec::{Key, Run};
 
 /// What the acceptance rule says of a new run against a base.
@@ -165,38 +165,67 @@ pub fn compare(key: &Key, base: &Run, new: &Run, out: &mut impl Write) -> io::Re
     Ok(verdict)
 }
 
-/// Which of a suite's queries a report reads: the working half, or the
-/// whole of a suite too small to halve (evaluation plan §7).
-fn part(suite: &Suite, out: &mut impl Write) -> io::Result<()> {
-    let scored = suite.scored().len();
-    if suite.halves.is_empty() {
-        writeln!(
-            out,
-            "the whole suite, {scored} queries with a relevant work: too few to halve"
-        )
-    } else {
-        let working = suite
-            .scored()
+/// Says which of a suite's queries a report reads (evaluation plan §7),
+/// and whether there are any: a suite held out whole has nothing to read
+/// while working, and one kept whole has no test half.
+fn part(suite: &Suite, half: Half, out: &mut impl Write) -> io::Result<bool> {
+    let scored = suite.scored();
+    let n = scored.len();
+    let count = |h: Half| {
+        scored
             .iter()
-            .filter(|q| suite.halves.get(*q) == Some(&crate::suite::Half::Working))
-            .count();
-        writeln!(
-            out,
-            "the working half: {working} of {scored} queries with a relevant work; the test half is not read"
-        )
-    }
+            .filter(|q| suite.halves.get(*q) == Some(&h))
+            .count()
+    };
+    let (said, read) = match (half, suite.halves.is_empty(), suite.is_held_out()) {
+        (Half::Working, true, _) => (
+            format!("the whole suite, {n} queries with a relevant work: too few to halve"),
+            true,
+        ),
+        (Half::Working, false, true) => (
+            format!(
+                "held out whole, {n} queries with a relevant work: nothing is read while \
+                 working; its total is read at a milestone, with --test"
+            ),
+            false,
+        ),
+        (Half::Working, false, false) => (
+            format!(
+                "the working half: {} of {n} queries with a relevant work; the test half is \
+                 not read",
+                count(Half::Working)
+            ),
+            true,
+        ),
+        (Half::Test, true, _) => ("kept whole, so it has no test half".to_owned(), false),
+        (Half::Test, false, true) => (
+            format!("held out whole, read at a milestone: {n} queries with a relevant work"),
+            true,
+        ),
+        (Half::Test, false, false) => (
+            format!(
+                "the test half, read at a milestone: {} of {n} queries with a relevant work",
+                count(Half::Test)
+            ),
+            true,
+        ),
+    };
+    writeln!(out, "{said}")?;
+    Ok(read)
 }
 
-/// Writes a suite's report of one run: the part of the suite read, then
-/// every result as returned (open), then with the results nobody judged
-/// taken out (condensed; evaluation plan §3.2).
+/// Writes a suite's report of one run over one half: the part of the
+/// suite read, then every result as returned (open), then with the
+/// results nobody judged taken out (condensed; evaluation plan §3.2).
 ///
 /// # Errors
 ///
 /// Writing.
-pub fn score_suite(suite: &Suite, run: &Run, out: &mut impl Write) -> io::Result<()> {
-    let key = suite.working_key();
-    part(suite, out)?;
+pub fn score_suite(suite: &Suite, run: &Run, half: Half, out: &mut impl Write) -> io::Result<()> {
+    if !part(suite, half, out)? {
+        return Ok(());
+    }
+    let key = suite.key_over(half);
     writeln!(out)?;
     writeln!(out, "open: every result as the search returned it")?;
     score(&key, run, out)?;
@@ -205,8 +234,9 @@ pub fn score_suite(suite: &Suite, run: &Run, out: &mut impl Write) -> io::Result
     score(&key, &condensed(run, &key), out)
 }
 
-/// Writes a suite's comparison of two runs, open and condensed, and
-/// returns the verdict over both: refused if either refuses.
+/// Writes a suite's comparison of two runs over one half, open and
+/// condensed, and returns the verdict over both: refused if either
+/// refuses, and none when the half has nothing to read.
 ///
 /// # Errors
 ///
@@ -215,10 +245,14 @@ pub fn compare_suite(
     suite: &Suite,
     base: &Run,
     new: &Run,
+    half: Half,
     out: &mut impl Write,
 ) -> io::Result<Verdict> {
-    let key = suite.working_key();
-    part(suite, out)?;
+    if !part(suite, half, out)? {
+        writeln!(out, "verdict: none")?;
+        return Ok(Verdict::TooFewQueries);
+    }
+    let key = suite.key_over(half);
     writeln!(out)?;
     writeln!(out, "open: every result as the search returned it")?;
     let open = compare(&key, base, new, out)?;
@@ -244,6 +278,34 @@ pub fn compare_suite(
 mod tests {
     use super::*;
     use std::fmt::Write as _;
+
+    #[test]
+    fn a_held_out_suite_is_read_only_with_its_test_half() {
+        let mut suite = Suite::default();
+        let mut run = String::new();
+        let mut key = String::new();
+        for q in 0..30 {
+            suite.queries.push((q.to_string(), format!("query {q}")));
+            writeln!(key, "{q} 0 good{q} 1").unwrap();
+            writeln!(run, "{q} Q0 good{q} 1 1 t").unwrap();
+        }
+        suite.key = Key::read(&key).unwrap();
+        suite.halves = crate::suite::held_out(&suite.scored());
+        let run = Run::read(&run).unwrap();
+        let mut out = Vec::new();
+        score_suite(&suite, &run, Half::Working, &mut out).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.starts_with("held out whole"), "{text}");
+        assert!(!text.contains("P@10"), "{text}");
+        let mut out = Vec::new();
+        score_suite(&suite, &run, Half::Test, &mut out).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("read at a milestone: 30 queries"), "{text}");
+        assert!(text.contains("P@10"), "{text}");
+        let mut out = Vec::new();
+        let verdict = compare_suite(&suite, &run, &run, Half::Working, &mut out).unwrap();
+        assert_eq!(verdict, Verdict::TooFewQueries);
+    }
 
     #[test]
     fn a_key_is_reported_at_its_levels() {
