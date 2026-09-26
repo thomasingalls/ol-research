@@ -430,7 +430,7 @@ pub fn text_of(work: &Work<'_>, table: &Table) -> Result<Text, Unmapped> {
                 Some(given) => format!("{given} {family}"),
                 None => family.to_owned(),
             },
-            AuthorName::Org(name) => name.to_owned(),
+            AuthorName::Org(name) | AuthorName::Given(name) => name.to_owned(),
         })
         .collect();
     let venue = match &work.container_title {

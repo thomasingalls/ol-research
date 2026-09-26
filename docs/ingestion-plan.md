@@ -127,7 +127,9 @@ wart is a claim the POC run confirms or refutes, not a commitment.
   same from 5.3.1 to 5.5.0). All of it is kept, each id with who asserted
   it; a ROR and an ISNI are claims, because a few records' fail their
   checks. An empty one, `{}`, says nothing and is set aside, and so is an
-  author with nothing in it but its `sequence`.
+  author with nothing in it but its `sequence`; one with anything in it
+  is kept, a place alone included. An author may be a given name alone,
+  kept as written.
 - Types (model 10). A record may have no `type` — 2,257 among those the
   survey stopped at, EMBL-EBI's dataset pages first — and its kind is then
   unknown: no form, no genre but a notice's. Crossmark's update type was
@@ -2097,6 +2099,31 @@ cross-IDs and a second edge namespace early.
   serialized the interned journal outside any file being written); the
   fingerprint takes the owned citation now, and prints a PubMed
   reference, which names none, as before.
+- 2026-09-26, the third survey of the whole March 2026 file, model 10
+  (homelab `ol-rht-survey-crossref-v3`, ol-rht 54ca5aa): 179,536,204
+  records, 87 failing (M). What the readings did over the file: 3,738,308
+  reference DOIs with a dash read as `-` and 1,511 with a space dropped;
+  113 record DOIs with a dash, 2 with a space, 1 repaired; 303,081 empty
+  authors and 28,412 empty affiliations set aside; 1,011,666 aliases
+  kept; 17,638 records with no type, 15,535 with no member; 100 DOIs
+  with an ASCII spelling; 7 test deposits kept out; 1,292 ISBNs and one
+  ORCID kept as claims. The 87, settled the same day, still as version
+  10 (the user's calls): 81 authors with a given name and nothing else —
+  people known by one name (`Siddhartha`, `Divya`), whole names in the
+  given field (`Nguyen Minh Duc`), initials, one organisation — kept as
+  written, `AuthorName::Given`, no rule telling them apart; 5
+  affiliations with a place and no more (`Belgrade,Serbia`), kept, the
+  schema's "a name or an id" no longer enforced where anything is given;
+  and one language, `nsg`, which is ISO 639-3's (Ngasa) and not ISO
+  639-2's: `model::Lang` now holds ISO 639-3's 7,927 individual
+  languages beside ISO 639-2's codes, 7,993 in all (SIL International's
+  table, the 639-3 registration authority's; `tools/gen_lang_table.py`),
+  where PubMed's bibliographic reader still takes ISO 639-2's alone. On
+  that record — a Szeged supplement in Uralic studies — Nganasan (`nio`)
+  would fit where Ngasa, a language of Tanzania, does not; the code is
+  the publisher's, and read as written. OpenAlex's `sh`, a claim since
+  2026-09-15 as a code outside ISO 639-2, is now a language the model
+  knows (Serbo-Croatian, ISO 639-3's `hbs`), and read.
 
 ## 11. Dependencies
 
@@ -2182,7 +2209,7 @@ give one string; splitting names is a modelling decision not made here.
 | `Orcid`         | 16 digits, last may be `X`, ISO 7064 checksum verified                                                |
 | `Issn`          | 8 characters, checksum verified                                                                       |
 | `PartialDate`   | `Year` \| `YearMonth` \| `YearMonthDay` \| `Range` (for `MedlineDate`); calendar-valid; sane year     |
-| `Lang`          | ISO 639-1/2 code                                                                                      |
+| `Lang`          | ISO 639-1/2/3 code (ISO 639-3's individual languages beside 639-2's codes since model 10)              |
 | `NonEmptyText`  | trimmed, non-empty, no control characters                                                             |
 | `WorkKind`, `Subject.scheme`, `WorkStatus` | closed enums. No `Other`. An unknown value is a parse failure (§6)          |
 

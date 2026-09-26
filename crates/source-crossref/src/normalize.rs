@@ -216,6 +216,13 @@ pub enum AuthorName<'n> {
     },
     #[allow(missing_docs)]
     Org(&'n str),
+    /// A given name and nothing else: a person known by one name
+    /// (`Siddhartha`), a whole name written in the given-name field
+    /// (`Nguyen Minh Duc`), initials (`F.`), or an organisation (`ASDEX
+    /// Upgrade Team`) — which, the record does not say, so it is kept as
+    /// written (81 records of the March 2026 file, the user's call,
+    /// 2026-09-26).
+    Given(&'n str),
 }
 
 /// An organisation as the deposit schema's `<institution>` describes it:
@@ -743,23 +750,16 @@ impl Ctx {
                     ErrorKind::Inconsistent("both family and name"),
                 ));
             }
-            (None, None) => {
-                return Err(match c.given.as_deref() {
-                    // "ASDEX Upgrade Team" (10.1238/physica.topical.108a00007):
-                    // an organisation in a person's given name, or a person
-                    // with one name; which, the record does not say.
-                    Some(given) => self.err(
-                        "author",
-                        given,
-                        ErrorKind::Unmodelled("a given name with neither a family name nor a name"),
-                    ),
-                    None => self.err(
+            (None, None) => match c.given.as_deref() {
+                Some(given) => AuthorName::Given(given),
+                None => {
+                    return Err(self.err(
                         "author",
                         "",
                         ErrorKind::Inconsistent("neither family nor name"),
-                    ),
-                });
-            }
+                    ));
+                }
+            },
         };
         let orcid = c.orcid.as_deref().map(|o| {
             let read = match Orcid::from_https_url(o) {
@@ -899,9 +899,11 @@ impl Ctx {
     /// its kind — a ROR and an ISNI as claims, a Wikidata item strictly.
     /// `None` for an empty one, `{}`, which says nothing and is set aside:
     /// 5,806 records of the March 2026 file carry one, Maximum Academic
-    /// Press's above all (2026-09-26). The schema requires a name or an
-    /// id of any other; a DOI, a second id of one kind or an id Retraction
-    /// Watch asserted has not been seen, and stops the run.
+    /// Press's above all (2026-09-26). One with anything is kept, though
+    /// the schema asks for a name or an id: 5 records give a place and no
+    /// more (`Belgrade,Serbia`), kept as written (the user's call). A DOI,
+    /// a second id of one kind or an id Retraction Watch asserted has not
+    /// been seen, and stops the run.
     fn institution<'n>(
         &self,
         held: Held,
@@ -910,13 +912,6 @@ impl Ctx {
         if p.is_empty() {
             self.set_aside.borrow_mut().push((held.field(), "{}"));
             return Ok(None);
-        }
-        if p.name.is_none() && p.id.is_empty() {
-            return Err(self.err(
-                held.field(),
-                "",
-                ErrorKind::Inconsistent("neither a name nor an id"),
-            ));
         }
         let (mut ror, mut isni, mut wikidata) = (None, None, None);
         for id in p.id {

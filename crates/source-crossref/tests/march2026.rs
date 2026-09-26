@@ -689,31 +689,60 @@ fn an_author_with_nothing_in_it_is_set_aside() {
     assert_eq!(out.works[0].authors.len(), 1);
 }
 
-/// The same line with a given name and nothing else in the empty author,
-/// as "ASDEX Upgrade Team" is written (10.1238/physica.topical.108a00007):
-/// an organisation in a given name, or a person with one name — not
-/// decided, so the run stops, under its own signature.
-#[test]
-fn an_author_with_only_a_given_name_stops_the_run() {
-    let e = broken(
-        "author_empty",
-        "{\"affiliation\": [], \"sequence\": \"additional\"}",
-        "{\"affiliation\": [], \"given\": \"ASDEX Upgrade Team\", \"sequence\": \"additional\"}",
-    );
-    assert!(
-        e.contains("a given name with neither a family name nor a name"),
-        "{e}"
-    );
+/// The record `name` with `from` written as `to`, normalized: a real line
+/// changed in one place, for a shape the survey counted on records not
+/// dumped.
+fn edited(name: &str, from: &str, to: &str) -> Collect<'static> {
+    let text = fixture(name);
+    assert_eq!(text.matches(from).count(), 1, "{name}: {from}");
+    let input = Box::leak(text.replacen(from, to, 1).into_boxed_str());
+    let native: &'static source_crossref::Work<'static> =
+        Box::leak(Box::new(serde_json::from_str(input).expect("parses")));
+    let mut out = Collect::default();
+    normalize(native, &mut out).unwrap_or_else(|e| panic!("{name}: {e}"));
+    out
 }
 
-/// 10.6084/m9.figshare.12732866, shard 13435 line 4974: a figshare
-/// component whose landing link is `null`, as on 921 of the records the
-/// survey named or stopped at. Read, and not kept: no resource is.
+/// The same line with a given name and nothing else in the empty author,
+/// as 81 records of the file write one — `Siddhartha`
+/// (10.1002/adv.21567), `Nguyen Minh Duc`, `ASDEX Upgrade Team`: kept as
+/// written, a given name alone.
 #[test]
-fn a_null_landing_link_is_read() {
-    let native = native("resource_url_null");
-    assert_eq!(native.resource.as_ref().unwrap().primary.url, None);
-    run("resource_url_null");
+fn an_author_with_only_a_given_name_is_kept_as_written() {
+    let out = edited(
+        "author_empty",
+        "{\"affiliation\": [], \"sequence\": \"additional\"}",
+        "{\"affiliation\": [], \"given\": \"Siddhartha\", \"sequence\": \"additional\"}",
+    );
+    let names: Vec<_> = out.works[0].authors.iter().map(|a| a.name).collect();
+    assert!(names.contains(&source_crossref::normalize::AuthorName::Given("Siddhartha")));
+}
+
+/// AARP's line with its author's affiliation written as a place and no
+/// more, as 5 records of the file write one (`Belgrade,Serbia`,
+/// 10.7251/noe1619089s): kept, an institution with no name.
+#[test]
+fn an_affiliation_with_only_a_place_is_kept() {
+    let out = edited(
+        "affiliation_acronym",
+        "\"affiliation\": [{\"acronym\": [\"AARP\"], \"department\": [\"Research\"], \"name\": \"AARP\", \"place\": [\"Washington, DC\"]}]",
+        "\"affiliation\": [{\"place\": [\"Belgrade,Serbia\"]}]",
+    );
+    let a = &out.works[0].authors[0].affiliations[0];
+    assert_eq!((a.name, texts(&a.places)), (None, vec!["Belgrade,Serbia"]));
+}
+
+/// The Instituto Nacional Materno Perinatal's line with its language
+/// written `nsg`, as the University of Szeged's supplement writes it
+/// (10.14232/sua.sup.2024.13): an ISO 639-3 code, Ngasa, and read.
+#[test]
+fn an_iso_639_3_language_code_is_read() {
+    let out = edited(
+        "language_alpha_3",
+        "\"language\": \"spa\"",
+        "\"language\": \"nsg\"",
+    );
+    assert_eq!(out.works[0].language.map(Lang::name), Some("Ngasa"));
 }
 
 /// 10.1603/an13119.s1, shard 22839 line 3956: a secondary link with a

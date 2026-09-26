@@ -1,10 +1,12 @@
-//! Languages, as an ISO 639-2 vocabulary.
+//! Languages, as ISO 639-3's individual languages and ISO 639-2's codes.
 //!
 //! Sources write language three ways: PubMed uses ISO 639-2/B bibliographic
 //! codes (`fre`, `ger`, `chi`), OpenAlex uses ISO 639-1 alpha-2 (`fr`), and
-//! others use the terminologic alpha-3 (`fra`). [`Lang`] is the language
-//! itself, keyed by its terminologic code, with one strict entry point per
-//! form — a source that switches forms fails at that source (plan §6).
+//! others use the terminologic alpha-3 (`fra`) — Crossref on a few records,
+//! and one of them a code only ISO 639-3 has (`nsg`, 2026-09-26, the
+//! user's call: recognize it). [`Lang`] is the language itself, keyed by
+//! its terminologic code, with one strict entry point per form — a source
+//! that switches forms fails at that source (plan §6).
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt;
@@ -39,7 +41,8 @@ fn index_of<T: Copy>(sorted: &[(&str, T)], code: &str) -> Option<T> {
 impl Lang {
     /// The bibliographic form, as PubMed writes it: `fre` for French, and
     /// the plain alpha-3 for languages with no separate bibliographic code.
-    /// The terminologic `fra` is rejected here.
+    /// The terminologic `fra` is rejected here, and so is a code only ISO
+    /// 639-3 has: the bibliographic form is ISO 639-2's.
     ///
     /// # Errors
     ///
@@ -49,13 +52,15 @@ impl Lang {
             return Ok(Self(i));
         }
         let lang = Self::from_terminologic(code)?;
-        if ENTRIES[usize::from(lang.0)].bibliographic.is_some() {
+        let entry = &ENTRIES[usize::from(lang.0)];
+        if entry.bibliographic.is_some() || !entry.part2 {
             return Err(Error);
         }
         Ok(lang)
     }
 
-    /// The terminologic alpha-3 form: `fra`, `deu`, `zho`, `eng`.
+    /// The terminologic alpha-3 form: `fra`, `deu`, `zho`, `eng`, and
+    /// ISO 639-3's individual languages beside them (`nsg`, Ngasa).
     ///
     /// # Errors
     ///
@@ -171,6 +176,31 @@ mod tests {
         for bad in ["", "en", "ENG", "Eng", "eng ", "english", "xxx"] {
             assert_eq!(Lang::from_bibliographic(bad), Err(Error), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn iso_639_3_codes_are_terminologic_and_not_bibliographic() {
+        let ngasa = Lang::from_terminologic("nsg").unwrap();
+        assert_eq!(ngasa.name(), "Ngasa");
+        assert_eq!(ngasa.alpha_2(), None);
+        assert_eq!(
+            Lang::from_bibliographic("nsg"),
+            Err(Error),
+            "PubMed writes ISO 639-2 only"
+        );
+        let afro_asiatic = Lang::from_bibliographic("afa").unwrap();
+        assert_eq!(
+            afro_asiatic.name(),
+            "Afro-Asiatic languages",
+            "639-2's group codes stay"
+        );
+        assert_eq!(
+            Lang::from_alpha_2("sh").unwrap().alpha_3(),
+            "hbs",
+            "Serbo-Croatian's alpha-2 is 639-3's"
+        );
+        assert_eq!(ENTRIES.len(), 7993);
+        assert_eq!(ENTRIES.iter().filter(|e| e.part2).count(), 486);
     }
 
     #[test]

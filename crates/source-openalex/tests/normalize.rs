@@ -299,13 +299,15 @@ fn the_data_being_wrong_is_a_claim() {
         "{malformed:?}"
     );
 
+    // `sh`, Serbo-Croatian, was outside ISO 639-2 and a claim; since
+    // model 10 the vocabulary holds ISO 639-3, whose `hbs` it is.
     let input = fixture("language_sh");
     let native = parse(&input);
     let (w, _) = one(&native);
-    assert!(matches!(
-        w.language,
-        Some(Claim::Malformed { raw: "sh", .. })
-    ));
+    match w.language {
+        Some(Claim::Valid(l)) => assert_eq!(l.alpha_3(), "hbs"),
+        other => panic!("{other:?}"),
+    }
 }
 
 #[test]

@@ -141,7 +141,11 @@
 /// reading counted ([`doi::Readings`]); a Crossref record keeps its
 /// `aliases`, other DOIs the registry holds for the work, and its DOI's
 /// ASCII spelling ([`Doi::ascii_spelling`]), a name of the work too, so a
-/// publisher's ASCII twin of an accented DOI is the same work. Nothing
+/// publisher's ASCII twin of an accented DOI is the same work. After the
+/// third survey of the whole file: a language is any of ISO 639-3's
+/// individual languages as well as ISO 639-2's codes ([`Lang`], whose
+/// table's order is its stored form), an author may be a given name
+/// alone, and an affiliation with anything in it is kept. Nothing
 /// was ever normalized under the version 10 builds before
 /// those (only surveyed), so they are version 10 too. Output under version
 /// 9 is rebuilt, not patched.
