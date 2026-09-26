@@ -12,6 +12,15 @@ pub const RESAMPLES: usize = 10_000;
 /// The generator's seed. Changing it moves every interval ever printed.
 pub const SEED: u64 = 0x6f6c_2d72_6874_0001;
 
+/// The fewest queries an interval is given for (decided 2026-09-26).
+/// Resampling a few queries sees only the spread those few happen to
+/// have, so its interval comes out narrower than the uncertainty is:
+/// against the textbook interval for a mean, about 6% narrower at 30
+/// queries and about 18% at 10, and at two it collapses to a point.
+/// Below the floor a mean is printed without one, and two runs get no
+/// verdict.
+pub const MIN_QUERIES: usize = 30;
+
 /// A 95% interval.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Interval {

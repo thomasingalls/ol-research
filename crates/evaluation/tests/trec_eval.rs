@@ -89,16 +89,18 @@ fn scored_by_trec_eval(
 }
 
 /// Works from a small alphabet, so that runs and keys meet; scores from
-/// a few values, so that equal scores are common.
+/// a few values, so that equal scores are common. At least one line, as
+/// `trec_eval` refuses an empty run file; a query returning nothing is
+/// one the file lacks.
 fn arb_run() -> impl Strategy<Value = Run> {
     prop::collection::btree_map(
         "q[0-5]",
         prop::collection::btree_map(
             "w[a-z][0-2]?",
             prop::sample::select(vec![-0.0, 0.0, 0.5, 1.0, 2.0, 2.5, 7.25]),
-            0..70,
+            1..70,
         ),
-        0..6,
+        1..6,
     )
     .prop_map(|queries| {
         let mut run = Run::default();
@@ -152,6 +154,16 @@ fn named() -> (Vec<Measure>, Vec<String>) {
 /// Generated cases per property.
 const CASES: u32 = 256;
 
+/// Fails a property that compared nothing: generated files where no query
+/// has a relevant work would pass every check vacuously.
+fn assert_compared(compared: &AtomicUsize) {
+    let n = compared.load(Ordering::Relaxed);
+    assert!(
+        n >= CASES as usize,
+        "{n} values compared over {CASES} cases"
+    );
+}
+
 /// Every measure `trec_eval` has, query by query.
 #[test]
 fn the_measures_are_trec_evals() {
@@ -160,6 +172,7 @@ fn the_measures_are_trec_evals() {
         return;
     };
     let (measures, named_args) = named();
+    let compared = AtomicUsize::new(0);
     let mut runner = TestRunner::new(ProptestConfig::with_cases(CASES));
     runner
         .run(&(arb_key(), arb_run(), 1_i64..=3), |(key, run, level)| {
@@ -177,6 +190,7 @@ fn the_measures_are_trec_evals() {
                         )));
                     };
                     let our = ours.columns[m][q];
+                    compared.fetch_add(1, Ordering::Relaxed);
                     prop_assert!(
                         (our - their).abs() <= PRINTED,
                         "{name} query {query}: ours {our}, trec_eval {their}"
@@ -186,6 +200,7 @@ fn the_measures_are_trec_evals() {
             Ok(())
         })
         .unwrap();
+    assert_compared(&compared);
 }
 
 /// F at a depth, the judged share and the high bound, which `trec_eval`
@@ -197,6 +212,7 @@ fn the_depth_measures_follow_trec_evals_counts() {
         eprintln!("TREC_EVAL not set; skipping");
         return;
     };
+    let compared = AtomicUsize::new(0);
     let mut runner = TestRunner::new(ProptestConfig::with_cases(CASES));
     runner
         .run(&(arb_key(), arb_run(), 1_i64..=3), |(key, run, level)| {
@@ -265,6 +281,7 @@ fn the_depth_measures_follow_trec_evals_counts() {
                     ];
                     for (m, want) in expected.iter().enumerate() {
                         let got = ours.columns[m][q];
+                        compared.fetch_add(1, Ordering::Relaxed);
                         prop_assert!(
                             (got - want).abs() <= 1e-12,
                             "{} query {query}: ours {got}, from trec_eval's counts {want}",
@@ -276,4 +293,5 @@ fn the_depth_measures_follow_trec_evals_counts() {
             Ok(())
         })
         .unwrap();
+    assert_compared(&compared);
 }

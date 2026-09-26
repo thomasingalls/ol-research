@@ -7,6 +7,27 @@ use std::io::{self, Write};
 use crate::measure::{self, Evaluated, Measure};
 use crate::trec::{Key, Run};
 
+/// What the acceptance rule says of a new run against a base.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Verdict {
+    /// No measure is worse beyond its interval.
+    Passes,
+    /// Some measure is worse beyond its interval.
+    Refused,
+    /// Some level has too few queries for intervals, and nothing is
+    /// worse where there are enough: the rule cannot speak.
+    TooFewQueries,
+}
+
+/// An interval as the report prints it.
+fn interval_text(interval: Option<crate::interval::Interval>, signed: bool) -> String {
+    match interval {
+        Some(i) if signed => format!("{:+.4} to {:+.4}", i.low, i.high),
+        Some(i) => format!("{:.4} to {:.4}", i.low, i.high),
+        None => format!("none: fewer than {} queries", crate::interval::MIN_QUERIES),
+    }
+}
+
 /// The levels a key is reported at: lenient (any positive grade) and
 /// strict (the top grade), or one level for a key with one positive
 /// grade.
@@ -54,11 +75,10 @@ pub fn score(key: &Key, run: &Run, out: &mut impl Write) -> io::Result<()> {
         for a in averaged {
             writeln!(
                 out,
-                "  {:<28} {:>7.4}   {:.4} to {:.4}",
+                "  {:<28} {:>7.4}   {}",
                 a.measure.to_string(),
                 a.mean,
-                a.interval.low,
-                a.interval.high
+                interval_text(a.interval, false)
             )?;
         }
     }
@@ -70,29 +90,31 @@ pub fn score(key: &Key, run: &Run, out: &mut impl Write) -> io::Result<()> {
     )
 }
 
-/// Writes the comparison of two runs, and returns whether the new one
-/// passes the acceptance rule: no measure worse beyond its interval at
-/// any level.
+/// Writes the comparison of two runs, and returns the acceptance
+/// rule's verdict: no measure worse beyond its interval at any level.
 ///
 /// # Errors
 ///
 /// Writing.
-pub fn compare(key: &Key, base: &Run, new: &Run, out: &mut impl Write) -> io::Result<bool> {
+pub fn compare(key: &Key, base: &Run, new: &Run, out: &mut impl Write) -> io::Result<Verdict> {
     let measures = Measure::report();
     let levels = levels(key);
     if levels.is_empty() {
         writeln!(out, "the key judges no work relevant")?;
-        return Ok(true);
+        return Ok(Verdict::TooFewQueries);
     }
     let mut worse = Vec::new();
+    let mut too_few = false;
     for (name, level) in levels {
         let b = measure::evaluate(key, base, level, &measures);
         let n = measure::evaluate(key, new, level, &measures);
         heading(out, name, &b)?;
         let Some(compared) = measure::compare(&b, &n) else {
             writeln!(out, "  nothing to average")?;
+            too_few = true;
             continue;
         };
+        too_few |= b.queries.len() < crate::interval::MIN_QUERIES;
         writeln!(
             out,
             "  {:<28} {:>7} {:>7} {:>11}   95% interval of the difference",
@@ -109,29 +131,37 @@ pub fn compare(key: &Key, base: &Run, new: &Run, out: &mut impl Write) -> io::Re
             };
             writeln!(
                 out,
-                "  {:<28} {:>7.4} {:>7.4} {:>+11.4}   {:+.4} to {:+.4}{mark}",
+                "  {:<28} {:>7.4} {:>7.4} {:>+11.4}   {}{mark}",
                 c.measure.to_string(),
                 c.base,
                 c.new,
                 c.difference,
-                c.interval.low,
-                c.interval.high
+                interval_text(c.interval, true)
             )?;
         }
     }
-    if worse.is_empty() {
-        writeln!(
-            out,
-            "verdict: passes; no measure is worse beyond its interval"
-        )?;
-    } else {
+    let verdict = if !worse.is_empty() {
         writeln!(
             out,
             "verdict: refused; worse beyond its interval: {}",
             worse.join(", ")
         )?;
-    }
-    Ok(worse.is_empty())
+        Verdict::Refused
+    } else if too_few {
+        writeln!(
+            out,
+            "verdict: none; a level has fewer than {} queries, too few for intervals",
+            crate::interval::MIN_QUERIES
+        )?;
+        Verdict::TooFewQueries
+    } else {
+        writeln!(
+            out,
+            "verdict: passes; no measure is worse beyond its interval"
+        )?;
+        Verdict::Passes
+    };
+    Ok(verdict)
 }
 
 #[cfg(test)]
@@ -151,12 +181,45 @@ mod tests {
 
     #[test]
     fn a_run_compared_with_itself_passes() {
+        let mut key = String::new();
+        let mut run = String::new();
+        for q in 0..30 {
+            writeln!(key, "{q} 0 a 2\n{q} 0 b 1").unwrap();
+            writeln!(run, "{q} Q0 b 1 2 t\n{q} Q0 c 2 1 t").unwrap();
+        }
+        let (key, run) = (Key::read(&key).unwrap(), Run::read(&run).unwrap());
+        let mut out = Vec::new();
+        assert_eq!(
+            compare(&key, &run, &run, &mut out).unwrap(),
+            Verdict::Passes
+        );
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("verdict: passes"), "{text}");
+    }
+
+    #[test]
+    fn a_small_suite_gets_means_and_no_verdict() {
         let key = Key::read("1 0 a 2\n1 0 b 1\n2 0 c 1\n").unwrap();
         let run = Run::read("1 Q0 b 1 2 t\n1 Q0 a 2 1 t\n2 Q0 d 1 1 t\n").unwrap();
         let mut out = Vec::new();
-        assert!(compare(&key, &run, &run, &mut out).unwrap());
+        assert_eq!(
+            compare(&key, &run, &run, &mut out).unwrap(),
+            Verdict::TooFewQueries
+        );
         let text = String::from_utf8(out).unwrap();
-        assert!(text.contains("verdict: passes"), "{text}");
+        assert!(text.contains("none: fewer than 30 queries"), "{text}");
+        assert!(text.contains("verdict: none"), "{text}");
+        let mut out = Vec::new();
+        score(&key, &run, &mut out).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        // The mean is printed; its interval is not.
+        assert!(
+            text.lines().any(|line| {
+                let columns: Vec<&str> = line.split_whitespace().collect();
+                columns.starts_with(&["P@10", "0.1000", "none:"])
+            }),
+            "{text}"
+        );
     }
 
     #[test]
@@ -173,7 +236,7 @@ mod tests {
         }
         let key = Key::read(&key).unwrap();
         let mut out = Vec::new();
-        let passed = compare(
+        let verdict = compare(
             &key,
             &Run::read(&base).unwrap(),
             &Run::read(&new).unwrap(),
@@ -181,7 +244,7 @@ mod tests {
         )
         .unwrap();
         let text = String::from_utf8(out).unwrap();
-        assert!(!passed, "{text}");
+        assert_eq!(verdict, Verdict::Refused, "{text}");
         assert!(text.contains("verdict: refused"), "{text}");
         assert!(text.contains("relevant P@10"), "{text}");
     }

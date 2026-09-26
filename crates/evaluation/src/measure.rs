@@ -308,8 +308,19 @@ pub struct Averaged {
     pub measure: Measure,
     #[allow(missing_docs)]
     pub mean: f64,
-    #[allow(missing_docs)]
-    pub interval: Interval,
+    /// `None` below [`interval::MIN_QUERIES`].
+    pub interval: Option<Interval>,
+}
+
+/// Each column's interval, or none for every column below the floor.
+fn intervals_over(columns: &[Vec<f64>], queries: usize) -> Vec<Option<Interval>> {
+    if queries < interval::MIN_QUERIES {
+        return vec![None; columns.len()];
+    }
+    interval::intervals(columns, &vec![0; queries])
+        .into_iter()
+        .map(Some)
+        .collect()
 }
 
 impl Evaluated {
@@ -320,8 +331,7 @@ impl Evaluated {
         if self.queries.is_empty() {
             return None;
         }
-        let strata = vec![0; self.queries.len()];
-        let intervals = interval::intervals(&self.columns, &strata);
+        let intervals = intervals_over(&self.columns, self.queries.len());
         Some(
             self.measures
                 .iter()
@@ -357,23 +367,24 @@ pub struct Compared {
     pub new: f64,
     #[allow(missing_docs)]
     pub difference: f64,
-    #[allow(missing_docs)]
-    pub interval: Interval,
+    /// `None` below [`interval::MIN_QUERIES`].
+    pub interval: Option<Interval>,
 }
 
 impl Compared {
     /// Worse beyond its interval: the whole interval of the difference
     /// below zero, for a measure where more is better — what the
-    /// acceptance rule refuses (evaluation plan §4).
+    /// acceptance rule refuses (evaluation plan §4). Never without an
+    /// interval.
     #[must_use]
     pub fn worse(&self) -> bool {
-        self.measure.higher_is_better() && self.interval.high < 0.0
+        self.measure.higher_is_better() && self.interval.is_some_and(|i| i.high < 0.0)
     }
 
     /// Better beyond its interval.
     #[must_use]
     pub fn better(&self) -> bool {
-        self.measure.higher_is_better() && self.interval.low > 0.0
+        self.measure.higher_is_better() && self.interval.is_some_and(|i| i.low > 0.0)
     }
 }
 
@@ -403,8 +414,7 @@ pub fn compare(base: &Evaluated, new: &Evaluated) -> Option<Vec<Compared>> {
         .zip(&new.columns)
         .map(|(b, n)| n.iter().zip(b).map(|(n, b)| n - b).collect())
         .collect();
-    let strata = vec![0; base.queries.len()];
-    let intervals = interval::intervals(&differences, &strata);
+    let intervals = intervals_over(&differences, base.queries.len());
     Some(
         base.measures
             .iter()
