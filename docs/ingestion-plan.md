@@ -1993,6 +1993,15 @@ cross-IDs and a second edge namespace early.
   Upgrade Team", an organisation in a person's field): it still stops
   the run, under a signature of its own, so the next survey counts that
   shape across the file before anyone decides how to read it.
+- 2026-09-26, still model 10: `null` links. The whole-file survey's
+  second failure, 22,268 records, was a `null` where the reader expects
+  text. Among the dumped records (M) it is two shapes, both in
+  `resource`, which the normalizer does not keep: a work's landing link
+  `{"primary": {"URL": null}}` (921: figshare's components for Optica and
+  Copernicus, two AGU chapters) and a secondary link that is all nulls,
+  `{"URL": null, "label": null}` (309: OUP's through Ingenta and BioOne,
+  the Chinese Journal of Mechanical Engineering's). Both are read as
+  absent; the next survey says whether the file holds a third.
 
 ## 11. Dependencies
 

@@ -699,3 +699,23 @@ fn an_author_with_only_a_given_name_stops_the_run() {
         "{e}"
     );
 }
+
+/// 10.6084/m9.figshare.12732866, shard 13435 line 4974: a figshare
+/// component whose landing link is `null`, as on 921 of the records the
+/// survey named or stopped at. Read, and not kept: no resource is.
+#[test]
+fn a_null_landing_link_is_read() {
+    let native = native("resource_url_null");
+    assert_eq!(native.resource.primary.url, None);
+    run("resource_url_null");
+}
+
+/// 10.1603/an13119.s1, shard 22839 line 3956: a secondary link with a
+/// `null` URL and a `null` label.
+#[test]
+fn a_null_secondary_link_is_read() {
+    let native = native("resource_secondary_null");
+    let secondary = &native.resource.secondary.as_deref().unwrap()[0];
+    assert_eq!((&secondary.url, &secondary.label), (&None, &None));
+    run("resource_secondary_null");
+}

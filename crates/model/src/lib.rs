@@ -130,7 +130,8 @@
 /// kept as written, and posted content's `status` — withdrawn or removed,
 /// when, and why. After the survey of the whole file on version 10, an
 /// empty affiliation is set aside rather than failing, as is an author
-/// with nothing in it (303,155 records), and an ISNI is a claim; nothing
+/// with nothing in it (303,155 records), a resource link may be `null`,
+/// and an ISNI is a claim; nothing
 /// was ever normalized under the version 10 builds before
 /// those (only surveyed), so they are version 10 too. Output under version
 /// 9 is rebuilt, not patched.

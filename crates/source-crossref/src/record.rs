@@ -596,21 +596,27 @@ pub struct Resource<'a> {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ResourceUrl<'a> {
+    /// `null` on figshare's components for Optica and Copernicus, and two
+    /// AGU chapters: 921 of the records the March 2026 file's survey
+    /// named or stopped at (2026-09-26), `{"primary": {"URL": null}}`.
+    /// Read, not kept: the normalized record keeps no resource.
     #[serde(rename = "URL", borrow)]
-    #[allow(missing_docs)]
-    pub url: Text<'a>,
+    pub url: Option<Text<'a>>,
 }
 
 /// `resource.secondary[]`.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LabelledUrl<'a> {
+    /// `null`, with `label`, on 309 of the same records — OUP's through
+    /// Ingenta and `BioOne`, the Chinese Journal of Mechanical
+    /// Engineering's: `{"URL": null, "label": null}`, an entry that says
+    /// nothing.
     #[serde(rename = "URL", borrow)]
-    #[allow(missing_docs)]
-    pub url: Text<'a>,
+    pub url: Option<Text<'a>>,
+    /// `null` with the URL.
     #[serde(borrow)]
-    #[allow(missing_docs)]
-    pub label: Text<'a>,
+    pub label: Option<Text<'a>>,
 }
 
 /// The issue a journal article appeared in.
