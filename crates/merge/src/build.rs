@@ -24,7 +24,7 @@ use smallvec::SmallVec;
 use crate::arena::NameIx;
 use crate::contributor::Contributor;
 use crate::copies::{self, Copies, Fate};
-use crate::identity::{Reason, RecordIx, Resolution, Standing, StubWorks, Work as Identified};
+use crate::identity::{Reason, RecordIx, Resolution, Standing, StubWorks, WorkRef as Identified};
 use crate::kind::{Form, Genre};
 use crate::layout;
 use crate::name::{Name, OwnedName};
@@ -936,7 +936,7 @@ fn names_table(res: &Resolution, ids: &Ids) -> Result<Vec<Packed>, Error> {
                 )));
             }
         }
-        for n in &work.names {
+        for n in work.names {
             let slot = &mut name_work[n.name as usize];
             *slot = Packed::of(match (n.standing, slot.get()) {
                 (Standing::Shared, Slot::Free | Slot::Shared) => Slot::Shared,
@@ -963,7 +963,7 @@ fn names_table(res: &Resolution, ids: &Ids) -> Result<Vec<Packed>, Error> {
 fn records_table(res: &Resolution) -> Result<Vec<usize>, Error> {
     let mut record_work = vec![usize::MAX; res.records.len()];
     for (w, work) in res.works.iter().enumerate() {
-        for &rix in &work.records {
+        for &rix in work.records {
             if record_work[rix as usize] != usize::MAX {
                 return Err(Error::Invariant(format!(
                     "{}={} is in two works",
@@ -1973,7 +1973,7 @@ fn finish_range<V: Views + ?Sized>(
     for w in held_works {
         works.push(held(
             res,
-            &res.works[w],
+            &res.works.get(w),
             whole.ids.held[w],
             views,
             &mut counted.tallies,

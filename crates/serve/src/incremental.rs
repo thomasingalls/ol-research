@@ -1288,7 +1288,7 @@ impl Engine<'_> {
                 let Some(w) = held_ids.iter().position(|x| x == part) else {
                     continue;
                 };
-                for n in &res.works[w].names {
+                for n in res.works.get(w).names {
                     taken.insert(res.arena.get(n.name).into_owned(), p);
                 }
             }
@@ -1574,8 +1574,8 @@ impl Engine<'_> {
         let mut puts = Vec::with_capacity(res.works.len());
         for (w, work) in res.works.iter().enumerate() {
             let id = held_ids[w];
-            let owned = build::held(&res, work, id, &views, &mut tallies);
-            for &rix in &work.records {
+            let owned = build::held(&res, &work, id, &views, &mut tallies);
+            for &rix in work.records {
                 if let Origin::Batch(i) = origins[rix as usize] {
                     self.work_of_batch.insert(i, id);
                     self.batch_sources

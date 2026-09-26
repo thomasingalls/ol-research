@@ -1320,7 +1320,7 @@ impl Identity {
             stub_parent: self.stub_parent,
             records: self.records,
             natives: self.natives,
-            works,
+            works: Works::from(works),
             stats: self.stats,
             components,
         })
@@ -1887,9 +1887,57 @@ pub struct Work {
 }
 
 impl Work {
+    /// The work borrowed, as [`Works`] gives one.
+    #[must_use]
+    pub fn borrowed(&self) -> WorkRef<'_> {
+        WorkRef {
+            records: &self.records,
+            names: &self.names,
+            rejected: &self.rejected,
+            duplicates: self.duplicates,
+            uncorroborated: self.uncorroborated,
+        }
+    }
+
     /// The sources holding a record of the work.
     #[must_use]
     pub fn sources(&self, records: &[Record]) -> Sources {
+        self.borrowed().sources(records)
+    }
+
+    /// The promoted name of one namespace.
+    #[must_use]
+    pub fn promoted<'a>(&self, key: Key, arena: &'a Arena) -> Option<Cow<'a, OwnedName>> {
+        self.borrowed().promoted(key, arena)
+    }
+
+    /// The names the registry keys the work by ([`WorkRef::registry_names`]).
+    #[must_use]
+    pub fn registry_names(&self, arena: &Arena) -> Vec<OwnedName> {
+        self.borrowed().registry_names(arena)
+    }
+}
+
+/// A work as [`Works`] keeps it, borrowed: what a [`Work`] holds, its
+/// lists as slices.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WorkRef<'a> {
+    #[allow(missing_docs)]
+    pub records: &'a [RecordIx],
+    #[allow(missing_docs)]
+    pub names: &'a [WorkName],
+    #[allow(missing_docs)]
+    pub rejected: &'a [Rejection],
+    /// Sources with more than one record in this work.
+    pub duplicates: Sources,
+    /// Some record had no title to test, and was joined untested.
+    pub uncorroborated: bool,
+}
+
+impl WorkRef<'_> {
+    /// The sources holding a record of the work.
+    #[must_use]
+    pub fn sources(self, records: &[Record]) -> Sources {
         self.records
             .iter()
             .map(|&rix| records[rix as usize].source)
@@ -1898,7 +1946,7 @@ impl Work {
 
     /// The promoted name of one namespace.
     #[must_use]
-    pub fn promoted<'a>(&self, key: Key, arena: &'a Arena) -> Option<Cow<'a, OwnedName>> {
+    pub fn promoted(self, key: Key, arena: &Arena) -> Option<Cow<'_, OwnedName>> {
         self.names
             .iter()
             .find(|n| n.standing == Standing::Promoted && arena.key(n.name) == key)
@@ -1909,7 +1957,7 @@ impl Work {
     /// is not shared, promoted ones first in namespace order, then the
     /// aliases sorted — a deterministic key for a deterministic order.
     #[must_use]
-    pub fn registry_names(&self, arena: &Arena) -> Vec<OwnedName> {
+    pub fn registry_names(self, arena: &Arena) -> Vec<OwnedName> {
         let mut out: Vec<OwnedName> = Key::ALL
             .iter()
             .filter_map(|&k| self.promoted(k, arena).map(Cow::into_owned))
@@ -1922,6 +1970,115 @@ impl Work {
             .collect();
         aliases.sort();
         out.extend(aliases);
+        out
+    }
+}
+
+/// Every work of a resolution, in flat arrays by offset where a [`Work`]
+/// keeps three small lists inline: about 33 bytes a work against 104
+/// (the merge's memory, 2026-09-26; step 2d's "works themselves as flat
+/// arrays"). Made once the pass has resolved, and read, never changed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Works {
+    records: Vec<RecordIx>,
+    names: Vec<WorkName>,
+    rejected: Vec<Rejection>,
+    /// Where each work's records, names and rejections start, and past
+    /// the last work, where they end.
+    starts: Vec<[u32; 3]>,
+    flags: Vec<(Sources, bool)>,
+}
+
+impl Default for Works {
+    fn default() -> Self {
+        Self {
+            records: Vec::new(),
+            names: Vec::new(),
+            rejected: Vec::new(),
+            starts: vec![[0; 3]],
+            flags: Vec::new(),
+        }
+    }
+}
+
+impl Works {
+    /// How many works.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.flags.len()
+    }
+
+    /// No works.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.flags.is_empty()
+    }
+
+    /// Work `w`.
+    ///
+    /// # Panics
+    ///
+    /// Past the last work, as an index would.
+    #[must_use]
+    pub fn get(&self, w: usize) -> WorkRef<'_> {
+        let ([r0, n0, j0], [r1, n1, j1]) = (self.starts[w], self.starts[w + 1]);
+        let (duplicates, uncorroborated) = self.flags[w];
+        WorkRef {
+            records: &self.records[r0 as usize..r1 as usize],
+            names: &self.names[n0 as usize..n1 as usize],
+            rejected: &self.rejected[j0 as usize..j1 as usize],
+            duplicates,
+            uncorroborated,
+        }
+    }
+
+    /// Every work, in order.
+    #[must_use = "an iterator does nothing unless consumed"]
+    pub fn iter(&self) -> impl ExactSizeIterator<Item = WorkRef<'_>> + Clone {
+        (0..self.len()).map(|w| self.get(w))
+    }
+
+    /// Adds `work` after the last.
+    #[allow(clippy::cast_possible_truncation)] // fewer than 2^32 of each in a run
+    pub fn push(&mut self, work: &Work) {
+        self.records.extend_from_slice(&work.records);
+        self.names.extend_from_slice(&work.names);
+        self.rejected.extend_from_slice(&work.rejected);
+        self.starts.push([
+            self.records.len() as u32,
+            self.names.len() as u32,
+            self.rejected.len() as u32,
+        ]);
+        self.flags.push((work.duplicates, work.uncorroborated));
+    }
+}
+
+impl From<Vec<Work>> for Works {
+    /// The works flat, each list made the length it will be, where
+    /// growing by doubling would leave up to half of it spare.
+    fn from(works: Vec<Work>) -> Self {
+        let sum = |len: fn(&Work) -> usize| works.iter().map(len).sum::<usize>();
+        let mut out = Self {
+            records: Vec::with_capacity(sum(|w| w.records.len())),
+            names: Vec::with_capacity(sum(|w| w.names.len())),
+            rejected: Vec::with_capacity(sum(|w| w.rejected.len())),
+            starts: Vec::with_capacity(works.len() + 1),
+            flags: Vec::with_capacity(works.len()),
+        };
+        out.starts.push([0; 3]);
+        for work in &works {
+            out.push(work);
+        }
+        out
+    }
+}
+
+impl FromIterator<Work> for Works {
+    fn from_iter<I: IntoIterator<Item = Work>>(works: I) -> Self {
+        let mut out = Self::default();
+        for work in works {
+            out.push(&work);
+        }
         out
     }
 }
@@ -2008,7 +2165,7 @@ pub struct Resolution {
     /// [`Resolution::record_of`].
     natives: Vec<RecordIx>,
     #[allow(missing_docs)]
-    pub works: Vec<Work>,
+    pub works: Works,
     #[allow(missing_docs)]
     pub stats: Stats,
     #[allow(missing_docs)]
@@ -2072,7 +2229,7 @@ impl Resolution {
             return (order.iter().map(|(w, _)| *w as u32).collect(), out);
         }
         let mut by_work = Flat::new();
-        for work in &self.works {
+        for work in self.works.iter() {
             let promoted = Key::ALL.iter().filter_map(|&key| {
                 work.names
                     .iter()
@@ -2089,7 +2246,9 @@ impl Resolution {
             by_work.push(promoted.chain(aliases));
         }
         let natives = |w: usize| -> SmallVec<[NameIx; 3]> {
-            let mut n: SmallVec<[NameIx; 3]> = self.works[w]
+            let mut n: SmallVec<[NameIx; 3]> = self
+                .works
+                .get(w)
                 .records
                 .iter()
                 .map(|&rix| self.records[rix as usize].native)
@@ -2135,7 +2294,9 @@ impl Resolution {
             .map(|(i, w)| (i, w.registry_names(&self.arena)))
             .collect();
         let natives = |w: usize| -> Vec<Cow<'_, OwnedName>> {
-            let mut n: Vec<Cow<'_, OwnedName>> = self.works[w]
+            let mut n: Vec<Cow<'_, OwnedName>> = self
+                .works
+                .get(w)
                 .records
                 .iter()
                 .map(|&rix| self.arena.get(self.records[rix as usize].native))
@@ -2485,7 +2646,8 @@ mod tests {
         let res = id.resolve(false).unwrap();
         assert_eq!(res.works.len(), 1);
         assert_eq!(
-            res.works[0]
+            res.works
+                .get(0)
                 .promoted(ingest::Key::Doi, &res.arena)
                 .unwrap()
                 .to_string(),
@@ -2526,7 +2688,7 @@ mod tests {
         assert_eq!(id.conflicts(), 1);
         let res = id.resolve(false).unwrap();
         assert_eq!(res.works.len(), 1);
-        let work = &res.works[0];
+        let work = &res.works.get(0);
         assert_eq!(work.duplicates, [SourceId::OpenAlex].into_iter().collect());
         assert_eq!(
             work.promoted(ingest::Key::OpenAlex, &res.arena)
@@ -2652,7 +2814,7 @@ mod tests {
             ]]
         );
         assert_eq!(
-            res.works[0].duplicates,
+            res.works.get(0).duplicates,
             [SourceId::Crossref].into_iter().collect()
         );
         assert_eq!(
@@ -2808,7 +2970,7 @@ mod tests {
         assert_eq!(res.stats.collided, 1);
         assert_eq!(res.stats.collided_assertions, 2);
         assert_eq!(res.components.rejected, 2);
-        for work in &res.works {
+        for work in res.works.iter() {
             let r = &work.rejected[0];
             assert_eq!(r.why, Reason::NotAnArticleId);
             assert_eq!(r.holder, None, "no record holds what names no article");
@@ -2923,7 +3085,7 @@ mod tests {
             ]
         );
         assert_eq!(shapes(&res), [("shared name".to_owned(), 1)]);
-        for work in &res.works {
+        for work in res.works.iter() {
             assert!(
                 work.promoted(ingest::Key::Doi, &res.arena).is_none(),
                 "a shared name is never promoted"
@@ -2948,7 +3110,7 @@ mod tests {
         id.mark();
         let res = id.resolve(false).unwrap();
         assert_eq!(res.works.len(), 1);
-        assert!(res.works[0].uncorroborated);
+        assert!(res.works.get(0).uncorroborated);
         assert_eq!(res.components.uncorroborated, 1);
         assert_eq!(
             shapes(&res),
@@ -3108,7 +3270,7 @@ mod tests {
         let standings: Vec<Standing> = res
             .works
             .iter()
-            .flat_map(|w| &w.names)
+            .flat_map(|w| w.names)
             .filter(|n| res.arena.get(n.name).to_string() == format!("doi:{DOI}"))
             .map(|n| n.standing)
             .collect();
@@ -3282,6 +3444,50 @@ mod tests {
         ka.sort();
         kb.sort();
         assert_eq!(ka, kb);
+    }
+
+    /// Works kept flat give back what was put in, list by list: works with
+    /// nothing in a list, several in each, and none at all (the merge's
+    /// memory, 2026-09-26).
+    #[test]
+    fn works_kept_flat_are_the_works_given() {
+        use super::{Rejection, Work, WorkName, Works};
+        use crate::name::Field;
+        let named = |name, standing| WorkName {
+            name,
+            standing,
+            by: Sources::NONE,
+            native: false,
+        };
+        let given = vec![
+            Work::default(),
+            Work {
+                records: [7, 3, 9, 12].into_iter().collect(),
+                names: (0..6).map(|n| named(n, Standing::Alias)).collect(),
+                rejected: (0..2)
+                    .map(|n| Rejection {
+                        name: 40 + n,
+                        record: 3,
+                        field: Field::of("ids.pii"),
+                        holder: n.checked_sub(1),
+                        why: Reason::NotAnArticleId,
+                    })
+                    .collect(),
+                duplicates: Sources::NONE,
+                uncorroborated: true,
+            },
+            Work {
+                records: [1].into_iter().collect(),
+                names: [named(11, Standing::Promoted)].into_iter().collect(),
+                ..Work::default()
+            },
+        ];
+        let flat = Works::from(given.clone());
+        assert_eq!(flat.len(), given.len());
+        assert!(flat.iter().eq(given.iter().map(Work::borrowed)));
+        assert_eq!(flat, given.iter().cloned().collect::<Works>());
+        assert!(Works::default().is_empty());
+        assert_eq!(Works::default().iter().count(), 0);
     }
 
     /// The stubs' names numbered in name order in a dictionary

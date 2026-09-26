@@ -540,6 +540,23 @@ eighth that is about 2.8 + 3.5 GB carried into pass 2 down to about
 (another 3.5 GB there, D). The price is a lookup in an FST, not a hash
 map, for each name a reference gives that no record holds.
 
+**The works, flat.** *Built 2026-09-26*, 2d's "not done". A `Work` kept
+three small lists inline — its records, its names, its rejections, room
+for three, four and one — which every work paid for whether it used
+them or not, most having one record and no rejection: 104 bytes a work
+(M). The identity pass still builds `Work`s one at a time, and once it
+has resolved, `Works` keeps them as three flat lists, each work's place
+in them, and its two flags, every list made the length it will be;
+readers take a `WorkRef`, the same fields as slices. On the laptop's
+store (M): 35.3 bytes a work; the same 58 merged files and registry
+byte for byte, the same report, the journal line different in its time
+alone; a test gives works with empty lists, full lists and none at all
+and gets them back. At the eighth about 6.1 GB down to 2.1 (D); for the
+whole file, at about 190 million works (E), about 20 GB down to 7. The
+two forms are held together only while the works are made flat, which
+at the eighth comes below the peak the pass already had while
+resolving.
+
 ## Walls behind this one
 
 - **Time.** Pass 1 decodes on one thread: 26 minutes for 36.5 GiB. The
