@@ -66,7 +66,7 @@ The running example: the query `IL-6 receptor antagonist`.
 
 | kind | what a person is doing | the answer key |
 |---|---|---|
-| known-item | finding a paper they know | not measured here: a mechanism's job (§10, item 7) |
+| known-item | finding a paper they know | a mechanism of its own, with its own tests (§10, item 7) |
 | topical | finding papers on a subject | human judgments: TREC's sets |
 | related work | finding papers like one they have | RELISH's judgments, by the seed papers' authors |
 | recent topical | the same, sorted by or leaning toward recent | none yet (§10, item 6) |
@@ -94,7 +94,13 @@ biomedicine's breadth ever need it.
 
 **Published, judged by people — these lead.** None of them steers
 tuning alone: they run side by side, each its own row, and the
-acceptance rule (§4) reads every row.
+acceptance rule (§4) reads every row. Why they lead, in the user's words
+(2026-09-26): "they have already gone to the trouble of meticulously
+curating the structure of the test, and because the search as it
+currently is is *so bad* that we risk little by applying improvements to
+basic, foundational search index construction with such a test suite as
+a baseline" — and with the same wariness of fitting to them (§12, item
+14).
 
 - **TREC Precision Medicine 2019–2020, scientific abstracts.** PMIDs
   over the MEDLINE 2019 baseline, three grades; 40 topics in 2019, 31 in
@@ -400,7 +406,12 @@ Commands:
   summary JSON shaped for the homelab's proposed `experiment_runs` table
   (§12, item 12). `evaluate score` reads a suite: every slice, the
   working half. A first run of one set learns what a search costs over
-  forty million works. SYNERGY, OAG-QA, iSearch++ and a reference-string
+  forty million works. The first thing each set reports is the smallest
+  difference it can detect: the half-width of each measure's interval on
+  the search as it is — a change smaller than that will not show, and a
+  paired comparison is usually tighter, so it is a cautious guide. If the
+  differences expected of a change are smaller, the sets cannot judge it
+  (§10, item 8). SYNERGY, OAG-QA, iSearch++ and a reference-string
   set follow the sources they need.
 - **E4. Comparisons at milestones:** the frozen halves in use, and the
   acceptance rule as a command's verdict.
@@ -454,10 +465,19 @@ Commands:
   tested; citations are a hypothesis to test as a treatment against
   such a key, never the key, since a key made of citations would show a
   citation treatment improving by construction — no control, nothing
-  blind. Known-item finding becomes a question
-  for the search's design (§10, item 7); recent topical loses its key
-  (§10, item 6); breadth now rests on the published sets (§12, item
-  8).
+  blind. Known-item finding becomes a question for the search's design
+  (§10, item 7); recent topical loses its key (§10, item 6); breadth now
+  rests on the published sets (§12, item 8).
+- **2026-09-26, the published sets and known-item.** The published sets
+  lead because they are curated and today's search is poor enough that
+  foundational changes risk little against them, the user wary of
+  fitting to them all the same (§3.2, §12 item 14); each set first
+  reports the smallest difference it can detect (E3), and judgments of
+  our own are the way on if that is too coarse (§10, item 8). Known-item:
+  the requirement is the user's — a typed exact title brings that paper
+  first, every time — and the mechanism is open, perhaps a citation
+  parser, a lookup and high-confidence matches rather than BM25, with
+  mistyped titles as its robustness measure (§10, item 7).
 
 ## 10. Open items
 
@@ -493,10 +513,28 @@ Commands:
    "recent works are relevant" would crown every recency mechanism.
    Open.
 7. **Finding a paper someone knows** — its title, or part of it, or an
-   identifier, typed into the box. The user, 2026-09-26: "exact title
-   search probably needs a specialized mechanism"; with identifiers
-   (serving plan §11 item 36) it is the search's own design, tested by
-   explicit cases, not measured by a suite. Open.
+   identifier, typed into the box. The requirement, the user's
+   (2026-09-26): "if a user types in what they think is the exact title
+   of a paper, the first result should be that paper every time. how we
+   get there is still a question mark." A guess at the how, the user's
+   and held loosely ("i might be wrong about the citation parser
+   pathway! we'll discover as we go"): not BM25 but a mechanism beside
+   it — the typed text parsed as a citation into structured data, looked
+   up, and a short list of high-confidence matches (the parsing is
+   `docs/inbox/citation-parsing-landscape.md`; identifiers typed into the
+   box are serving plan §11 item 36). Whatever it becomes, it has tests of
+   its own, and realistically mistyped titles — the ways of typing drawn
+   up for E2's known-item suite: hyphens dropped, Greek letters spelled
+   out, accents dropped, a word missing — are its robustness measure; the
+   answer key is the task itself, so it is no stand-in for relevance.
+   Open.
+8. **Judgments of our own.** Should the published sets prove unable to
+   detect the changes that matter (E3's first report), or once the gains
+   get subtle, a key can be built the way TREC built theirs: pool the top
+   results of the control and treatment runs, and have a person judge the
+   pool without knowing which run gave what. Independent of the
+   treatment, as §3.4 requires, and the one key that sees what a new
+   treatment surfaces, so it also answers the pooling bias. Not started.
 
 ## 11. Methods held for later
 
@@ -608,11 +646,14 @@ go"). Each line: the compromise, what it costs, what would lift it.
    one narrow set is running several side by side, each its own row under
    the acceptance rule. Lifted, in part, as Crossref and OpenAlex bring
    SYNERGY, OAG-QA and iSearch++ within reach.
-9. **Finding a paper someone knows is not measured** — until the
-   mechanism of §10 item 7 exists, and then by its explicit cases.
+9. **Finding a paper someone knows is not measured yet** — it waits for
+   the mechanism of §10 item 7, whose own tests and mistyped titles will
+   measure it.
 10. **Recent topical has no answer key** (§10, item 6).
 11. **Small suites.** A TREC year is 30 to 50 topics, so its intervals
-    are wide (§4.1); RELISH is the one set in the thousands.
+    are wide (§4.1); RELISH is the one set in the thousands. Each set's
+    smallest detectable difference is reported first (E3), and judgments
+    of our own (§10, item 8) lift it.
 
 The E2 compromises this replaces — titles more than one work carries,
 citations standing in for relevance, indexing standing in for relevance,
@@ -635,3 +676,11 @@ sizes from a pilot — went with it.
     are the comparable ones. The pools were built from that era's systems,
     which counts against any treatment that surfaces works they never
     reached (§3.4); the judged share is read first.
+14. **Starting on the published sets risks fitting the search to them** —
+    to their topics, their fields and their pools. Accepted while the
+    search is poor and the changes are foundational (the user: "we risk
+    little by applying improvements to basic, foundational search index
+    construction with such a test suite as a baseline"); guarded by
+    several sets side by side, each its own row, and the frozen test
+    halves; lifted by judgments of our own (§10, item 8) when the gains
+    get subtle.
