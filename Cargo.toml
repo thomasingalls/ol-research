@@ -58,6 +58,10 @@ protox = "0.9"
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "time", "sync"] }
 tokio-stream = { version = "0.1", features = ["net"] }
+# Local chat transport: async HTTP so dropping a browser response also
+# drops the in-flight model request. No TLS/provider credentials in this step.
+reqwest = { version = "0.13", default-features = false, features = ["json", "stream"] }
+async-stream = "0.3"
 # Fetching (plan §3.5): rustls, no transparent decompression — raw bytes
 # must land as served — and the two digests the sources publish or imply.
 ureq = { version = "3", default-features = false, features = ["rustls"] }

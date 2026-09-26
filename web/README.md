@@ -44,10 +44,10 @@ product ambitions:
   `openalex:W…`, `reg1038:…` — a publisher's own id) or a public id. One work jumps straight there; a **shared**
   name offers the choice between the works it was accepted into; an id retired
   by a **split** says so.
-- **Chat** — an assistant-ui thread with a local streaming preview. Sending,
-  stopping, editing, regenerating and switching branches work, but no agent
-  is connected and the canned reply says so. The conversation is held by
-  the screen, not the URL, and is gone when you leave it.
+- **Chat** — an assistant-ui thread connected to the local development model
+  through the Rust chat API. Sending, stopping, editing, regenerating and
+  switching branches work. The model has no corpus tools yet. The
+  conversation is held by the screen and is gone when you leave it.
 
 Vocabulary, kept the same as the pipeline: a **work** is one entity; its
 **names** are the identifiers that point at it; a **stub** is a work we know
@@ -106,7 +106,7 @@ No file-based codegen — four screens do not earn a generated route tree.
 | `/work/$workId`  | `/work/ol:3FWKF485MRW1QF?q=protein+folding`  | `workId` is a public id; `q` is the search beside it, if any |
 | `/work/$workId`  | `/work/ol:3FWKF485MRW1QF?list=cited-alongside` | which list is open: `references` (the default, which normalises away), `cites-same`, `citers`, `cited-alongside` |
 | `/resolve`       | `/resolve?text=pmid:10410805`                | one outcome redirects to the work           |
-| `/chat`          | `/chat`                                      | local preview; the conversation is not in the URL |
+| `/chat`          | `/chat`                                      | local model; the conversation is not in the URL |
 
 A link from one work to another keeps `q` and `list`, so the results stay
 beside it and the same list opens on it.
@@ -403,34 +403,43 @@ retains Radix `Slot.Slottable` for its icon and accessible label.
 
 Local customizations are the literature placeholder, keeping Send on the
 right without attachments, hiding attachment controls without an adapter,
-an accessible edit-field label, and the welcome component supplied by
-`src/components/chat.tsx`. The shared header wraps on narrow screens so
+an accessible edit-field label, a token-limit notice, and the welcome
+component supplied by `src/components/chat.tsx`. The shared header wraps on narrow screens so
 the added Chat link fits. The registry includes renderers for richer
-message parts; the mock currently
-exercises text only. Upgrades should review both the copied sources and
+message parts; the local adapter currently supports text and exposed
+reasoning. Upgrades should review both the copied sources and
 runtime package versions together, then typecheck and exercise the UI.
 Running the registry command again fetches its **current** source, not
 the snapshot documented here. The dependency-age policy is unchanged.
 
 `src/routes/chat.tsx` loads the chat screen lazily. `src/components/chat.tsx`
 creates an assistant-ui `LocalRuntime` scoped to that screen, and
-`src/lib/mock-chat.ts` is the only model adapter. It streams a fixed,
-explicitly labeled preview in the browser, respecting cancellation.
-Assistant-ui owns the composer, messages, edit branches and regeneration.
-There is no chat endpoint, persistence, tool execution, upload service or
-provider request. The shell's existing `/v1/epoch` request remains separate.
+`src/lib/chat-adapter.ts` is the model adapter. It sends the selected branch
+to `/v1/chat`, decodes typed NDJSON events, and yields cumulative ordered
+parts to assistant-ui. Rust is the source of the request/event types in
+`src/generated/chat.ts`; regenerate with `just chat-types`. Assistant-ui
+owns the composer, messages, edit branches and regeneration.
 
-**Credentials:** no key is required, so there is no reason to populate even
-a dummy provider key to run this preview. The adapter does not read keys or
-environment variables, and real credentials cannot enable it. Any future
-credential plumbing must initially use inert dummy values and must not
-connect to a provider; real access is a separate user decision. Do not put
-provider keys in `VITE_*` variables, which are compiled into browser code.
+Run `just chat-model`, `just chat-api` and `just web` in separate terminals,
+then open `/chat`. The first uses the cached Gemma E2B model with llama.cpp
+in offline mode; the second starts `ol-rht-chat` on loopback port 50053.
+Vite proxies `/v1/chat` there. The corpus service is optional for chat;
+the shell's existing `/v1/epoch` request remains separate.
 
-Run `pnpm dev` and open `/chat`. Check that an empty/whitespace draft cannot
-send, Enter sends, Shift+Enter adds a line, IME composition does not send,
-Stop freezes an in-progress reply, Refresh creates another response branch,
-and editing a sent message preserves the earlier branch. Leaving Chat and
-returning, or reloading, starts an empty conversation. The local-preview
-label remains visible throughout. Attachments and voice controls stay
-hidden until their adapters exist.
+Only the dummy value `local-dev-only` is used, between the Rust service and
+local llama.cpp. The browser has no model hostname or credentials. Neither
+service connects to a remote provider. The chat API currently accepts only
+loopback upstream URLs; real credential/provider setup remains a separate
+decision. See [the chat API documentation](../docs/chat-api.md) for startup,
+the wire contract, limits, cancellation behavior and tests.
+
+Check that an empty/whitespace draft cannot send, Enter sends, Shift+Enter
+adds a line, and IME composition does not send. Stop should freeze the
+partial answer **and free the llama.cpp generation slot**. Refresh creates
+another response branch; editing preserves the earlier branch. Leaving
+Chat and returning, or reloading, starts an empty conversation. Attachments
+and voice controls stay hidden until their adapters exist.
+
+`pnpm test:chat` runs the stream/adapter tests without a model. The backend
+tests also use a local fake; `just chat-check` runs both. The Node tests
+use native TypeScript stripping (Node 22.18+).

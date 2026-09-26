@@ -62,6 +62,23 @@ serve:
 web:
     cd web && pnpm dev
 
+# Cached Gemma only: offline, loopback, one slot, an inert development key.
+chat-model:
+    llama-server --offline -hf unsloth/gemma-4-E2B-it-qat-GGUF:Q4_K_XL --no-mmproj --alias local-gemma --host 127.0.0.1 --port 8081 --ctx-size 8192 --parallel 1 --api-key local-dev-only --reasoning off --no-webui --slots
+
+# Local chat API on :50053; run beside chat-model and web. No corpus required.
+chat-api:
+    cargo run -p ol-rht-chat
+
+# Regenerate the browser's chat request/event contract from Rust.
+chat-types:
+    cargo test -p ol-rht-chat --lib protocol::tests::write_types -- --ignored --exact
+
+# Model-independent transport tests and browser stream adapter tests.
+chat-check:
+    cargo test -p ol-rht-chat
+    cd web && pnpm test:chat
+
 # pnpm-workspace.yaml holds packages back two weeks (minimumReleaseAge).
 # Do not pass a flag that overrides it.
 

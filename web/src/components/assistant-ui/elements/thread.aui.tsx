@@ -470,6 +470,11 @@ const AssistantMessage: FC = () => {
           }}
         </MessagePrimitive.GroupedParts>
         <MessageError />
+        <AuiIf condition={(s) => s.message.status?.type === "incomplete" && s.message.status.reason === "length"}>
+          <p role="status" className="text-muted-foreground mt-2 text-sm">
+            Reply reached the development token limit.
+          </p>
+        </AuiIf>
       </div>
 
       <div
