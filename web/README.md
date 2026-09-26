@@ -385,6 +385,10 @@ existing shadcn CLI, with the `@assistant-ui` registry in `components.json`:
 pnpm exec shadcn add @assistant-ui/thread
 ```
 
+The [research workbench design](../docs/research-workbench-design.md)
+records the proposed persistence, runner and artifact architecture beyond
+this first chat implementation, including open decisions and demo criteria.
+
 The UI source is in `src/components/assistant-ui/elements`; its runtime is
 an ordinary dependency (`@assistant-ui/react`, with
 `@assistant-ui/react-markdown` for markdown). Existing shared shadcn

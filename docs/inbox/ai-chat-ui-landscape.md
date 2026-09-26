@@ -8,6 +8,12 @@ implementation notes in [the web README](../../web/README.md#chat-ui) describe
 what this repo actually installed; the versions surveyed below are not its
 lockfile.
 
+The later [research workbench design](../research-workbench-design.md)
+records the storage/runtime survey and the user's clarification of the
+scientific-workbench target. Its rpi/Pi and API-to-VM proposal supersedes the
+backend
+evaluation recommendation below; the assistant-ui choice remains in place.
+
 The target is a full chat screen with modern model interactions: tools,
 files, rich answers and eventually research workflows. Voice is not a
 priority. Staying in the shadcn ecosystem, preferably using its installation

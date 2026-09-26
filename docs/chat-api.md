@@ -4,6 +4,12 @@ First implementation, 2026-09-26, on `feature/chat`. The library comparison
 remains a [dated research snapshot](inbox/ai-chat-ui-landscape.md); this file
 describes the running implementation.
 
+The [research workbench design](research-workbench-design.md) records the
+subsequent persistence and execution discussion: Postgres/SQLx, a possible
+vendored rpi, a Pi baseline, API-to-VM handoff, Temporal, durable workspaces
+and artifact provenance. Those are
+proposals beyond the implementation documented here.
+
 The application can now talk to a local model through a small Rust service:
 
 ```text
