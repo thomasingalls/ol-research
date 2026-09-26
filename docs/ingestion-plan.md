@@ -123,7 +123,8 @@ wart is a claim the POC run confirms or refutes, not a commitment.
   ids of three kinds, ROR, ISNI and Wikidata (`institution_id@type`, the
   same from 5.3.1 to 5.5.0). All of it is kept, each id with who asserted
   it; a ROR and an ISNI are claims, because a few records' fail their
-  checks. An empty one, `{}`, says nothing and is set aside.
+  checks. An empty one, `{}`, says nothing and is set aside, and so is an
+  author with nothing in it but its `sequence`.
 - Types (model 10). A record may have no `type` — 2,257 among those the
   survey stopped at, EMBL-EBI's dataset pages first — and its kind is then
   unknown: no form, no genre but a notice's. Crossmark's update type was
@@ -1980,6 +1981,18 @@ cross-IDs and a second edge namespace early.
   read off their lines (homelab `ol-rht-dump-crossref-v2`, which found
   every DOI the survey named but those written with non-ASCII
   characters: the file escapes them, `\u2013`, and the search did not).
+- 2026-09-26, still model 10: an author with nothing in it. The largest
+  failure of the whole-file survey, 303,155 records, was an author with
+  neither a family name nor a name. Every one among the dumped records
+  but one (3,034 of 3,035, M) is `{"affiliation": [], "sequence":
+  "additional"}` — no name, no ORCID, no affiliation — one to a record,
+  beside the real authors, on dissertations from university repositories
+  (Drexel, Wellington, La Plata, Iowa, UPC, North Texas, Queensland). It
+  says nothing, and is set aside and counted, as an empty affiliation
+  is. The one exception has a given name and nothing else ("ASDEX
+  Upgrade Team", an organisation in a person's field): it still stops
+  the run, under a signature of its own, so the next survey counts that
+  shape across the file before anyone decides how to read it.
 
 ## 11. Dependencies
 

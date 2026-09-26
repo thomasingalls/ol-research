@@ -660,7 +660,26 @@ impl Ctx {
             .collect()
     }
 
-    fn author<'n>(&self, c: &'n Contributor<'_>) -> Result<Author<'n>, Error> {
+    /// An author; `None` for one with nothing in it — no name of any kind,
+    /// no ORCID, no affiliation, only its `sequence` — which says nothing
+    /// and is set aside: university repositories' dissertations carry one
+    /// beside their real authors (Drexel's, Wellington's, La Plata's), and
+    /// the survey of the March 2026 file counted 303,155 records failing
+    /// on an author with neither a family name nor a name (2026-09-26).
+    fn author<'n>(&self, c: &'n Contributor<'_>) -> Result<Option<Author<'n>>, Error> {
+        if c.given.is_none()
+            && c.family.is_none()
+            && c.name.is_none()
+            && c.prefix.is_none()
+            && c.suffix.is_none()
+            && c.orcid.is_none()
+            && c.authenticated_orcid.is_none()
+            && c.affiliation.is_empty()
+            && c.role.is_none()
+        {
+            self.set_aside.borrow_mut().push(("author", "{}"));
+            return Ok(None);
+        }
         let name = match (c.family.as_deref(), c.name.as_deref()) {
             (Some(family), None) => AuthorName::Person {
                 given: c.given.as_deref(),
@@ -684,11 +703,21 @@ impl Ctx {
                 ));
             }
             (None, None) => {
-                return Err(self.err(
-                    "author",
-                    "",
-                    ErrorKind::Inconsistent("neither family nor name"),
-                ));
+                return Err(match c.given.as_deref() {
+                    // "ASDEX Upgrade Team" (10.1238/physica.topical.108a00007):
+                    // an organisation in a person's given name, or a person
+                    // with one name; which, the record does not say.
+                    Some(given) => self.err(
+                        "author",
+                        given,
+                        ErrorKind::Unmodelled("a given name with neither a family name nor a name"),
+                    ),
+                    None => self.err(
+                        "author",
+                        "",
+                        ErrorKind::Inconsistent("neither family nor name"),
+                    ),
+                });
             }
         };
         let orcid = c
@@ -714,13 +743,13 @@ impl Ctx {
                 affiliations.push(i);
             }
         }
-        Ok(Author {
+        Ok(Some(Author {
             name,
             orcid,
             authenticated_orcid: c.authenticated_orcid,
             sequence: c.sequence,
             affiliations,
-        })
+        }))
     }
 
     /// A license's start, read against the work's publication date and
@@ -1100,7 +1129,7 @@ pub fn normalize<'n, K: Sink<'n, Crossref>>(w: &'n Native<'_>, emit: &mut K) -> 
         .as_deref()
         .unwrap_or_default()
         .iter()
-        .map(|c| ctx.author(c))
+        .filter_map(|c| ctx.author(c).transpose())
         .collect::<Result<_, _>>()?;
     let institutions = w
         .institution

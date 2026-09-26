@@ -671,3 +671,31 @@ fn an_isni_whose_check_character_fails_is_a_claim() {
             error: IsniError::Checksum
         }));
 }
+
+/// 10.14264/04d7b78, shard 17 line 1780: a University of Queensland
+/// thesis whose second author is `{"affiliation": [], "sequence":
+/// "additional"}` — nothing, as on 303,155 records of the file: set aside,
+/// and the real author kept.
+#[test]
+fn an_author_with_nothing_in_it_is_set_aside() {
+    let out = collect("author_empty");
+    assert_eq!(out.set_aside, [("author", "{}")]);
+    assert_eq!(out.works[0].authors.len(), 1);
+}
+
+/// The same line with a given name and nothing else in the empty author,
+/// as "ASDEX Upgrade Team" is written (10.1238/physica.topical.108a00007):
+/// an organisation in a given name, or a person with one name — not
+/// decided, so the run stops, under its own signature.
+#[test]
+fn an_author_with_only_a_given_name_stops_the_run() {
+    let e = broken(
+        "author_empty",
+        "{\"affiliation\": [], \"sequence\": \"additional\"}",
+        "{\"affiliation\": [], \"given\": \"ASDEX Upgrade Team\", \"sequence\": \"additional\"}",
+    );
+    assert!(
+        e.contains("a given name with neither a family name nor a name"),
+        "{e}"
+    );
+}

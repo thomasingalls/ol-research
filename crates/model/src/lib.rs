@@ -129,8 +129,9 @@
 /// Fields: a work's version label and its part of a multi-volume set are
 /// kept as written, and posted content's `status` — withdrawn or removed,
 /// when, and why. After the survey of the whole file on version 10, an
-/// empty affiliation is set aside rather than failing, and an ISNI is a
-/// claim; nothing was ever normalized under the version 10 builds before
+/// empty affiliation is set aside rather than failing, as is an author
+/// with nothing in it (303,155 records), and an ISNI is a claim; nothing
+/// was ever normalized under the version 10 builds before
 /// those (only surveyed), so they are version 10 too. Output under version
 /// 9 is rebuilt, not patched.
 pub const VERSION: u32 = 10;
