@@ -407,7 +407,11 @@ an accessible edit-field label, a token-limit notice, and the welcome
 component supplied by `src/components/chat.tsx`. The shared header wraps on narrow screens so
 the added Chat link fits. The registry includes renderers for richer
 message parts; the local adapter currently supports text and exposed
-reasoning. Upgrades should review both the copied sources and
+reasoning, plus server-executed corpus search and paper lookup.
+`chat-tools.tsx` renders search results and compact lookup status. The model writes citations using
+retrieved metadata and reading links; citation formatting has no dedicated
+UI yet. Links in answers and search cards open new tabs to preserve the
+conversation. Upgrades should review both the copied sources and
 runtime package versions together, then typecheck and exercise the UI.
 Running the registry command again fetches its **current** source, not
 the snapshot documented here. The dependency-age policy is unchanged.
@@ -423,8 +427,10 @@ owns the composer, messages, edit branches and regeneration.
 Run `just chat-model`, `just chat-api` and `just web` in separate terminals,
 then open `/chat`. The first uses the cached Gemma E2B model with llama.cpp
 in offline mode; the second starts `ol-rht-chat` on loopback port 50053.
-Vite proxies `/v1/chat` there. The corpus service is optional for chat;
-the shell's existing `/v1/epoch` request remains separate.
+Vite proxies `/v1/chat` there **during development only**. Production serves
+the static build and routes `/v1/chat` to Rust without Vite. Run `just serve`
+for both corpus tools; plain conversation works without it. The shell's
+existing `/v1/epoch` request remains separate.
 
 Only the dummy value `local-dev-only` is used, between the Rust service and
 local llama.cpp. The browser has no model hostname or credentials. Neither

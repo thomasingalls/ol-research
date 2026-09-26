@@ -66,7 +66,7 @@ web:
 chat-model:
     llama-server --offline -hf unsloth/gemma-4-E2B-it-qat-GGUF:Q4_K_XL --no-mmproj --alias local-gemma --host 127.0.0.1 --port 8081 --ctx-size 8192 --parallel 1 --api-key local-dev-only --reasoning off --no-webui --slots
 
-# Local chat API on :50053; run beside chat-model and web. No corpus required.
+# Local chat API on :50053; run beside chat-model and web, plus serve for corpus tools.
 chat-api:
     cargo run -p ol-rht-chat
 

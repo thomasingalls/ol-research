@@ -195,6 +195,13 @@ fn development_config_cannot_target_a_remote_provider() {
         "http://127.0.0.1/v1?secret=x",
     ] {
         assert!(Config::local(url, "test").is_err(), "{url}");
+        assert!(
+            Config::local("http://127.0.0.1:8081/v1", "test")
+                .unwrap()
+                .with_corpus(url)
+                .is_err(),
+            "{url}"
+        );
     }
     assert!(Config::local("http://[::1]:8081/v1", "test").is_ok());
 }
@@ -262,5 +269,531 @@ async fn dropping_response_closes_model_socket_before_headers_and_during_generat
         drop(response);
         model.await.unwrap();
         api_task.abort();
+    }
+}
+
+type RequestLog = std::sync::Arc<std::sync::Mutex<Vec<Value>>>;
+
+async fn scripted_model(wires: Vec<String>) -> (String, tokio::task::JoinHandle<()>, RequestLog) {
+    let log = RequestLog::default();
+    let captured = log.clone();
+    let wires = std::sync::Arc::new(std::sync::Mutex::new(std::collections::VecDeque::from(
+        wires,
+    )));
+    let (url, task) = serve(Router::new().route(
+        "/v1/chat/completions",
+        post(move |Json(body): Json<Value>| {
+            captured.lock().unwrap().push(body);
+            let wire = wires
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("unexpected extra model call");
+            async move { ([("content-type", "text/event-stream")], wire) }
+        }),
+    ))
+    .await;
+    (url, task, log)
+}
+
+fn search_call(args: &Value) -> String {
+    let args = serde_json::to_string(args).unwrap();
+    chunk(&json!({"content":"Looking."}), &Value::Null)
+        + &chunk(
+            &json!({"tool_calls":[{"index":0,"id":"model-call","type":"function","function":{"name":"sea","arguments":&args[..1]}}]}),
+            &Value::Null,
+        )
+        + &chunk(
+            &json!({"tool_calls":[{"index":0,"function":{"name":"rch","arguments":&args[1..]}}]}),
+            &json!("tool_calls"),
+        )
+        + "data: [DONE]\n\n"
+}
+
+fn answer() -> String {
+    chunk(&json!({"content":"Found the papers."}), &json!("stop")) + "data: [DONE]\n\n"
+}
+
+#[tokio::test]
+async fn search_round_trip_and_followup_preserve_results_without_reexecuting_history() {
+    let (model, model_task, requests) = scripted_model(vec![
+        search_call(&json!({"query":"protein & λ","limit":2})),
+        answer(),
+        answer(),
+    ])
+    .await;
+    let (sent, received) = tokio::sync::oneshot::channel();
+    let sent = std::sync::Arc::new(std::sync::Mutex::new(Some(sent)));
+    let (corpus, corpus_task) = serve(Router::new().route("/v1/search", axum::routing::get(move |axum::extract::Query(query): axum::extract::Query<std::collections::HashMap<String, String>>, headers: axum::http::HeaderMap| {
+        assert!(!headers.contains_key("authorization"));
+        sent.lock().unwrap().take().expect("historic search must not execute again").send(query).unwrap();
+        async { Json(json!({"total":20,"answered":{"epoch":8,"batch":7,"at":"2026-09-19","sources":["pubmed"],"attribution":["NLM attribution"]},"hits":[
+            {"public_id":"ol:paper","title":"Protein λ","summary":{"authors":["A","B","C","D","E","F","G"],"venue":"Journal","published":{"year":2026},"retracted_by":["pubmed"],"corrected_by":[],"concern_by":["crossref"]}}
+        ]})) }
+    }))).await;
+    let (api, api_task) = serve(
+        ol_rht_chat::router(
+            Config::local(&format!("{model}/v1"), "test")
+                .unwrap()
+                .with_corpus(&corpus)
+                .unwrap(),
+        )
+        .unwrap(),
+    )
+    .await;
+    let output = events(&api, request()).await;
+    assert_eq!(
+        received.await.unwrap(),
+        std::collections::HashMap::from([
+            ("query".to_owned(), "protein & λ".to_owned()),
+            ("limit".to_owned(), "2".to_owned()),
+            ("hydrate".to_owned(), "true".to_owned()),
+            ("facet_values".to_owned(), "1".to_owned())
+        ])
+    );
+    assert_eq!(
+        output
+            .iter()
+            .map(|e| e["type"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        [
+            "start",
+            "delta",
+            "tool_call",
+            "tool_result",
+            "delta",
+            "finish"
+        ]
+    );
+    let id = &output[2]["part_id"];
+    let result = &output[3]["result"]["data"];
+    assert_eq!(&output[3]["part_id"], id);
+    assert_ne!(output[1]["part_id"], output[4]["part_id"]);
+    assert_eq!(result["hits"][0]["authors"].as_array().unwrap().len(), 6);
+    assert_eq!(result["hits"][0]["retracted_by"], json!(["pubmed"]));
+    assert_eq!(result["hits"][0]["concern_by"], json!(["crossref"]));
+    assert_eq!(
+        result["answered"]["attribution"],
+        json!(["NLM attribution"])
+    );
+    {
+        let requests = requests.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0]["tools"][0]["function"]["name"], "search");
+        let messages = requests[1]["messages"].as_array().unwrap();
+        assert_eq!(&messages[2]["tool_calls"][0]["id"], id);
+        assert_eq!(messages[3]["role"], "tool");
+        assert_eq!(&messages[3]["tool_call_id"], id);
+        assert_eq!(
+            &serde_json::from_str::<Value>(messages[3]["content"].as_str().unwrap()).unwrap(),
+            result
+        );
+    }
+    let history = json!({"messages":[
+        request()["messages"][0],
+        {"id":"a1","role":"assistant","content":[
+            {"type":"text","text":"Looking."},
+            {"type":"tool_call","tool_call_id":id,"call":output[2]["call"],"result":output[3]["result"]},
+            {"type":"text","text":"Found the papers."},
+            {"type":"tool_call","tool_call_id":"cancelled","call":{"name":"search","args":{"query":"cancelled","limit":5}},"result":null}
+        ]},
+        {"id":"u2","role":"user","content":[{"type":"text","text":"Which is retracted?"}]}
+    ]});
+    assert_eq!(
+        events(&api, history).await.last().unwrap()["type"],
+        "finish"
+    );
+    let captured = requests.lock().unwrap();
+    let messages = captured[2]["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 6);
+    assert_eq!(&messages[2]["tool_calls"][0]["id"], id);
+    assert_eq!(
+        &serde_json::from_str::<Value>(messages[3]["content"].as_str().unwrap()).unwrap(),
+        result
+    );
+    assert_eq!(messages[4]["content"], "Found the papers.");
+    assert_eq!(messages[5]["content"], "Which is retracted?");
+    for task in [model_task, corpus_task, api_task] {
+        task.abort();
+    }
+}
+
+#[tokio::test]
+async fn search_errors_and_no_matches_are_tool_results_the_model_can_use() {
+    for (status, body, expected) in [
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "private corpus error",
+            "error",
+        ),
+        (StatusCode::BAD_REQUEST, "private query error", "error"),
+        (StatusCode::OK, "not JSON", "error"),
+        (
+            StatusCode::OK,
+            r#"{"total":0,"hits":[],"answered":null}"#,
+            "ok",
+        ),
+    ] {
+        let (model, model_task, requests) =
+            scripted_model(vec![search_call(&json!({"query":"protein"})), answer()]).await;
+        let (corpus, corpus_task) = serve(Router::new().route(
+            "/v1/search",
+            axum::routing::get(move || async move { (status, body) }),
+        ))
+        .await;
+        let (api, api_task) = serve(
+            ol_rht_chat::router(
+                Config::local(&format!("{model}/v1"), "test")
+                    .unwrap()
+                    .with_corpus(&corpus)
+                    .unwrap(),
+            )
+            .unwrap(),
+        )
+        .await;
+        let output = events(&api, request()).await;
+        assert_eq!(output[2]["call"]["args"]["limit"], 5);
+        assert_eq!(output[3]["result"]["data"]["status"], expected);
+        assert_eq!(output.last().unwrap()["type"], "finish");
+        assert!(!output[3].to_string().contains("private"));
+        assert_eq!(requests.lock().unwrap().len(), 2);
+        for task in [model_task, corpus_task, api_task] {
+            task.abort();
+        }
+    }
+}
+
+#[tokio::test]
+async fn tool_budget_allows_six_calls_then_requires_an_answer() {
+    for ignores_budget in [false, true] {
+        let call = search_call(&json!({"query":"protein"}));
+        let mut wires = vec![call.clone(); 6];
+        wires.push(if ignores_budget { call } else { answer() });
+        let (model, model_task, requests) = scripted_model(wires).await;
+        let (corpus, corpus_task) = serve(Router::new().route(
+            "/v1/search",
+            axum::routing::get(|| async { Json(json!({"total":0,"hits":[],"answered":null})) }),
+        ))
+        .await;
+        let (api, api_task) = serve(
+            ol_rht_chat::router(
+                Config::local(&format!("{model}/v1"), "test")
+                    .unwrap()
+                    .with_corpus(&corpus)
+                    .unwrap(),
+            )
+            .unwrap(),
+        )
+        .await;
+        let output = events(&api, request()).await;
+        assert_eq!(
+            output.iter().filter(|e| e["type"] == "tool_result").count(),
+            6
+        );
+        assert_eq!(
+            output.last().unwrap()["type"],
+            if ignores_budget { "error" } else { "finish" }
+        );
+        assert_eq!(requests.lock().unwrap()[6]["tool_choice"], "none");
+        for task in [model_task, corpus_task, api_task] {
+            task.abort();
+        }
+    }
+}
+
+#[tokio::test]
+async fn incomplete_or_invalid_calls_never_execute() {
+    let good = search_call(&json!({"query":"protein"}));
+    let mut wires = vec![
+        good.replace("data: [DONE]\n\n", ""),
+        good.replace("tool_calls\"}]", "stop\"}]"),
+        good.replace("tool_calls\"}]", "length\"}]"),
+        good.replace("rch", "rch_unknown"),
+    ];
+    for args in [
+        json!({"query":""}),
+        json!({"query":"a","limit":11}),
+        json!({"query":"a","limit":0}),
+        json!({"query":"a","url":"http://example.com"}),
+        json!({"query":"λ".repeat(257)}),
+    ] {
+        wires.push(search_call(&args));
+    }
+    for wire in wires {
+        let length = wire.contains("\"finish_reason\":\"length\"");
+        let (model, model_task, _) = scripted_model(vec![wire]).await;
+        let (api, api_task) = serve(
+            ol_rht_chat::router(
+                Config::local(&format!("{model}/v1"), "test")
+                    .unwrap()
+                    .with_corpus("http://127.0.0.1:1")
+                    .unwrap(),
+            )
+            .unwrap(),
+        )
+        .await;
+        let output = events(&api, request()).await;
+        assert!(!output.iter().any(|e| e["type"] == "tool_call"));
+        assert_eq!(
+            output.last().unwrap()["type"],
+            if length { "finish" } else { "error" }
+        );
+        model_task.abort();
+        api_task.abort();
+    }
+}
+
+#[tokio::test]
+async fn dropping_response_cancels_the_search_socket() {
+    let (model, model_task, _) =
+        scripted_model(vec![search_call(&json!({"query":"protein"}))]).await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let (started, seen) = tokio::sync::oneshot::channel();
+    let corpus_task = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut request = Vec::new();
+        let mut byte = [0];
+        while !request.ends_with(b"\r\n\r\n") {
+            socket.read_exact(&mut byte).await.unwrap();
+            request.push(byte[0]);
+        }
+        started.send(()).unwrap();
+        let read = tokio::time::timeout(Duration::from_secs(3), socket.read(&mut byte))
+            .await
+            .expect("search survived cancellation");
+        assert!(matches!(read, Ok(0) | Err(_)));
+    });
+    let (api, api_task) = serve(
+        ol_rht_chat::router(
+            Config::local(&format!("{model}/v1"), "test")
+                .unwrap()
+                .with_corpus(&format!("http://{address}"))
+                .unwrap(),
+        )
+        .unwrap(),
+    )
+    .await;
+    let response = client()
+        .post(format!("{api}/v1/chat"))
+        .json(&request())
+        .send()
+        .await
+        .unwrap();
+    seen.await.unwrap();
+    drop(response);
+    corpus_task.await.unwrap();
+    model_task.abort();
+    api_task.abort();
+}
+
+fn paper_call(id: &str) -> String {
+    chunk(
+        &json!({"tool_calls":[{"index":0,"id":"model-paper","type":"function","function":{"name":"get_paper","arguments":json!({"id":id}).to_string()}}]}),
+        &json!("tool_calls"),
+    ) + "data: [DONE]\n\n"
+}
+
+fn paper_fixture() -> Value {
+    json!({"answered":{"epoch":8,"batch":7,"at":"2026-09-19","sources":["pubmed"],"attribution":["NLM attribution"]}, "work":{
+        "public_id":"ol:paper", "stub":false, "title":"Paper title", "authors":["First Author","Second Author"], "venue":"Journal",
+        "published":{"year":2026,"month":9,"day":1}, "abstract":"Available abstract.", "open_access":true,
+        "retracted_by":["pubmed"], "corrected_by":[], "concern_by":[],
+        "names":[
+            {"namespace":"pmc","value":"PMCwrong","standing":"alias"},
+            {"namespace":"pmc","value":"PMC123456","standing":"promoted"},
+            {"namespace":"doi","value":"10.1000/paper?a#b%","standing":"promoted"}
+        ]
+    }})
+}
+
+#[tokio::test]
+async fn paper_lookup_accepts_all_supported_id_names_and_supplies_citation_data() {
+    for id in [
+        "ol:paper",
+        "doi:10.1000/paper?a#b%",
+        "pmid:123",
+        "pmc:PMC123456",
+        "openalex:W123",
+        "reg1016:S123456789",
+    ] {
+        let (model, model_task, requests) = scripted_model(vec![paper_call(id), answer()]).await;
+        let (corpus, corpus_task) = serve(Router::new().route(
+            "/v1/work",
+            axum::routing::get(
+                move |axum::extract::Query(query): axum::extract::Query<
+                    std::collections::HashMap<String, String>,
+                >,
+                      headers: axum::http::HeaderMap| async move {
+                    assert_eq!(
+                        query,
+                        std::collections::HashMap::from([("work".to_owned(), id.to_owned())])
+                    );
+                    assert!(!headers.contains_key("authorization"));
+                    Json(paper_fixture())
+                },
+            ),
+        ))
+        .await;
+        let (api, api_task) = serve(
+            ol_rht_chat::router(
+                Config::local(&format!("{model}/v1"), "test")
+                    .unwrap()
+                    .with_corpus(&corpus)
+                    .unwrap(),
+            )
+            .unwrap(),
+        )
+        .await;
+        let output = events(&api, request()).await;
+        assert_eq!(
+            output[1]["call"],
+            json!({"name":"get_paper","args":{"id":id}})
+        );
+        let result = &output[2]["result"]["data"];
+        let paper = &result["paper"];
+        assert_eq!(paper["public_id"], "ol:paper");
+        assert_eq!(paper["authors"], json!(["First Author", "Second Author"]));
+        assert_eq!(paper["published"]["year"], 2026);
+        assert_eq!(paper["abstract_text"], "Available abstract.");
+        assert_eq!(
+            paper["full_text_url"],
+            "https://pmc.ncbi.nlm.nih.gov/articles/PMC123456/"
+        );
+        assert_eq!(
+            paper["publisher_url"],
+            "https://doi.org/10.1000/paper%3Fa%23b%25"
+        );
+        assert_eq!(paper["retracted_by"], json!(["pubmed"]));
+        assert_eq!(result["answered"]["epoch"], 8);
+        assert_eq!(output.last().unwrap()["type"], "finish");
+        let captured = requests.lock().unwrap();
+        assert_eq!(
+            captured[1]["messages"][2]["tool_calls"][0]["function"]["name"],
+            "get_paper"
+        );
+        let received: Value =
+            serde_json::from_str(captured[1]["messages"][3]["content"].as_str().unwrap()).unwrap();
+        assert_eq!(&received, result);
+        assert!(
+            captured[0]["messages"][0]["content"]
+                .as_str()
+                .unwrap()
+                .contains("preferring its ol: public_id")
+        );
+        for task in [model_task, corpus_task, api_task] {
+            task.abort();
+        }
+    }
+}
+
+#[tokio::test]
+async fn paper_links_require_promoted_names_and_truncation_is_explicit() {
+    for stub in [false, true] {
+        let (model, model_task, _) = scripted_model(vec![paper_call("ol:paper"), answer()]).await;
+        let mut fixture = paper_fixture();
+        fixture["work"]["stub"] = json!(stub);
+        fixture["work"]["names"] = if stub {
+            json!([])
+        } else {
+            json!([
+                {"namespace":"pmc","value":"PMC123","standing":"shared"},
+                {"namespace":"doi","value":"10.1000/real","standing":"promoted"}
+            ])
+        };
+        fixture["work"]["abstract"] = json!(if stub {
+            String::new()
+        } else {
+            "λ".repeat(8100)
+        });
+        fixture["work"]["authors"] = if stub {
+            json!([])
+        } else {
+            json!((0..51).map(|n| format!("Author {n}")).collect::<Vec<_>>())
+        };
+        let (corpus, corpus_task) = serve(Router::new().route(
+            "/v1/work",
+            axum::routing::get(move || {
+                let body = fixture.clone();
+                async move { Json(body) }
+            }),
+        ))
+        .await;
+        let (api, api_task) = serve(
+            ol_rht_chat::router(
+                Config::local(&format!("{model}/v1"), "test")
+                    .unwrap()
+                    .with_corpus(&corpus)
+                    .unwrap(),
+            )
+            .unwrap(),
+        )
+        .await;
+        let output = events(&api, request()).await;
+        let paper = &output[2]["result"]["data"]["paper"];
+        assert_eq!(paper["stub"], stub);
+        assert!(paper["full_text_url"].is_null());
+        assert_eq!(paper["publisher_url"].is_null(), stub);
+        assert_eq!(paper["abstract_truncated"], !stub);
+        assert_eq!(paper["authors_truncated"], !stub);
+        if !stub {
+            assert_eq!(
+                paper["abstract_text"].as_str().unwrap().chars().count(),
+                8000
+            );
+            assert_eq!(paper["authors"].as_array().unwrap().len(), 50);
+        }
+        for task in [model_task, corpus_task, api_task] {
+            task.abort();
+        }
+    }
+}
+
+#[tokio::test]
+async fn absent_shared_retired_and_unavailable_papers_are_explicit_tool_errors() {
+    for (status, body, message) in [
+        (StatusCode::NOT_FOUND, "private", "No single paper"),
+        (
+            StatusCode::BAD_REQUEST,
+            r#"{"code":"failed_precondition","message":"private"}"#,
+            "shared identifier",
+        ),
+        (
+            StatusCode::BAD_REQUEST,
+            r#"{"code":"invalid_argument","message":"private"}"#,
+            "syntax",
+        ),
+        (StatusCode::SERVICE_UNAVAILABLE, "private", "failed"),
+        (
+            StatusCode::OK,
+            r#"{"work":null,"answered":null}"#,
+            "No paper",
+        ),
+    ] {
+        let (model, model_task, _) = scripted_model(vec![paper_call("ol:unknown"), answer()]).await;
+        let (corpus, corpus_task) = serve(Router::new().route(
+            "/v1/work",
+            axum::routing::get(move || async move { (status, body) }),
+        ))
+        .await;
+        let (api, api_task) = serve(
+            ol_rht_chat::router(
+                Config::local(&format!("{model}/v1"), "test")
+                    .unwrap()
+                    .with_corpus(&corpus)
+                    .unwrap(),
+            )
+            .unwrap(),
+        )
+        .await;
+        let output = events(&api, request()).await;
+        let result = &output[2]["result"]["data"];
+        assert_eq!(result["status"], "error");
+        assert!(result["message"].as_str().unwrap().contains(message));
+        assert!(!result.to_string().contains("private"));
+        assert_eq!(output.last().unwrap()["type"], "finish");
+        for task in [model_task, corpus_task, api_task] {
+            task.abort();
+        }
     }
 }

@@ -31,8 +31,152 @@ pub enum Role {
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 pub enum ContentPart {
-    Text { text: String },
-    Reasoning { text: String },
+    Text {
+        text: String,
+    },
+    Reasoning {
+        text: String,
+    },
+    ToolCall {
+        tool_call_id: String,
+        call: ToolCall,
+        result: Option<ToolResult>,
+    },
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(
+    tag = "name",
+    content = "args",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+pub enum ToolCall {
+    Search(SearchArgs),
+    GetPaper(PaperArgs),
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(
+    tag = "name",
+    content = "data",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+pub enum ToolResult {
+    Search(SearchResult),
+    GetPaper(PaperResult),
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+pub struct PaperArgs {
+    pub id: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+pub enum PaperResult {
+    Ok {
+        paper: Box<Paper>,
+        answered: Option<CorpusProvenance>,
+    },
+    Error {
+        message: String,
+    },
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+pub struct Paper {
+    pub public_id: String,
+    pub stub: bool,
+    pub title: String,
+    pub authors: Vec<String>,
+    pub authors_truncated: bool,
+    pub venue: String,
+    pub published: Option<PaperDate>,
+    pub identifiers: Vec<PaperIdentifier>,
+    pub abstract_text: String,
+    pub abstract_truncated: bool,
+    pub retracted_by: Vec<String>,
+    pub corrected_by: Vec<String>,
+    pub concern_by: Vec<String>,
+    pub open_access: Option<bool>,
+    pub full_text_url: Option<String>,
+    pub publisher_url: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+pub struct PaperDate {
+    pub year: i32,
+    pub month: u32,
+    pub day: u32,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+pub struct PaperIdentifier {
+    pub namespace: String,
+    pub value: String,
+    pub standing: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+pub struct SearchArgs {
+    pub query: String,
+    #[serde(default = "default_limit")]
+    pub limit: u8,
+}
+
+fn default_limit() -> u8 {
+    5
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+pub enum SearchResult {
+    Ok {
+        query: String,
+        total: u64,
+        hits: Vec<SearchPaper>,
+        answered: Option<CorpusProvenance>,
+    },
+    Error {
+        message: String,
+    },
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+pub struct SearchPaper {
+    pub public_id: String,
+    pub title: String,
+    /// At most six authors, in source order, to keep model context bounded.
+    pub authors: Vec<String>,
+    pub venue: String,
+    pub year: Option<i32>,
+    pub retracted_by: Vec<String>,
+    pub corrected_by: Vec<String>,
+    pub concern_by: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+pub struct CorpusProvenance {
+    pub epoch: u64,
+    pub batch: u64,
+    pub at: String,
+    pub sources: Vec<String>,
+    pub attribution: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
@@ -57,6 +201,15 @@ pub enum ChatEvent {
         kind: PartKind,
         text: String,
     },
+    /// Complete, validated arguments. Execution belongs to the server.
+    ToolCall {
+        part_id: String,
+        call: ToolCall,
+    },
+    ToolResult {
+        part_id: String,
+        result: ToolResult,
+    },
     Finish {
         reason: FinishReason,
     },
@@ -80,12 +233,23 @@ mod tests {
     use ts_rs::{Config, TS};
 
     fn bindings() -> String {
-        let cfg = Config::default();
+        let cfg = Config::default().with_large_int("number");
         let declarations = [
             ChatRequest::decl(&cfg),
             ChatMessage::decl(&cfg),
             Role::decl(&cfg),
             ContentPart::decl(&cfg),
+            ToolCall::decl(&cfg),
+            ToolResult::decl(&cfg),
+            PaperArgs::decl(&cfg),
+            PaperResult::decl(&cfg),
+            Paper::decl(&cfg),
+            PaperDate::decl(&cfg),
+            PaperIdentifier::decl(&cfg),
+            SearchArgs::decl(&cfg),
+            SearchResult::decl(&cfg),
+            SearchPaper::decl(&cfg),
+            CorpusProvenance::decl(&cfg),
             PartKind::decl(&cfg),
             ChatEvent::decl(&cfg),
             FinishReason::decl(&cfg),

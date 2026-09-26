@@ -9,6 +9,7 @@ import {
   EmptyTitle,
 } from "@/components/ui/empty"
 import { chatAdapter } from "@/lib/chat-adapter"
+import { ChatTool, ChatToolGroup } from "@/components/chat-tools"
 
 /** A route-scoped runtime: leaving Chat discards its in-memory conversation. */
 export function Chat() {
@@ -21,10 +22,10 @@ export function Chat() {
         className="flex h-[calc(100dvh-12rem)] min-h-80 flex-col xl:h-[calc(100dvh-7rem)]"
       >
         <p className="text-muted-foreground px-4 py-2 text-center text-xs">
-          Local model · No corpus connection · Messages aren’t saved
+          Local model · Corpus tools · Messages aren’t saved
         </p>
         <div className="min-h-0 flex-1">
-          <Thread components={{ Welcome: ChatWelcome }} />
+          <Thread components={{ Welcome: ChatWelcome, ToolFallback: ChatTool, ToolGroup: ChatToolGroup }} />
         </div>
       </section>
     </AssistantRuntimeProvider>
@@ -40,8 +41,8 @@ function ChatWelcome() {
         </EmptyMedia>
         <EmptyTitle>Chat</EmptyTitle>
         <EmptyDescription>
-          Chat with the local development model. It has no access to the
-          literature database yet.
+          Find papers in the literature corpus with the local development model.
+          Search for papers or look one up by ID for a citation and reading links.
         </EmptyDescription>
       </EmptyHeader>
     </Empty>

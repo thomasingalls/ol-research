@@ -154,6 +154,8 @@ const defaultComponents = memoizeMarkdownComponents({
         className,
       )}
       {...props}
+      target="_blank"
+      rel="noopener noreferrer"
     />
   ),
   blockquote: ({ className, ...props }) => (
