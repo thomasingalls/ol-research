@@ -8,24 +8,39 @@ use std::fmt;
 ///
 /// The rule (plan §4): `10.` then four to nine ASCII digits with no leading
 /// zero (the registrant), `/`, then a non-empty suffix of printable ASCII
-/// with no whitespace. DOIs are case-insensitive by definition, so the
-/// canonical form is lowercase; the value is borrowed from the input unless
-/// it contained uppercase, in which case a lowercased copy is made (about
-/// 7 % of PubMed's DOIs).
+/// and letters, with no whitespace. DOIs are case-insensitive by
+/// definition, so the canonical form is lowercase — for letters beyond
+/// ASCII too, as registries write them (`réseaux`, not `Réseaux`), though
+/// the DOI Handbook folds only ASCII case (§4.3.4, 2025 edition). The
+/// value is borrowed from the input unless something was read or
+/// lowercased (about 7 % of PubMed's DOIs).
 ///
-/// Non-ASCII suffixes are permitted by the DOI Handbook and rejected here
-/// until one is observed; that is a modelling decision waiting on evidence.
+/// Letters beyond ASCII are the DOI of record (model version 10, the
+/// user's decision, 2026-09-26): Crossref registers `10.3166/réseaux…` and
+/// `10.1556/mentál…`, doi.org resolves them, and some publishers registered
+/// an ASCII twin as well (`día` and `dia`) — a second name for the work,
+/// which the merge joins, not a spelling this type folds.
 ///
-/// One non-ASCII character is read rather than rejected: U+2010 HYPHEN in
-/// the suffix is taken as `-` (model version 9, the user's decision,
-/// 2026-09-25). The Handbook would call the two different names — it
-/// compares code points and folds only ASCII case (§4.3.4, 2025 edition) —
-/// so this is a reading, and the evidence is what makes it one: in
-/// Crossref's March 2026 sample every one of 13,305 reference DOIs
-/// carrying it came from Wiley's 1,248 records, 13,301 of them are DOIs
-/// once it is read as `-`, and the hyphen-minus forms resolve at doi.org
-/// where the U+2010 form does not. Other dashes (U+2013, U+2212) and
-/// look-alikes (`×` for `x`) are not read; 30 in the same 262,499.
+/// Three things are read rather than rejected, each a misspelling of a DOI
+/// the registry knows, and each reported in [`Readings`] so a source can
+/// count it:
+/// - every Unicode dash, and the minus sign, is `-`. U+2010 since model
+///   version 9 (Wiley's 13,305 reference DOIs in Crossref's March 2026
+///   sample, whose hyphen forms resolve and U+2010 forms do not); the rest
+///   since model 10, when the file's en-dash DOIs proved second
+///   registrations of their hyphen twins, which doi.org redirects to
+///   (`10.1027/0838–1925.18.2.82` → `…0838-1925…`);
+/// - whitespace at either end is dropped (`10.3354/meps7782` and three
+///   non-breaking spaces after `10.4021/gr2008.11.1240`, 2026-09-26), where
+///   whitespace inside is still refused;
+/// - a letter written as its UTF-8 bytes read as Latin-1, `Ã¼` or,
+///   lowercased, `ã¼` for `ü` (`10.2195/…_gã¼nthner_…`, whose `günthner` twin
+///   is registered and resolves), is repaired: `Ã` or `ã` followed by a
+///   character from U+0080 to U+00BF is the Latin-1 letter those two bytes
+///   encode, U+00C0 to U+00FF.
+///
+/// A character that is none of these — a symbol (`×` for `x`), a control,
+/// a zero-width joiner — is still refused.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Doi<'a>(#[serde(borrow)] Cow<'a, str>);
@@ -39,6 +54,47 @@ pub struct Doi<'a>(#[serde(borrow)] Cow<'a, str>);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Registrant(u32);
+
+/// What reading a DOI changed from what its source wrote, beyond case
+/// ([`Doi::read`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[allow(clippy::struct_excessive_bools)] // three independent facts
+pub struct Readings {
+    /// A dash other than `-` was read as `-`.
+    pub dash: bool,
+    /// Whitespace at an end was dropped.
+    pub space: bool,
+    /// A broken encoding was repaired.
+    pub encoding: bool,
+}
+
+impl Readings {
+    /// Each reading made, in words, for a report.
+    pub fn made(self) -> impl Iterator<Item = &'static str> {
+        [
+            (self.dash, "a dash read as a hyphen"),
+            (self.space, "whitespace at an end dropped"),
+            (self.encoding, "a broken encoding repaired"),
+        ]
+        .into_iter()
+        .filter_map(|(made, what)| made.then_some(what))
+    }
+
+    /// True when nothing was read.
+    #[must_use]
+    pub const fn is_empty(self) -> bool {
+        !(self.dash || self.space || self.encoding)
+    }
+}
+
+/// Every Unicode dash (general category Pd) but `-` itself, and the minus
+/// sign: each read as `-` in a suffix.
+const DASHES: [char; 25] = [
+    '\u{058A}', '\u{05BE}', '\u{1400}', '\u{1806}', '\u{2010}', '\u{2011}', '\u{2012}', '\u{2013}',
+    '\u{2014}', '\u{2015}', '\u{2E17}', '\u{2E1A}', '\u{2E3A}', '\u{2E3B}', '\u{2E40}', '\u{2E5D}',
+    '\u{301C}', '\u{3030}', '\u{30A0}', '\u{FE31}', '\u{FE32}', '\u{FE58}', '\u{FE63}', '\u{FF0D}',
+    '\u{2212}',
+];
 
 /// Why a string is not a DOI.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -71,7 +127,10 @@ impl fmt::Display for Error {
             Self::MissingSlash => f.write_str("no / after the registrant code"),
             Self::EmptySuffix => f.write_str("empty suffix"),
             Self::InvalidChar { offset } => {
-                write!(f, "non-printable or non-ASCII byte at {offset}")
+                write!(
+                    f,
+                    "a character that is not printable ASCII or a letter at {offset}"
+                )
             }
         }
     }
@@ -131,13 +190,31 @@ impl<'a> Doi<'a> {
     /// U+2010 HYPHEN, read as `-` in a suffix (see [`Doi`]).
     pub const HYPHEN: char = '\u{2010}';
 
-    /// Parses a bare DOI such as `10.1001/jama.2025.15703`.
+    /// Parses a bare DOI such as `10.1001/jama.2025.15703`, making the
+    /// readings of [`Doi`] without saying which; [`Self::read`] says.
     ///
     /// # Errors
     ///
-    /// See [`Error`]. An offset is into the input as given, before any
-    /// [`Self::HYPHEN`] is read as `-`.
+    /// As [`Self::read`].
     pub fn parse(s: &'a str) -> Result<Self, Error> {
+        Self::read(s).map(|(doi, _)| doi)
+    }
+
+    /// Parses a bare DOI, and says what it read from what was written: a
+    /// dash, whitespace at an end, a broken encoding ([`Doi`]).
+    ///
+    /// # Errors
+    ///
+    /// See [`Error`]. An offset is into the input as given, before
+    /// anything is read.
+    pub fn read(s: &'a str) -> Result<(Self, Readings), Error> {
+        let trimmed = s.trim();
+        let lead = s.len() - s.trim_start().len();
+        let mut readings = Readings {
+            space: trimmed.len() != s.len(),
+            ..Readings::default()
+        };
+        let s = trimmed;
         if s.is_empty() {
             return Err(Error::Empty);
         }
@@ -150,34 +227,48 @@ impl<'a> Doi<'a> {
         if suffix.is_empty() {
             return Err(Error::EmptySuffix);
         }
-        let suffix_start = s.len() - suffix.len();
-        // Printable ASCII throughout, but for HYPHEN; a suffix that is all
-        // ASCII — nearly every one — is checked a byte at a time.
-        let hyphen = if suffix.is_ascii() {
+        let suffix_start = lead + s.len() - suffix.len();
+        // A suffix that is all ASCII — nearly every one — is checked a byte
+        // at a time, and borrowed when it needs no lowercasing.
+        if suffix.is_ascii() {
             if let Some(bad) = suffix.bytes().position(|b| !(0x21..=0x7e).contains(&b)) {
                 return Err(Error::InvalidChar {
                     offset: suffix_start + bad,
                 });
             }
-            false
-        } else {
-            if let Some((bad, _)) = suffix
-                .char_indices()
-                .find(|&(_, c)| c != Self::HYPHEN && !('\x21'..='\x7e').contains(&c))
+            let doi = if suffix.bytes().any(|b| b.is_ascii_uppercase()) {
+                Cow::Owned(s.to_ascii_lowercase())
+            } else {
+                Cow::Borrowed(s)
+            };
+            return Ok((Self(doi), readings));
+        }
+        let mut out = String::with_capacity(s.len());
+        out.push_str(&s[..s.len() - suffix.len()]);
+        let mut chars = suffix.char_indices().peekable();
+        while let Some((at, c)) = chars.next() {
+            if let Some(&(_, next)) = chars.peek()
+                && (c == '\u{C3}' || c == '\u{E3}')
+                && ('\u{80}'..='\u{BF}').contains(&next)
             {
+                let letter = char::from_u32(0xC0 + u32::from(next) - 0x80).unwrap_or(next);
+                out.extend(letter.to_lowercase());
+                readings.encoding = true;
+                chars.next();
+            } else if ('\x21'..='\x7e').contains(&c) {
+                out.push(c.to_ascii_lowercase());
+            } else if DASHES.contains(&c) {
+                out.push('-');
+                readings.dash = true;
+            } else if c.is_alphabetic() {
+                out.extend(c.to_lowercase());
+            } else {
                 return Err(Error::InvalidChar {
-                    offset: suffix_start + bad,
+                    offset: suffix_start + at,
                 });
             }
-            true
-        };
-        Ok(Self(if hyphen {
-            Cow::Owned(s.replace(Self::HYPHEN, "-").to_ascii_lowercase())
-        } else if suffix.bytes().any(|b| b.is_ascii_uppercase()) {
-            Cow::Owned(s.to_ascii_lowercase())
-        } else {
-            Cow::Borrowed(s)
-        }))
+        }
+        Ok((Self(Cow::Owned(out)), readings))
     }
 
     /// Parses the URL form, `https://doi.org/10.…`.
@@ -210,8 +301,8 @@ impl<'a> Doi<'a> {
         Registrant::from_digits(&s[3..s.find('/').unwrap_or(s.len())]).unwrap_or(Registrant(0))
     }
 
-    /// True when no copy was needed: nothing to lowercase, no
-    /// [`Self::HYPHEN`] to read.
+    /// True when no copy was needed: an ASCII suffix, nothing to lowercase
+    /// or read.
     #[must_use]
     pub const fn is_borrowed(&self) -> bool {
         matches!(self.0, Cow::Borrowed(_))
@@ -226,7 +317,7 @@ impl fmt::Display for Doi<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Doi, Error, Registrant};
+    use super::{Doi, Error, Readings, Registrant};
 
     #[test]
     fn parses_observed_forms_borrowing_lowercase_ones() {
@@ -277,16 +368,9 @@ mod tests {
             Doi::parse("https://www.ajronline.org/doi/10.2214/AJR.07.2123"),
             Err(Error::BadPrefix)
         );
-        // Dashes and look-alikes other than U+2010, as Crossref's March 2026
-        // sample carries them in reference DOIs: refused, not read.
-        assert_eq!(
-            Doi::parse("10.1111/j.1365\u{2013}3040.2007.01641.x"),
-            Err(Error::InvalidChar { offset: 14 })
-        );
-        assert_eq!(
-            Doi::parse("10.12198/j.issn.1673\u{2212}159X.5718"),
-            Err(Error::InvalidChar { offset: 20 })
-        );
+        // A look-alike that is no dash, and a zero-width character, as
+        // Crossref's March 2026 sample carries them in reference DOIs:
+        // refused, not read.
         assert_eq!(
             Doi::parse("10.1177/0308518\u{d7}18809094"),
             Err(Error::InvalidChar { offset: 15 })
@@ -320,11 +404,7 @@ mod tests {
         // Beside a character that is not read, the offset is into the input
         // as given: U+2010 is three bytes here, not one.
         assert_eq!(
-            Doi::parse("10.1136/bmjopen\u{2212}2018\u{2010}025300"),
-            Err(Error::InvalidChar { offset: 15 })
-        );
-        assert_eq!(
-            Doi::parse("10.1136/bmjopen\u{2010}2018\u{2212}025300"),
+            Doi::parse("10.1136/bmjopen\u{2010}2018\u{d7}025300"),
             Err(Error::InvalidChar { offset: 22 })
         );
         // Only in the suffix: the registrant is digits.
@@ -345,13 +425,96 @@ mod tests {
             Err(Error::InvalidChar { offset: 9 })
         );
         assert_eq!(
-            Doi::parse("10.1234/a\u{e9}"),
+            Doi::parse("10.1234/a\u{bc}"),
             Err(Error::InvalidChar { offset: 9 })
         );
-        assert_eq!(Doi::parse(" 10.1234/a"), Err(Error::BadPrefix));
+        assert_eq!(Doi::parse(" "), Err(Error::Empty));
+        assert_eq!(
+            Doi::parse(" 10.1234/a b"),
+            Err(Error::InvalidChar { offset: 10 }),
+            "offsets are into the input as given"
+        );
         assert!(
             Doi::parse("10.1234/a.").is_ok(),
             "trailing period is printable ASCII"
+        );
+    }
+
+    /// The record DOIs of Crossref's March 2026 file that are not ASCII
+    /// (homelab `ol-rht-dump-crossref-v3`, 2026-09-26).
+    #[test]
+    fn what_the_march_2026_file_writes_beyond_ascii() {
+        let read = |s| Doi::read(s).unwrap();
+        // Every dash is `-`: the en dash on Hogrefe's second registration,
+        // which doi.org redirects to its hyphen twin; the minus sign and
+        // the em dash as well.
+        let (doi, r) = read("10.1027/0838\u{2013}1925.18.2.82");
+        assert_eq!(doi.as_str(), "10.1027/0838-1925.18.2.82");
+        assert_eq!(
+            r,
+            Readings {
+                dash: true,
+                ..Readings::default()
+            }
+        );
+        for dash in ['\u{2212}', '\u{2014}', '\u{2011}', '\u{FF0D}'] {
+            assert_eq!(
+                Doi::parse(&format!("10.1234/a{dash}b")).unwrap().as_str(),
+                "10.1234/a-b",
+                "{dash:?}"
+            );
+        }
+        // A letter is the DOI of record, lowercased as registries write it.
+        let (doi, r) = read("10.3166/r\u{e9}seaux.151.139-166");
+        assert_eq!(doi.as_str(), "10.3166/r\u{e9}seaux.151.139-166");
+        assert!(r.is_empty());
+        assert_eq!(
+            Doi::parse("10.1556/MENT\u{c1}L.5.2004.1.1")
+                .unwrap()
+                .as_str(),
+            "10.1556/ment\u{e1}l.5.2004.1.1"
+        );
+        assert_eq!(
+            Doi::parse("10.1234/stra\u{df}e").unwrap().as_str(),
+            "10.1234/stra\u{df}e",
+            "an eszett is already lowercase"
+        );
+        // Non-breaking spaces at the end, dropped.
+        let (doi, r) = read("10.4021/gr2008.11.1240\u{a0}\u{a0}\u{a0}");
+        assert_eq!(doi.as_str(), "10.4021/gr2008.11.1240");
+        assert_eq!(
+            r,
+            Readings {
+                space: true,
+                ..Readings::default()
+            }
+        );
+        // `ü` written as its UTF-8 bytes read as Latin-1 and lowercased.
+        let (doi, r) = read("10.2195/lj_not_ref_d_g\u{e3}\u{bc}nthner_0120052");
+        assert_eq!(doi.as_str(), "10.2195/lj_not_ref_d_g\u{fc}nthner_0120052");
+        assert_eq!(
+            r,
+            Readings {
+                encoding: true,
+                ..Readings::default()
+            }
+        );
+        assert_eq!(
+            Doi::parse("10.1234/caf\u{c3}\u{a9}").unwrap().as_str(),
+            "10.1234/caf\u{e9}",
+            "`Ã©` for `é`, not lowercased"
+        );
+        assert_eq!(
+            Doi::parse("10.1234/s\u{e3}o").unwrap().as_str(),
+            "10.1234/s\u{e3}o",
+            "`ã` before a letter is itself"
+        );
+        assert_eq!(
+            read("\u{a0}10.1234/a\u{2013}b")
+                .1
+                .made()
+                .collect::<Vec<_>>(),
+            ["a dash read as a hyphen", "whitespace at an end dropped"]
         );
     }
 

@@ -74,6 +74,14 @@ impl merge::Contributor for Crossref {
         // the DOI the record is registered under. The DOI-shaped ones —
         // 13,659 of the census's — are refused by the scope, whether they
         // restate this record's DOI or name another (§11, item 9).
+        // `aliases`: other DOIs the registry holds for the work.
+        for alias in work.aliases.iter().filter_map(model::Claim::valid) {
+            out(merge::Assertion {
+                name: merge::Name::Doi(alias.as_str()),
+                field: "aliases",
+                native: false,
+            });
+        }
         let scope = view::publisher_scope(work);
         for value in &work.alternative_ids {
             if let Ok(name) = scope.name(value) {

@@ -134,6 +134,12 @@ pub struct Work<'n> {
     /// `status`: posted content withdrawn or removed.
     #[serde(borrow)]
     pub status: Option<PostedStatus<'n>>,
+    /// `aliases`: other DOIs the registry holds for this work — a
+    /// figshare item's `.v1`, on 138 of the records the March 2026 file's
+    /// survey named or stopped at (2026-09-26) — each a name the merge
+    /// gives the work beside its own. Dropped until model 10.
+    #[serde(borrow)]
+    pub aliases: Few<DoiClaim<'n>, 1>,
     /// `publisher`; absent with `member`.
     #[serde(borrow)]
     pub publisher: Option<Interned<'n>>,
@@ -522,6 +528,9 @@ struct Ctx {
     /// What the record's reading set aside, by field and value, for the
     /// sink once the record is read ([`Sink::set_aside`]).
     set_aside: std::cell::RefCell<Vec<(&'static str, &'static str)>>,
+    /// What it read as other than written, by field and how
+    /// ([`Sink::corrected`]).
+    corrected: std::cell::RefCell<Vec<(&'static str, &'static str)>>,
 }
 
 /// Where an `<institution>` sits: the field its failures name.
@@ -588,6 +597,16 @@ impl<'n, 'a> Parts<'n, 'a> {
 }
 
 impl Ctx {
+    /// A DOI, read ([`Doi::read`]), with what the reading changed noted
+    /// for the sink under `field`.
+    fn doi<'n>(&self, field: &'static str, raw: &'n str) -> Result<Doi<'n>, DoiError> {
+        let (doi, readings) = Doi::read(raw)?;
+        self.corrected
+            .borrow_mut()
+            .extend(readings.made().map(|how| (field, how)));
+        Ok(doi)
+    }
+
     fn err(&self, field: &'static str, raw: &str, kind: ErrorKind) -> Error {
         Error {
             doi: self.doi.clone(),
@@ -965,7 +984,9 @@ impl Ctx {
             }
         };
         Ok(Some(Update {
-            doi: Doi::parse(&u.doi).map_err(|e| self.err(field, &u.doi, ErrorKind::Doi(e)))?,
+            doi: self
+                .doi(field, &u.doi)
+                .map_err(|e| self.err(field, &u.doi, ErrorKind::Doi(e)))?,
             kind,
             word: u.r#type,
             at: self.stamp(
@@ -1006,8 +1027,11 @@ pub fn normalize<'n, K: Sink<'n, Crossref>>(w: &'n Native<'_>, emit: &mut K) -> 
     let mut ctx = Ctx {
         doi: None,
         set_aside: std::cell::RefCell::new(Vec::new()),
+        corrected: std::cell::RefCell::new(Vec::new()),
     };
-    let doi = Doi::parse(&w.doi).map_err(|e| ctx.err("DOI", &w.doi, ErrorKind::Doi(e)))?;
+    let doi = ctx
+        .doi("DOI", &w.doi)
+        .map_err(|e| ctx.err("DOI", &w.doi, ErrorKind::Doi(e)))?;
     ctx.doi = Some(doi.as_str().to_owned());
     if w.url.strip_prefix(Doi::URL_PREFIX) != Some(&*w.doi) {
         return Err(ctx.err(
@@ -1220,8 +1244,17 @@ pub fn normalize<'n, K: Sink<'n, Crossref>>(w: &'n Native<'_>, emit: &mut K) -> 
         }));
     }
 
+    let aliases = w
+        .aliases
+        .iter()
+        .flatten()
+        .map(|a| Claim::from_parse(a, ctx.doi("aliases", a)))
+        .collect();
     for (field, value) in ctx.set_aside.take() {
         emit.set_aside(&doi, field, value);
+    }
+    for (field, how) in ctx.corrected.take() {
+        emit.corrected(&doi, field, how);
     }
     emit.work(&Work {
         owner,
@@ -1253,6 +1286,7 @@ pub fn normalize<'n, K: Sink<'n, Crossref>>(w: &'n Native<'_>, emit: &mut K) -> 
         part_number: w.part_number.as_deref(),
         version: w.version.as_ref().map(|v| &*v.version),
         status,
+        aliases,
         publisher: w.publisher.as_deref().map(Interned::Text),
         language,
         authors,
@@ -1280,14 +1314,22 @@ pub fn normalize<'n, K: Sink<'n, Crossref>>(w: &'n Native<'_>, emit: &mut K) -> 
                 ErrorKind::Inconsistent("DOI and doi-asserted-by must appear together"),
             ));
         }
+        let cited = r.doi.as_deref().map(|d| {
+            Claim::from_parse(
+                d,
+                Doi::read(d).map(|(cited, readings)| {
+                    for how in readings.made() {
+                        emit.corrected(&doi, "reference.DOI", how);
+                    }
+                    cited
+                }),
+            )
+        });
         emit.reference(
             &doi,
             &Reference {
                 key: &r.key,
-                doi: r
-                    .doi
-                    .as_deref()
-                    .map(|d| Claim::from_parse(d, Doi::parse(d))),
+                doi: cited,
                 asserted_by: r.doi_asserted_by,
                 unstructured: r.unstructured.as_deref(),
                 year: r.year.as_deref(),

@@ -134,7 +134,12 @@
 /// or the resource absent, a journal issue may hold only its date,
 /// a record may name no member and no publisher (a DOI moved to an owner
 /// Crossref's index does not attach), an ISNI, an ISBN and an author's
-/// ORCID are claims, and a language may be a three-letter code; nothing
+/// ORCID are claims, and a language may be a three-letter code. DOIs, in
+/// every source: a letter beyond ASCII is the DOI of record, lowercased;
+/// every Unicode dash is read as `-`, whitespace at an end dropped, and a
+/// letter written as its UTF-8 bytes read as Latin-1 repaired — each
+/// reading counted ([`doi::Readings`]); and a Crossref record keeps its
+/// `aliases`, other DOIs the registry holds for the work. Nothing
 /// was ever normalized under the version 10 builds before
 /// those (only surveyed), so they are version 10 too. Output under version
 /// 9 is rebuilt, not patched.

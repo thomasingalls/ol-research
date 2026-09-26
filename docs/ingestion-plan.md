@@ -2041,6 +2041,36 @@ cross-IDs and a second edge namespace early.
   character fails (1) is a claim, as the other ids with checks are.
   Every one of the 234 records the whole-file survey named as examples
   now normalizes.
+- 2026-09-26, still model 10: DOIs beyond ASCII, the user's decisions.
+  About 200 records of the file had a DOI the model refused; all 97 the
+  survey named were found by their escaped spelling (homelab
+  `ol-rht-dump-crossref-v3`) and checked at doi.org and Crossref's API.
+  In `model::Doi`, for every source and every DOI, records' and
+  references' alike:
+  - every Unicode dash, and the minus sign, is `-`. The 61 en-dash DOIs
+    are second registrations — Wiley's, Hogrefe's, AAIDD's — of articles
+    whose hyphen twins are the live records, and doi.org redirects the
+    one to the other (`10.1027/0838–1925.18.2.82`, 301); read as the
+    twin's DOI, a second registration is a copy of the twin's record in
+    the merge, one work;
+  - a letter beyond ASCII is the DOI of record, lowercased as registries
+    write it (33: Lavoisier's `réseaux`, Akadémiai Kiadó's `mentál`),
+    since doi.org resolves them. Some publishers registered an ASCII twin
+    too (`día` and `dia`); that the merge joins such twins waits on a
+    count of them over the whole file (homelab
+    `ol-rht-census-doi-spellings-v1`);
+  - whitespace at an end is dropped (2: `10.3354/meps7782` and a
+    non-breaking space — an early registration of an article whose DOI is
+    `meps07782` — and `10.4021/gr2008.11.1240` with three); neither
+    spelling resolves, and the user wants such readings counted;
+  - a letter written as its UTF-8 bytes read as Latin-1 is repaired (1:
+    Fraunhofer's `gã¼nthner`, whose `günthner` twin is live), a table the
+    data will add to.
+  Each reading is counted in the survey's report (`Sink::corrected`, new),
+  by field and kind, so a reading that leaves a DOI no registry knows is
+  a number, as an exclusion is. Crossref's own `aliases` (138 of the
+  dumped records; a figshare item's `.v1`) were parsed and dropped, and
+  are now kept, each a name the merge gives the work.
 
 ## 11. Dependencies
 

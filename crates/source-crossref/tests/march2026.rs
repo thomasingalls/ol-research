@@ -33,6 +33,7 @@ struct Collect<'n> {
     references: Vec<Reference<'n>>,
     excluded: Vec<&'static str>,
     set_aside: Vec<(&'static str, &'static str)>,
+    corrected: Vec<(&'static str, &'static str)>,
 }
 
 impl<'n> Sink<'n, source_crossref::Crossref> for Collect<'n> {
@@ -48,6 +49,9 @@ impl<'n> Sink<'n, source_crossref::Crossref> for Collect<'n> {
     }
     fn set_aside(&mut self, _: &Doi<'n>, field: &'static str, value: &'static str) {
         self.set_aside.push((field, value));
+    }
+    fn corrected(&mut self, _: &Doi<'n>, field: &'static str, how: &'static str) {
+        self.corrected.push((field, how));
     }
 }
 
@@ -836,4 +840,67 @@ fn an_orcid_whose_check_character_fails_is_a_claim() {
             error: OrcidError::Checksum
         }
     );
+}
+
+/// 10.1027/0838–1925.18.2.82, shard 32585 line 253: Hogrefe's second
+/// registration of an article, its DOI written with an en dash; doi.org
+/// redirects it to the hyphen twin, which is the live record. Read as the
+/// twin's DOI, and counted.
+#[test]
+fn an_en_dash_in_a_records_doi_is_a_hyphen_and_counted() {
+    let out = collect("doi_en_dash");
+    assert_eq!(out.works[0].doi.as_str(), "10.1027/0838-1925.18.2.82");
+    assert_eq!(out.corrected, [("DOI", "a dash read as a hyphen")]);
+}
+
+/// 10.1556/mentál.5.2004.1.1, shard 34231 line 4842: Akadémiai Kiadó's
+/// DOI with an accented letter, registered and resolving: the DOI of
+/// record, and nothing to count.
+#[test]
+fn an_accented_letter_is_the_doi_of_record() {
+    let out = collect("doi_accented");
+    assert_eq!(out.works[0].doi.as_str(), "10.1556/ment\u{e1}l.5.2004.1.1");
+    assert!(out.corrected.is_empty());
+}
+
+/// 10.3354/meps7782 and a non-breaking space, shard 29882 line 4840: an
+/// early registration of an article whose DOI is `meps07782`; the space
+/// dropped, and counted, since what is left names nothing a registry knows.
+#[test]
+fn a_trailing_space_is_dropped_and_counted() {
+    let out = collect("doi_trailing_space");
+    assert_eq!(out.works[0].doi.as_str(), "10.3354/meps7782");
+    assert_eq!(out.corrected, [("DOI", "whitespace at an end dropped")]);
+}
+
+/// `10.2195/lj_not_ref_d_gã¼nthner_0120052`, shard 33247 line 4997: `ü`
+/// written as its UTF-8 bytes read as Latin-1, then lowercased; its
+/// `günthner` twin is registered and resolves.
+#[test]
+fn a_broken_encoding_is_repaired_and_counted() {
+    let out = collect("doi_broken_encoding");
+    assert_eq!(
+        out.works[0].doi.as_str(),
+        "10.2195/lj_not_ref_d_g\u{fc}nthner_0120052"
+    );
+    assert_eq!(out.corrected, [("DOI", "a broken encoding repaired")]);
+}
+
+/// 10.26686/wgtn.16850662, shard 10933 line 3720: a Wellington thesis on
+/// figshare, whose `.v1` DOI Crossref holds as its alias: kept, and a
+/// name the merge gives the work.
+#[test]
+fn an_alias_is_kept_and_is_a_name_of_the_work() {
+    let w = run("aliases");
+    let aliases: Vec<_> = w
+        .aliases
+        .iter()
+        .map(|a| a.valid().unwrap().as_str().to_owned())
+        .collect();
+    assert_eq!(aliases, ["10.26686/wgtn.16850662.v1"]);
+    let mut names = Vec::new();
+    <source_crossref::Crossref as merge::Contributor>::names(&w, &mut |a| {
+        names.push((a.name.to_string(), a.field, a.native));
+    });
+    assert!(names.contains(&("doi:10.26686/wgtn.16850662.v1".to_owned(), "aliases", false)));
 }

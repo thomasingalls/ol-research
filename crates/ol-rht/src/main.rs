@@ -5313,6 +5313,8 @@ fn sample(samples: &mut Vec<String>, raw: &str, error: &impl Display) {
 struct PubmedStats {
     citations: u64,
     deletions: u64,
+    /// Values read as other than written, by field and how.
+    corrected: BTreeMap<(&'static str, &'static str), u64>,
     /// Records the checked-in exclusion list kept out, by reason.
     excluded: BTreeMap<&'static str, u64>,
     doi: [u64; 3],
@@ -5438,6 +5440,9 @@ impl StatsReport for PubmedStats {
 
     fn report(&self) {
         eprintln!("citations {}  deletions {}", self.citations, self.deletions);
+        if !self.corrected.is_empty() {
+            eprintln!("  read as other than written {:?}", self.corrected);
+        }
         for (reason, n) in &self.excluded {
             eprintln!("  excluded by the checked-in list: {n}, {reason}");
         }
@@ -5718,6 +5723,10 @@ impl<'n> Sink<'n, Pubmed> for PubmedStats {
     fn excluded(&mut self, _: &Pmid, reason: &'static str) {
         *self.excluded.entry(reason).or_default() += 1;
     }
+
+    fn corrected(&mut self, _: &Pmid, field: &'static str, how: &'static str) {
+        *self.corrected.entry((field, how)).or_default() += 1;
+    }
 }
 
 /// The Crossref stats report.
@@ -5732,6 +5741,10 @@ struct CrossrefStats {
     excluded: BTreeMap<&'static str, u64>,
     /// Values read and not kept, by field and value.
     set_aside: BTreeMap<(&'static str, &'static str), u64>,
+    /// Values read as other than written, by field and how.
+    corrected: BTreeMap<(&'static str, &'static str), u64>,
+    /// `aliases`: valid, malformed.
+    aliases: [u64; 2],
     doi_lowercased: u64,
     owner_differs: u64,
     /// What `alternative-id` became as a name (merge plan §3.1).
@@ -5857,6 +5870,15 @@ impl<'n> Sink<'n, Crossref> for CrossrefStats {
         }
         self.version_part[0] += u64::from(w.version.is_some());
         self.version_part[1] += u64::from(w.part_number.is_some());
+        for a in &w.aliases {
+            match a {
+                Claim::Valid(_) => self.aliases[0] += 1,
+                Claim::Malformed { raw, error } => {
+                    self.aliases[1] += 1;
+                    sample(&mut self.malformed_samples, raw, error);
+                }
+            }
+        }
         self.unowned[0] += u64::from(w.member.is_none());
         self.unowned[1] += u64::from(w.publisher.is_none());
     }
@@ -5892,6 +5914,10 @@ impl<'n> Sink<'n, Crossref> for CrossrefStats {
 
     fn set_aside(&mut self, _: &Doi<'n>, field: &'static str, value: &'static str) {
         *self.set_aside.entry((field, value)).or_default() += 1;
+    }
+
+    fn corrected(&mut self, _: &Doi<'n>, field: &'static str, how: &'static str) {
+        *self.corrected.entry((field, how)).or_default() += 1;
     }
 }
 
@@ -5936,6 +5962,13 @@ impl StatsReport for CrossrefStats {
         if !self.set_aside.is_empty() {
             eprintln!("  set aside {:?}", self.set_aside);
         }
+        if !self.corrected.is_empty() {
+            eprintln!("  read as other than written {:?}", self.corrected);
+        }
+        eprintln!(
+            "  aliases {} malformed {}",
+            self.aliases[0], self.aliases[1]
+        );
         eprintln!("  relations {:?}", self.relations);
         eprintln!(
             "  licenses {:?}  from publication {} on a day {} unreadable {}",
@@ -6036,6 +6069,8 @@ impl Display for InstitutionCounts {
 struct OpenAlexStats {
     works: u64,
     deletions: u64,
+    /// Values read as other than written, by field and how.
+    corrected: BTreeMap<(&'static str, &'static str), u64>,
     types: BTreeMap<source_openalex::vocab::WorkType, u64>,
     doi: [u64; 3],
     doi_lowercased: u64,
@@ -6090,6 +6125,9 @@ struct OpenAlexStats {
 impl StatsReport for OpenAlexStats {
     fn report(&self) {
         eprintln!("works {}  deletions {}", self.works, self.deletions);
+        if !self.corrected.is_empty() {
+            eprintln!("  read as other than written {:?}", self.corrected);
+        }
         eprintln!("  types {:?}", self.types);
         eprintln!(
             "  doi valid {} malformed {} none {}  lowercased (allocations) {}",
@@ -6290,23 +6328,27 @@ impl<'n> Sink<'n, OpenAlex> for OpenAlexStats {
     fn deletion(&mut self, _: &OpenAlexId) {
         self.deletions += 1;
     }
+
+    fn corrected(&mut self, _: &OpenAlexId, field: &'static str, how: &'static str) {
+        *self.corrected.entry((field, how)).or_default() += 1;
+    }
 }
 
 impl Merge for PubmedStats {
     fn merge(&mut self, other: Self) {
-        absorb_all!(self, other: PubmedStats { citations, deletions, excluded, doi, elocation_doi, doi_lowercased, doi_disagree, pii, pii_extra, publisher, pmc, pmc_malformed, published, published_kept, published_kept_why, published_kept_certain, electronic, revised, completed, status, languages, publication_types, unplaced_types, title, abstracts, sections, sections_markup, sections_math, other_abstracts, journal_issn, journal_issn_linking, journal_issn_malformed, persons, collectives, orcid, affiliations, affiliation_ids, investigators, mesh_headings, mesh_major, chemicals, keywords, grants, grants_with_country, data_banks, history, history_date_malformed, history_time_malformed, publication_status, relations, references, reference_ids, reference_loose, reference_doi_malformed, reference_pmid_malformed, reference_pmc_malformed, malformed_samples });
+        absorb_all!(self, other: PubmedStats { citations, deletions, corrected, excluded, doi, elocation_doi, doi_lowercased, doi_disagree, pii, pii_extra, publisher, pmc, pmc_malformed, published, published_kept, published_kept_why, published_kept_certain, electronic, revised, completed, status, languages, publication_types, unplaced_types, title, abstracts, sections, sections_markup, sections_math, other_abstracts, journal_issn, journal_issn_linking, journal_issn_malformed, persons, collectives, orcid, affiliations, affiliation_ids, investigators, mesh_headings, mesh_major, chemicals, keywords, grants, grants_with_country, data_banks, history, history_date_malformed, history_time_malformed, publication_status, relations, references, reference_ids, reference_loose, reference_doi_malformed, reference_pmid_malformed, reference_pmc_malformed, malformed_samples });
     }
 }
 
 impl Merge for CrossrefStats {
     fn merge(&mut self, other: Self) {
-        absorb_all!(self, other: CrossrefStats { works, deletions, types, untyped, excluded, set_aside, doi_lowercased, owner_differs, publisher, issued, title, alternate_titles, subtitle_empty, abstracts, persons, orgs, with_orcid, orcid_malformed, institutions, issns, isbns, languages, references, reference_doi, reference_empty, updates, update_words, relations, licenses, license_starts, dates, version_part, unowned, malformed_samples });
+        absorb_all!(self, other: CrossrefStats { works, deletions, types, untyped, excluded, set_aside, corrected, aliases, doi_lowercased, owner_differs, publisher, issued, title, alternate_titles, subtitle_empty, abstracts, persons, orgs, with_orcid, orcid_malformed, institutions, issns, isbns, languages, references, reference_doi, reference_empty, updates, update_words, relations, licenses, license_starts, dates, version_part, unowned, malformed_samples });
     }
 }
 
 impl Merge for OpenAlexStats {
     fn merge(&mut self, other: Self) {
-        absorb_all!(self, other: OpenAlexStats { works, deletions, types, doi, doi_lowercased, pmid, mag, languages, language_malformed, title, oa_status, oa_url, with_best_oa, authorships, authors_with_id, with_orcid, with_raw_orcid, orcid_conflicts, corresponding, corresponding_institutions_disagree, institutions, institution_countries, institutions_without_ror, authorship_countries, affiliations, locations, provenance, location_ids, with_source, issn_l, issn, host_lineage, licenses, versions, topics, keywords, concepts, mesh, sdgs, awards, funders, funders_with_ror, apc, abstracts, counts_by_year, indexed_in, flags, references, self_references, related, malformed_samples });
+        absorb_all!(self, other: OpenAlexStats { works, deletions, corrected, types, doi, doi_lowercased, pmid, mag, languages, language_malformed, title, oa_status, oa_url, with_best_oa, authorships, authors_with_id, with_orcid, with_raw_orcid, orcid_conflicts, corresponding, corresponding_institutions_disagree, institutions, institution_countries, institutions_without_ror, authorship_countries, affiliations, locations, provenance, location_ids, with_source, issn_l, issn, host_lineage, licenses, versions, topics, keywords, concepts, mesh, sdgs, awards, funders, funders_with_ror, apc, abstracts, counts_by_year, indexed_in, flags, references, self_references, related, malformed_samples });
     }
 }
 
