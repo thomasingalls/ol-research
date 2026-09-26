@@ -10,9 +10,8 @@ use ingest::Key;
 
 use crate::build::Merged;
 use crate::layout::Summary;
-use crate::name::OwnedName;
 
-use crate::identity::{Resolution, Standing};
+use crate::identity::{Resolution, Standing, StubWorks};
 use crate::registry::Assignment;
 use crate::work::SourceId;
 
@@ -26,7 +25,7 @@ use crate::work::SourceId;
 pub fn identity(
     out: &mut impl Write,
     res: &Resolution,
-    stub_works: &[Vec<OwnedName>],
+    stub_works: &StubWorks,
     registry: Option<&Assignment>,
 ) -> io::Result<()> {
     let s = &res.stats;
@@ -161,7 +160,7 @@ pub fn identity(
         by_key[Key::ALL.iter().position(|k| *k == name.key()).unwrap_or(0)] += 1;
     }
     let mut sizes: BTreeMap<usize, u64> = BTreeMap::new();
-    for names in stub_works {
+    for names in stub_works.iter() {
         *sizes.entry(names.len().min(4)).or_default() += 1;
     }
     writeln!(

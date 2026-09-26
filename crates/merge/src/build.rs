@@ -24,7 +24,7 @@ use smallvec::SmallVec;
 use crate::arena::NameIx;
 use crate::contributor::Contributor;
 use crate::copies::{self, Copies, Fate};
-use crate::identity::{Reason, RecordIx, Resolution, Standing, Work as Identified};
+use crate::identity::{Reason, RecordIx, Resolution, Standing, StubWorks, Work as Identified};
 use crate::kind::{Form, Genre};
 use crate::layout;
 use crate::name::{Name, OwnedName};
@@ -989,7 +989,7 @@ fn records_table(res: &Resolution) -> Result<Vec<usize>, Error> {
 pub struct Builder {
     res: Resolution,
     ids: Ids,
-    stub_works: Vec<Vec<OwnedName>>,
+    stub_works: StubWorks,
     name_work: Vec<Packed>,
     stub_name_work: Vec<Option<WorkId>>,
     record_work: Vec<usize>,
@@ -1032,7 +1032,17 @@ impl Builder {
     ///
     /// An invariant broken.
     pub fn new(res: Resolution, ids: Ids) -> Result<Self, Error> {
-        let stub_works = res.stub_works();
+        let stub_works = res.stub_groups();
+        Self::with_stubs(res, ids, stub_works)
+    }
+
+    /// [`Builder::new`] with the stubs the registry was given, by number
+    /// ([`Resolution::stub_groups`]), which are not worked out twice.
+    ///
+    /// # Errors
+    ///
+    /// An invariant broken, or stubs that are not the resolution's.
+    pub fn with_stubs(res: Resolution, ids: Ids, stub_works: StubWorks) -> Result<Self, Error> {
         if ids.held.len() != res.works.len() || ids.stubs.len() != stub_works.len() {
             return Err(Error::Invariant(format!(
                 "{} ids for {} works, {} for {} stubs",
@@ -1052,11 +1062,13 @@ impl Builder {
         let record_work = records_table(&res)?;
         let mut stub_name_work = vec![None; res.stubs.len()];
         for (s, names) in stub_works.iter().enumerate() {
-            for name in names {
-                let ix = res.stubs.find(name.as_name()).ok_or_else(|| {
-                    Error::Invariant(format!("stub name {name} is not in the stubs"))
+            for &ix in names {
+                let slot = stub_name_work.get_mut(ix as usize).ok_or_else(|| {
+                    Error::Invariant(format!("stub name {ix} is not in the stubs"))
                 })?;
-                stub_name_work[ix as usize] = Some(ids.stubs[s]);
+                if slot.replace(ids.stubs[s]).is_some() {
+                    return Err(Error::Invariant(format!("stub name {ix} is in two stubs")));
+                }
             }
         }
         if stub_name_work.iter().any(Option::is_none) {
@@ -1839,7 +1851,7 @@ impl<S: std::hash::BuildHasher> Views for HashMap<RecordIx, Owned, S> {
 struct Whole<'p> {
     res: &'p Resolution,
     ids: &'p Ids,
-    stub_works: &'p [Vec<OwnedName>],
+    stub_works: &'p StubWorks,
     /// Per id: its records' sources, [`Sources::NONE`] for a stub, `None`
     /// where no work is. What an edge or a relation asks of the work at
     /// its other end, which may be in any range: two bytes an id.
@@ -1848,11 +1860,7 @@ struct Whole<'p> {
 }
 
 impl<'p> Whole<'p> {
-    fn new(
-        res: &'p Resolution,
-        ids: &'p Ids,
-        stub_works: &'p [Vec<OwnedName>],
-    ) -> Result<Self, Error> {
+    fn new(res: &'p Resolution, ids: &'p Ids, stub_works: &'p StubWorks) -> Result<Self, Error> {
         let max = ids
             .held
             .iter()
@@ -1972,20 +1980,22 @@ fn finish_range<V: Views + ?Sized>(
         ));
     }
     for s in stubs {
-        let names = &whole.stub_works[s];
-        let citers: Vec<Vec<Citer>> = names
+        // A stub's names are read out for its own row alone (the merge's
+        // memory, 2026-09-26): the pass holds them as numbers.
+        let numbers = whole.stub_works.names(s);
+        let names: Vec<OwnedName> = numbers
             .iter()
-            .map(|name| {
-                let mut list = res
-                    .stubs
-                    .find(name.as_name())
-                    .and_then(|ix| stub_citers.remove(&ix))
-                    .unwrap_or_default();
+            .map(|&ix| res.stubs.get(ix).into_owned())
+            .collect();
+        let citers: Vec<Vec<Citer>> = numbers
+            .iter()
+            .map(|ix| {
+                let mut list = stub_citers.remove(ix).unwrap_or_default();
                 join_citers(&mut list);
                 list
             })
             .collect();
-        works.push(stub(names, &citers, whole.ids.stubs[s]));
+        works.push(stub(&names, &citers, whole.ids.stubs[s]));
     }
     works.sort_by_key(|w| w.id);
     // Edges: one per pair, the sources joined. A reference a record's

@@ -515,6 +515,31 @@ merged files and the same registry, byte for byte, and the same report;
 the journal line differs in its time alone, and the run makes one
 allocation fewer.
 
+**The stub names, by number.** *Built 2026-09-26* (the user: "continue
+with the next memory steps"). The stubs are found while the references
+are read, a name at a time, so the stubs' arena stays hashed through
+the pass; once it has resolved, `Resolution::sort_stubs` puts the stub
+names through the dictionary the arena's go through — sorted runs under
+the temporary directory, an FST and a front-coded list — and renumbers
+them in name order, before anything but the arena has used their
+numbers. The stubs then travel as numbers (`StubWorks`: where each
+stub's names start, and the names' numbers), in name order within and
+between, which under a dictionary is number order, so nothing sorts
+names. Registry assignment and pass 2 are handed the same list, not a
+copy of every stub's names each, and a stub's names are read out for
+its own row as its range is finished. On the laptop's store (M): 15
+bytes a stub name in the dictionary, against 109 hashed, and about 8 a
+stub against 138; the heap into pass 2 went from 0.14 to 0.03 GiB, the
+store being mostly stubs; the same 58 merged files and registry byte
+for byte, the same report, the journal line different in its time
+alone. A test gives the same citations to a hashed and a renumbered
+pass, a refused publisher id among them, and finds the same stubs in
+the same order, each name where the run's index finds it. At the
+eighth that is about 2.8 + 3.5 GB carried into pass 2 down to about
+0.6 (D), and registry assignment no longer copies every stub's names
+(another 3.5 GB there, D). The price is a lookup in an FST, not a hash
+map, for each name a reference gives that no record holds.
+
 ## Walls behind this one
 
 - **Time.** Pass 1 decodes on one thread: 26 minutes for 36.5 GiB. The

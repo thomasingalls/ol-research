@@ -2149,25 +2149,148 @@ impl Resolution {
 
     /// The stubs (merge plan §4), each the names one or more references
     /// gave one uncited work, sorted within and between, so the registry
-    /// sees them in one order every run.
+    /// sees them in one order every run: [`Resolution::stub_groups`] with
+    /// its names read out.
+    #[must_use]
+    pub fn stub_works(&self) -> Vec<Vec<OwnedName>> {
+        let groups = self.stub_groups();
+        groups
+            .iter()
+            .map(|names| {
+                names
+                    .iter()
+                    .map(|&ix| self.stubs.get(ix).into_owned())
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// The stubs as [`Resolution::stub_works`] gives them, each a list of
+    /// its names' numbers in [`Resolution::stubs`] rather than the names:
+    /// eight bytes a stub where the names were 138 on the laptop's store
+    /// (the merge's memory, 2026-09-26). A stub's names are in name order
+    /// and the stubs are in the order of their names; two stubs share no
+    /// name, so that is the order of their first names.
     #[must_use]
     #[allow(clippy::cast_possible_truncation)] // fewer than 2^32 names in a run
-    pub fn stub_works(&self) -> Vec<Vec<OwnedName>> {
+    pub fn stub_groups(&self) -> StubWorks {
+        let n = self.stubs.len();
+        // The names in name order: their numbers, under a dictionary.
+        let order: Vec<NameIx> = if self.stubs.dictionary().is_some() {
+            (0..n as NameIx).collect()
+        } else {
+            let mut order: Vec<NameIx> = (0..n as NameIx).collect();
+            order.sort_by(|&a, &b| self.stubs.get(a).cmp(&self.stubs.get(b)));
+            order
+        };
         let mut parent = self.stub_parent.clone();
-        let mut by_root: HashMap<NameIx, Vec<OwnedName>> = HashMap::new();
-        for ix in 0..self.stubs.len() as NameIx {
-            let root = stub_find(&mut parent, ix);
-            by_root
-                .entry(root)
-                .or_default()
-                .push(self.stubs.get(ix).into_owned());
+        // Each stub is numbered by its first name in name order, which is
+        // where it sorts; then its names fall into place in that order.
+        let mut stub_of_root = vec![u32::MAX; n];
+        let mut starts: Vec<u32> = Vec::new();
+        for &ix in &order {
+            let root = stub_find(&mut parent, ix) as usize;
+            if stub_of_root[root] == u32::MAX {
+                stub_of_root[root] = starts.len() as u32;
+                starts.push(0);
+            }
+            starts[stub_of_root[root] as usize] += 1;
         }
-        let mut works: Vec<Vec<OwnedName>> = by_root.into_values().collect();
-        for names in &mut works {
-            names.sort();
+        let mut at = 0u32;
+        for start in &mut starts {
+            let count = *start;
+            *start = at;
+            at += count;
         }
-        works.sort();
-        works
+        let mut fill = starts.clone();
+        starts.push(at);
+        let mut names = vec![0; n];
+        for &ix in &order {
+            let stub = stub_of_root[stub_find(&mut parent, ix) as usize] as usize;
+            names[fill[stub] as usize] = ix;
+            fill[stub] += 1;
+        }
+        StubWorks { starts, names }
+    }
+
+    /// Numbers the stubs' names in name order, as a dictionary numbers the
+    /// arena's under a full merge, and keeps them in one: about 13 bytes a
+    /// name where the hashed arena kept 109 (the merge's memory,
+    /// 2026-09-26). The stubs are found while references are read, so the
+    /// arena is hashed until then; this runs once the pass has resolved,
+    /// before anything has numbered a stub name but the arena itself. The
+    /// stubs, their names and their order are what they were.
+    ///
+    /// # Errors
+    ///
+    /// I/O in `sorter`, or a dictionary that disagrees with the arena.
+    pub fn sort_stubs(&mut self, mut sorter: crate::dictionary::Sorter) -> io::Result<()> {
+        if self.stubs.dictionary().is_some() {
+            return Ok(());
+        }
+        for name in self.stubs.iter() {
+            sorter.push(name.as_name())?;
+        }
+        let numbered = Arena::sorted(sorter.finish()?);
+        if numbered.len() != self.stubs.len() {
+            return Err(io::Error::other(format!(
+                "{} stub names sorted into {}",
+                self.stubs.len(),
+                numbered.len()
+            )));
+        }
+        let rank = self
+            .stubs
+            .iter()
+            .map(|name| {
+                numbered.find(name.as_name()).ok_or_else(|| {
+                    io::Error::other(format!("stub name {} is not in its dictionary", *name))
+                })
+            })
+            .collect::<io::Result<Vec<NameIx>>>()?;
+        let mut parent = vec![0; rank.len()];
+        for (old, &up) in self.stub_parent.iter().enumerate() {
+            parent[rank[old] as usize] = rank[up as usize];
+        }
+        self.stub_parent = parent;
+        self.stubs = numbered;
+        Ok(())
+    }
+}
+
+/// The stubs by number ([`Resolution::stub_groups`]): each stub's names
+/// as numbers in [`Resolution::stubs`], one list after another.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StubWorks {
+    /// Where each stub's names start in `names`, and past the last, the
+    /// end.
+    starts: Vec<u32>,
+    names: Vec<NameIx>,
+}
+
+impl StubWorks {
+    /// How many stubs.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.starts.len().saturating_sub(1)
+    }
+
+    /// No stubs.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Stub `s`'s names, in name order.
+    #[must_use]
+    pub fn names(&self, s: usize) -> &[NameIx] {
+        &self.names[self.starts[s] as usize..self.starts[s + 1] as usize]
+    }
+
+    /// Every stub's names, in the stubs' order.
+    #[must_use = "an iterator does nothing unless consumed"]
+    pub fn iter(&self) -> impl ExactSizeIterator<Item = &[NameIx]> {
+        (0..self.len()).map(|s| self.names(s))
     }
 }
 
@@ -3159,6 +3282,109 @@ mod tests {
         ka.sort();
         kb.sort();
         assert_eq!(ka, kb);
+    }
+
+    /// The stubs' names numbered in name order in a dictionary
+    /// ([`Resolution::sort_stubs`]) are the same stubs, in the same order,
+    /// each name found where the run's index finds it, as the hashed
+    /// arena's: the full merge renumbers them once the pass has resolved,
+    /// before anything but the arena has used their numbers (the merge's
+    /// memory, 2026-09-26).
+    #[test]
+    fn stubs_numbered_in_name_order_are_the_same_stubs() {
+        use crate::dictionary::Sorter;
+        use crate::registry::NameIndex;
+        let registrant = model::Registrant::parse("10.30476").unwrap();
+        let refused = OwnedName::Publisher(registrant, "JAMP-14-1".into());
+        let build = || {
+            let mut id = Identity::new();
+            pubmed(&mut id, 1, Some("10.1/held"), None, "Held");
+            // A publisher id two records claim is refused: the arena has
+            // it, and a reference that cites it makes it a stub's.
+            for p in [6u32, 8] {
+                let title = format!("Paper {p}");
+                id.push(
+                    SourceId::Pubmed,
+                    &[
+                        Assertion {
+                            name: Name::Pmid(pmid(p)),
+                            field: "pmid",
+                            native: true,
+                        },
+                        Assertion {
+                            name: refused.as_name(),
+                            field: "ids.pii",
+                            native: false,
+                        },
+                    ],
+                    Titles {
+                        title: Some(&title),
+                        vernacular: None,
+                    },
+                )
+                .unwrap();
+            }
+            id.mark();
+            // Cited out of name order, across namespaces, some together.
+            let pmc = |n| Name::Pmc(PmcId::new(n).unwrap());
+            id.cite(
+                SourceId::Pubmed,
+                &[Name::Doi("10.1/zz"), Name::Pmid(pmid(90))],
+            );
+            id.cite(SourceId::Pubmed, &[Name::Doi("10.1/aa")]);
+            id.cite(SourceId::Crossref, &[pmc(5), Name::Doi("10.1/mm")]);
+            id.cite(
+                SourceId::Crossref,
+                &[Name::Doi("10.1/mm"), Name::Doi("10.1/bb")],
+            );
+            id.cite(SourceId::Pubmed, &[Name::Pmid(pmid(3))]);
+            id.cite(SourceId::Pubmed, &[refused.as_name()]);
+            id.cite(
+                SourceId::Pubmed,
+                &[Name::Doi("10.1/held"), Name::Doi("10.1/beside")],
+            );
+            id.resolve(true).unwrap()
+        };
+        let plain = build();
+        let mut sorted = build();
+        let dir = std::env::temp_dir().join(format!("ol-rht-stubs-test-{}", std::process::id()));
+        sorted.sort_stubs(Sorter::create(&dir).unwrap()).unwrap();
+        assert!(plain.stubs.dictionary().is_none());
+        assert!(sorted.stubs.dictionary().is_some());
+        let works = plain.stub_works();
+        assert_eq!(
+            works
+                .iter()
+                .map(|names| names.iter().map(ToString::to_string).collect::<Vec<_>>())
+                .collect::<Vec<_>>(),
+            [
+                vec!["doi:10.1/aa"],
+                vec!["doi:10.1/bb", "doi:10.1/mm", "pmc:PMC5"],
+                vec!["doi:10.1/zz", "pmid:90"],
+                vec!["pmid:3"],
+                vec!["reg30476:JAMP-14-1"],
+            ]
+        );
+        assert_eq!(sorted.stub_works(), works);
+        assert_eq!(sorted.stub_groups().len(), works.len());
+        for (numbers, names) in sorted.stub_groups().iter().zip(&works) {
+            let read: Vec<OwnedName> = numbers
+                .iter()
+                .map(|&ix| sorted.stubs.get(ix).into_owned())
+                .collect();
+            assert_eq!(&read, names);
+        }
+        for name in works.iter().flatten() {
+            let (p, s) = (plain.index(name).unwrap(), sorted.index(name).unwrap());
+            assert_eq!(&plain.name(p), name);
+            assert_eq!(&sorted.name(s), name);
+        }
+        assert!(
+            (sorted.index(&refused).unwrap() as usize) < sorted.arena.len(),
+            "a stub's name the arena also has is the arena's"
+        );
+        sorted.sort_stubs(Sorter::create(&dir).unwrap()).unwrap();
+        assert_eq!(sorted.stub_works(), works, "numbered once is numbered");
     }
 
     /// The merge's memory, step 2a (2026-09-24): numbering the names in

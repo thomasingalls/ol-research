@@ -1331,7 +1331,7 @@ fn merge_pass1(
         eprintln!("{what}: {e}");
         ExitCode::FAILURE
     })?;
-    let res = identity.resolve(opts.survey).map_err(|e| {
+    let mut res = identity.resolve(opts.survey).map_err(|e| {
         eprintln!("{what}: {e}");
         ExitCode::FAILURE
     })?;
@@ -1340,6 +1340,7 @@ fn merge_pass1(
         started.elapsed().as_secs_f64(),
         heap()
     );
+    merge_sort_stubs(what, &mut res)?;
     Ok(Pass1 {
         res,
         pubmed,
@@ -1357,7 +1358,7 @@ struct Assigned {
     ids: merge::Ids,
     /// The counts; its `lines` are empty, having been staged as made.
     assignment: merge::registry::Assignment,
-    stub_works: Vec<Vec<OwnedName>>,
+    stub_works: merge::identity::StubWorks,
     dropped: u64,
     /// `None` on a partial run.
     pending: Option<merge::registry::Pending>,
@@ -1372,6 +1373,29 @@ struct Assigned {
 struct Totals {
     minted: u32,
     lines: u64,
+}
+
+/// The stub names, found while the references were read, numbered in
+/// name order and kept in a dictionary as the arena's are (the merge's
+/// memory, 2026-09-26): its runs under the system's temporary directory,
+/// as the arena's are.
+fn merge_sort_stubs(what: &str, res: &mut Resolution) -> Result<(), ExitCode> {
+    let sorting = std::time::Instant::now();
+    let stubs = std::env::temp_dir().join(format!("ol-rht-stubs-{}", std::process::id()));
+    merge::dictionary::Sorter::create(&stubs)
+        .and_then(|sorter| res.sort_stubs(sorter))
+        .map_err(|e| {
+            eprintln!("{what}: {}: {e}", stubs.display());
+            ExitCode::FAILURE
+        })?;
+    eprintln!(
+        "{what}: {} stub names in a dictionary of {} MiB in {:.1} s; {}",
+        res.stubs.len(),
+        res.stubs.dictionary().map_or(0, |d| d.bytes() >> 20),
+        sorting.elapsed().as_secs_f64(),
+        heap()
+    );
+    Ok(())
 }
 
 /// Gives every work its id through the registry (merge plan §4): held
@@ -1402,13 +1426,15 @@ fn merge_assign(
     };
     let mut ranked = merge::registry::Ranked::read(path, res).map_err(fail)?;
     let (order, mut works) = res.registry_works();
-    let stub_works = res.stub_works();
-    for names in &stub_works {
-        works.push(
-            names
-                .iter()
-                .map(|n| res.index(n).expect("a stub's name is the run's")),
-        );
+    // By number, a stub's names read out one at a time for their numbers
+    // in the run's index, which is the arena's for a name it also holds
+    // (the merge's memory, 2026-09-26).
+    let stub_works = res.stub_groups();
+    for names in stub_works.iter() {
+        works.push(names.iter().map(|&ix| {
+            res.index(&res.stubs.get(ix))
+                .expect("a stub's name is the run's")
+        }));
     }
     let at = ingest::time::now();
     let mut stager = merge_stager(what, path, complete)?;
@@ -1707,7 +1733,6 @@ fn merge_all(opts: &Options, public_key: Option<&Path>) -> ExitCode {
         pending,
         totals,
     } = assigned;
-    drop(stub_works);
     let counts = Counts {
         minted: assignment.minted,
         merged: assignment.merged,
@@ -1719,7 +1744,7 @@ fn merge_all(opts: &Options, public_key: Option<&Path>) -> ExitCode {
         started.elapsed().as_secs_f64(),
         heap()
     );
-    let mut builder = match Builder::new(res, ids) {
+    let mut builder = match Builder::with_stubs(res, ids, stub_works) {
         Ok(builder) => builder,
         Err(e) => {
             eprintln!("{what}: {e}");
