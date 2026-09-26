@@ -16,9 +16,9 @@ use std::fmt;
 
 use ingest::Sink;
 use model::{
-    Claim, Date, DateError, DateTime, Doi, DoiError, Interned, Isbn, IsbnError, Isni, IsniError,
-    Issn, IssnError, Lang, LangError, Orcid, OrcidError, ParseError, PartialDate, Qid, Registrant,
-    Ror, RorError,
+    Claim, Date, DateError, DateTime, Day, Doi, DoiError, Interned, Isbn, IsbnError, Isni,
+    IsniError, Issn, IssnError, Lang, LangError, Month, Orcid, OrcidError, ParseError, PartialDate,
+    Qid, Registrant, Ror, RorError,
 };
 
 use crate::Crossref;
@@ -77,6 +77,8 @@ pub struct Work<'n> {
     pub published_print: Option<PartialDate>,
     /// `published-online`.
     pub published_online: Option<PartialDate>,
+    /// The other dates the record gives, each with what it is.
+    pub dates: Few<Dated, 1>,
     /// `title[0]`, raw markup included.
     #[serde(borrow)]
     pub title: Option<&'n str>,
@@ -232,6 +234,51 @@ pub struct TypedIsbn {
     pub isbn: Isbn,
 }
 
+/// A date beside the publication dates, with what it is. Crossref gives
+/// these and they were dropped until model 10; for a dissertation or a
+/// standard, `approved` is often the only date there is (the user's call,
+/// 2026-09-26: keep them all).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Dated {
+    #[allow(missing_docs)]
+    pub kind: DateKind,
+    #[allow(missing_docs)]
+    pub date: PartialDate,
+}
+
+/// What a [`Dated`] is: the field it came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DateKind {
+    /// `posted`: posted content went up.
+    Posted,
+    /// `accepted`.
+    Accepted,
+    /// `approved`: a dissertation's or a standard's approval.
+    Approved,
+    /// `published-other`.
+    PublishedOther,
+    /// `content-created`: a dataset's content was created.
+    ContentCreated,
+    /// `content-updated`: it last changed.
+    ContentUpdated,
+}
+
+impl DateKind {
+    /// The field, as Crossref spells it.
+    #[must_use]
+    pub const fn field(self) -> &'static str {
+        match self {
+            Self::Posted => "posted",
+            Self::Accepted => "accepted",
+            Self::Approved => "approved",
+            Self::PublishedOther => "published-other",
+            Self::ContentCreated => "content-created",
+            Self::ContentUpdated => "content-updated",
+        }
+    }
+}
+
 /// A license.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct License<'n> {
@@ -240,10 +287,39 @@ pub struct License<'n> {
     pub url: Interned<'n>,
     #[allow(missing_docs)]
     pub version: ContentVersion,
-    #[allow(missing_docs)]
-    pub start: DateTime,
-    /// `delay-in-days`.
-    pub delay_days: i64,
+    /// `start`, read ([`LicenseStart`]). `delay-in-days` is checked
+    /// against it and dropped: it is Crossref's `max(0, start − issued)`,
+    /// whose 0 means no delay, a start before publication, and nothing to
+    /// measure from alike.
+    #[serde(borrow)]
+    pub start: LicenseStart<'n>,
+}
+
+/// When a license applies from.
+///
+/// Where a deposit gives no start date, Crossref writes the work's
+/// `issued` as the start, padded to its first day (`1986` is 1986-01-01),
+/// and where the work has no `issued`, writes none (M, over every local
+/// license and the March 2026 file's dumped records, 2026-09-26). A
+/// start on that day is the fill or a publisher's start on the day of
+/// publication, which the record cannot tell apart and which say the same:
+/// from publication (the user's call).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LicenseStart<'n> {
+    /// From publication: no start, or the start is the publication date.
+    FromPublication,
+    /// From this day, before publication or after it.
+    On(Date),
+    /// A start written as a date that is none — `0001-01-01`, a date
+    /// library's empty value, on one record of the March 2026 file —
+    /// kept as written beside why.
+    Unreadable {
+        /// The `date-time` as written.
+        #[serde(borrow)]
+        raw: &'n str,
+        #[allow(missing_docs)]
+        error: DateError,
+    },
 }
 
 /// A Crossmark update, either direction.
@@ -593,6 +669,109 @@ impl Ctx {
         })
     }
 
+    /// A license's start, read against the work's publication date and
+    /// Crossref's delay: the rules Crossref's own fill follows, checked
+    /// ([`LicenseStart`]). Every one held on the March 2026 file's dumped
+    /// records and every local license (2026-09-26); one that does not is
+    /// a record Crossref wrote some other way, and stops the run.
+    fn license_start<'n>(
+        &self,
+        l: &'n crate::record::License<'_>,
+        issued: Option<PartialDate>,
+    ) -> Result<LicenseStart<'n>, Error> {
+        let field = "license.start";
+        let delay = l.delay_in_days;
+        let Some(s) = &l.start else {
+            if issued.is_some() || delay != 0 {
+                return Err(self.err(
+                    field,
+                    &delay.to_string(),
+                    ErrorKind::Inconsistent("no start, but a publication date or a delay"),
+                ));
+            }
+            return Ok(LicenseStart::FromPublication);
+        };
+        let at = match self.stamp(field, s.date_parts, &s.date_time, s.timestamp) {
+            Ok(at) => at,
+            Err(Error {
+                kind: ErrorKind::Date(DateError::YearRange),
+                ..
+            }) => return self.unreadable_start(l, s),
+            Err(e) => return Err(e),
+        };
+        if at.epoch_seconds().rem_euclid(86_400) != 0 {
+            return Err(self.err(
+                field,
+                &s.date_time,
+                ErrorKind::Inconsistent("a start that is not midnight"),
+            ));
+        }
+        let start = at.date();
+        let Some(issued) = issued else {
+            if delay != 0 {
+                return Err(self.err(
+                    field,
+                    &delay.to_string(),
+                    ErrorKind::Inconsistent("a delay with no publication date"),
+                ));
+            }
+            return Ok(LicenseStart::On(start));
+        };
+        let Some(published) = first_day(issued) else {
+            return Err(self.err(
+                "issued",
+                &format!("{issued:?}"),
+                ErrorKind::Unmodelled("a publication date that is not a year, month or day"),
+            ));
+        };
+        let expected = (start.days_since_epoch() - published.days_since_epoch()).max(0);
+        if delay != expected {
+            return Err(self.err(
+                field,
+                &delay.to_string(),
+                ErrorKind::Inconsistent("delay-in-days is not the start less the publication date"),
+            ));
+        }
+        Ok(if start == published {
+            LicenseStart::FromPublication
+        } else {
+            LicenseStart::On(start)
+        })
+    }
+
+    /// A start whose year no date can hold: kept as written beside why,
+    /// when its three forms agree with one another and its delay is 0.
+    fn unreadable_start<'n>(
+        &self,
+        license: &crate::record::License<'_>,
+        start: &'n crate::date::Stamp<'_>,
+    ) -> Result<LicenseStart<'n>, Error> {
+        let parts = start.date_parts;
+        let (Some(year), Some(month), Some(day)) = (parts.year, parts.month, parts.day) else {
+            return Err(self.err(
+                "license.start",
+                &start.date_time,
+                ErrorKind::Inconsistent("date-parts is not a full date"),
+            ));
+        };
+        let written = format!("{year:04}-{month:02}-{day:02}T00:00:00Z");
+        let days = model::date::days_from_civil(i64::from(year), i64::from(month), i64::from(day));
+        if start.date_time != written
+            || start.timestamp != days * 86_400_000
+            || license.delay_in_days != 0
+        {
+            return Err(self.err(
+                "license.start",
+                &start.date_time,
+                ErrorKind::Inconsistent("an unreadable start whose forms disagree"),
+            ));
+        }
+        Ok(LicenseStart::Unreadable {
+            raw: &start.date_time,
+            error: DateError::YearRange,
+        })
+    }
+
     /// An `<institution>`: its texts as written, and each id checked for
     /// its kind — a ROR as a claim, an ISNI and a Wikidata item strictly.
     /// The schema requires a name or an id; a DOI, a second id of one
@@ -691,6 +870,19 @@ impl Ctx {
     }
 }
 
+/// The first day of a partial date as Crossref pads one: a year's first
+/// day, a month's, or the day. `None` for the shapes Crossref never
+/// writes.
+fn first_day(p: PartialDate) -> Option<Date> {
+    let one = Day::new(1)?;
+    match p {
+        PartialDate::Year(y) => Date::new(y, Month::January, one).ok(),
+        PartialDate::YearMonth(y, m) => Date::new(y, m, one).ok(),
+        PartialDate::Day(d) => Some(d),
+        _ => None,
+    }
+}
+
 fn first<'n>(list: Option<&'n [Text<'_>]>) -> Option<&'n str> {
     list.and_then(|l| l.first()).map(|t| &**t)
 }
@@ -752,6 +944,19 @@ pub fn normalize<'n, K: Sink<'n, Crossref>>(w: &'n Native<'_>, emit: &mut K) -> 
     }
     let published_print = ctx.partial("published-print", w.published_print.as_ref())?;
     let published_online = ctx.partial("published-online", w.published_online.as_ref())?;
+    let mut dates = Few::new();
+    for (kind, p) in [
+        (DateKind::Posted, &w.posted),
+        (DateKind::Accepted, &w.accepted),
+        (DateKind::Approved, &w.approved),
+        (DateKind::PublishedOther, &w.published_other),
+        (DateKind::ContentCreated, &w.content_created),
+        (DateKind::ContentUpdated, &w.content_updated),
+    ] {
+        if let Some(date) = ctx.partial(kind.field(), p.as_ref())? {
+            dates.push(Dated { kind, date });
+        }
+    }
 
     if let (Some(a), Some(b)) = (w.reference_count, w.references_count)
         && a != b
@@ -821,13 +1026,7 @@ pub fn normalize<'n, K: Sink<'n, Crossref>>(w: &'n Native<'_>, emit: &mut K) -> 
             Ok(License {
                 url: Interned::Text(&l.url),
                 version: l.content_version,
-                start: ctx.stamp(
-                    "license.start",
-                    l.start.date_parts,
-                    &l.start.date_time,
-                    l.start.timestamp,
-                )?,
-                delay_days: l.delay_in_days,
+                start: ctx.license_start(l, issued)?,
             })
         })
         .collect::<Result<_, Error>>()?;
@@ -886,6 +1085,7 @@ pub fn normalize<'n, K: Sink<'n, Crossref>>(w: &'n Native<'_>, emit: &mut K) -> 
         issued,
         published_print,
         published_online,
+        dates,
         title: first(w.title.as_deref()),
         alternate_titles: w
             .title

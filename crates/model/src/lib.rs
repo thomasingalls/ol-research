@@ -121,6 +121,11 @@
 /// read as, Crossmark's free-text years having left `err`,
 /// `corrected-article`, `Erratum` and others in the data (about 600
 /// shards); and an update can be a comment, which Crossmark's twelve lack.
+/// Dates: a license's start may be absent (3,272 shards), and is read as
+/// from publication, as a day, or as written and unreadable, its delay
+/// checked and dropped; and the dates beside the publication dates —
+/// approved, posted, accepted, published-other, a dataset's content
+/// created and updated (9,641 shards) — are kept with what each is.
 /// Output under version 9 is rebuilt, not patched.
 pub const VERSION: u32 = 10;
 

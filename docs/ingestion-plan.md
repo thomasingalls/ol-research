@@ -134,6 +134,16 @@ wart is a claim the POC run confirms or refutes, not a commitment.
   copies a work's `updated-by` into its `relation` under the same word.
   The reference, funding, peer-review and relation-id lists are the
   deposit schema's whole lists.
+- Dates (model 10). A license's `start` may be absent: Crossref writes
+  the work's `issued`, padded to its first day, where a deposit gave no
+  start, and nothing where the work has no `issued` to fill it from —
+  dissertations and standards above all. A start is read as from
+  publication (absent, or on the padded `issued`), as its own day, or,
+  for the one `0001-01-01`, as written beside why; `delay-in-days` is
+  checked as `max(0, start − issued)` and dropped. The dates beside the
+  publication dates — `posted`, `accepted`, `approved`,
+  `published-other`, `content-created`, `content-updated` — are kept, each
+  with what it is.
 - Known gaps, kept on purpose and listed so they stay known: editors,
   chairs and translators are dropped, and their affiliations with them,
   though those carry the same ids (the user, 2026-09-26: fine "so long as
@@ -141,7 +151,10 @@ wart is a claim the POC run confirms or refutes, not a commitment.
   and not kept (its own pass, for citation matching). Crossmark policy
   pages — about 260 among the records the survey stopped at, typed or
   not — are not works and are normalized as if they were, until books and
-  their kin are taken on after articles.
+  their kin are taken on after articles. Grants are read and not kept;
+  a grant's `issued` is the earliest of its award starts, and is kept as
+  its publication date meanwhile. A conference's dates and a journal
+  issue's are read and not kept.
 - Terms: metadata is free to reuse and not subject to copyright; abstracts
   carry some limitations.
 
@@ -1884,6 +1897,31 @@ cross-IDs and a second edge namespace early.
   counts in its status. Over the dumped records (M): no vocabulary
   failure left, 1,070 updates read from an older word, 69 set aside, and
   the merge's view maps every relation of the 12,394 that normalize.
+- 2026-09-26, model version 10, dates. A license with no `start` stopped
+  3,272 shards: Crossref's deposit schema makes the start optional ("the
+  license terms will apply for the article's lifetime") and its API docs
+  call it required. What Crossref does (M, every local license and every
+  dumped one): where a deposit gives no start it writes the work's
+  `issued`, padded to its first day, and where there is no `issued`,
+  nothing; `delay-in-days` is `max(0, start − issued)`, 0 when either is
+  missing, and every start is at midnight. The user's readings: a start
+  that is absent or on the padded `issued` means from publication (the
+  fill and a publisher's start on that day cannot be told apart, and say
+  the same), any other is its day, and the one `0001-01-01` (Frontiers,
+  10.3389/fmicb.2019.02678) is kept as written beside why
+  (`LicenseStart`); the delay is checked and dropped. Those rules are
+  checked, and a license that breaks one stops the run. Since model 9
+  the reader had been giving 40 % of the local sample's licenses a day
+  and an hour their publishers never named. The dates Crossref gives
+  beside the publication dates were parsed and dropped, and are kept now
+  as (what it is, date) — the user's call, with a dissertation's or a
+  standard's `approved` often its only date — among them `content-
+  updated`, new, which stopped 9,641 shards: a dataset's last change, in
+  no fixed order with `content-created`. A grant's own `award-start`
+  (991 shards) and an investigator's role dates are read, not kept, as
+  grants are not. Over the dumped records (M): no date failure left;
+  9,525 starts from publication, 1,289 on a day; 11,060 `content-updated`
+  and 1,115 `approved` kept.
 
 ## 11. Dependencies
 

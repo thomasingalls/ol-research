@@ -7,8 +7,10 @@ use ingest::Sink;
 use merge::OwnedName;
 use merge::kind::Genre;
 use merge::relation::{Kind, Related, Update};
-use model::{Claim, Doi, RorError, Table};
-use source_crossref::normalize::{Institution, Reference, Work, normalize};
+use model::{Claim, Date, Doi, PartialDate, RorError, Table};
+use source_crossref::normalize::{
+    DateKind, Dated, Institution, LicenseStart, Reference, Work, normalize,
+};
 use source_crossref::view;
 use source_crossref::vocab::{
     AssertedBy, FundingType, ReferenceType, RelationIdKind, ReviewRecommendation, UpdateType,
@@ -349,4 +351,161 @@ fn a_review_can_accept_with_reservation() {
         Some(ReviewRecommendation::AcceptWithReservation)
     );
     run("review_accept_with_reservation");
+}
+
+fn day(iso: &str) -> Date {
+    Date::parse_iso(iso).unwrap()
+}
+
+fn starts(w: &Work<'_>) -> Vec<LicenseStart<'static>> {
+    w.licenses
+        .iter()
+        .map(|l| match l.start {
+            LicenseStart::FromPublication => LicenseStart::FromPublication,
+            LicenseStart::On(d) => LicenseStart::On(d),
+            LicenseStart::Unreadable { .. } => panic!("an unreadable start"),
+        })
+        .collect()
+}
+
+/// 10.1109/ieeestd.1928.7409882, shard 15398 line 1376: an IEEE standard
+/// with no publication date and two licenses with no start, as 3,272
+/// shards stopped at: from publication.
+#[test]
+fn a_license_with_no_start_applies_from_publication() {
+    let w = run("license_no_start_standard");
+    assert_eq!(w.issued, None);
+    assert_eq!(
+        starts(&w),
+        [LicenseStart::FromPublication, LicenseStart::FromPublication]
+    );
+}
+
+/// 10.18174/192728, shard 4117 line 2865: a Wageningen dissertation whose
+/// only date is its approval, kept now, beside a license with no start.
+#[test]
+fn a_dissertation_keeps_its_approval_date() {
+    let w = run("license_no_start_dissertation");
+    assert_eq!(
+        w.dates.as_slice(),
+        [Dated {
+            kind: DateKind::Approved,
+            date: PartialDate::from_numbers(2000, None, None).unwrap()
+        }]
+    );
+    assert_eq!(starts(&w), [LicenseStart::FromPublication]);
+}
+
+/// 10.4000/15d42, shard 1176 line 2299: issued in 2025, a license from
+/// 2025-01-01 with no delay — Crossref's fill from the padded year, not a
+/// day the publisher named.
+#[test]
+fn a_start_on_the_padded_publication_date_is_from_publication() {
+    let w = run("license_start_filled");
+    assert_eq!(starts(&w), [LicenseStart::FromPublication]);
+}
+
+/// 10.20315/data.0006, shard 1683 line 2748: a dataset licensed from
+/// before its publication, the delay written as 0; and its content last
+/// updated before it was created, both kept as written.
+#[test]
+fn a_start_before_publication_is_its_day() {
+    let w = run("license_start_before_issued");
+    assert_eq!(starts(&w), [LicenseStart::On(day("2025-03-24"))]);
+    let date = |iso: &str| PartialDate::Day(day(iso));
+    assert_eq!(
+        w.dates.as_slice(),
+        [
+            Dated {
+                kind: DateKind::ContentCreated,
+                date: date("2025-10-10")
+            },
+            Dated {
+                kind: DateKind::ContentUpdated,
+                date: date("2023-03-09")
+            }
+        ]
+    );
+}
+
+/// 10.4211/hs.55c30255450e4f19825e9a5eee0e89ab, shard 17387 line 4569: a
+/// start two days after publication, and a delay of 2.
+#[test]
+fn a_start_after_publication_is_its_day() {
+    let w = run("license_start_delayed");
+    assert_eq!(starts(&w), [LicenseStart::On(day("2018-05-16"))]);
+}
+
+/// 10.1016/j.heliyon.2015.e00017, shard 21476 line 762: no publication
+/// date, one license with no start and one with a day of its own.
+#[test]
+fn a_start_on_a_work_with_no_publication_date_is_its_day() {
+    let w = run("license_start_without_issued");
+    assert_eq!(
+        starts(&w),
+        [
+            LicenseStart::FromPublication,
+            LicenseStart::On(day("2015-07-31"))
+        ]
+    );
+}
+
+/// 10.46936/10.25585/60000540, shard 11188 line 4489: a DOE grant's own
+/// `award-start`, read and not kept, as grants are not yet.
+#[test]
+fn a_grant_has_its_own_start() {
+    let native = native("grant_award_start");
+    assert!(native.award_start.is_some());
+    run("grant_award_start");
+}
+
+/// 10.46936/incite/60012409, shard 5798 line 4300: an investigator's part
+/// in the project, from 2024 to 2025.
+#[test]
+fn an_investigator_has_role_dates() {
+    let native = native("investigator_role_dates");
+    let project = &native.project.as_deref().unwrap()[0];
+    let investigator = &project.investigator.as_deref().unwrap()[0];
+    assert!(investigator.role_start.is_some() && investigator.role_end.is_some());
+    run("investigator_role_dates");
+}
+
+/// What the record normalizes to once `from` is written as `to`: the
+/// rules a license's start is read by stop a record that breaks them.
+fn broken(name: &str, from: &str, to: &str) -> String {
+    let text = fixture(name);
+    assert_eq!(text.matches(from).count(), 1, "{name}: {from}");
+    let input = Box::leak(text.replacen(from, to, 1).into_boxed_str());
+    let native: &'static source_crossref::Work<'static> =
+        Box::leak(Box::new(serde_json::from_str(input).expect("parses")));
+    let mut out = Collect::default();
+    normalize(native, &mut out).unwrap_err().to_string()
+}
+
+#[test]
+fn a_license_that_breaks_crossrefs_rules_stops_the_run() {
+    let e = broken(
+        "license_start_filled",
+        "\"delay-in-days\": 0",
+        "\"delay-in-days\": 3",
+    );
+    assert!(e.contains("delay-in-days is not the start less"), "{e}");
+    let e = broken(
+        "license_no_start_standard",
+        "\"issued\": {\"date-parts\": [[null]]}",
+        "\"issued\": {\"date-parts\": [[1928]]}",
+    );
+    assert!(e.contains("no start, but a publication date"), "{e}");
+    let e = broken(
+        "license_start_delayed",
+        "\"date-time\": \"2018-05-16T00:00:00Z\", \"timestamp\": 1526428800000",
+        "\"date-time\": \"2018-05-16T00:00:01Z\", \"timestamp\": 1526428801000",
+    );
+    assert!(e.contains("a start that is not midnight"), "{e}");
+    let e = broken(
+        "license_start_without_issued",
+        "\"delay-in-days\": 0, \"start\"",
+        "\"delay-in-days\": 5, \"start\"",
+    );
+    assert!(e.contains("a delay with no publication date"), "{e}");
 }

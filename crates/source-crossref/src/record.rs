@@ -79,6 +79,17 @@ pub struct Work<'a> {
     pub approved: Option<PartialDate>,
     /// Present on 2.
     pub content_created: Option<PartialDate>,
+    /// When a dataset's or database's content last changed: the deposit
+    /// schema's `database_date/update_date`, the sibling of
+    /// `content-created`. 9,641 shards of the March 2026 file stopped at
+    /// it (2026-09-26), the Protein Data Bank's, OECD's and APA's first;
+    /// it can come before `content-created`.
+    pub content_updated: Option<PartialDate>,
+    /// A grant's own start (grant schema 0.2.0, `award-start-date` on the
+    /// grant as a whole), beside each project's; 991 shards stopped at it.
+    /// A grant's `issued` is the earliest of these starts. Read, not kept:
+    /// grants are not normalized yet.
+    pub award_start: Option<PartialDate>,
     /// Absent on one work (a grant).
     pub reference_count: Option<u32>,
     /// Absent on the same work.
@@ -469,11 +480,13 @@ pub struct License<'a> {
     pub url: Text<'a>,
     #[allow(missing_docs)]
     pub content_version: ContentVersion,
-    #[allow(missing_docs)]
+    /// Crossref's `max(0, start − issued)`, in days.
     pub delay_in_days: i64,
+    /// Absent where the deposit gave none and the work has no `issued`
+    /// for Crossref to fill it from: dissertations and standards above
+    /// all (3,272 shards of the March 2026 file stopped at one).
     #[serde(borrow)]
-    #[allow(missing_docs)]
-    pub start: Stamp<'a>,
+    pub start: Option<Stamp<'a>>,
 }
 
 /// A full-text link.
@@ -772,6 +785,12 @@ pub struct Investigator<'a> {
     #[serde(borrow)]
     #[allow(missing_docs)]
     pub affiliation: Option<Few<Affiliation<'a>, 2>>,
+    /// When the person's part in the project began (grant schema 0.2.0,
+    /// an investigator's `@start-date`); on 9 of the grants the March
+    /// 2026 file's survey stopped at, behind `award-start`.
+    pub role_start: Option<PartialDate>,
+    /// When it ended.
+    pub role_end: Option<PartialDate>,
 }
 
 /// `project-title[]`.
