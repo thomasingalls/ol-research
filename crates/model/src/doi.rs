@@ -21,7 +21,7 @@ use std::fmt;
 /// an ASCII twin as well (`día` and `dia`) — a second name for the work,
 /// which the merge joins, not a spelling this type folds.
 ///
-/// Four things are read rather than rejected, each a misspelling of a DOI
+/// Five things are read rather than rejected, each a misspelling of a DOI
 /// the registry knows, and each reported in [`Readings`] so a source can
 /// count it:
 /// - every Unicode dash, and the minus sign, is `-`. U+2010 since model
@@ -38,11 +38,14 @@ use std::fmt;
 ///   is registered and resolves), is repaired: `Ã` or `ã` followed by a
 ///   character from U+0080 to U+00BF is the Latin-1 letter those two bytes
 ///   encode, U+00C0 to U+00FF;
-/// - a soft hyphen, U+00AD, is dropped (model version 11, 2026-09-26). It
-///   is not a dash but a place a line may break, shown only where one does,
-///   so `10.11646/zoo\u{ad}taxa.4966.5.3` is Zootaxa's `…/zootaxa.4966.5.3`;
-///   Crossref's March 2026 file cites JAMA's DOIs with one after the slash
-///   (`10.1001/\u{ad}jamasurg.2022.7640`), copied from a web page.
+/// - a soft hyphen, U+00AD, and a zero-width space, U+200B, are dropped
+///   (model version 11, 2026-09-26). Neither is a character of the name:
+///   each marks a place a line may break, the soft hyphen shown only where
+///   one does and the space never, so `10.11646/zoo\u{ad}taxa.4966.5.3` is
+///   Zootaxa's `…/zootaxa.4966.5.3`. Crossref's March 2026 file cites
+///   JAMA's DOIs with a soft hyphen after the slash
+///   (`10.1001/\u{ad}jamasurg.2022.7640`) and ASM's with a zero-width
+///   space in a page range (`10.1128/aem.45.4.1394-\u{200b}1397.1983`).
 ///
 /// A character that is none of these — a symbol (`×` for `x`), a control,
 /// a zero-width joiner, whitespace inside — is still refused.
@@ -63,7 +66,7 @@ pub struct Registrant(u32);
 /// What reading a DOI changed from what its source wrote, beyond case
 /// ([`Doi::read`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[allow(clippy::struct_excessive_bools)] // four independent facts
+#[allow(clippy::struct_excessive_bools)] // five independent facts
 pub struct Readings {
     /// A dash other than `-` was read as `-`.
     pub dash: bool,
@@ -73,6 +76,8 @@ pub struct Readings {
     pub encoding: bool,
     /// A soft hyphen was dropped.
     pub soft_hyphen: bool,
+    /// A zero-width space was dropped.
+    pub zero_width_space: bool,
 }
 
 impl Readings {
@@ -83,6 +88,7 @@ impl Readings {
             (self.space, "whitespace at an end dropped"),
             (self.encoding, "a broken encoding repaired"),
             (self.soft_hyphen, "a soft hyphen dropped"),
+            (self.zero_width_space, "a zero-width space dropped"),
         ]
         .into_iter()
         .filter_map(|(made, what)| made.then_some(what))
@@ -91,7 +97,7 @@ impl Readings {
     /// True when nothing was read.
     #[must_use]
     pub const fn is_empty(self) -> bool {
-        !(self.dash || self.space || self.encoding || self.soft_hyphen)
+        !(self.dash || self.space || self.encoding || self.soft_hyphen || self.zero_width_space)
     }
 }
 
@@ -209,8 +215,8 @@ impl<'a> Doi<'a> {
     }
 
     /// Parses a bare DOI, and says what it read from what was written: a
-    /// dash, whitespace at an end, a broken encoding, a soft hyphen
-    /// ([`Doi`]).
+    /// dash, whitespace at an end, a broken encoding, a soft hyphen, a
+    /// zero-width space ([`Doi`]).
     ///
     /// # Errors
     ///
@@ -271,6 +277,8 @@ impl<'a> Doi<'a> {
                 readings.dash = true;
             } else if c == '\u{AD}' {
                 readings.soft_hyphen = true;
+            } else if c == '\u{200B}' {
+                readings.zero_width_space = true;
             } else if c.is_alphabetic() {
                 out.extend(c.to_lowercase());
             } else {
@@ -566,11 +574,11 @@ mod tests {
         );
     }
 
-    /// Reference DOIs of Crossref's March 2026 file with a soft hyphen, as
-    /// the normalize reports printed them (homelab
+    /// Reference DOIs of Crossref's March 2026 file with a soft hyphen or a
+    /// zero-width space, as the normalize reports printed them (homelab
     /// `ol-rht-normalize-crossref-v1`, 2026-09-26).
     #[test]
-    fn a_soft_hyphen_is_dropped() {
+    fn a_soft_hyphen_or_a_zero_width_space_is_dropped() {
         for (written, read) in [
             (
                 "10.11646/zoo\u{ad}taxa.4966.5.3",
@@ -597,10 +605,25 @@ mod tests {
             );
             assert_eq!(r.made().collect::<Vec<_>>(), ["a soft hyphen dropped"]);
         }
+        let (doi, r) = Doi::read("10.1128/aem.45.4.1394-\u{200b}1397.1983").unwrap();
+        assert_eq!(doi.as_str(), "10.1128/aem.45.4.1394-1397.1983");
+        assert_eq!(
+            r,
+            Readings {
+                zero_width_space: true,
+                ..Readings::default()
+            }
+        );
+        assert_eq!(r.made().collect::<Vec<_>>(), ["a zero-width space dropped"]);
         assert_eq!(
             Doi::read("10.1234/\u{ad}"),
             Err(Error::EmptySuffix),
             "nothing but a soft hyphen is no suffix"
+        );
+        assert_eq!(Doi::read("10.1234/\u{200b}\u{ad}"), Err(Error::EmptySuffix));
+        assert!(
+            Doi::read("10.1234/a\u{200d}b").is_err(),
+            "a zero-width joiner is still refused"
         );
         assert_eq!(
             Doi::read("10.1234/a\u{ad}\u{2013}b").unwrap().1,

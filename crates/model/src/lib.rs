@@ -150,15 +150,18 @@
 /// those (only surveyed), so they are version 10 too. Output under version
 /// 9 is rebuilt, not patched.
 ///
-/// Version 11 (2026-09-26): a soft hyphen, U+00AD, in a DOI is dropped and
-/// counted as a reading ([`doi::Readings`]), the user's call on the first
-/// normalize of Crossref's whole file under version 10, whose reports
-/// printed reference DOIs with one inside a word
+/// Version 11 (2026-09-26): a soft hyphen, U+00AD, and a zero-width space,
+/// U+200B, in a DOI are dropped, each counted as a reading
+/// ([`doi::Readings`]) — the user's calls on the first normalize of
+/// Crossref's whole file under version 10, whose reports printed
+/// reference DOIs with a soft hyphen inside a word
 /// (`10.11646/zoo\u{ad}taxa.4966.5.3`) and after the slash (JAMA's
-/// `10.1001/\u{ad}jamasurg.2022.7640`). Version 10 was written to the
-/// box's store (homelab `ol-rht-normalize-crossref-v1`,
-/// `ol-rht-normalize-baseline-v3`) but merged only in a survey; its sets
-/// are rebuilt, not patched.
+/// `10.1001/\u{ad}jamasurg.2022.7640`), and a zero-width space in a page
+/// range (`10.1128/aem.45.4.1394-\u{200b}1397.1983`). The box's store
+/// holds version 10's sets (homelab `ol-rht-normalize-crossref-v1`,
+/// `ol-rht-normalize-baseline-v3`), and the user keeps the server on
+/// version 10 through a full merge of them; version 11 comes after, and
+/// its sets are rebuilt, not patched.
 pub const VERSION: u32 = 11;
 
 pub mod claim;

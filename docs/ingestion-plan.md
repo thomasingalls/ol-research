@@ -2165,18 +2165,22 @@ cross-IDs and a second edge namespace early.
   756,476,977 none; 198.6 GiB of sets, 23 to 28 minutes a share. Every
   reading's count equals the third survey's. PubMed 39,994,988 works,
   446,087,838 references, 12 minutes. The reports' samples of malformed
-  reference DOIs showed a soft hyphen, U+00AD, in four of 64; the user:
-  "we can normalize the soft hyphens already". It is dropped, not read
-  as `-`: a soft hyphen is a place a line may break, shown only where one
-  does (`10.11646/zoo\u{ad}taxa.4966.5.3` is Zootaxa's
+  reference DOIs showed a soft hyphen, U+00AD, in four of 64 and a
+  zero-width space, U+200B, in one; the user: "we can normalize the soft
+  hyphens already", and the zero-width space "in the same way". Each is
+  dropped, not read as `-`: neither is a character of the name, each a
+  place a line may break, the soft hyphen shown only where one does
+  (`10.11646/zoo\u{ad}taxa.4966.5.3` is Zootaxa's
   `10.11646/zootaxa.4966.5.3`; JAMA's are cited with one after the
-  slash). Counted as "a soft hyphen dropped", beside the other readings.
-  Model version 11, since what a set holds changes; the v10 sets are
-  rebuilt before a merge of record, not patched. The merge survey over
-  PubMed and an eighth of those v10 sets (`ol-rht-merge-survey-v6`) still
-  measures what it was run for. Whitespace inside a DOI, in the same
-  samples, is open item 10 (§8), the user's "to deal with more carefully
-  later".
+  slash, and ASM's `10.1128/aem.45.4.1394-\u{200b}1397.1983` with a
+  zero-width space in the page range). Each is counted, "a soft hyphen
+  dropped" and "a zero-width space dropped", beside the other readings.
+  That is model version 11, since what a set holds changes, and it waits:
+  the user keeps the server on model 10 "all the way through a full
+  merge", so the first merge of record reads these v10 sets, and model
+  11 lands after it, on its own branch until then, with its sets rebuilt
+  rather than patched. Whitespace inside a DOI, in the same samples, is
+  open item 10 (§8), the user's "to deal with more carefully later".
 
 ## 11. Dependencies
 
