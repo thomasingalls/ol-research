@@ -210,8 +210,12 @@ type RawEdge = (WorkId, WorkId, SourceId, u64);
 /// set always does.
 #[must_use]
 pub fn fingerprint(names: &[Name<'_>], citation: &Citation<'_>, table: Option<&Table>) -> u64 {
+    // The owned citation, whose container is text: the borrowed one's is
+    // an interned value, which postcard can write only inside a file
+    // being written, and a Crossref reference has one (2026-09-26: the
+    // first Crossref merge since this fingerprint stopped on it).
     let citation = OwnedCitation::of(citation, table);
-    let bytes = postcard::to_allocvec(&(names, citation.borrow())).expect("a reference serializes");
+    let bytes = postcard::to_allocvec(&(names, &citation)).expect("a reference serializes");
     let hash = blake3::hash(&bytes);
     let mut bits = [0u8; 8];
     bits.copy_from_slice(&hash.as_bytes()[..8]);
@@ -2560,6 +2564,42 @@ fn venue_disjoint(a: &Venue<'_>, b: &Venue<'_>) -> bool {
 #[cfg(test)]
 #[allow(clippy::unreadable_literal)] // real ids, as the sample spells them
 mod tests {
+    /// A Crossref reference names its journal, an interned value, and is
+    /// fingerprinted outside any file being written; a PubMed one has no
+    /// journal, and prints as it did before the fingerprint took the owned
+    /// citation.
+    #[test]
+    fn a_reference_with_a_journal_is_fingerprinted() {
+        use model::symbol::Interned;
+        let names = [Name::Doi("10.1016/j.x.2025.01.001")];
+        let journal = Citation {
+            container: Some(Interned::Text("Nature")),
+            year: Some("2025"),
+            ..Citation::default()
+        };
+        let a = super::fingerprint(&names, &journal, None);
+        assert_eq!(a, super::fingerprint(&names, &journal, None));
+        let other = Citation {
+            container: Some(Interned::Text("Science")),
+            ..journal
+        };
+        assert_ne!(a, super::fingerprint(&names, &other, None));
+        let plain = Citation {
+            text: Some("Smith J. 2025."),
+            ..Citation::default()
+        };
+        let owned = super::OwnedCitation::of(&plain, None);
+        assert_eq!(
+            super::fingerprint(&names, &plain, None),
+            {
+                let bytes = postcard::to_allocvec(&(&names[..], owned.borrow())).unwrap();
+                let hash = blake3::hash(&bytes);
+                u64::from_le_bytes(hash.as_bytes()[..8].try_into().unwrap())
+            },
+            "a reference with no journal prints as before"
+        );
+    }
+
     use model::date::Bound;
     use model::{Day, Issn, Lang, Month, OpenAlexId, Pmid, Year};
 
