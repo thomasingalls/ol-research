@@ -10,6 +10,12 @@
 store := env_var_or_default("OL_RHT_STORE", "data")
 key := env_var_or_default("OL_RHT_PUBLIC_KEY", env_var("HOME") / ".config/ol-rht/public.key")
 cli := "cargo run --release -p ol-rht --"
+postgres_port := env_var_or_default("OL_RHT_POSTGRES_PORT", "55432")
+postgres_url := "postgres://ol_rht:local-dev-only@127.0.0.1:" + postgres_port + "/ol_rht?sslmode=disable"
+database_url := env_var_or_default("OL_RHT_DATABASE_URL", postgres_url)
+# Tests never inherit the application URL: use a dedicated test server override.
+database_test_url := env_var_or_default("OL_RHT_TEST_DATABASE_URL", postgres_url)
+postgres := "docker compose -f dev/postgres/compose.yaml"
 
 @default:
     just --list
@@ -78,6 +84,58 @@ chat-types:
 chat-check:
     cargo test -p ol-rht-chat
     cd web && pnpm test:chat
+
+# Build/start the local Postgres container; wait until ready (Docker must be running).
+db-up:
+    {{postgres}} up --build --wait --wait-timeout 90
+
+# Stop local Postgres while retaining all data.
+db-stop:
+    {{postgres}} stop
+
+# Remove the local container/network; keep its named data volume.
+db-down:
+    {{postgres}} down
+
+# Delete the local Postgres volume and its data; never used by tests or startup.
+db-reset:
+    {{postgres}} down --volumes
+
+# Local container status, including readiness.
+db-status:
+    {{postgres}} ps
+
+# Follow local Postgres logs.
+db-logs:
+    {{postgres}} logs --follow postgres
+
+# Open psql inside the local container; no native Postgres installation.
+db-shell:
+    {{postgres}} exec postgres psql -U ol_rht -d ol_rht
+
+# Explicit application migrations; OL_RHT_DATABASE_URL overrides the local default.
+db-migrate:
+    @OL_RHT_DATABASE_URL={{quote(database_url)}} cargo run -p workbench-store --bin workbench-db -- migrate
+
+# Check application database connectivity without running migrations.
+db-ping:
+    @OL_RHT_DATABASE_URL={{quote(database_url)}} cargo run -p workbench-store --bin workbench-db -- check
+
+# Install the pinned metadata tool into this worktree's ignored target directory.
+db-tools:
+    cargo install sqlx-cli --version 0.9.0 --locked --no-default-features --features postgres,rustls --debug --root target/sqlx-cli
+
+# Refresh committed query metadata against the migrated LOCAL database (db-tools first).
+db-prepare:
+    PATH="{{justfile_directory()}}/target/sqlx-cli/bin:$PATH" SQLX_OFFLINE=false DATABASE_URL={{quote(postgres_url)}} cargo sqlx prepare --workspace -- --package workbench-store --all-targets
+
+# Verify committed metadata against the migrated LOCAL database (db-tools first).
+db-prepare-check:
+    PATH="{{justfile_directory()}}/target/sqlx-cli/bin:$PATH" SQLX_OFFLINE=false DATABASE_URL={{quote(postgres_url)}} cargo sqlx prepare --check --workspace -- --package workbench-store --all-targets
+
+# Real Postgres tests, each in an isolated database; fails if Postgres is unavailable.
+db-test:
+    @DATABASE_URL={{quote(database_test_url)}} cargo test -p workbench-store --test postgres -- --ignored
 
 # pnpm-workspace.yaml holds packages back two weeks (minimumReleaseAge).
 # Do not pass a flag that overrides it.

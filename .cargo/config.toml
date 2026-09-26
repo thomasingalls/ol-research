@@ -4,3 +4,8 @@
 c = "check --workspace --all-targets"
 l = "clippy --workspace --all-targets"
 t = "test --workspace"
+
+# Committed .sqlx metadata makes ordinary builds independent of a live DB.
+# `just db-prepare`/`db-prepare-check` explicitly opt into the local database.
+[env]
+SQLX_OFFLINE = "true"

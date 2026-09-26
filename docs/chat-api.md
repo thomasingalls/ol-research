@@ -7,8 +7,9 @@ describes the running implementation.
 The [research workbench design](research-workbench-design.md) records the
 subsequent persistence and execution discussion: Postgres/SQLx, a possible
 vendored rpi, a Pi baseline, API-to-VM handoff, Temporal, durable workspaces
-and artifact provenance. Those are
-proposals beyond the implementation documented here.
+and artifact provenance. The [Postgres storage foundation](workbench-storage.md)
+is implemented independently; this chat endpoint is not connected to it yet.
+Runner integration, handoff and the rest remain proposals.
 
 The application can now talk to a local model through a small Rust service:
 

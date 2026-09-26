@@ -4,10 +4,12 @@
 This document preserves the reasoning from the chat-storage discussion so
 implementation can proceed in small steps without losing the intended
 product. It distinguishes the user's requirements, inspected implementation,
-external documentation, and proposed architecture. rpi/Pi integration, Temporal
-workflows, SQLx storage and the development Postgres container are not built
-at this checkpoint. The concrete architecture still needs implementation
-trials; recording it does not settle every choice below.
+external documentation, and proposed architecture. The first
+[Postgres/SQLx storage slice](workbench-storage.md) is now implemented:
+local container, migrations, project/session records and native checkpoints.
+It is not connected to the chat endpoint. rpi/Pi integration, Temporal
+workflows and VM handoff are not built. The concrete architecture still
+needs implementation trials; recording it does not settle every choice below.
 
 **Latest clarification, 2026-09-26:** prefer evaluating a vendored, customized
 `rpi` with upstream Pi as a comparison baseline. Start with API execution for
@@ -84,7 +86,9 @@ persisted conversation, durable run service, sandbox runner, artifact store
 or reconnection protocol. The HTTP response owns generation; Stop or
 disconnect drops the work. The current three-minute run limit and six-tool
 budget are prototype limits, not workbench requirements. The repository has
-no SQLx storage layer to extend at this checkpoint.
+an independent SQLx storage crate with a local Postgres container, described
+in the [storage implementation](workbench-storage.md). It does not yet
+change the chat endpoint's lifecycle or persist its conversations.
 
 Do not confuse these representations:
 
@@ -457,12 +461,13 @@ a small vertical trial without implementing the eventual full workbench.
 
 ### Local Postgres foundation
 
-The container work remains a useful bounded piece:
+The first [storage slice](workbench-storage.md) implements the following
+foundation independently of chat, runner and workflow integration:
 
-- A small `Containerfile` derived from a pinned official Postgres image.
-  The inspected homelab manifest declares PostgreSQL 18; confirm the intended
-  deployment version before pinning the local image.
-- Compose or equivalent configuration for loopback-only access, development
+- A small `Containerfile` pinned to the official multi-platform Postgres 18
+  digest (18.6). The inspected homelab manifest declares PostgreSQL 18.1;
+  the local image matches its major without changing the cluster.
+- Compose configuration for loopback-only access, development
   credentials, readiness, and a persistent named volume.
 - `just` recipes for start/stop, logs, shell, migrations and database tests.
   Stopping preserves data; resetting the volume is an explicit operation.

@@ -1,0 +1,25 @@
+name: ol-rht-postgres
+
+services:
+  postgres:
+    build:
+      context: .
+      dockerfile: Containerfile
+    environment:
+      POSTGRES_USER: ol_rht
+      POSTGRES_PASSWORD: local-dev-only
+      POSTGRES_DB: ol_rht
+    ports:
+      - "127.0.0.1:${OL_RHT_POSTGRES_PORT:-55432}:5432"
+    volumes:
+      # Postgres 18 stores versioned PGDATA beneath this directory.
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ol_rht -d ol_rht"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    stop_grace_period: 30s
+
+volumes:
+  postgres-data:

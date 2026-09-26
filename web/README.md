@@ -388,6 +388,8 @@ pnpm exec shadcn add @assistant-ui/thread
 The [research workbench design](../docs/research-workbench-design.md)
 records the proposed persistence, runner and artifact architecture beyond
 this first chat implementation, including open decisions and demo criteria.
+The [Postgres storage foundation](../docs/workbench-storage.md) is implemented
+separately; the browser chat is not connected to persisted sessions yet.
 
 The UI source is in `src/components/assistant-ui/elements`; its runtime is
 an ordinary dependency (`@assistant-ui/react`, with
