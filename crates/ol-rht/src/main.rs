@@ -4858,6 +4858,12 @@ struct CrossrefStats {
     works: u64,
     deletions: u64,
     types: BTreeMap<source_crossref::vocab::WorkType, u64>,
+    /// Records with no `type`.
+    untyped: u64,
+    /// Records the checked-in exclusion list kept out, by reason.
+    excluded: BTreeMap<&'static str, u64>,
+    /// Values read and not kept, by field and value.
+    set_aside: BTreeMap<(&'static str, &'static str), u64>,
     doi_lowercased: u64,
     owner_differs: u64,
     /// What `alternative-id` became as a name (merge plan §3.1).
@@ -4879,6 +4885,8 @@ struct CrossrefStats {
     reference_doi: [u64; 3],
     reference_empty: u64,
     updates: BTreeMap<source_crossref::vocab::UpdateType, u64>,
+    /// Updates written in an older word than Crossmark's, by the word.
+    update_words: BTreeMap<&'static str, u64>,
     relations: BTreeMap<String, u64>,
     licenses: BTreeMap<source_crossref::vocab::ContentVersion, u64>,
     malformed_samples: Vec<String>,
@@ -4887,7 +4895,10 @@ struct CrossrefStats {
 impl<'n> Sink<'n, Crossref> for CrossrefStats {
     fn work(&mut self, w: &source_crossref::normalize::Work<'n>) {
         self.works += 1;
-        *self.types.entry(w.kind).or_default() += 1;
+        match w.kind {
+            Some(kind) => *self.types.entry(kind).or_default() += 1,
+            None => self.untyped += 1,
+        }
         self.doi_lowercased += u64::from(!w.doi.is_borrowed());
         self.owner_differs += u64::from(w.owner != w.doi.registrant());
         let scope = source_crossref::view::publisher_scope(w);
@@ -4930,6 +4941,9 @@ impl<'n> Sink<'n, Crossref> for CrossrefStats {
         }
         for u in w.updates_to.iter().chain(&w.updated_by) {
             *self.updates.entry(u.kind).or_default() += 1;
+            if !u.word.is_crossmark() {
+                *self.update_words.entry(u.word.as_str()).or_default() += 1;
+            }
         }
         for r in &w.relations {
             bump(&mut self.relations, r.kind.as_text().unwrap_or(""));
@@ -4963,12 +4977,23 @@ impl<'n> Sink<'n, Crossref> for CrossrefStats {
     fn deletion(&mut self, _: &Doi<'n>) {
         self.deletions += 1;
     }
+
+    fn excluded(&mut self, _: &Doi<'n>, reason: &'static str) {
+        *self.excluded.entry(reason).or_default() += 1;
+    }
+
+    fn set_aside(&mut self, _: &Doi<'n>, field: &'static str, value: &'static str) {
+        *self.set_aside.entry((field, value)).or_default() += 1;
+    }
 }
 
 impl StatsReport for CrossrefStats {
     fn report(&self) {
         eprintln!("works {}  deletions {}", self.works, self.deletions);
-        eprintln!("  types {:?}", self.types);
+        if !self.excluded.is_empty() {
+            eprintln!("  kept out by the exclusion list {:?}", self.excluded);
+        }
+        eprintln!("  types {:?}  untyped {}", self.types, self.untyped);
         eprintln!(
             "  doi lowercased (allocations) {}  owner prefix != registrant {}",
             self.doi_lowercased, self.owner_differs
@@ -4993,7 +5018,13 @@ impl StatsReport for CrossrefStats {
         );
         eprintln!("  issns {}  isbns {}", self.issns, self.isbns);
         eprintln!("  languages {:?}", self.languages);
-        eprintln!("  updates {:?}", self.updates);
+        eprintln!(
+            "  updates {:?}  from older words {:?}",
+            self.updates, self.update_words
+        );
+        if !self.set_aside.is_empty() {
+            eprintln!("  set aside {:?}", self.set_aside);
+        }
         eprintln!("  relations {:?}", self.relations);
         eprintln!("  licenses {:?}", self.licenses);
         eprintln!("references {}", self.references);
@@ -5340,7 +5371,7 @@ impl Merge for PubmedStats {
 
 impl Merge for CrossrefStats {
     fn merge(&mut self, other: Self) {
-        absorb_all!(self, other: CrossrefStats { works, deletions, types, doi_lowercased, owner_differs, publisher, issued, title, alternate_titles, subtitle_empty, abstracts, persons, orgs, with_orcid, institutions, issns, isbns, languages, references, reference_doi, reference_empty, updates, relations, licenses, malformed_samples });
+        absorb_all!(self, other: CrossrefStats { works, deletions, types, untyped, excluded, set_aside, doi_lowercased, owner_differs, publisher, issued, title, alternate_titles, subtitle_empty, abstracts, persons, orgs, with_orcid, institutions, issns, isbns, languages, references, reference_doi, reference_empty, updates, update_words, relations, licenses, malformed_samples });
     }
 }
 

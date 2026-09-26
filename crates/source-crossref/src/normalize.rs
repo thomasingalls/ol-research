@@ -28,8 +28,8 @@ use crate::record::{
     Serial, Text, Work as Native,
 };
 use crate::vocab::{
-    AssertedBy, ContentVersion, IdKind, RelationAssertedBy, RelationIdKind, Sequence, SerialKind,
-    UpdateType, WorkType,
+    AssertedBy, ContentVersion, IdKind, Meaning, RelationAssertedBy, RelationIdKind, Sequence,
+    SerialKind, UpdateType, UpdateWord, WorkType,
 };
 
 /// A list with room for its usual length inside the record itself (plan
@@ -61,8 +61,9 @@ pub struct Work<'n> {
     pub owner: Registrant,
     /// `member`.
     pub member: u32,
-    /// `type`.
-    pub kind: WorkType,
+    /// `type`; `None` where the record has none, which is unknown rather
+    /// than guessed (the user's call, 2026-09-26).
+    pub kind: Option<WorkType>,
     /// DOI registration.
     pub created: DateTime,
     /// Latest metadata deposit.
@@ -251,8 +252,11 @@ pub struct Update<'n> {
     /// The other work.
     #[serde(borrow)]
     pub doi: Doi<'n>,
-    #[allow(missing_docs)]
+    /// What the update is.
     pub kind: UpdateType,
+    /// The word the record wrote, beside what it was read as, so a reading
+    /// such as `err` for an erratum can be revisited (the user, 2026-09-26).
+    pub word: UpdateWord,
     #[allow(missing_docs)]
     pub at: DateTime,
 }
@@ -652,21 +656,38 @@ impl Ctx {
         })
     }
 
+    /// An update, read as what its word means ([`UpdateWord::meaning`]);
+    /// `None` for a word that is no update, which the caller sets aside. A
+    /// test deposit's word reaches here only on a record the exclusion list
+    /// does not hold, and stops the run: the list needs it, or the word
+    /// means something after all.
     fn update<'n>(
         &self,
         field: &'static str,
         u: &'n crate::record::Update<'_>,
-    ) -> Result<Update<'n>, Error> {
-        Ok(Update {
+    ) -> Result<Option<Update<'n>>, Error> {
+        let kind = match u.r#type.meaning() {
+            Meaning::Update(kind) => kind,
+            Meaning::NotAnUpdate => return Ok(None),
+            Meaning::TestDeposit => {
+                return Err(self.err(
+                    field,
+                    u.r#type.as_str(),
+                    ErrorKind::Unmodelled("a test deposit's update word on a record not listed"),
+                ));
+            }
+        };
+        Ok(Some(Update {
             doi: Doi::parse(&u.doi).map_err(|e| self.err(field, &u.doi, ErrorKind::Doi(e)))?,
-            kind: u.r#type,
+            kind,
+            word: u.r#type,
             at: self.stamp(
                 field,
                 u.updated.date_parts,
                 &u.updated.date_time,
                 u.updated.timestamp,
             )?,
-        })
+        }))
     }
 }
 
@@ -709,6 +730,10 @@ pub fn normalize<'n, K: Sink<'n, Crossref>>(w: &'n Native<'_>, emit: &mut K) -> 
         &w.deposited.date_time,
         w.deposited.timestamp,
     )?;
+    if let Some(reason) = crate::exclusions::reason(&doi, deposited) {
+        emit.excluded(&doi, reason);
+        return Ok(());
+    }
     let indexed = ctx.stamp(
         "indexed",
         w.indexed.date_parts,
@@ -806,33 +831,50 @@ pub fn normalize<'n, K: Sink<'n, Crossref>>(w: &'n Native<'_>, emit: &mut K) -> 
             })
         })
         .collect::<Result<_, Error>>()?;
-    let updates_to = w
-        .update_to
-        .as_deref()
-        .unwrap_or_default()
-        .iter()
-        .map(|u| ctx.update("update-to", u))
-        .collect::<Result<_, _>>()?;
-    let updated_by = w
-        .updated_by
-        .as_deref()
-        .unwrap_or_default()
-        .iter()
-        .map(|u| ctx.update("updated-by", u))
-        .collect::<Result<_, _>>()?;
-    let relations = w
-        .relation
-        .iter()
-        .flat_map(|map| map.iter())
-        .flat_map(|(kind, targets)| {
-            targets.iter().map(move |t| Relation {
-                kind: Interned::Text(kind),
-                id: &t.id,
-                id_kind: t.id_type,
-                asserted_by: t.asserted_by,
-            })
-        })
-        .collect();
+    let mut updates = |field: &'static str, list: Option<&'n [crate::record::Update<'_>]>| {
+        let mut kept = Few::new();
+        for u in list.unwrap_or_default() {
+            match ctx.update(field, u)? {
+                Some(update) => kept.push(update),
+                None => emit.set_aside(&doi, field, u.r#type.as_str()),
+            }
+        }
+        Ok::<_, Error>(kept)
+    };
+    let updates_to = updates("update-to", w.update_to.as_deref())?;
+    let updated_by = updates("updated-by", w.updated_by.as_deref())?;
+    // Crossref copies a work's `updated-by` into its `relation` under the
+    // update's word, so a `relation` type can be one too, and means what
+    // it means there.
+    let mut relations = Few::new();
+    for (kind, targets) in w.relation.iter().flatten() {
+        if let Some(word) = UpdateWord::from_word(kind) {
+            match word.meaning() {
+                Meaning::Update(_) => {}
+                Meaning::NotAnUpdate => {
+                    for _ in targets {
+                        emit.set_aside(&doi, "relation", word.as_str());
+                    }
+                    continue;
+                }
+                Meaning::TestDeposit => {
+                    return Err(ctx.err(
+                        "relation",
+                        kind,
+                        ErrorKind::Unmodelled(
+                            "a test deposit's update word on a record not listed",
+                        ),
+                    ));
+                }
+            }
+        }
+        relations.extend(targets.iter().map(|t| Relation {
+            kind: Interned::Text(kind),
+            id: &t.id,
+            id_kind: t.id_type,
+            asserted_by: t.asserted_by,
+        }));
+    }
 
     emit.work(&Work {
         owner,

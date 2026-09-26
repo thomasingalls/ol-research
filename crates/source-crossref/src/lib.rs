@@ -10,7 +10,9 @@
 //! `deny_unknown_fields`, every enumerated string a closed enum — and a
 //! field or value outside that stops the run with the item's DOI. The
 //! vocabularies with an authoritative source (`/types`, the Crossmark update
-//! types) are complete; the rest are exactly what was observed.
+//! types, the deposit schema's lists) are that source's whole list; the
+//! rest are exactly what was observed ([`vocab`]). A few records are kept
+//! out on purpose ([`exclusions`]).
 //!
 //! Two containers hold the same record: the REST API envelope
 //! (`message.items[]`, the POC input) and the public data file's JSON lines.
@@ -21,6 +23,7 @@ use std::ops::ControlFlow;
 
 pub mod date;
 pub mod error;
+pub mod exclusions;
 pub mod list;
 pub mod normalize;
 pub mod parse;

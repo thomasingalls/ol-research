@@ -14,7 +14,7 @@ use merge::view::{Status, Text, Unmapped, Venue, View, bound, strip_markup, text
 use merge::{Name, OwnedName};
 
 use crate::normalize::{AuthorName, Reference, Work};
-use crate::vocab::{RelationIdKind, UpdateType, WorkType};
+use crate::vocab::{Meaning, RelationAssertedBy, RelationIdKind, UpdateType, UpdateWord, WorkType};
 
 /// What scopes the record's publisher ids (merge plan §3.1): its DOI,
 /// which every Crossref record has by construction. Not `prefix`, which
@@ -65,23 +65,46 @@ pub const fn form(kind: WorkType) -> Form {
     }
 }
 
-/// The genre a form implies when nothing more is known — the third
-/// choice of §5's precedence — or the one a Crossmark notice asserts:
-/// a record whose `update-to` is a retraction is the retraction notice.
+/// The genre a Crossmark notice asserts — a record whose `update-to` is a
+/// retraction is the retraction notice, one that comments on a work is a
+/// comment — or else the one its form implies when nothing more is known,
+/// the third choice of §5's precedence. `None` for a record with neither:
+/// no notice, and no type.
+///
+/// An update that names the record itself makes it no notice: it is the
+/// work, updated in place — APS's `corrected` articles (35 among the
+/// records the March 2026 file's survey stopped at), and a few
+/// `correction`, `retraction` and `new_edition` updates written the same
+/// way. It still counts in [`Status`], from `updated-by`.
 #[must_use]
-pub fn genre(work: &Work<'_>) -> Genre {
-    let notice = work.updates_to.iter().map(|u| u.kind).max();
+pub fn genre(work: &Work<'_>) -> Option<Genre> {
+    let notices = || work.updates_to.iter().filter(|u| u.doi != work.doi);
+    // The twelve Crossmark types by their order, as before a comment
+    // joined the list.
+    let notice = notices()
+        .map(|u| u.kind)
+        .filter(|k| *k != UpdateType::Comment)
+        .max();
     match notice {
         Some(UpdateType::Retraction | UpdateType::PartialRetraction | UpdateType::Withdrawal) => {
-            return Genre::Retraction;
+            return Some(Genre::Retraction);
         }
         Some(UpdateType::Correction | UpdateType::Corrigendum | UpdateType::Erratum) => {
-            return Genre::Erratum;
+            return Some(Genre::Erratum);
         }
-        Some(UpdateType::ExpressionOfConcern) => return Genre::ExpressionOfConcern,
+        Some(UpdateType::ExpressionOfConcern) => return Some(Genre::ExpressionOfConcern),
         _ => {}
     }
-    match work.kind {
+    if notices().any(|u| u.kind == UpdateType::Comment) {
+        return Some(Genre::Comment);
+    }
+    work.kind.map(default_genre)
+}
+
+/// The genre a work type implies when nothing more is known.
+#[must_use]
+pub const fn default_genre(kind: WorkType) -> Genre {
+    match kind {
         WorkType::JournalArticle => Genre::Article,
         WorkType::PostedContent => Genre::Preprint,
         WorkType::PeerReview => Genre::PeerReview,
@@ -112,10 +135,15 @@ pub fn genre(work: &Work<'_>) -> Genre {
     }
 }
 
-/// A Crossmark update type as the merge's.
+/// An update as the merge's relation, from the notice's side
+/// (`update-to`) or the updated work's (`updated-by`). The merge's
+/// updates are Crossmark's twelve; a comment is its comment relation
+/// instead.
 #[must_use]
-pub const fn update(kind: UpdateType) -> Update {
-    match kind {
+pub const fn update_relation(kind: UpdateType, notice: bool) -> Kind {
+    let update = match kind {
+        UpdateType::Comment if notice => return Kind::IsCommentOn,
+        UpdateType::Comment => return Kind::HasComment,
         UpdateType::Addendum => Update::Addendum,
         UpdateType::Clarification => Update::Clarification,
         UpdateType::Correction => Update::Correction,
@@ -128,14 +156,44 @@ pub const fn update(kind: UpdateType) -> Update {
         UpdateType::Removal => Update::Removal,
         UpdateType::Retraction => Update::Retraction,
         UpdateType::Withdrawal => Update::Withdrawal,
+    };
+    if notice {
+        Kind::UpdateTo(update)
+    } else {
+        Kind::UpdatedBy(update)
     }
 }
 
 /// A `relation` type as the merge's relation kind: the deposit schema's
-/// inter-work relations, two more the data showed, and the Crossmark
-/// words publishers deposit here too, in Crossref's own spellings.
+/// inter-work relations, two more the data showed, and update words.
+/// Crossref copies a work's `updated-by` into its `relation` under the
+/// update's word, asserted by the object, the notice: those read as what
+/// the word means ([`UpdateWord::meaning`]), and a comment so asserted is
+/// a comment on this work. A word that is no update never gets here: the
+/// normalizer set it aside.
 #[must_use]
-pub fn relation_kind(kind: &str) -> Option<Kind> {
+pub fn relation_kind(kind: &str, by: RelationAssertedBy) -> Option<Kind> {
+    if let Some(word) = UpdateWord::from_word(kind) {
+        let Meaning::Update(update) = word.meaning() else {
+            return None;
+        };
+        return Some(match update {
+            UpdateType::Comment if by == RelationAssertedBy::Object => Kind::HasComment,
+            UpdateType::Comment => return None,
+            UpdateType::Correction => Kind::Correction,
+            UpdateType::Erratum => Kind::Erratum,
+            UpdateType::Corrigendum => Kind::Corrigendum,
+            UpdateType::NewVersion => Kind::NewVersion,
+            UpdateType::ExpressionOfConcern => Kind::ExpressionOfConcern,
+            UpdateType::Addendum => Kind::Addendum,
+            UpdateType::Clarification => Kind::Clarification,
+            UpdateType::NewEdition => Kind::NewEdition,
+            UpdateType::PartialRetraction => Kind::PartialRetraction,
+            UpdateType::Removal => Kind::Removal,
+            UpdateType::Retraction => Kind::Retraction,
+            UpdateType::Withdrawal => Kind::Withdrawal,
+        });
+    }
     Some(match kind {
         "has-review" => Kind::HasReview,
         "is-review-of" => Kind::IsReviewOf,
@@ -189,18 +247,6 @@ pub fn relation_kind(kind: &str) -> Option<Kind> {
         "replaces" => Kind::Replaces,
         "is-data-basis-for" => Kind::IsDataBasisFor,
         "based-on-data" => Kind::BasedOnData,
-        "correction" => Kind::Correction,
-        "erratum" => Kind::Erratum,
-        "corrigendum" => Kind::Corrigendum,
-        "new_version" => Kind::NewVersion,
-        "expression_of_concern" => Kind::ExpressionOfConcern,
-        "addendum" => Kind::Addendum,
-        "clarification" => Kind::Clarification,
-        "new_edition" => Kind::NewEdition,
-        "partial_retraction" => Kind::PartialRetraction,
-        "removal" => Kind::Removal,
-        "retraction" => Kind::Retraction,
-        "withdrawal" => Kind::Withdrawal,
         _ => return None,
     })
 }
@@ -241,7 +287,6 @@ pub fn view<'w>(work: &'w Work<'_>, table: &'w Table) -> Result<View<'w>, Unmapp
         }
     }
     let by = |kinds: &[UpdateType]| work.updated_by.iter().any(|u| kinds.contains(&u.kind));
-    let genre = genre(work);
     Ok(View {
         version: 1,
         set: "",
@@ -257,8 +302,8 @@ pub fn view<'w>(work: &'w Work<'_>, table: &'w Table) -> Result<View<'w>, Unmapp
         },
         published,
         language: work.language,
-        form: Some(form(work.kind)),
-        genre: Some(genre),
+        form: work.kind.map(form),
+        genre: genre(work),
         status: Status {
             retracted: by(&[
                 UpdateType::Retraction,
@@ -284,9 +329,11 @@ pub fn view<'w>(work: &'w Work<'_>, table: &'w Table) -> Result<View<'w>, Unmapp
 
 /// A relation target as a name, when its id is in our namespaces and
 /// parses.
+/// `short-doi` is read as a DOI: every one the March 2026 file's survey
+/// reached is a whole DOI, and one that is not stays no name.
 fn target(id: &str, kind: RelationIdKind) -> Option<OwnedName> {
     match kind {
-        RelationIdKind::Doi => Doi::parse(id)
+        RelationIdKind::Doi | RelationIdKind::ShortDoi => Doi::parse(id)
             .ok()
             .map(|d| OwnedName::Doi(d.as_str().into())),
         RelationIdKind::Pmid => Pmid::from_digits(id).ok().map(OwnedName::Pmid),
@@ -312,7 +359,7 @@ pub fn relations(
 ) -> Result<(), Unmapped> {
     for r in &work.relations {
         let term = text(&r.kind, table, "relations.kind")?;
-        let kind = relation_kind(term).ok_or_else(|| Unmapped {
+        let kind = relation_kind(term, r.asserted_by).ok_or_else(|| Unmapped {
             field: "relations.kind",
             value: term.to_owned(),
         })?;
@@ -323,13 +370,13 @@ pub fn relations(
     }
     for u in &work.updates_to {
         out(Related {
-            kind: Kind::UpdateTo(update(u.kind)),
+            kind: update_relation(u.kind, true),
             target: Some(OwnedName::Doi(u.doi.as_str().into())),
         });
     }
     for u in &work.updated_by {
         out(Related {
-            kind: Kind::UpdatedBy(update(u.kind)),
+            kind: update_relation(u.kind, false),
             target: Some(OwnedName::Doi(u.doi.as_str().into())),
         });
     }
@@ -402,8 +449,8 @@ mod tests {
     use merge::kind::{Form, Genre};
     use merge::relation::Kind;
 
-    use super::{form, relation_kind};
-    use crate::vocab::WorkType;
+    use super::{form, relation_kind, update_relation};
+    use crate::vocab::{RelationAssertedBy, UpdateType, WorkType};
 
     #[test]
     fn every_work_type_has_a_form_and_the_sample_relation_types_map() {
@@ -440,9 +487,47 @@ mod tests {
             "is-identical-to",
             "expression_of_concern",
         ] {
-            assert!(relation_kind(word).is_some(), "{word}");
+            assert!(
+                relation_kind(word, RelationAssertedBy::Subject).is_some(),
+                "{word}"
+            );
         }
-        assert_eq!(relation_kind("new_version"), Some(Kind::NewVersion));
-        assert_eq!(relation_kind("is-friend-of"), None);
+        let object = |word| relation_kind(word, RelationAssertedBy::Object);
+        assert_eq!(object("new_version"), Some(Kind::NewVersion));
+        assert_eq!(object("is-friend-of"), None);
+        // The old words, as the dump showed them under `relation`: a copy
+        // of the work's `updated-by`, asserted by the notice.
+        assert_eq!(object("err"), Some(Kind::Erratum));
+        assert_eq!(object("corrected-article"), Some(Kind::Correction));
+        assert_eq!(object("publisher-note"), Some(Kind::Correction));
+        assert_eq!(
+            object("expression-of-concern"),
+            Some(Kind::ExpressionOfConcern)
+        );
+        assert_eq!(object("comment"), Some(Kind::HasComment));
+        assert_eq!(object("correspondence"), Some(Kind::HasComment));
+        assert_eq!(
+            relation_kind("comment", RelationAssertedBy::Subject),
+            None,
+            "which way it points is not said"
+        );
+        assert_eq!(object("article"), None, "set aside, never here");
+    }
+
+    #[test]
+    fn a_comment_is_the_merge_relation_it_is() {
+        assert_eq!(
+            update_relation(UpdateType::Comment, true),
+            Kind::IsCommentOn
+        );
+        assert_eq!(
+            update_relation(UpdateType::Comment, false),
+            Kind::HasComment
+        );
+        assert_eq!(
+            update_relation(UpdateType::Correction, false),
+            Kind::UpdatedBy(merge::relation::Update::Correction)
+        );
+        assert!(Form::JournalArticle.admits(Genre::Comment));
     }
 }

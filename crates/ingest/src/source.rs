@@ -135,6 +135,15 @@ pub trait Sink<'n, S: Source> {
         let _ = (id, reason);
     }
 
+    /// A value of a record's that the source reads and does not keep, on
+    /// purpose (plan §6): `field` holding `value`, such as Crossref's
+    /// `update-to` holding `print`, which is no update. Nothing is written
+    /// for it; a sink that reports counts it, so what the model leaves out
+    /// stays visible. May come before the record's work.
+    fn set_aside(&mut self, id: &S::Id<'n>, field: &'static str, value: &'static str) {
+        let _ = (id, field, value);
+    }
+
     /// Called before the first record of each raw file, with the file's
     /// path and its index among the run's files.
     ///
@@ -192,6 +201,10 @@ impl<'n, S: Source, K: Sink<'n, S>> Sink<'n, S> for &mut K {
         (**self).excluded(id, reason);
     }
 
+    fn set_aside(&mut self, id: &S::Id<'n>, field: &'static str, value: &'static str) {
+        (**self).set_aside(id, field, value);
+    }
+
     fn begin_file(&mut self, path: &Path, index: usize) -> io::Result<()> {
         (**self).begin_file(path, index)
     }
@@ -231,6 +244,12 @@ impl<'n, S: Source, K: Sink<'n, S>> Sink<'n, S> for Option<K> {
         }
     }
 
+    fn set_aside(&mut self, id: &S::Id<'n>, field: &'static str, value: &'static str) {
+        if let Some(k) = self {
+            k.set_aside(id, field, value);
+        }
+    }
+
     fn begin_file(&mut self, path: &Path, index: usize) -> io::Result<()> {
         self.as_mut().map_or(Ok(()), |k| k.begin_file(path, index))
     }
@@ -265,6 +284,11 @@ impl<'n, S: Source, A: Sink<'n, S>, B: Sink<'n, S>> Sink<'n, S> for (A, B) {
     fn excluded(&mut self, id: &S::Id<'n>, reason: &'static str) {
         self.0.excluded(id, reason);
         self.1.excluded(id, reason);
+    }
+
+    fn set_aside(&mut self, id: &S::Id<'n>, field: &'static str, value: &'static str) {
+        self.0.set_aside(id, field, value);
+        self.1.set_aside(id, field, value);
     }
 
     fn begin_file(&mut self, path: &Path, index: usize) -> io::Result<()> {

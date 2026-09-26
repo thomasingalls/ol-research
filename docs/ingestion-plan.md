@@ -123,10 +123,25 @@ wart is a claim the POC run confirms or refutes, not a commitment.
   ids of three kinds, ROR, ISNI and Wikidata (`institution_id@type`, the
   same from 5.3.1 to 5.5.0). All of it is kept, each id with who asserted
   it; a ROR is a claim, because one record's fails its checksum.
+- Types (model 10). A record may have no `type` — 2,257 among those the
+  survey stopped at, EMBL-EBI's dataset pages first — and its kind is then
+  unknown: no form, no genre but a notice's. Crossmark's update type was
+  free text before deposit schema 4.3.5 (October 2014), and old records
+  carry their publishers' words: each is read for its meaning and kept
+  beside it (`vocab::UpdateWord`), a word that is no update (`print`, a
+  section's name) is set aside and counted, and a test deposit's word
+  keeps its record out through `source_crossref::exclusions`. Crossref
+  copies a work's `updated-by` into its `relation` under the same word.
+  The reference, funding, peer-review and relation-id lists are the
+  deposit schema's whole lists.
 - Known gaps, kept on purpose and listed so they stay known: editors,
   chairs and translators are dropped, and their affiliations with them,
   though those carry the same ids (the user, 2026-09-26: fine "so long as
-  we know we're missing important data").
+  we know we're missing important data"). A reference's `type` is read
+  and not kept (its own pass, for citation matching). Crossmark policy
+  pages — about 260 among the records the survey stopped at, typed or
+  not — are not works and are normalized as if they were, until books and
+  their kin are taken on after articles.
 - Terms: metadata is free to reuse and not subject to copyright; abstracts
   carry some limitations.
 
@@ -1839,6 +1854,36 @@ cross-IDs and a second edge namespace early.
   record's two copies). The user sees ids for institutions, authors and
   funders coming one day, as works have them, and kept "a name or an id"
   with that in mind; not this pass.
+- 2026-09-26, model version 10, types. A record with no `type` (2,243
+  shards; EMBL-EBI's ProteomeXchange pages, ScienceOpen collections, SAGE
+  videos, created 2006 to 2022) has an unknown kind: `Option<WorkType>`,
+  no form, and no genre unless a notice gives one — not guessed as
+  `database`, not kept out. `patent` (1,070 shards) and `journal` (64)
+  were reference types, not work types, and the reference, funding,
+  peer-review and relation-id lists take the deposit schema's whole lists
+  (`short-doi` and `orcid` are the data's, not the schema's; a short DOI
+  is read as a DOI, an ORCID names nothing). Crossmark's update words, the
+  user's readings: capitals, `expression-of-concern` and the misspellings
+  `retration`, `retracion` are the Crossmark word; Elsevier's `err` is an
+  erratum (its label on every one); APS's `corrected` and AIP's
+  `publisher-note` are corrections; `comment` and `correspondence` are a
+  comment, a new update type the merge reads as `is-comment-on` /
+  `has-comment`; `unknown`, `print`, `article` and three more section
+  names are no update, set aside and counted (`Sink::set_aside`, new);
+  and `sample_update` and two more are test deposits, whose three records
+  among the dumped ones the new checked-in exclusion list keeps out. Each
+  update keeps the word beside its reading. Two things the dump showed
+  that the proposal had not: Cambridge's `corrected-article` names the
+  work its notice corrects, not the notice — 32 of its 33 notices are
+  titled "… – ERRATUM" or "… – CORRIGENDUM", 29 one page — so it is a
+  correction, where the user had chosen a type of its own on the
+  proposal's reading that the notice is the corrected article; and an
+  update to the record itself (APS's `corrected`, 35, and a few
+  `correction`, `retraction`, `new_edition`) marks a work updated in
+  place, which now makes it no notice in the genre, though it still
+  counts in its status. Over the dumped records (M): no vocabulary
+  failure left, 1,070 updates read from an older word, 69 set aside, and
+  the merge's view maps every relation of the 12,394 that normalize.
 
 ## 11. Dependencies
 

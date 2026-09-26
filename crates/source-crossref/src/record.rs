@@ -14,7 +14,7 @@ use crate::date::{IndexedStamp, PartialDate, Stamp};
 use crate::vocab::{
     AssertedBy, ContentVersion, FundingType, IdKind, IntendedApplication, ReferenceType,
     RelationAssertedBy, RelationIdKind, ReviewRecommendation, ReviewStage, ReviewType, RoleName,
-    Sequence, SerialKind, Source, Subtype, UpdateType, Vocabulary, WorkType,
+    Sequence, SerialKind, Source, Subtype, UpdateWord, Vocabulary, WorkType,
 };
 
 /// A list with room for its usual length inside the record itself (plan
@@ -35,9 +35,13 @@ pub struct Work<'a> {
     /// `https://doi.org/` + DOI.
     #[serde(rename = "URL", borrow)]
     pub url: Text<'a>,
-    /// One of the 30 types.
+    /// One of the 30 types; absent on 2,257 of the records the March 2026
+    /// file's survey stopped at (2026-09-26) — EMBL-EBI's dataset pages,
+    /// collections, videos, articles, Crossmark policy pages, all created
+    /// 2006 to 2022 and six of six title-only `<database>` deposits. The
+    /// type is unknown, not guessed.
     #[serde(rename = "type")]
-    pub r#type: WorkType,
+    pub r#type: Option<WorkType>,
     /// Always `Crossref`.
     pub source: Source,
     /// The DOI prefix, `10.1016`.
@@ -662,8 +666,8 @@ pub struct Update<'a> {
     #[serde(rename = "DOI", borrow)]
     #[allow(missing_docs)]
     pub doi: Text<'a>,
-    #[allow(missing_docs)]
-    pub r#type: UpdateType,
+    /// As written; [`UpdateWord::meaning`] reads it.
+    pub r#type: UpdateWord,
     #[serde(borrow)]
     #[allow(missing_docs)]
     pub label: Option<Text<'a>>,

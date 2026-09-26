@@ -115,8 +115,13 @@
 /// written, and a ROR (a claim: one record's fails its checksum), an ISNI
 /// and a Wikidata item ([`Qid`]), each with who asserted it; 1,957 shards
 /// stopped at a Wikidata id and 892 at an affiliation's acronym. The
-/// work's own institutions were dropped before. Output under version 9 is
-/// rebuilt, not patched.
+/// work's own institutions were dropped before. Types: a Crossref record
+/// may have no `type`, which is unknown rather than guessed (2,243
+/// shards); an update keeps the word it was written in beside what it is
+/// read as, Crossmark's free-text years having left `err`,
+/// `corrected-article`, `Erratum` and others in the data (about 600
+/// shards); and an update can be a comment, which Crossmark's twelve lack.
+/// Output under version 9 is rebuilt, not patched.
 pub const VERSION: u32 = 10;
 
 pub mod claim;

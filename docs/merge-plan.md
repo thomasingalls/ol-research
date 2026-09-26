@@ -522,8 +522,10 @@ Relations that are not identity become a typed stream `(from, to, kind,
 source)`, kinds closed (`merge::relation::Kind`): PubMed's
 `CommentsCorrections` (23 kinds), Crossref's `relation` types (the deposit
 schema's, plus the Crossmark words some publishers deposit there) and
-Crossmark updates both ways as `update-to:<type>` / `updated-by:<type>`,
-and the OpenAlex location DOIs and PMIDs of §3.1 as `has-version`. Status
+Crossmark updates both ways as `update-to:<type>` / `updated-by:<type>` —
+a comment, which Crossmark's twelve lack, as `is-comment-on` /
+`has-comment`, and an older publisher's word as what it means (ingestion
+plan §10, 2026-09-26) — and the OpenAlex location DOIs and PMIDs of §3.1 as `has-version`. Status
 derives from them (§5); lineage will (§11). A relation's other end
 resolves through the names table like an edge's, minting a stub if need
 be: 15,303 relations on the sample — `has-version` 3,834, `has-review`
