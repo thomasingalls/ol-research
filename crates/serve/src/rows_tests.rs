@@ -106,7 +106,9 @@ fn a_bulk_read_applies_the_deltas_overrides() {
     restated.view.set = "batch".into();
     let mut added = work(7, "Work 7", &["doi:10.1000/shared"]);
     added.view.set = "batch".into();
-    let applied = incremental::apply(
+    let mut delivered = corpus();
+    delivered.extend([restated.clone(), added.clone()]);
+    let applied = incremental::apply_with(
         &store,
         &serving,
         Batch {
@@ -117,6 +119,7 @@ fn a_bulk_read_applies_the_deltas_overrides() {
             inputs: vec!["batch-1".into()],
         },
         Some(&fixture::key()),
+        &fixture::Layer(delivered),
     )
     .unwrap();
     assert_eq!(applied.batch, 2);
@@ -185,7 +188,7 @@ fn the_live_epoch_measures_the_bulk_read() {
         .map(|n| n.work)
         .collect();
     let hits: Vec<WorkId> = serving
-        .search("systematic review", 100)
+        .search(&query_parser::parse("systematic review").unwrap(), 100)
         .unwrap()
         .hits
         .iter()

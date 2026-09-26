@@ -54,18 +54,35 @@ pub trait Source: Sized {
     /// byte stream — the file itself, or an inflating decoder over it, or
     /// a download in flight — and hands each to `each`, borrowed from a
     /// buffer that is reused for the next. `each` returning `Break` ends
-    /// the read before the next record is parsed; the first record that
-    /// does not parse ends it with the error, and what follows is never
+    /// the read before the next record is parsed.
+    ///
+    /// A record that does not parse is handed to `each` as its error when
+    /// the framing found where the record ends before parsing it — a line
+    /// of a lines file, one result of an API page — because the next
+    /// record starts there all the same, and whether to read it is
+    /// `each`'s answer, as for any record. Where the framing cannot find
+    /// that end — an XML stream, whose reader is lost inside the record —
+    /// the read ends with the error instead, and what follows is never
     /// read.
     ///
     /// # Errors
     ///
     /// The stream (I/O, gzip, bytes that are not UTF-8), or a record that
-    /// did not parse: structural strictness (plan §6).
+    /// did not parse where nothing after it can be read: structural
+    /// strictness (plan §6).
     fn records<R, F>(input: R, each: F) -> Result<(), ReadError<Self::ParseError>>
     where
         R: BufRead,
-        F: FnMut(&Self::Native<'_>) -> ControlFlow<()>;
+        F: FnMut(Result<&Self::Native<'_>, Self::ParseError>) -> ControlFlow<()>;
+
+    /// A normalized work's native name as the merge writes it
+    /// (`pmid:123`): what the set's [`crate::binary::Index`] is keyed by,
+    /// so that a reader holding the name finds the record's copy by a
+    /// seek. `None`, the default, writes no index.
+    fn native_key(work: &Self::Work<'_>) -> Option<String> {
+        let _ = work;
+        None
+    }
 
     /// Normalizes one record, pushing what it becomes to `sink`: a work and
     /// then each of its edges, or a deletion.
@@ -116,6 +133,15 @@ pub trait Sink<'n, S: Source> {
     /// Nothing else is emitted for it; a sink that reports counts it.
     fn excluded(&mut self, id: &S::Id<'n>, reason: &'static str) {
         let _ = (id, reason);
+    }
+
+    /// A value of a record's that the source reads and does not keep, on
+    /// purpose (plan §6): `field` holding `value`, such as Crossref's
+    /// `update-to` holding `print`, which is no update. Nothing is written
+    /// for it; a sink that reports counts it, so what the model leaves out
+    /// stays visible. May come before the record's work.
+    fn set_aside(&mut self, id: &S::Id<'n>, field: &'static str, value: &'static str) {
+        let _ = (id, field, value);
     }
 
     /// Called before the first record of each raw file, with the file's
@@ -175,6 +201,10 @@ impl<'n, S: Source, K: Sink<'n, S>> Sink<'n, S> for &mut K {
         (**self).excluded(id, reason);
     }
 
+    fn set_aside(&mut self, id: &S::Id<'n>, field: &'static str, value: &'static str) {
+        (**self).set_aside(id, field, value);
+    }
+
     fn begin_file(&mut self, path: &Path, index: usize) -> io::Result<()> {
         (**self).begin_file(path, index)
     }
@@ -214,6 +244,12 @@ impl<'n, S: Source, K: Sink<'n, S>> Sink<'n, S> for Option<K> {
         }
     }
 
+    fn set_aside(&mut self, id: &S::Id<'n>, field: &'static str, value: &'static str) {
+        if let Some(k) = self {
+            k.set_aside(id, field, value);
+        }
+    }
+
     fn begin_file(&mut self, path: &Path, index: usize) -> io::Result<()> {
         self.as_mut().map_or(Ok(()), |k| k.begin_file(path, index))
     }
@@ -248,6 +284,11 @@ impl<'n, S: Source, A: Sink<'n, S>, B: Sink<'n, S>> Sink<'n, S> for (A, B) {
     fn excluded(&mut self, id: &S::Id<'n>, reason: &'static str) {
         self.0.excluded(id, reason);
         self.1.excluded(id, reason);
+    }
+
+    fn set_aside(&mut self, id: &S::Id<'n>, field: &'static str, value: &'static str) {
+        self.0.set_aside(id, field, value);
+        self.1.set_aside(id, field, value);
     }
 
     fn begin_file(&mut self, path: &Path, index: usize) -> io::Result<()> {

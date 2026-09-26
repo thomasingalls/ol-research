@@ -7,6 +7,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{RwLock, RwLockReadGuard};
+use std::time::Instant;
 
 use graph::Base;
 use ingest::Store;
@@ -268,14 +269,29 @@ impl Serving {
     /// becomes a work's (2026-09-18).
     #[must_use]
     pub fn cited_as(&self, name: &OwnedName) -> Vec<CitedRow> {
-        let text = name.to_string();
+        self.cited_as_key(&name.to_string())
+    }
+
+    /// Every name the base's or the fold's cited-as rows name, in order:
+    /// what a comparison of two cores walks (serving plan §11, item 35).
+    #[must_use]
+    pub fn cited_as_names(&self) -> Vec<String> {
+        let mut names: std::collections::BTreeSet<String> =
+            self.cited.names().into_iter().collect();
+        names.extend(self.fold().cited.names().map(str::to_owned));
+        names.into_iter().collect()
+    }
+
+    /// [`cited_as`](Self::cited_as) for a name's text form.
+    #[must_use]
+    pub fn cited_as_key(&self, text: &str) -> Vec<CitedRow> {
         let fold = self
             .fold
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut rows: Vec<CitedRow> = self
             .cited
-            .rows_of(&text)
+            .rows_of(text)
             .into_iter()
             .filter(|row| !fold.cited.restated(row.from, row.by))
             .map(|row| CitedRow {
@@ -284,7 +300,7 @@ impl Serving {
                 ..row
             })
             .collect();
-        rows.extend(fold.cited.rows_of(&text));
+        rows.extend(fold.cited.rows_of(text));
         rows.sort_unstable();
         rows.dedup();
         rows
@@ -649,23 +665,30 @@ impl Serving {
         Arcs::new(self.graph.citers(id), delta)
     }
 
-    /// Works matching a query, with facet counts over the matches.
+    /// Works matching a query, as the query parser read it, with facet
+    /// counts over the matches.
     ///
     /// # Errors
     ///
-    /// A query the engine refuses.
-    pub fn search(&self, text: &str, limit: usize) -> Result<Hits, Error> {
-        self.search_facets(text, limit, 5)
+    /// The engine.
+    pub fn search(&self, asked: &query_parser::Query, limit: usize) -> Result<Hits, Error> {
+        self.search_facets(asked, limit, 5, None)
     }
 
     /// As [`search`](Self::search), with the top `facets` values of each
-    /// facet root.
+    /// facet root, and stopped at `until` when there is one.
     ///
     /// # Errors
     ///
-    /// A query the engine refuses.
-    pub fn search_facets(&self, text: &str, limit: usize, facets: usize) -> Result<Hits, Error> {
-        Ok(self.search.search(text, limit, facets)?)
+    /// The engine, or `search::Error::Deadline` past `until`.
+    pub fn search_facets(
+        &self,
+        asked: &query_parser::Query,
+        limit: usize,
+        facets: usize,
+        until: Option<Instant>,
+    ) -> Result<Hits, Error> {
+        Ok(self.search.search(asked, limit, facets, until)?)
     }
 
     /// A work's public id: minted since the epoch, or in the base's array.

@@ -325,6 +325,7 @@ pub fn view<'w>(work: &'w Citation<'_>, table: &'w Table) -> Result<View<'w>, Un
     Ok(View {
         version: work.version,
         set: "",
+        superseded: Vec::new(),
         revised: work.dates.revised,
         titles: <crate::Pubmed as merge::Contributor>::titles(work),
         has_abstract: work.r#abstract.is_some() || !work.other_abstracts.is_empty(),

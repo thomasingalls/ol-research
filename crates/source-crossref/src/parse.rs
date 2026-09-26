@@ -199,29 +199,34 @@ pub fn jsonl(input: &str) -> impl Iterator<Item = Result<Work<'_>, Error>> + '_ 
 /// told apart by the first bytes: an API page starts with `{"status"`, a
 /// public data file with a work. A page is one document, held whole while
 /// its items are parsed one by one; lines are read one at a time from a
-/// buffer reused for the next.
+/// buffer reused for the next. An item or line that does not parse is
+/// handed to `each` as its error, and the next is read if `each` goes on:
+/// each is framed before it is parsed, so one cannot spoil the next.
 ///
 /// # Errors
 ///
-/// The stream's, a malformed envelope, or the first item or line that
-/// does not parse.
+/// The stream's, or a malformed envelope.
 pub fn records<R: BufRead, F>(mut input: R, mut each: F) -> Result<(), ReadError<Error>>
 where
-    F: FnMut(&Work<'_>) -> ControlFlow<()>,
+    F: FnMut(Result<&Work<'_>, Error>) -> ControlFlow<()>,
 {
+    let mut one = |work: Result<Work<'_>, Error>| match work {
+        Ok(work) => each(Ok(&work)),
+        Err(e) => each(Err(e)),
+    };
     if frame::starts_with(&mut input, b"{\"status\"")? {
         let mut buf = Vec::new();
         input.read_to_end(&mut buf)?;
         let page = Page::parse(frame::utf8(&buf)?).map_err(ReadError::Parse)?;
         for work in page.works() {
-            if each(&work.map_err(ReadError::Parse)?).is_break() {
+            if one(work).is_break() {
                 break;
             }
         }
         Ok(())
     } else {
         frame::lines(input, |number, line| {
-            work(line, Context::Line(number)).map(|w| each(&w))
+            Ok(one(work(line, Context::Line(number))))
         })
     }
 }
@@ -295,6 +300,33 @@ mod tests {
         );
         let err = jsonl(&bad).next().unwrap().unwrap_err();
         assert_eq!(err.context, Context::Line(1));
+    }
+
+    #[test]
+    fn a_line_or_item_that_does_not_parse_is_handed_over_and_the_next_read() {
+        let bad = WORK.replacen("\"publisher\"", "\"publisherr\"", 1);
+        let lines = format!("{WORK}\n{bad}\n{WORK}\n");
+        let page = envelope(&[WORK, &bad, WORK].join(",")).replacen(
+            "\"total-results\":1",
+            "\"total-results\":3",
+            1,
+        );
+        for (input, failed) in [(lines, Context::Line(2)), (page, Context::Item(1))] {
+            let mut seen = Vec::new();
+            records(Cursor::new(&input), |work| {
+                seen.push(work.map(|w| w.doi.to_string()).map_err(|e| e.context));
+                ControlFlow::Continue(())
+            })
+            .unwrap();
+            assert_eq!(
+                seen,
+                [
+                    Ok("10.1000/x".to_owned()),
+                    Err(failed),
+                    Ok("10.1000/x".to_owned())
+                ]
+            );
+        }
     }
 
     #[test]

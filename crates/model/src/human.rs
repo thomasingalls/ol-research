@@ -49,7 +49,7 @@ where
 mod tests {
     use crate::id::{InstitutionId, OpenAlexId};
     use crate::{
-        CountryCode, CurrencyCode, Date, DateTime, Isbn, Issn, Lang, Orcid, PartialDate, Ror,
+        CountryCode, CurrencyCode, Date, DateTime, Isbn, Issn, Lang, Orcid, PartialDate, Qid, Ror,
     };
 
     fn roundtrip<T>(value: &T, json: &str, packed_len: usize)
@@ -71,6 +71,7 @@ mod tests {
             4,
         );
         roundtrip(&Ror::from_bare("052gg0110").unwrap(), "\"052gg0110\"", 4);
+        roundtrip(&Qid::from_prefixed("Q182973").unwrap(), "\"Q182973\"", 3);
         roundtrip(&Issn::parse("0004-637X").unwrap(), "\"0004-637X\"", 2);
         roundtrip(&Lang::from_alpha_2("fr").unwrap(), "\"fra\"", 2);
         roundtrip(&CountryCode::parse("US").unwrap(), "\"US\"", 2);
@@ -117,5 +118,10 @@ mod tests {
             "alpha-2 is not the text form"
         );
         assert!(postcard::from_bytes::<Ror>(&postcard::to_stdvec(&(1u32 << 31)).unwrap()).is_err());
+        assert!(postcard::from_bytes::<Qid>(&postcard::to_stdvec(&0u32).unwrap()).is_err());
+        assert!(
+            serde_json::from_str::<Qid>("\"182973\"").is_err(),
+            "the letter is the form"
+        );
     }
 }

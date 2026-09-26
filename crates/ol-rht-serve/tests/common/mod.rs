@@ -218,8 +218,24 @@ impl Answers for Fake {
         }
     }
 
-    fn search(&self, text: &str, limit: usize, _facets: usize) -> Result<Hits, serve::Error> {
-        let hits = if text.contains("titled") {
+    fn search(
+        &self,
+        asked: &query_parser::Query,
+        limit: usize,
+        _facets: usize,
+        until: std::time::Instant,
+    ) -> Result<Hits, serve::Error> {
+        // A search that runs past its time limit and holds its thread a
+        // while longer, as an engine does until it next looks at the
+        // clock.
+        if asked.words().iter().any(|w| w.text == "slow") {
+            std::thread::sleep(
+                until.saturating_duration_since(std::time::Instant::now())
+                    + std::time::Duration::from_millis(300),
+            );
+            return Err(serve::Error::Search(search::Error::Deadline));
+        }
+        let hits = if asked.words().iter().any(|w| w.text.contains("titled")) {
             vec![search::Hit {
                 score: 1.5,
                 id: id(1),

@@ -3,7 +3,7 @@
 //! shape (plan §6).
 
 use source_crossref::Work;
-use source_crossref::vocab::{UpdateType, WorkType};
+use source_crossref::vocab::{UpdateWord, WorkType};
 
 fn fixture(name: &str) -> String {
     std::fs::read_to_string(format!(
@@ -21,7 +21,7 @@ fn work(input: &str) -> Work<'_> {
 fn journal_article_with_everything() {
     let input = fixture("journal_article_full");
     let w = work(&input);
-    assert_eq!(w.r#type, WorkType::JournalArticle);
+    assert_eq!(w.r#type, Some(WorkType::JournalArticle));
     assert!(!w.reference.as_ref().unwrap().is_empty());
     assert!(w.r#abstract.as_ref().unwrap().contains("<jats:"));
     assert!(
@@ -39,7 +39,7 @@ fn journal_article_with_everything() {
 fn the_grant_has_a_project_and_no_counts() {
     let input = fixture("grant_project");
     let w = work(&input);
-    assert_eq!(w.r#type, WorkType::Grant);
+    assert_eq!(w.r#type, Some(WorkType::Grant));
     assert!(w.project.is_some());
     assert!(w.reference_count.is_none());
 }
@@ -68,7 +68,7 @@ fn retractions_arrive_as_updated_by() {
             .as_ref()
             .unwrap()
             .iter()
-            .any(|u| u.r#type == UpdateType::Retraction)
+            .any(|u| u.r#type == UpdateWord::Retraction)
     );
 }
 
@@ -156,7 +156,7 @@ mod normalized {
         let (_, out) = run("journal_article_full");
         assert_eq!(out.works.len(), 1);
         let w = &out.works[0];
-        assert_eq!(w.kind, WorkType::JournalArticle);
+        assert_eq!(w.kind, Some(WorkType::JournalArticle));
         assert_eq!(w.doi.as_str(), "10.1002/jha2.1033");
         assert!(
             w.created.epoch_seconds() > 1_000_000_000,
@@ -190,7 +190,7 @@ mod normalized {
     #[test]
     fn grant_and_null_issued() {
         let (_, out) = run("grant_project");
-        assert_eq!(out.works[0].kind, WorkType::Grant);
+        assert_eq!(out.works[0].kind, Some(WorkType::Grant));
         assert_eq!(out.works[0].references_count, None);
         assert!(out.references.is_empty());
         let (_, out) = run("issued_null_component");
@@ -292,5 +292,7 @@ mod normalized {
         for kind in Kind::NORMALIZED {
             std::fs::remove_file(kind.path(&prefix)).unwrap();
         }
+        // Every source names its records, so every set has an index.
+        std::fs::remove_file(ingest::binary::Index::path(&prefix)).unwrap();
     }
 }

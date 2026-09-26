@@ -4,17 +4,20 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use merge::Document;
 use merge::WorkId;
 use serde::{Deserialize, Serialize};
-use tantivy::collector::{Count, FacetCollector, TopDocs};
-use tantivy::query::{AllQuery, Query, QueryParser};
+use tantivy::collector::{Count, FacetCollector, FacetCounts as Counted, TopDocs};
+use tantivy::query::{AllQuery, Query};
 use tantivy::schema::{Facet, TantivyDocument, Value};
 use tantivy::{Index, IndexReader, IndexWriter, ReloadPolicy, Term};
 
 use crate::error::Error;
 use crate::schema::{self, Fields};
+use crate::translate;
+use crate::until::Until;
 
 /// Our manifest beside the engine's files.
 pub const MANIFEST: &str = "ol-rht.json";
@@ -104,7 +107,7 @@ pub struct Built {
 }
 
 /// A document as the engine takes it.
-fn document(fields: &Fields, d: &Document) -> Result<TantivyDocument, Error> {
+pub(crate) fn document(fields: &Fields, d: &Document) -> Result<TantivyDocument, Error> {
     let mut doc = TantivyDocument::new();
     doc.add_u64(fields.id, u64::from(d.id.get()));
     if let Some(title) = &d.title {
@@ -434,23 +437,40 @@ impl Opened {
         Ok(())
     }
 
-    fn parse(&self, text: &str) -> Result<Box<dyn Query>, Error> {
-        QueryParser::for_index(&self.index, self.fields.searched())
-            .parse_query(text)
-            .map_err(Error::Query)
-    }
-
-    /// The top `limit` hits for `text` over the searched fields, and the
-    /// top `top` values of every facet root over every match.
+    /// The top `limit` hits for `asked` over the searched fields, and the
+    /// top `top` values of every facet root over every match, in one pass
+    /// over the matches; stopped at `until` when there is one.
     ///
     /// # Errors
     ///
-    /// A query the parser refuses, or the engine.
-    pub fn search(&self, text: &str, limit: usize, top: usize) -> Result<Hits, Error> {
-        let query = self.parse(text)?;
+    /// [`Error::Deadline`] past `until`, or the engine.
+    pub fn search(
+        &self,
+        asked: &query_parser::Query,
+        limit: usize,
+        top: usize,
+        until: Option<Instant>,
+    ) -> Result<Hits, Error> {
+        let query = translate::query(&self.index, &self.fields, asked)?;
         let searcher = self.reader.searcher();
-        let by_score = TopDocs::with_limit(limit.max(1)).order_by_score();
-        let (docs, total) = searcher.search(&query, &(by_score, Count))?;
+        let collectors = (
+            TopDocs::with_limit(limit.max(1)).order_by_score(),
+            Count,
+            facet_collector(),
+        );
+        let (docs, total, counted) = match until {
+            None => searcher.search(&*query, &collectors)?,
+            Some(until) => {
+                let collector = Until::new(collectors, until);
+                searcher.search(&*query, &collector).map_err(|e| {
+                    if collector.expired() {
+                        Error::Deadline
+                    } else {
+                        e.into()
+                    }
+                })?
+            }
+        };
         let mut hits = Vec::with_capacity(docs.len());
         for (score, address) in docs {
             let doc: TantivyDocument = searcher.doc(address)?;
@@ -466,11 +486,10 @@ impl Opened {
                 .map(str::to_owned);
             hits.push(Hit { score, id, title });
         }
-        let facets = self.facets(&*query, top)?;
         Ok(Hits {
             total,
             hits,
-            facets,
+            facets: facet_counts(&counted, top),
         })
     }
 
@@ -480,18 +499,27 @@ impl Opened {
     ///
     /// The engine.
     pub fn facets_of_all(&self, top: usize) -> Result<FacetCounts, Error> {
-        self.facets(&AllQuery, top)
+        let query: &dyn Query = &AllQuery;
+        let counted = self.reader.searcher().search(query, &facet_collector())?;
+        Ok(facet_counts(&counted, top))
     }
+}
 
-    fn facets(&self, query: &dyn Query, top: usize) -> Result<FacetCounts, Error> {
-        let mut collector = FacetCollector::for_field("facet");
-        for root in schema::ROOTS {
-            collector.add_facet(root);
-        }
-        let counts = self.reader.searcher().search(query, &collector)?;
-        let mut out = Vec::with_capacity(schema::ROOTS.len());
-        for root in schema::ROOTS {
-            let values = counts
+/// A collector of every facet root's counts.
+fn facet_collector() -> FacetCollector {
+    let mut collector = FacetCollector::for_field("facet");
+    for root in schema::ROOTS {
+        collector.add_facet(root);
+    }
+    collector
+}
+
+/// The top `top` values of every facet root in `counted`.
+fn facet_counts(counted: &Counted, top: usize) -> FacetCounts {
+    schema::ROOTS
+        .iter()
+        .map(|root| {
+            let values = counted
                 .top_k(root, top)
                 .into_iter()
                 .map(|(facet, n)| {
@@ -500,10 +528,9 @@ impl Opened {
                     (value, n)
                 })
                 .collect();
-            out.push((root.to_owned(), values));
-        }
-        Ok(out)
-    }
+            ((*root).to_owned(), values)
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -512,7 +539,14 @@ mod tests {
     use merge::kind::{Form, Genre};
     use merge::{SourceId, Sources, WorkId};
 
+    use std::time::{Duration, Instant};
+
     use super::{Opened, build};
+    use crate::Error;
+
+    fn asked(text: &str) -> query_parser::Query {
+        query_parser::parse(text).unwrap()
+    }
 
     fn document(id: u32, title: &str, abstract_text: &str, year: u16) -> Document {
         Document {
@@ -559,7 +593,7 @@ mod tests {
         let opened = Opened::open(&dir).unwrap();
         assert_eq!(opened.documents(), 3);
         assert_eq!(opened.batch().unwrap(), 7);
-        let hits = opened.search("aspirin", 10, 5).unwrap();
+        let hits = opened.search(&asked("aspirin"), 10, 5, None).unwrap();
         assert_eq!(hits.total, 2);
         let ids: Vec<u32> = hits.hits.iter().map(|h| h.id.get()).collect();
         assert!(ids.contains(&1) && ids.contains(&2), "{ids:?}");
@@ -579,8 +613,20 @@ mod tests {
         let all = opened.facets_of_all(10).unwrap();
         let held = all.iter().find(|(root, _)| root == "/held_by").unwrap();
         assert_eq!(held.1, vec![("pubmed".to_owned(), 3)]);
-        assert_eq!(opened.search("lovelace", 10, 5).unwrap().total, 3);
-        assert_eq!(opened.search("\"of tests\"", 10, 5).unwrap().total, 3);
+        assert_eq!(
+            opened
+                .search(&asked("lovelace"), 10, 5, None)
+                .unwrap()
+                .total,
+            3
+        );
+        assert_eq!(
+            opened
+                .search(&asked("\"of tests\""), 10, 5, None)
+                .unwrap()
+                .total,
+            3
+        );
         // A batch absorbed: one document replaced, one removed, one added.
         let absorbed = super::absorb(
             &dir,
@@ -599,13 +645,19 @@ mod tests {
         assert_eq!(opened.documents(), 3, "the searcher lags until reloaded");
         opened.reload().unwrap();
         assert_eq!(opened.batch().unwrap(), 8);
-        let hits = opened.search("aspirin", 10, 5).unwrap();
+        let hits = opened.search(&asked("aspirin"), 10, 5, None).unwrap();
         let mut ids: Vec<u32> = hits.hits.iter().map(|h| h.id.get()).collect();
         ids.sort_unstable();
         assert_eq!(ids, [1, 2, 4]);
-        assert_eq!(opened.search("revised", 10, 5).unwrap().total, 1);
         assert_eq!(
-            opened.search("entirely", 10, 5).unwrap().total,
+            opened.search(&asked("revised"), 10, 5, None).unwrap().total,
+            1
+        );
+        assert_eq!(
+            opened
+                .search(&asked("entirely"), 10, 5, None)
+                .unwrap()
+                .total,
             0,
             "work 3 is gone"
         );
@@ -615,6 +667,51 @@ mod tests {
             .find(|(root, _)| root == "/status")
             .unwrap();
         assert_eq!(status.1, vec![("retracted".to_owned(), 1)]);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// A search past its time stops with [`Error::Deadline`]; one with
+    /// time to spare answers as a search with no limit does; and what
+    /// twenty nested parentheses cost Tantivy's parser a second for is,
+    /// at thirty thousand, a word like any other.
+    #[test]
+    fn a_search_keeps_to_its_time() {
+        let root = std::env::temp_dir().join(format!("ol-rht-search-until-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let dir = root.join(crate::version());
+        let docs: Vec<_> = (1..=50)
+            .map(|id| {
+                document(
+                    id,
+                    "Randomized trial of aspirin",
+                    "Aspirin in adults.",
+                    2020,
+                )
+            })
+            .collect();
+        build(&dir, &docs, 1).unwrap();
+        let opened = Opened::open(&dir).unwrap();
+        let aspirin = asked("aspirin");
+        let past = Instant::now();
+        assert!(matches!(
+            opened.search(&aspirin, 10, 5, Some(past)),
+            Err(Error::Deadline)
+        ));
+        let spare = Instant::now() + Duration::from_secs(60);
+        assert_eq!(
+            opened.search(&aspirin, 10, 5, Some(spare)).unwrap(),
+            opened.search(&aspirin, 10, 5, None).unwrap()
+        );
+        let deep = asked(&format!(
+            "{}aspirin{}",
+            "(".repeat(30_000),
+            ")".repeat(30_000)
+        ));
+        let started = Instant::now();
+        let hits = opened.search(&deep, 10, 5, Some(spare)).unwrap();
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert_eq!(hits.total, 50);
         std::fs::remove_dir_all(&root).unwrap();
     }
 }

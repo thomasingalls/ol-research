@@ -14,7 +14,7 @@ use crate::date::{IndexedStamp, PartialDate, Stamp};
 use crate::vocab::{
     AssertedBy, ContentVersion, FundingType, IdKind, IntendedApplication, ReferenceType,
     RelationAssertedBy, RelationIdKind, ReviewRecommendation, ReviewStage, ReviewType, RoleName,
-    Sequence, SerialKind, Source, Subtype, UpdateType, Vocabulary, WorkType,
+    Sequence, SerialKind, Source, StatusType, Subtype, UpdateWord, Vocabulary, WorkType,
 };
 
 /// A list with room for its usual length inside the record itself (plan
@@ -35,17 +35,26 @@ pub struct Work<'a> {
     /// `https://doi.org/` + DOI.
     #[serde(rename = "URL", borrow)]
     pub url: Text<'a>,
-    /// One of the 30 types.
+    /// One of the 30 types; absent on 2,257 of the records the March 2026
+    /// file's survey stopped at (2026-09-26) — EMBL-EBI's dataset pages,
+    /// collections, videos, articles, Crossmark policy pages, all created
+    /// 2006 to 2022 and six of six title-only `<database>` deposits. The
+    /// type is unknown, not guessed.
     #[serde(rename = "type")]
-    pub r#type: WorkType,
+    pub r#type: Option<WorkType>,
     /// Always `Crossref`.
     pub source: Source,
     /// The DOI prefix, `10.1016`.
     #[serde(borrow)]
     pub prefix: Text<'a>,
-    /// The member id, digits as a string.
+    /// The member id, digits as a string. Absent, with `publisher`, where
+    /// a DOI has moved to a member Crossref's index does not attach to the
+    /// work — a journal passed to a new owner, whose `prefix` is here
+    /// (`10.65087`, the Aquatic Ecosystem Health & Management Society, for
+    /// Taylor & Francis's and Elsevier's DOIs): 15,535 records of the March
+    /// 2026 file (2026-09-26), and still absent on the live API.
     #[serde(borrow)]
-    pub member: Text<'a>,
+    pub member: Option<Text<'a>>,
     /// Query relevance; `0.0` outside searches.
     pub score: f64,
     /// DOI registration.
@@ -75,6 +84,33 @@ pub struct Work<'a> {
     pub approved: Option<PartialDate>,
     /// Present on 2.
     pub content_created: Option<PartialDate>,
+    /// When a dataset's or database's content last changed: the deposit
+    /// schema's `database_date/update_date`, the sibling of
+    /// `content-created`. 9,641 shards of the March 2026 file stopped at
+    /// it (2026-09-26), the Protein Data Bank's, OECD's and APA's first;
+    /// it can come before `content-created`.
+    pub content_updated: Option<PartialDate>,
+    /// The work's version label: deposit schema 5.4.0's `version_info`
+    /// (March 2025), free text of up to 100 characters — `v1` on Rogue
+    /// Scholar's posts, `1` on eLife's. 193 shards of the March 2026 file
+    /// stopped at it (2026-09-26).
+    #[serde(borrow)]
+    pub version: Option<VersionInfo<'a>>,
+    /// That posted content was withdrawn or removed, when, and why:
+    /// documented by Crossref, and on 5 records of the March 2026 file
+    /// (2026-09-26), eLife's retracted reviewed preprints among them.
+    #[serde(borrow)]
+    pub status: Option<PostedStatus<'a>>,
+    /// Which part of a multi-volume set: `set_metadata/part_number`, 1–15
+    /// characters as written (`1`, `06`, `33-6`); RSC's books above all.
+    /// 100 shards stopped at it.
+    #[serde(borrow)]
+    pub part_number: Option<Text<'a>>,
+    /// A grant's own start (grant schema 0.2.0, `award-start-date` on the
+    /// grant as a whole), beside each project's; 991 shards stopped at it.
+    /// A grant's `issued` is the earliest of these starts. Read, not kept:
+    /// grants are not normalized yet.
+    pub award_start: Option<PartialDate>,
     /// Absent on one work (a grant).
     pub reference_count: Option<u32>,
     /// Absent on the same work.
@@ -108,9 +144,10 @@ pub struct Work<'a> {
     /// A JATS XML fragment; 275 of 1,000.
     #[serde(borrow)]
     pub r#abstract: Option<Text<'a>>,
+    /// Absent with `member`, but on two records that keep the name
+    /// without the number.
     #[serde(borrow)]
-    #[allow(missing_docs)]
-    pub publisher: Text<'a>,
+    pub publisher: Option<Text<'a>>,
     #[serde(borrow)]
     #[allow(missing_docs)]
     pub publisher_location: Option<Text<'a>>,
@@ -209,9 +246,12 @@ pub struct Work<'a> {
     #[serde(borrow)]
     #[allow(missing_docs)]
     pub content_domain: Option<ContentDomain<'a>>,
+    /// Where the DOI resolves; absent on 195 records of the March 2026
+    /// file (2026-09-26) — Elsevier's, Springer's, Taylor & Francis's,
+    /// JSTOR's among them, deposited 2016 to 2022, most with full-text
+    /// `link`s still. Read, not kept.
     #[serde(borrow)]
-    #[allow(missing_docs)]
-    pub resource: Resource<'a>,
+    pub resource: Option<Resource<'a>>,
     #[serde(borrow)]
     #[allow(missing_docs)]
     pub journal_issue: Option<JournalIssue<'a>>,
@@ -299,13 +339,18 @@ pub struct Role {
     pub vocabulary: Vocabulary,
 }
 
-/// An affiliation.
+/// An affiliation: the deposit schema's `<institution>`, the element a
+/// work's own [`Institution`] is too, so it has the same parts.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Affiliation<'a> {
     /// Absent on 4 of 1,249.
     #[serde(borrow)]
     pub name: Option<Text<'a>>,
+    /// `institution_acronym`, up to six; 892 shards of the March 2026 file
+    /// stopped at one (2026-09-26).
+    #[serde(borrow)]
+    pub acronym: Option<Few<Text<'a>, 1>>,
     #[serde(borrow)]
     #[allow(missing_docs)]
     pub department: Option<Few<Text<'a>, 1>>,
@@ -460,11 +505,13 @@ pub struct License<'a> {
     pub url: Text<'a>,
     #[allow(missing_docs)]
     pub content_version: ContentVersion,
-    #[allow(missing_docs)]
+    /// Crossref's `max(0, start − issued)`, in days.
     pub delay_in_days: i64,
+    /// Absent where the deposit gave none and the work has no `issued`
+    /// for Crossref to fill it from: dissertations and standards above
+    /// all (3,272 shards of the March 2026 file stopped at one).
     #[serde(borrow)]
-    #[allow(missing_docs)]
-    pub start: Stamp<'a>,
+    pub start: Option<Stamp<'a>>,
 }
 
 /// A full-text link.
@@ -558,30 +605,39 @@ pub struct Resource<'a> {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ResourceUrl<'a> {
+    /// `null` on figshare's components for Optica and Copernicus, and two
+    /// AGU chapters: 921 of the records the March 2026 file's survey
+    /// named or stopped at (2026-09-26), `{"primary": {"URL": null}}`.
+    /// Read, not kept: the normalized record keeps no resource.
     #[serde(rename = "URL", borrow)]
-    #[allow(missing_docs)]
-    pub url: Text<'a>,
+    pub url: Option<Text<'a>>,
 }
 
 /// `resource.secondary[]`.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LabelledUrl<'a> {
+    /// `null`, with `label`, on 309 of the same records — OUP's through
+    /// Ingenta and `BioOne`, the Chinese Journal of Mechanical
+    /// Engineering's: `{"URL": null, "label": null}`, an entry that says
+    /// nothing.
     #[serde(rename = "URL", borrow)]
-    #[allow(missing_docs)]
-    pub url: Text<'a>,
+    pub url: Option<Text<'a>>,
+    /// `null` with the URL.
     #[serde(borrow)]
-    #[allow(missing_docs)]
-    pub label: Text<'a>,
+    pub label: Option<Text<'a>>,
 }
 
 /// The issue a journal article appeared in.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct JournalIssue<'a> {
+    /// Absent where the object holds only the issue's dates — 289 of the
+    /// records the March 2026 file's survey named or stopped at
+    /// (2026-09-26; `JoVE`'s, Tsinghua University Press's, Permanyer's), none
+    /// with an `issue` of its own either. Read, not kept.
     #[serde(borrow)]
-    #[allow(missing_docs)]
-    pub issue: Text<'a>,
+    pub issue: Option<Text<'a>>,
     #[allow(missing_docs)]
     pub published_print: Option<PartialDate>,
     #[allow(missing_docs)]
@@ -657,8 +713,8 @@ pub struct Update<'a> {
     #[serde(rename = "DOI", borrow)]
     #[allow(missing_docs)]
     pub doi: Text<'a>,
-    #[allow(missing_docs)]
-    pub r#type: UpdateType,
+    /// As written; [`UpdateWord::meaning`] reads it.
+    pub r#type: UpdateWord,
     #[serde(borrow)]
     #[allow(missing_docs)]
     pub label: Option<Text<'a>>,
@@ -735,6 +791,14 @@ pub struct Project<'a> {
     #[serde(borrow)]
     #[allow(missing_docs)]
     pub lead_investigator: Option<Few<Investigator<'a>, 1>>,
+    /// The schema's `co-lead_investigator` role; 13 shards stopped at it.
+    #[serde(borrow)]
+    pub co_lead_investigator: Option<Few<Investigator<'a>, 1>>,
+    /// The schema's `award-dates` planned end; seen on the live API
+    /// (2026-09-26), not yet in the March 2026 file's dumped records.
+    pub award_planned_end: Option<PartialDate>,
+    /// Its planned start: the same element, not seen yet.
+    pub award_planned_start: Option<PartialDate>,
 }
 
 /// A grant investigator: a person without the `sequence` and `role` that
@@ -763,6 +827,47 @@ pub struct Investigator<'a> {
     #[serde(borrow)]
     #[allow(missing_docs)]
     pub affiliation: Option<Few<Affiliation<'a>, 2>>,
+    /// Other names the person goes by: a list, where Crossref's API docs
+    /// say a string; FCT's (Portugal) above all.
+    #[serde(borrow)]
+    pub alternate_name: Option<Few<Text<'a>, 1>>,
+    /// When the person's part in the project began (grant schema 0.2.0,
+    /// an investigator's `@start-date`); on 9 of the grants the March
+    /// 2026 file's survey stopped at, behind `award-start`.
+    pub role_start: Option<PartialDate>,
+    /// When it ended.
+    pub role_end: Option<PartialDate>,
+}
+
+/// `version` on a work: its label, the label's language, and notes on it.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct VersionInfo<'a> {
+    #[serde(borrow)]
+    #[allow(missing_docs)]
+    pub version: Text<'a>,
+    /// `en` on 6 of 226; read, not kept (the user, 2026-09-26).
+    #[serde(borrow)]
+    pub language: Option<Text<'a>>,
+    /// Notes on the version, each with its language when given ("this is
+    /// a version", "Prima edizione"): on 4 records of the March 2026
+    /// file. Read, not kept, as the label's language is not.
+    #[serde(borrow)]
+    pub version_description: Option<Few<Described<'a>, 1>>,
+}
+
+/// `status` on posted content.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct PostedStatus<'a> {
+    /// What became of it.
+    #[serde(rename = "type")]
+    pub r#type: StatusType,
+    /// When.
+    pub updated: PartialDate,
+    /// Why, each reason with its language when given (`null` on eLife's).
+    #[serde(borrow)]
+    pub status_description: Option<Few<Described<'a>, 1>>,
 }
 
 /// `project-title[]`.
@@ -789,20 +894,36 @@ pub struct Described<'a> {
     pub language: Option<Text<'a>>,
 }
 
-/// `award-amount`.
+/// `award-amount` on a project.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AwardAmount<'a> {
+    /// As Crossref writes it, a JSON double (`1.0E+7`, `1481283.8`).
+    pub amount: f64,
+    /// `null` beside a real amount on 89 of the 1,023 project amounts
+    /// among the grants the March 2026 file's survey stopped at
+    /// (2026-09-26): the amount with no currency said.
+    #[serde(borrow)]
+    pub currency: Option<Text<'a>>,
+}
+
+/// `award-amount` on a funding entry: one funder's share of the project,
+/// its own type so that a `percentage` on a project's amount still fails.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FundingAmount<'a> {
     #[allow(missing_docs)]
     pub amount: f64,
     #[serde(borrow)]
     #[allow(missing_docs)]
     pub currency: Text<'a>,
+    /// The share, `null` on 28 of 919.
+    pub percentage: Option<u32>,
 }
 
 /// `funding[]` on a project.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct Funding<'a> {
     #[serde(borrow)]
     #[allow(missing_docs)]
@@ -813,15 +934,20 @@ pub struct Funding<'a> {
     #[serde(rename = "type")]
     #[allow(missing_docs)]
     pub r#type: Option<FundingType>,
+    /// This funder's part of the money; 35 shards stopped at it, and 912
+    /// of the dumped grants carry it behind `award-start`.
+    #[serde(borrow)]
+    pub award_amount: Option<FundingAmount<'a>>,
 }
 
 /// `funding[].funder`.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FundingFunder<'a> {
+    /// Absent on 5 of 1,209, where the funder is named by its ROR alone
+    /// (grant schema 0.2.0 allows either).
     #[serde(borrow)]
-    #[allow(missing_docs)]
-    pub name: Text<'a>,
+    pub name: Option<Text<'a>>,
     #[serde(borrow)]
     #[allow(missing_docs)]
     pub id: Option<Few<Identifier<'a>, 1>>,

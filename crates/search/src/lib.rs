@@ -4,6 +4,11 @@
 //! proof-of-concept engine, embedded, so the sink is a library call and
 //! the tests run under cargo.
 //!
+//! A search is asked as the query parser's tree ([`query_parser`]),
+//! never as text in the engine's own query language: `translate` is
+//! the one place the tree becomes a Tantivy query, and `until` the
+//! collector that stops a search at its deadline.
+//!
 //! The mapping — which fields are indexed and how, which are facets, what
 //! is stored — is the user's to set. Until it is, [`schema::provisional`]
 //! is one function that exercises the pipeline and says so, and every
@@ -13,6 +18,8 @@ pub mod error;
 pub mod index;
 pub mod report;
 pub mod schema;
+pub(crate) mod translate;
+mod until;
 
 pub use error::Error;
 pub use index::{Absorbed, Built, Hit, Hits, Manifest, Opened};

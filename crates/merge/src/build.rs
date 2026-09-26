@@ -190,6 +190,34 @@ pub struct OwnedNamed {
     pub cited_by: SmallVec<[Citer; 1]>,
 }
 
+/// One reference's arc as pass 2 keeps it: citing work, cited work,
+/// source, and the reference's [`fingerprint`].
+type RawEdge = (WorkId, WorkId, SourceId, u64);
+
+/// A reference's fingerprint: 64 bits of the hash of its names and its
+/// citation, whole. A record's standing copies are read one by one, and
+/// a reference two of them carry is one reference, not two (the user,
+/// 2026-09-25; merge version 15): repeats are dropped where a range is
+/// finished, by fingerprint, before anything counts references. The bits
+/// are only ever compared between one record's references landing on one
+/// work. The citation is hashed as text, a container given as a symbol
+/// resolved through `table`: a symbol is a place in one set's table, and
+/// the same reference in two sets must print alike.
+///
+/// # Panics
+///
+/// A reference that does not serialize, which a borrowed one read from a
+/// set always does.
+#[must_use]
+pub fn fingerprint(names: &[Name<'_>], citation: &Citation<'_>, table: Option<&Table>) -> u64 {
+    let citation = OwnedCitation::of(citation, table);
+    let bytes = postcard::to_allocvec(&(names, citation.borrow())).expect("a reference serializes");
+    let hash = blake3::hash(&bytes);
+    let mut bits = [0u8; 8];
+    bits.copy_from_slice(&hash.as_bytes()[..8]);
+    u64::from_le_bytes(bits)
+}
+
 /// A rejected assertion, owned.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OwnedRejected {
@@ -962,7 +990,7 @@ pub struct Builder {
     stub_name_work: Vec<Option<WorkId>>,
     record_work: Vec<usize>,
     views: Vec<Option<Owned>>,
-    edges: Vec<(WorkId, WorkId, SourceId)>,
+    edges: Vec<RawEdge>,
     relations: Vec<Relation>,
     unresolved: Vec<OwnedUnresolved>,
     /// Names references gave beside the held works they landed on
@@ -1109,7 +1137,7 @@ impl Builder {
         let Some(spill) = self.spill.as_mut() else {
             match row {
                 Row::View(..) => unreachable!("views are kept by keep_view"),
-                Row::Edge(from, to, by) => self.edges.push((from, to, by)),
+                Row::Edge(from, to, by, fp) => self.edges.push((from, to, by, fp)),
                 Row::Relation(r) => self.relations.push(r),
                 Row::CitedAs(r) => self.cited_as.push(r),
                 Row::Unresolved(r) => self.unresolved.push(r),
@@ -1369,11 +1397,14 @@ impl Builder {
                     }),
                 );
                 *self.stats.relation_kinds.entry(r.kind).or_default() += 1;
-                if !stub && let Some(name) = r.target.as_ref() {
-                    // A relation names a held work by one of its names:
-                    // kept beside the work like a reference's names, so
-                    // that a batch knows the name is still named if it
-                    // leaves the work (serving plan §11, item 28).
+                if let Some(name) = r.target.as_ref() {
+                    // A relation names a work by one of its names: kept
+                    // beside the work like a reference's names, so that a
+                    // batch knows the name is still named if it leaves the
+                    // work (serving plan §11, item 28), and who names it
+                    // when a batch moves it — a stub's too, since a
+                    // relation leaves no citer on the stub (item 35, merge
+                    // version 15).
                     let row = OwnedCitedAs {
                         from,
                         by: source,
@@ -1442,7 +1473,13 @@ impl Builder {
                 };
                 let mut names: SmallVec<[Name<'_>; 3]> = SmallVec::new();
                 S::targets(&reference, &mut |n| names.push(n));
-                self.reference(from, S::SOURCE, &names, &S::citation(&reference));
+                // The citation as text, a container given as a symbol of
+                // this set's table resolved: as the batch reads it, and as
+                // the unresolved row keeps it (merge version 15).
+                let owned = OwnedCitation::of(&S::citation(&reference), reader.table());
+                let citation = owned.borrow();
+                let print = fingerprint(&names, &citation, None);
+                self.reference_printed(from, S::SOURCE, &names, &citation, print);
                 read += 1;
             }
             Ok(())
@@ -1463,13 +1500,27 @@ impl Builder {
         names: &[Name<'_>],
         citation: &Citation<'_>,
     ) -> &'static str {
+        let print = fingerprint(names, citation, None);
+        self.reference_printed(from, source, names, citation, print)
+    }
+
+    /// [`Builder::reference`] with the reference's [`fingerprint`] given,
+    /// by a reader that has its set's symbol table.
+    fn reference_printed(
+        &mut self,
+        from: WorkId,
+        source: SourceId,
+        names: &[Name<'_>],
+        citation: &Citation<'_>,
+        print: u64,
+    ) -> &'static str {
         let referenced = resolve_reference(names, citation, |n| self.resolve(n));
         match referenced {
             Referenced::Empty | Referenced::Unknown => {}
             Referenced::NoName => self.unresolved(from, source, Why::NoName, names, citation),
             Referenced::SharedOnly => self.unresolved(from, source, Why::Shared, names, citation),
             Referenced::Edge { to, settled, stub } => {
-                self.keep(from, Row::Edge(from, to, source));
+                self.keep(from, Row::Edge(from, to, source, print));
                 // Whether the citation text repeats a name: what §6 asks
                 // first when names disagree, and so what a later reader
                 // needs to ask it again. A stub's names carry it per
@@ -1730,7 +1781,7 @@ fn gather(rows: Vec<Row>, held: Vec<u32>, stubs: Vec<u32>) -> (HashMap<RecordIx,
                 };
                 views.insert(rix, joined);
             }
-            Row::Edge(from, to, by) => gathered.edges.push((from, to, by)),
+            Row::Edge(from, to, by, fp) => gathered.edges.push((from, to, by, fp)),
             Row::Relation(r) => gathered.relations.push(r),
             Row::CitedAs(r) => gathered.cited_as.push(r),
             Row::Unresolved(r) => gathered.unresolved.push(r),
@@ -1829,7 +1880,7 @@ struct Gathered {
     held: Vec<usize>,
     /// Indices into the stubs' works.
     stubs: Vec<usize>,
-    edges: Vec<(WorkId, WorkId, SourceId)>,
+    edges: Vec<RawEdge>,
     relations: Vec<Relation>,
     unresolved: Vec<OwnedUnresolved>,
     cited_as: Vec<OwnedCitedAs>,
@@ -1918,16 +1969,19 @@ fn finish_range<V: Views + ?Sized>(
         works.push(stub(names, &citers, whole.ids.stubs[s]));
     }
     works.sort_by_key(|w| w.id);
-    // Edges: one per pair, the sources joined.
+    // Edges: one per pair, the sources joined. A reference a record's
+    // copies repeat is one reference (merge version 15): its repeats go
+    // before anything is counted.
     let mut raw = edges;
     raw.sort_unstable();
+    raw.dedup();
     // A `cited_as` row's arc moves whole only if one reference made
     // it: how many did is what the raw list says (2026-09-18).
     if !cited_as.is_empty() {
         let mut twice: HashSet<(WorkId, WorkId, SourceId)> = HashSet::new();
         for pair in raw.windows(2) {
-            if pair[0] == pair[1] {
-                twice.insert(pair[0]);
+            if (pair[0].0, pair[0].1, pair[0].2) == (pair[1].0, pair[1].1, pair[1].2) {
+                twice.insert((pair[0].0, pair[0].1, pair[0].2));
             }
         }
         for row in &mut cited_as {
@@ -1935,7 +1989,7 @@ fn finish_range<V: Views + ?Sized>(
         }
     }
     let mut edges: Vec<Edge> = Vec::with_capacity(raw.len());
-    for (from, to, source) in raw {
+    for (from, to, source, _) in raw {
         if let Some(last) = edges.last_mut()
             && last.from == from
             && last.to == to
@@ -1993,6 +2047,7 @@ fn finish_range<V: Views + ?Sized>(
         }
     }
     unresolved.sort_by_key(|u| u.from);
+    dedup_unresolved(&mut unresolved);
     cited_as.sort_by(|a, b| (a.from, &a.name, a.by).cmp(&(b.from, &b.name, b.by)));
     cited_as.dedup();
     counted.edges += edges.len() as u64;
@@ -2007,6 +2062,24 @@ fn finish_range<V: Views + ?Sized>(
         unresolved,
         cited_as,
     })
+}
+
+/// Unresolved rows sorted by citing work, each once: a reference a
+/// record's copies repeat is one reference (merge version 15). The first
+/// of each stays where it was, so the order is still the order the
+/// references were read in.
+fn dedup_unresolved(rows: &mut Vec<OwnedUnresolved>) {
+    let mut kept: Vec<OwnedUnresolved> = Vec::with_capacity(rows.len());
+    let mut start = 0;
+    for row in rows.drain(..) {
+        if kept.last().is_none_or(|last| last.from != row.from) {
+            start = kept.len();
+        }
+        if !kept[start..].contains(&row) {
+            kept.push(row);
+        }
+    }
+    *rows = kept;
 }
 
 /// A pass's [`Merged`]: its counts, and its rows when they are held.
@@ -2916,5 +2989,66 @@ mod tests {
             stubs: vec![],
         };
         assert!(Builder::new(res, bad).is_err());
+    }
+
+    /// A reference a record's copies repeat is one reference (merge
+    /// version 15, the user, 2026-09-25): its arc is `sole` and its
+    /// unresolved row is kept once, while two different references to one
+    /// work still make the arc no one reference's.
+    #[test]
+    fn a_reference_repeated_across_copies_is_one() {
+        let (mut b, [alpha, beta, _stub]) = scenario();
+        let text = Citation {
+            text: Some("Bea. Beta. 2001."),
+            ..Citation::default()
+        };
+        let beside = [Name::Doi("10.1000/b"), Name::Pmid(pmid(4242))];
+        for _ in 0..2 {
+            b.reference(alpha, SourceId::Pubmed, &beside, &text);
+            b.reference(
+                alpha,
+                SourceId::Pubmed,
+                &[],
+                &Citation {
+                    year: Some("1999"),
+                    ..Citation::default()
+                },
+            );
+        }
+        b.reference(alpha, SourceId::Crossref, &beside, &text);
+        b.reference(
+            alpha,
+            SourceId::Crossref,
+            &beside,
+            &Citation {
+                text: Some("Bea. Beta. 2001. Corrected."),
+                ..Citation::default()
+            },
+        );
+        let merged = b.finish().unwrap();
+        let sole = |by: SourceId| -> Vec<bool> {
+            merged
+                .cited_as
+                .iter()
+                .filter(|r| r.from == alpha && r.to == beta && r.by == by)
+                .map(|r| r.sole)
+                .collect()
+        };
+        assert_eq!(
+            sole(SourceId::Pubmed),
+            [true, true],
+            "one reference, given twice"
+        );
+        assert_eq!(
+            sole(SourceId::Crossref),
+            [false, false],
+            "two references: the text differs"
+        );
+        let unresolved = merged
+            .unresolved
+            .iter()
+            .filter(|u| u.from == alpha && u.why == Why::NoName)
+            .count();
+        assert_eq!(unresolved, 1, "one unresolved reference, given twice");
     }
 }

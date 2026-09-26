@@ -48,6 +48,144 @@ pub const FORMAT: u8 = 2;
 /// turned (plan §5, second measurement).
 const LEVEL: i32 = 3;
 
+/// Uncompressed bytes of records after which a works or references file
+/// starts a new zstd frame. A stream of frames reads as one stream, and a
+/// frame is where a reader can start: with the set's [`Index`], one
+/// record's copy is a seek and one frame (serving plan §11, item 35,
+/// 2026-09-25), where a single frame had to be inflated whole.
+pub const FRAME: usize = 256 << 10;
+
+/// A set's index: where each frame of its works and references files
+/// starts, and each work's native name with the ordinal of its first
+/// reference — a work's references follow it in the references file,
+/// so the next work's first is where its own end. Written beside the
+/// set by [`Binary`] when the source names its records
+/// ([`Source::native_key`]); `<prefix>.index.zst`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Index {
+    /// Each frame of the works file: its byte offset and the ordinal of
+    /// its first record, the header not counted; the first frame holds
+    /// the header before its records.
+    pub works_frames: Vec<(u64, u64)>,
+    /// The same for the references file.
+    pub references_frames: Vec<(u64, u64)>,
+    /// Each work in file order: its native name, and the ordinal of its
+    /// first reference.
+    pub works: Vec<(String, u64)>,
+    /// References in the file: where the last work's end.
+    pub references: u64,
+}
+
+impl Index {
+    /// The index file of a set.
+    #[must_use]
+    pub fn path(prefix: &Path) -> PathBuf {
+        let mut name = prefix.as_os_str().to_owned();
+        name.push(".index.zst");
+        PathBuf::from(name)
+    }
+
+    /// Reads a set's index; `None` when the set has none.
+    ///
+    /// # Errors
+    ///
+    /// I/O, or an index that does not decode.
+    pub fn read(prefix: &Path) -> io::Result<Option<Self>> {
+        let path = Self::path(prefix);
+        let bytes = match fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e),
+        };
+        let raw = zstd::stream::decode_all(bytes.as_slice())?;
+        postcard::from_bytes(&raw)
+            .map(Some)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+    }
+
+    fn write(&self, prefix: &Path) -> io::Result<()> {
+        let raw = postcard::to_allocvec(self)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        fs::write(
+            Self::path(prefix),
+            zstd::stream::encode_all(raw.as_slice(), LEVEL)?,
+        )
+    }
+}
+
+/// The records of one frame of a set's file, inflated alone: the frame
+/// at `offset`, which holds the file's header first when it is the first.
+///
+/// # Errors
+///
+/// I/O, or a frame that does not inflate.
+pub fn frame(path: &Path, offset: u64) -> io::Result<Frame> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = File::open(path)?;
+    file.seek(SeekFrom::Start(offset))?;
+    let mut decoder = zstd::stream::read::Decoder::new(BufReader::new(file))?.single_frame();
+    let mut bytes = Vec::new();
+    decoder.read_to_end(&mut bytes)?;
+    let mut body = 0;
+    if offset == 0 {
+        let _: Header = next_value(&bytes, &mut body)?
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "empty file"))?;
+    }
+    Ok(Frame { bytes, body })
+}
+
+/// A set's symbol table, from its symbols file; `None` when the set has
+/// none.
+///
+/// # Errors
+///
+/// I/O, or a symbols file that does not read.
+pub fn table(prefix: &Path) -> io::Result<Option<Table>> {
+    let path = Kind::Symbols.path(prefix);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let file = Reader::open(&path)?;
+    let strings = file
+        .records::<&str>()
+        .map(|r| r.map(Box::from))
+        .collect::<io::Result<Vec<Box<str>>>>()?;
+    Ok(Some(Table::from(strings)))
+}
+
+/// One frame's records, inflated ([`frame`]).
+#[derive(Debug)]
+pub struct Frame {
+    bytes: Vec<u8>,
+    body: usize,
+}
+
+impl Frame {
+    /// The frame's records, decoded as `T`, borrowing from its bytes.
+    pub fn records<'a, T: Deserialize<'a>>(&'a self) -> impl Iterator<Item = io::Result<T>> + 'a {
+        let mut pos = self.body;
+        std::iter::from_fn(move || next_value(&self.bytes, &mut pos).transpose())
+    }
+}
+
+/// Counts the bytes written through it: where a frame starts.
+struct Counting<W> {
+    inner: W,
+    count: u64,
+}
+
+impl<W: Write> Write for Counting<W> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let n = self.inner.write(buf)?;
+        self.count += n as u64;
+        Ok(n)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
+}
+
 /// The record kinds a set can hold, one file each: the normalized
 /// layer's three and its symbol table, then the merged layer's (merge
 /// plan §8). The order is written into headers as a variant index, so a
@@ -185,11 +323,21 @@ pub struct Finished {
     pub records: Vec<(Kind, u64)>,
     /// Compressed bytes on disk, every file.
     pub bytes: u64,
+    /// The frames of each file written in frames ([`FRAME`]): byte
+    /// offset and first record ordinal.
+    pub frames: Vec<(Kind, Vec<(u64, u64)>)>,
 }
 
 struct Stream {
-    out: zstd::stream::write::Encoder<'static, BufWriter<File>>,
+    /// `None` only while a frame is being ended.
+    out: Option<zstd::stream::write::Encoder<'static, Counting<BufWriter<File>>>>,
     records: u64,
+    /// Whether this file starts a new frame every `frame` bytes.
+    framed: bool,
+    frame: usize,
+    /// Uncompressed bytes of records in the current frame.
+    in_frame: usize,
+    frames: Vec<(u64, u64)>,
 }
 
 /// One set being written, of whatever kinds the layer has: the framing
@@ -227,6 +375,18 @@ impl Writer {
     /// The kinds are not a set, a symbol table is already installed on
     /// this thread, or I/O.
     pub fn create(prefix: &Path, source: &str, model: u32, kinds: &[Kind]) -> io::Result<Self> {
+        Self::create_framed(prefix, source, model, kinds, FRAME)
+    }
+
+    /// [`Writer::create`], its works and references files framed every
+    /// `frame` bytes of records.
+    fn create_framed(
+        prefix: &Path,
+        source: &str,
+        model: u32,
+        kinds: &[Kind],
+        frame: usize,
+    ) -> io::Result<Self> {
         let distinct = kinds
             .iter()
             .enumerate()
@@ -253,8 +413,19 @@ impl Writer {
         };
         for kind in kinds {
             let file = File::create(kind.path(prefix))?;
-            let out = zstd::stream::write::Encoder::new(BufWriter::new(file), LEVEL)?;
-            writer.streams.push(Stream { out, records: 0 });
+            let counting = Counting {
+                inner: BufWriter::new(file),
+                count: 0,
+            };
+            let out = zstd::stream::write::Encoder::new(counting, LEVEL)?;
+            writer.streams.push(Stream {
+                out: Some(out),
+                records: 0,
+                framed: matches!(kind, Kind::Works | Kind::References),
+                frame,
+                in_frame: 0,
+                frames: vec![(0, 0)],
+            });
         }
         for (i, kind) in kinds.iter().enumerate() {
             let header = Header {
@@ -265,8 +436,9 @@ impl Writer {
                 kind: *kind,
             };
             writer.put_at(i, &header)?;
-            // Headers are not records.
+            // Headers are not records, and the first frame holds one.
             writer.streams[i].records = 0;
+            writer.streams[i].in_frame = 0;
         }
         symbol::begin_writing().map_err(io::Error::other)?;
         Ok(writer)
@@ -276,6 +448,16 @@ impl Writer {
     #[must_use]
     pub fn kinds(&self) -> &[Kind] {
         &self.kinds
+    }
+
+    /// Records written so far to the file of `kind`; zero for a kind the
+    /// set does not have.
+    #[must_use]
+    pub fn records(&self, kind: Kind) -> u64 {
+        self.kinds
+            .iter()
+            .position(|k| *k == kind)
+            .map_or(0, |i| self.streams[i].records)
     }
 
     /// Writes one record to the file of `kind`.
@@ -307,9 +489,26 @@ impl Writer {
         self.buf = postcard::to_extend(value, std::mem::take(&mut self.buf))
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         let stream = &mut self.streams[i];
-        write_varint(&mut stream.out, self.buf.len() as u64)?;
-        stream.out.write_all(&self.buf)?;
+        let out = stream
+            .out
+            .as_mut()
+            .ok_or_else(|| io::Error::other("a frame did not end"))?;
+        write_varint(out, self.buf.len() as u64)?;
+        out.write_all(&self.buf)?;
         stream.records += 1;
+        stream.in_frame += self.buf.len();
+        if stream.framed && stream.in_frame >= stream.frame {
+            // End the frame here, between two records, and start the next
+            // where the bytes written so far end.
+            let counting = stream
+                .out
+                .take()
+                .ok_or_else(|| io::Error::other("a frame did not end"))?
+                .finish()?;
+            stream.frames.push((counting.count, stream.records));
+            stream.out = Some(zstd::stream::write::Encoder::new(counting, LEVEL)?);
+            stream.in_frame = 0;
+        }
         Ok(())
     }
 
@@ -330,12 +529,24 @@ impl Writer {
             prefix: self.prefix.clone(),
             records: Vec::with_capacity(streams.len()),
             bytes: 0,
+            frames: Vec::new(),
         };
         for (kind, s) in self.kinds.iter().zip(streams) {
             finished.records.push((*kind, s.records));
-            let mut file = s.out.finish()?;
+            let out = s
+                .out
+                .ok_or_else(|| io::Error::other("a frame did not end"))?;
+            let mut file = out.finish()?.inner;
             file.flush()?;
             finished.bytes += file.get_ref().metadata().map_or(0, |m| m.len());
+            if s.framed {
+                let mut frames = s.frames;
+                // A frame ended after the last record starts nothing.
+                if frames.len() > 1 && frames.last().is_some_and(|f| f.1 == s.records) {
+                    frames.pop();
+                }
+                finished.frames.push((*kind, frames));
+            }
         }
         self.finished = true;
         Ok(finished)
@@ -376,6 +587,9 @@ pub struct Binary {
     model: u32,
     prefix_of: PrefixOf,
     current: Option<Writer>,
+    /// The open set's works in order: native name and first reference
+    /// ordinal, for its [`Index`]; `None` once a work had no name.
+    natives: Option<Vec<(String, u64)>>,
     written: Vec<Written>,
     error: Option<io::Error>,
     poisoned: bool,
@@ -406,6 +620,7 @@ impl Binary {
             model,
             prefix_of: Box::new(prefix_of),
             current: None,
+            natives: None,
             written: Vec::new(),
             error: None,
             poisoned: false,
@@ -433,6 +648,7 @@ impl Binary {
             self.model,
             &Kind::NORMALIZED,
         )?);
+        self.natives = Some(Vec::new());
         Ok(())
     }
 
@@ -454,6 +670,34 @@ impl Binary {
             .take()
             .ok_or_else(|| io::Error::other("no raw file is open"))?;
         let finished = set.finish()?;
+        if let Some(works) = self.natives.take() {
+            let frames = |kind: Kind| -> Vec<(u64, u64)> {
+                finished
+                    .frames
+                    .iter()
+                    .find(|(k, _)| *k == kind)
+                    .map(|(_, f)| f.clone())
+                    .unwrap_or_default()
+            };
+            let references = finished
+                .records
+                .iter()
+                .find(|(k, _)| *k == Kind::References)
+                .map_or(0, |(_, n)| *n);
+            let index = Index {
+                works_frames: frames(Kind::Works),
+                references_frames: frames(Kind::References),
+                works,
+                references,
+            };
+            if let Err(e) = index.write(&finished.prefix) {
+                for kind in Kind::NORMALIZED {
+                    let _ = fs::remove_file(kind.path(&finished.prefix));
+                }
+                let _ = fs::remove_file(Index::path(&finished.prefix));
+                return Err(e);
+            }
+        }
         let mut records = [0u64; 4];
         for (slot, (_, n)) in records.iter_mut().zip(&finished.records) {
             *slot = *n;
@@ -478,6 +722,7 @@ impl Binary {
     /// a failure whose earlier files are complete and receipted.
     pub fn abandon_open(&mut self) {
         self.current = None;
+        self.natives = None;
     }
 
     fn put<T: Serialize + ?Sized>(&mut self, i: usize, value: &T) {
@@ -525,12 +770,19 @@ impl Binary {
             for kind in Kind::NORMALIZED {
                 let _ = fs::remove_file(kind.path(&w.prefix));
             }
+            let _ = fs::remove_file(Index::path(&w.prefix));
         }
     }
 }
 
 impl<'n, S: Source> Sink<'n, S> for Binary {
     fn work(&mut self, work: &S::Work<'n>) {
+        if let Some(natives) = self.natives.as_mut() {
+            match (S::native_key(work), &self.current) {
+                (Some(key), Some(set)) => natives.push((key, set.records(Kind::References))),
+                _ => self.natives = None,
+            }
+        }
         self.put(0, work);
     }
 
@@ -710,7 +962,48 @@ pub fn read_all<T: DeserializeOwned>(path: &Path) -> io::Result<Vec<T>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Kind, read_varint, write_varint};
+    use super::{Kind, Reader, Writer, frame, read_varint, write_varint};
+
+    /// A file written in frames reads whole as it did in one, and each
+    /// frame of its table reads alone, from its offset, the records from
+    /// its first ordinal on (serving plan §11, item 35).
+    #[test]
+    fn frames_read_whole_and_one_at_a_time() {
+        let dir = std::env::temp_dir().join(format!("ol-rht-frames-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let prefix = dir.join("set");
+        let values: Vec<String> = (0..500)
+            .map(|i| format!("record {i} {}", "x".repeat(i % 37)))
+            .collect();
+        let mut writer =
+            Writer::create_framed(&prefix, "test", 1, &[Kind::Works, Kind::Symbols], 256).unwrap();
+        for v in &values {
+            writer.put(Kind::Works, v).unwrap();
+        }
+        let finished = writer.finish().unwrap();
+        let frames = &finished
+            .frames
+            .iter()
+            .find(|(k, _)| *k == Kind::Works)
+            .unwrap()
+            .1;
+        assert!(frames.len() > 20, "{} frames", frames.len());
+        let path = Kind::Works.path(&prefix);
+        let whole: Vec<String> = Reader::open(&path)
+            .unwrap()
+            .records::<&str>()
+            .map(|r| r.unwrap().to_owned())
+            .collect();
+        assert_eq!(whole, values);
+        let mut read: Vec<String> = Vec::new();
+        for (k, &(offset, first)) in frames.iter().enumerate() {
+            assert_eq!(first, read.len() as u64, "frame {k}");
+            let f = frame(&path, offset).unwrap();
+            read.extend(f.records::<&str>().map(|r| r.unwrap().to_owned()));
+        }
+        assert_eq!(read, values);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn varints_roundtrip() {

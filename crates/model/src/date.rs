@@ -512,20 +512,30 @@ impl Date {
         Self::from_numbers(num(0..4)?, num(5..7)?, num(8..10)?)
     }
 
-    /// Days since 1970-01-01, negative before it (Howard Hinnant's
-    /// `days_from_civil`).
+    /// Days since 1970-01-01, negative before it.
     #[must_use]
     pub const fn days_since_epoch(self) -> i64 {
-        let m = self.month.number() as i64;
-        let d = self.day.get() as i64;
-        let y = self.year.get() as i64 - if m <= 2 { 1 } else { 0 };
-        let era = y.div_euclid(400);
-        let yoe = y - era * 400;
-        let mp = (m + 9) % 12;
-        let doy = (153 * mp + 2) / 5 + d - 1;
-        let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-        era * 146_097 + doe - 719_468
+        days_from_civil(
+            self.year.get() as i64,
+            self.month.number() as i64,
+            self.day.get() as i64,
+        )
     }
+}
+
+/// Days since 1970-01-01 of a proleptic Gregorian year, month and day,
+/// negative before it (Howard Hinnant's `days_from_civil`), for numbers a
+/// [`Date`] cannot hold: a source's `0001-01-01`, checked against the
+/// timestamp the source wrote beside it.
+#[must_use]
+pub const fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
+    let y = year - if month <= 2 { 1 } else { 0 };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let mp = (month + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
 }
 
 /// A time of day with no zone, as PubMed's history dates carry it: an
@@ -1410,6 +1420,12 @@ mod tests {
         assert_eq!(
             Date::from_numbers(1969, 12, 31).unwrap().days_since_epoch(),
             -1
+        );
+        // Frontiers' license start of 0001-01-01, and the timestamp
+        // Crossref wrote beside it (10.3389/fmicb.2019.02678).
+        assert_eq!(
+            super::days_from_civil(1, 1, 1) * 86_400_000,
+            -62_135_596_800_000
         );
         let dt = DateTime::parse_utc("2014-07-05T15:19:03Z").unwrap();
         assert_eq!(dt.epoch_seconds(), 1_404_573_543);

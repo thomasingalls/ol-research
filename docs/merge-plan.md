@@ -522,8 +522,10 @@ Relations that are not identity become a typed stream `(from, to, kind,
 source)`, kinds closed (`merge::relation::Kind`): PubMed's
 `CommentsCorrections` (23 kinds), Crossref's `relation` types (the deposit
 schema's, plus the Crossmark words some publishers deposit there) and
-Crossmark updates both ways as `update-to:<type>` / `updated-by:<type>`,
-and the OpenAlex location DOIs and PMIDs of §3.1 as `has-version`. Status
+Crossmark updates both ways as `update-to:<type>` / `updated-by:<type>` —
+a comment, which Crossmark's twelve lack, as `is-comment-on` /
+`has-comment`, and an older publisher's word as what it means (ingestion
+plan §10, 2026-09-26) — and the OpenAlex location DOIs and PMIDs of §3.1 as `has-version`. Status
 derives from them (§5); lineage will (§11). A relation's other end
 resolves through the names table like an edge's, minting a stub if need
 be: 15,303 relations on the sample — `has-version` 3,834, `has-review`
@@ -1355,6 +1357,20 @@ stays.
   claims back to the record that made them for the identity pass to
   decide again: refused again while two records of a source claim it, or
   a star holds it; accepted when one claimant is left.
+- 2026-09-25, merge version 15: what a batch needs to restate a record's
+  evidence as the full merge writes it (serving plan §11, item 35). A
+  reference is one however many of a record's copies carry it — the
+  user's ruling — counted by a fingerprint of its names and its citation,
+  whole; the full merge had counted it once a copy, so an arc two copies
+  repeat was no one reference's and its unresolved row was written twice.
+  A citation is read as text, a container given as a symbol of its set's
+  table resolved, so the same reference in two sets prints alike and an
+  unresolved row keeps its container, which it had dropped. A record's
+  view names the sets of the copies its speaking copy supersedes, so a
+  batch can read a record's earlier copies back (the user's option (a)).
+  And a relation keeps its cited-as row whatever it names, a stub
+  included: a relation leaves no citer on a stub, and without the row a
+  batch that moves the name could not find who relates to it.
 
 ## 11. Open items
 
@@ -1880,6 +1896,19 @@ stays.
       batch keeps a rejection the record's own row already carries, and
       under C a name whose work has parts is a container's wherever it
       turns up. Needed before daily update files, with items 23 and 24.
+26. **A reference whose one name is malformed leaves no trace.** A
+    citation carries no DOI field (`view.rs`, `Citation`) and an empty
+    citation is dropped (`build.rs`, `Builder::reference`), so a
+    reference that gives only a DOI the model refuses is neither an arc
+    nor an unresolved row: counted as `empty` in the report, and gone.
+    On Crossref's March 2026 bulk sample (2026-09-25, model 8) that was
+    13,339 of 317,615 references, nearly all Wiley's U+2010 hyphen, which
+    model version 9 reads as `-` (ingestion plan §10). What remains is 30
+    in the sample's 262,499 reference DOIs: other dashes, `×` for `x`,
+    spaces in SICI DOIs, zero-width characters. The malformed text is in
+    the normalized layer as a `Claim::Malformed`, so keeping it — an
+    unresolved row that carries the name as written — needs no
+    re-normalizing; it is a merged-layout change. Not built.
 21. ~~**The public id.**~~ Built 2026-09-16 (serving plan SP3):
     `merge::public` mints one for every id lacking it when `merge` is
     given `--public-key <file>` — a keyed BLAKE3 hash of the id, `ol:`

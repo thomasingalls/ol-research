@@ -52,7 +52,7 @@ wart is a claim the POC run confirms or refutes, not a commitment.
 
 | Source           | Native ID  | Nodes | Edges                                 | Full-scale channel                          | POC channel                              |
 |------------------|------------|-------|---------------------------------------|---------------------------------------------|------------------------------------------|
-| Crossref         | DOI        | yes   | yes — `reference[]`                   | annual file: one 208 GB tar of `.jsonl.gz`, torrent | the official 31 MB random-sample torrent |
+| Crossref         | DOI        | yes   | yes — `reference[]`                   | annual file: 35,908 `.jsonl.gz` shards, 223 GB, torrent | the official 31 MB random-sample torrent |
 | PubMed           | PMID       | yes   | partial — `ReferenceList`, mostly PMC | baseline + daily update files, HTTPS        | one late-numbered baseline file          |
 | arXiv            | arXiv ID   | yes   | **no**                                | OAI-PMH harvest                             | OAI-PMH, ~10 pages                       |
 | OpenAlex         | `W…`       | yes   | yes — `referenced_works[]`            | quarterly S3 snapshot over HTTPS, 666 GB    | one manifest-chosen part: 10,873 records, 20 MB |
@@ -60,14 +60,21 @@ wart is a claim the POC run confirms or refutes, not a commitment.
 
 ### Crossref
 
-- Nearly 1.8 × 10^8 records in the March 2026 file. Distributed as one
-  208 GB `tar` of gzipped JSON-lines files, one record per line — the
-  pre-2024 `{"items":[…]}` layout is gone. Via Academic Torrents
-  (doi 10.13003/nggf-vt1j) or AWS requester-pays (~$18). Records are the
-  REST API's item objects *(confirm on the sample)*.
+- Nearly 1.8 × 10^8 records in the March 2026 file. Distributed as 35,908
+  gzipped JSON-lines shards, `0.jsonl.gz` to `35907.jsonl.gz`, flat in one
+  directory, one record per line — 223,053,729,528 bytes, and no tar (the
+  torrent's metafile, read 2026-09-25) — the pre-2024 `{"items":[…]}`
+  layout is gone. Beside them is `a.py`, 666 bytes: Crossref's own
+  conversion script, which sorts a shard's records by DOI and writes each
+  back with its keys sorted, so every line starts `{"DOI": …`. Via
+  Academic Torrents (doi 10.13003/nggf-vt1j) or AWS requester-pays
+  (~$18). Records are the REST API's item objects: confirmed on the
+  sample, whose 10,000 records normalize with no failure on model 8
+  (2026-09-25); the reader tells an API page from a record line by its
+  first bytes.
 - Crossref also publishes a 31 MB **random sample** as its own torrent: 100
-  `.jsonl.gz` files. That is the POC input — no file selection from the big
-  tar needed, and a random draw is the best schema-diversity sample available.
+  `.jsonl.gz` files. That is the POC input — no selection from the full
+  file needed, and a random draw is the best schema-diversity sample available.
   Caveat from first use: the sample torrent has no web seed and few peers — it
   fetched zero bytes in a session while the full file showed 34 seeders.
   Fallbacks in §7.
@@ -101,13 +108,70 @@ wart is a claim the POC run confirms or refutes, not a commitment.
   (186) passes its checksum; every timestamp's `date-parts`, `date-time`
   and `timestamp` agree; `URL` is exactly `https://doi.org/` + DOI;
   `references-count` equals the array; `published` equals `issued`. Those
-  are strict types and enforced invariants in the normalizer. `prefix` is
+  are strict types and enforced invariants in the normalizer — but for
+  the ISSN and, since the whole March 2026 file was surveyed, the ISBN and
+  the ORCID, which a few publishers get wrong and which are claims (§10).
+  `prefix` is
   the DOI's *current owner*, not its registrant — they differ on 67 works,
   because DOIs move between publishers. 47 reference DOIs (0.2 %) carry a
   Unicode hyphen (U+2010) for an ASCII one: the `Claim<Doi>` category
-  again. `updated-by` appears on affected works, so retraction status needs
+  again. In the bulk sample (2026-09-25) it is 13,305 of 262,499 reference
+  DOIs, every one in Wiley's records, and it is read as `-` since model
+  version 9 (§10). `updated-by` appears on affected works, so retraction status needs
   no inversion pass after all — §2's earlier claim about `update-to` stands
   for the notice side only.
+- Institutions (model 10). An author's affiliation and a work's own
+  `institution[]` are one element of the deposit schema, `<institution>`:
+  a name or an id, up to six each of acronyms, places and departments, and
+  ids of three kinds, ROR, ISNI and Wikidata (`institution_id@type`, the
+  same from 5.3.1 to 5.5.0). All of it is kept, each id with who asserted
+  it; a ROR and an ISNI are claims, because a few records' fail their
+  checks. An empty one, `{}`, says nothing and is set aside, and so is an
+  author with nothing in it but its `sequence`.
+- Types (model 10). A record may have no `type` — 2,257 among those the
+  survey stopped at, EMBL-EBI's dataset pages first — and its kind is then
+  unknown: no form, no genre but a notice's. Crossmark's update type was
+  free text before deposit schema 4.3.5 (October 2014), and old records
+  carry their publishers' words: each is read for its meaning and kept
+  beside it (`vocab::UpdateWord`), a word that is no update (`print`, a
+  section's name) is set aside and counted, and a test deposit's word
+  keeps its record out through `source_crossref::exclusions`. Crossref
+  copies a work's `updated-by` into its `relation` under the same word.
+  The reference, funding, peer-review and relation-id lists are the
+  deposit schema's whole lists.
+- Dates (model 10). A license's `start` may be absent: Crossref writes
+  the work's `issued`, padded to its first day, where a deposit gave no
+  start, and nothing where the work has no `issued` to fill it from —
+  dissertations and standards above all. A start is read as from
+  publication (absent, or on the padded `issued`), as its own day, or,
+  for the one `0001-01-01`, as written beside why; `delay-in-days` is
+  checked as `max(0, start − issued)` and dropped. The dates beside the
+  publication dates — `posted`, `accepted`, `approved`,
+  `published-other`, `content-created`, `content-updated` — are kept, each
+  with what it is.
+- Fields new in the March 2026 file (model 10): a work's `version`
+  (deposit schema 5.4.0's `version_info`: a label, kept as written, and
+  its language, read and not kept) and `part-number` (a set's part, kept
+  as written). A grant's projects carry more than the reader knew — a
+  funder's share of the money, co-lead investigators, investigators'
+  other names and dates, planned dates, funders named by a ROR alone,
+  amounts with no currency — all read, none kept.
+- Known gaps, kept on purpose and listed so they stay known: editors,
+  chairs and translators are dropped, and their affiliations with them,
+  though those carry the same ids (the user, 2026-09-26: fine "so long as
+  we know we're missing important data"). A reference's `type` is read
+  and not kept (its own pass, for citation matching). Crossmark policy
+  pages — about 260 among the records the survey stopped at, typed or
+  not — are not works and are normalized as if they were, until books and
+  their kin are taken on after articles. Posted content's `status`
+  (withdrawn, removed) is kept and the merge does not read it yet. Records
+  on Crossref's test prefix, `10.5555`, are normalized as works unless
+  one stops the run and joins the exclusion list. Grants are read and not kept;
+  a grant's `issued` is the earliest of its award starts, and is kept as
+  its publication date meanwhile. A conference's dates and a journal
+  issue's are read and not kept. Crossref's live API writes `subtype:
+  blog` on Rogue Scholar's posts (2026-09-26), where the March 2026 file
+  has them as `other`: the next file will stop there.
 - Terms: metadata is free to reuse and not subject to copyright; abstracts
   carry some limitations.
 
@@ -249,6 +313,26 @@ its own, award ids — every one now a closed enum or a field (§9 M5).
 The API (2026-09) is a newer serializer than the June snapshot: §9 M5
 lists every difference the first 35,000 looked-up works showed, all
 modelled, each with a fixture.
+
+The snapshot of 2026-09-23 (2,040 parts, 476,196,327 works; 1,581 parts
+and 403.6 M works in 2026 partitions) differs again. Three of its
+smallest 2026 parts (2026-03-23, 2026-03-30, 2026-06-29; 9,071 works),
+enumerated path by path against the model on 2026-09-25, while the 17
+June parts show no difference under the same script:
+
+- `source.listed_in`, new, on every source object: an array of the lists
+  that index the source (`erih-plus`, `cwts-core`, `doaj`, `medline`,
+  `scielo`, `latindex`, national lists such as `jufo-1`…`3`, `norway-1`,
+  `2`, `ki-jl-1`…`3`, `abdc-*`), `[]` when none; absent from the API's
+  answers. Model 8 refuses it at the first work of every part.
+- A work `type` of `software`: 25 works, all Zenodo DataCite records.
+- `updated_date` before `created_date`: 2 works, both created
+  2026-08-07.
+- `language` codes `enc` and `idb`: kept as malformed claims, not failures.
+
+These parts are small and mostly DataCite's, so the large 2026
+partitions may hold more; the snapshot is surveyed whole before it is
+normalized (§10, 2026-09-25).
 
 ### Semantic Scholar — paused
 
@@ -873,12 +957,14 @@ Two ergonomic details that do not weaken the contract: `--limit N` for fast
 iteration, and opt-in `--survey`, which scans everything, writes no output,
 and reports every distinct failure signature with counts and samples, so one
 run surfaces many warts instead of one. Default is stop-at-first. A survey
-surveys parse failures too (2026-09-23), at the price of the rest of the
-file the failure was in: the reader's place in the byte stream is no longer
-a record boundary, so the file is abandoned and the next taken. Every
-abandoned file and the record it was abandoned at is named in the report,
-because a survey that quietly skipped most of a file would be worse than
-one that stopped.
+surveys parse failures too (2026-09-23). In a lines file or an API page
+(Crossref, OpenAlex) a record is framed — its line or its item cut out —
+before it is parsed, so one that does not parse costs that record and the
+survey reads the next (2026-09-26). In PubMed's XML the reader's place in
+the byte stream is no longer a record boundary, so the file is abandoned
+and the next taken. Every abandoned file and the record it was abandoned
+at is named in the report, because a survey that quietly skipped most of
+a file would be worse than one that stopped.
 
 ## 7. POC acquisition
 
@@ -1709,6 +1795,252 @@ cross-IDs and a second edge namespace early.
   `2016 11-12` (59), `2000 Aug, 7`, `2023 Auguest`, `2021 [SEASON]`,
   `2020 COVID-19 SPECIAL ISSUE` — which is the case for keeping over
   cataloguing that version 7 was built on.
+- 2026-09-25, model version 9 — U+2010 HYPHEN in a DOI's suffix is read
+  as `-`. Crossref's March 2026 bulk sample carries it in 13,305 of its
+  262,499 reference DOIs, every one from Wiley's records (1,248 of them),
+  and the merge had been dropping those references with no row at all:
+  a reference whose one name is malformed has nothing to land on. Read
+  as `-`, 13,301 are DOIs, and the three tried resolve at doi.org where
+  the U+2010 form of one answers 404. The DOI Handbook (2025 edition,
+  §4.2, §4.3.4) allows any Unicode in a suffix and calls two names the
+  same only when their code points are, but for ASCII case, so the two
+  forms are different names and this is a reading, not the standard's
+  equivalence. The user's first preference was to keep the character as
+  written, then: "we should just normalize that character, what the hell
+  wiley". Only U+2010 is read. The same sample's other 30 rejected
+  reference DOIs stay malformed: an en dash (13), `×` for `x` in SAGE's
+  (8), spaces inside SICI DOIs (3), a minus sign (2), zero-width
+  characters (2), and two that mix U+2010 with another; the merge still
+  drops those without a trace (merge plan §11).
+- 2026-09-25, Crossref's bulk file is shards, not a tar — the 2026-09-14
+  entry above had it as one tar. The torrent's metafile (read 2026-09-25)
+  names 35,908 `N.jsonl.gz` shards and Crossref's conversion script
+  `a.py`, 223,053,729,528 bytes, flat in one directory; the box fetched it
+  by magnet link (homelab `job-fetch-crossref-v1`). A command naming
+  every shard is about 2.3 MB of arguments, over Linux's 2 MiB, so the
+  Jobs that read them take them in eight shares, listed without a glob.
+- 2026-09-25, Crossref before OpenAlex. The OpenAlex snapshot of
+  2026-09-23 is fetched to the box, but it waits until Crossref is live
+  (the user: "there are a lot of practical considerations needed to take
+  care of before taking this on"). Model 8 reads none of its 2026
+  partitions — 403.6 M of its 476 M works — for a new field, a new work
+  type and two updates dated before their creation (§2, OpenAlex). The
+  user is interested in OpenAlex as a hold-out: a dataset that validates
+  this pipeline's correctness, not an infallible oracle, but a
+  disagreement with it needs a rigorous justification.
+- 2026-09-25, a set's records can be sought (serving plan §11, item 35,
+  the user's option (c)). A batch reads records back from the normalized
+  layer — a re-delivered record's earlier copies, the citers of a stub it
+  divides or of a name it moved — and a set was one zstd frame, read
+  whole to find any record: about half a second a set (M). The works and
+  references files now start a new frame every 256 KiB of records
+  (`binary::FRAME`), which reads as one stream as before, and a set gains
+  `<prefix>.index.zst`: each frame's offset and first record, and each
+  work's native name with its first reference's ordinal, since a work's
+  references follow it. A reader with the index finds a record by a seek
+  and one frame; a set without one is scanned, as before. The index is
+  keyed by the name the merge writes (`Source::native_key`), so the
+  source crates fill it. On the sample the sets are about 7 % larger
+  (M: the two baseline files 65.8 to 70.3 MiB) and an index is about
+  65 KB for 30,000 works. Neither the model nor the layout version moves:
+  every file reads as it did, and a set normalized before has no index.
+- 2026-09-26, a survey reads past a line that does not parse — the
+  user's call. The first survey of Crossref's whole March 2026 file
+  (homelab `ol-rht-survey-crossref-v1`, model 9) read 132,819,641
+  records and abandoned 24,545 of its 35,908 shards at their first parse
+  failure (M), leaving an estimated 46 M records unread, and a record
+  with two warts showed only the first: 1,052 of the licenses with no
+  start sat behind a Wikidata id or an affiliation's acronym (M, over
+  the records those shards stopped at, dumped by homelab
+  `ol-rht-dump-crossref-v1`). The 2026-09-23 rule abandoned a file
+  because the reader's place is lost, which is PubMed's XML and not a
+  lines file: Crossref and OpenAlex cut a line, or a page's item, out
+  before parsing it, so the next record starts where it did.
+  `Source::records` now hands such a failure to the runner beside the
+  records, and a survey tallies it and reads on; PubMed's still ends
+  the read. Every run that is not a survey stops at it, as before. Over
+  the dump's 33,476 records a survey now reads all of them and abandons
+  nothing (M: 26,262 failed, 42 signatures).
+- 2026-09-26, model version 10 — what the Crossref survey found, in four
+  parts the user decided the same day, one version for all of them.
+  Institutions first. 1,957 shards stopped at a Wikidata id
+  (`id-type: wikidata`) and 892 at an acronym on an author's affiliation;
+  the parser knew Wikidata nowhere and an acronym only on a work's own
+  institution, though both are one schema element. An affiliation and a
+  work's `institution[]` now normalize to one `Institution`: name,
+  acronyms, places and departments as written, and a ROR, an ISNI and a
+  Wikidata item (`model::Qid`, written `Q182973`: "keep the letters,
+  they're part of the id format"), each with who asserted it. The work's
+  own institutions were parsed and dropped before, and are kept now: they
+  name a dissertation's university, and most Wikidata ids sit there. A
+  ROR is a claim, as an ISSN is — one record carries `03npvkt06`, whose
+  checksum fails (10.25189/2675-4916.2023.v4.n1.id679); an ISNI and a
+  Wikidata item are strict. The schema's "a name or an id" is enforced,
+  and so is its country on a grant investigator's affiliation only; a DOI
+  as an institution id, a second id of one kind, or one Retraction Watch
+  asserted stops the run, and none has been seen. Over the dumped
+  records (M): 9,014 affiliations and 996 works' own institutions, 553
+  and 243 with a Wikidata item, none failing, two RORs malformed (one
+  record's two copies). The user sees ids for institutions, authors and
+  funders coming one day, as works have them, and kept "a name or an id"
+  with that in mind; not this pass.
+- 2026-09-26, model version 10, types. A record with no `type` (2,243
+  shards; EMBL-EBI's ProteomeXchange pages, ScienceOpen collections, SAGE
+  videos, created 2006 to 2022) has an unknown kind: `Option<WorkType>`,
+  no form, and no genre unless a notice gives one — not guessed as
+  `database`, not kept out. `patent` (1,070 shards) and `journal` (64)
+  were reference types, not work types, and the reference, funding,
+  peer-review and relation-id lists take the deposit schema's whole lists
+  (`short-doi` and `orcid` are the data's, not the schema's; a short DOI
+  is read as a DOI, an ORCID names nothing). Crossmark's update words, the
+  user's readings: capitals, `expression-of-concern` and the misspellings
+  `retration`, `retracion` are the Crossmark word; Elsevier's `err` is an
+  erratum (its label on every one); APS's `corrected` and AIP's
+  `publisher-note` are corrections; `comment` and `correspondence` are a
+  comment, a new update type the merge reads as `is-comment-on` /
+  `has-comment`; `unknown`, `print`, `article` and three more section
+  names are no update, set aside and counted (`Sink::set_aside`, new);
+  and `sample_update` and two more are test deposits, whose three records
+  among the dumped ones the new checked-in exclusion list keeps out. Each
+  update keeps the word beside its reading. Two things the dump showed
+  that the proposal had not: Cambridge's `corrected-article` names the
+  work its notice corrects, not the notice — 32 of its 33 notices are
+  titled "… – ERRATUM" or "… – CORRIGENDUM", 29 one page — so it is a
+  correction, where the user had chosen a type of its own on the
+  proposal's reading that the notice is the corrected article; and an
+  update to the record itself (APS's `corrected`, 35, and a few
+  `correction`, `retraction`, `new_edition`) marks a work updated in
+  place, which now makes it no notice in the genre, though it still
+  counts in its status. Over the dumped records (M): no vocabulary
+  failure left, 1,070 updates read from an older word, 69 set aside, and
+  the merge's view maps every relation of the 12,394 that normalize.
+- 2026-09-26, model version 10, dates. A license with no `start` stopped
+  3,272 shards: Crossref's deposit schema makes the start optional ("the
+  license terms will apply for the article's lifetime") and its API docs
+  call it required. What Crossref does (M, every local license and every
+  dumped one): where a deposit gives no start it writes the work's
+  `issued`, padded to its first day, and where there is no `issued`,
+  nothing; `delay-in-days` is `max(0, start − issued)`, 0 when either is
+  missing, and every start is at midnight. The user's readings: a start
+  that is absent or on the padded `issued` means from publication (the
+  fill and a publisher's start on that day cannot be told apart, and say
+  the same), any other is its day, and the one `0001-01-01` (Frontiers,
+  10.3389/fmicb.2019.02678) is kept as written beside why
+  (`LicenseStart`); the delay is checked and dropped. Those rules are
+  checked, and a license that breaks one stops the run. Since model 9
+  the reader had been giving 40 % of the local sample's licenses a day
+  and an hour their publishers never named. The dates Crossref gives
+  beside the publication dates were parsed and dropped, and are kept now
+  as (what it is, date) — the user's call, with a dissertation's or a
+  standard's `approved` often its only date — among them `content-
+  updated`, new, which stopped 9,641 shards: a dataset's last change, in
+  no fixed order with `content-created`. A grant's own `award-start`
+  (991 shards) and an investigator's role dates are read, not kept, as
+  grants are not. Over the dumped records (M): no date failure left;
+  9,525 starts from publication, 1,289 on a day; 11,060 `content-updated`
+  and 1,115 `approved` kept.
+- 2026-09-26, model version 10, fields. The file has four top-level
+  fields the reader did not know, and the dumped records hold no fifth:
+  `content-updated` (the dates entry above), `award-start` (likewise),
+  `version` (193 shards: a label, `v1` on Rogue Scholar's posts, `1` on
+  eLife's, kept as written since the schema allows 100 characters of
+  free text; its language, `en` on 6 of 226, read and not kept) and
+  `part-number` (100 shards, RSC's sets above all: `1`, `06`, `33-6`,
+  kept as written). Behind `award-start` the grants held more: a
+  funder's share of the money with its percentage (35 shards, 912
+  dumped grants), co-lead investigators (13 shards), investigators'
+  other names (a list, where the API docs say a string), planned project
+  dates (seen on the live API, not yet in the file), funders named by a
+  ROR alone, and a project amount with a `null` currency beside a real
+  amount (89). All are read, typed, so that a new shape still stops the
+  run, and none is kept: grants are the user's to decide as a pass of
+  their own. Documented fields not seen in the data — `component-number`,
+  `free-to-read`, `status` — are not modelled; the first to appear stops
+  the run with its shape. Over the dumped records (M): every one of the
+  1,197 grants reads; 226 version labels and 103 part numbers kept. What
+  the dump still stops at is the next pass's: 3,009 authors with neither
+  a family name nor a name, 1,951 records with no `member`, 1,117 `null`
+  strings (a resource's URL, mostly), 270 journal issues with no number,
+  150 records with no `resource`, and one language.
+- 2026-09-26, the survey of the whole March 2026 file on model 10
+  (homelab `ol-rht-survey-crossref-v2`, reading past a line that does not
+  parse): 179,536,204 records from all 35,908 shards, none abandoned,
+  about 12.5 minutes a share (M). 355,035 fail, 0.2 %, in 33 signatures:
+  the next pass's — 303,155 authors with neither a family name nor a
+  name, 22,268 `null` strings, 15,535 records with no `member`, 6,255
+  journal issues with no number, 1,290 ISBNs, about 200 records whose own
+  DOI is not ASCII, 303 three-letter language codes, 195 with no
+  `resource`, 9 ORCIDs — and a few that model 10 itself caused or had not
+  seen, settled the same day, still as version 10 since nothing had been
+  normalized under it: 5,806 records carried an empty affiliation, `{}`
+  (Maximum Academic Press above all), which the new "a name or an id"
+  failed, and which is now set aside and counted; two ISNIs fail their
+  check character, and an ISNI is now a claim; posted content's `status`
+  (5 records: withdrawn or removed, when, why — eLife's retracted reviewed
+  preprints) is kept, and a version label's notes are read, not kept;
+  Retraction Watch's update typed `68818` (both sides of one Spandidos
+  retraction, beside the publisher's own `retraction`) is set aside; and
+  four more test deposits join the exclusion list, their March stamps
+  read off their lines (homelab `ol-rht-dump-crossref-v2`, which found
+  every DOI the survey named but those written with non-ASCII
+  characters: the file escapes them, `\u2013`, and the search did not).
+- 2026-09-26, still model 10: an author with nothing in it. The largest
+  failure of the whole-file survey, 303,155 records, was an author with
+  neither a family name nor a name. Every one among the dumped records
+  but one (3,034 of 3,035, M) is `{"affiliation": [], "sequence":
+  "additional"}` — no name, no ORCID, no affiliation — one to a record,
+  beside the real authors, on dissertations from university repositories
+  (Drexel, Wellington, La Plata, Iowa, UPC, North Texas, Queensland). It
+  says nothing, and is set aside and counted, as an empty affiliation
+  is. The one exception has a given name and nothing else ("ASDEX
+  Upgrade Team", an organisation in a person's field): it still stops
+  the run, under a signature of its own, so the next survey counts that
+  shape across the file before anyone decides how to read it.
+- 2026-09-26, still model 10: `null` links. The whole-file survey's
+  second failure, 22,268 records, was a `null` where the reader expects
+  text. Among the dumped records (M) it is two shapes, both in
+  `resource`, which the normalizer does not keep: a work's landing link
+  `{"primary": {"URL": null}}` (921: figshare's components for Optica and
+  Copernicus, two AGU chapters) and a secondary link that is all nulls,
+  `{"URL": null, "label": null}` (309: OUP's through Ingenta and BioOne,
+  the Chinese Journal of Mechanical Engineering's). Both are read as
+  absent; the next survey says whether the file holds a third.
+- 2026-09-26, still model 10: no `member`. 15,535 records of the file
+  name no member, and all but two of those dumped no publisher either
+  (M). They are DOIs that moved: Taylor & Francis's, Elsevier's, De
+  Gruyter's and smaller publishers' journals passed to new owners whose
+  prefixes the records carry (`10.65087`, the Aquatic Ecosystem Health &
+  Management Society; `10.65844`, Hasanuddin University — Crossref's
+  `/prefixes`, 2026-09-26), deposited in 2025 and 2026, and Crossref's
+  index does not attach the new member to the work, on the live API as
+  in the file. `member` and `publisher` are now optional: absent where
+  the record does not say them. The owner is still known, from `prefix`.
+  The member is not looked up from the prefix: that would be another
+  source's word, for a lookup table of its own if it is ever wanted.
+- 2026-09-26, still model 10: a journal issue with no number (6,255
+  records: `journal-issue` holding only the issue's dates, JoVE's,
+  Tsinghua's, Permanyer's), and a record with no `resource` at all (195:
+  Elsevier's, Springer's, JSTOR's, deposited 2016 to 2022, most with
+  full-text links still). Neither is kept by the normalizer; both are
+  read as absent. Of the 33,476 records the first dump holds, 4 now
+  fail: two ISBNs, one language, one author with only a given name.
+- 2026-09-26, still model 10: an ISBN is a claim (the user's call). 1,290
+  records of the file carry one that is not an ISBN, and a record — a
+  book, a chapter — stopped on it: publishers' check digits (Carl
+  Hanser's, AIAA's), an ISBN-10's `X` on thirteen digits (Blackwell's),
+  twelve digits (the Institute of Mathematical Statistics'), fourteen
+  with a stray `9` in front. As an ISSN, a ROR and an ISNI are, it is
+  kept as written beside why and never matched on, and the record
+  normalizes. The sample's 186 of 2026-09-15 all passed, which is why it
+  was strict.
+- 2026-09-26, still model 10: a language may be ISO 639-2's three-letter
+  terminologic code (303 records: `spa` on two Peruvian publishers',
+  `eng`), read as the language it names; a bibliographic-only code
+  (`fre`) has not been seen and still stops the run. An author's ORCID
+  written `http://orcid.org/` (8) is the same iD, and one whose check
+  character fails (1) is a claim, as the other ids with checks are.
+  Every one of the 234 records the whole-file survey named as examples
+  now normalizes.
 
 ## 11. Dependencies
 

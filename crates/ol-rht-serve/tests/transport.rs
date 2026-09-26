@@ -275,6 +275,44 @@ async fn search_and_expand_are_bounded() {
         .await
         .unwrap_err();
     assert_eq!(over.code(), Code::InvalidArgument);
+    // Any text is a query (2026-09-25), the empty one included, which is
+    // all the protocol can say of a query not given; the one refusal is
+    // size, named. No URL to outgrow here, so the byte cap is reached.
+    let asked = |query: String| pb::SearchRequest {
+        query,
+        limit: 0,
+        facets: 0,
+        hydrate: false,
+    };
+    for text in ["", "\"", "((((((((((((((((((((((((((((((", "id:[1 TO 5000]"] {
+        let found = client
+            .search(asked(text.into()))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(found.total, 0, "{text:?}");
+    }
+    for (text, why) in [
+        (
+            vec!["w"; query_parser::MAX_WORDS + 1].join(" "),
+            "the query is 1025 words; the limit is 1024",
+        ),
+        (
+            "a".repeat(query_parser::MAX_BYTES + 1),
+            "the query is 65537 bytes; the limit is 65536",
+        ),
+    ] {
+        let refused = client.search(asked(text)).await.unwrap_err();
+        assert_eq!(
+            (refused.code(), refused.message()),
+            (Code::InvalidArgument, why)
+        );
+    }
+    let at_cap = client
+        .search(asked("a".repeat(query_parser::MAX_BYTES)))
+        .await
+        .unwrap();
+    assert_eq!(at_cap.into_inner().total, 0);
     // Two spellings of one work are one seed, so the cosine divides by
     // one and not two. Work 1 cites 2 and 3 and 3 cites it back, so
     // walking both ways reaches 2 (degree 1, score 1) and 3 (degree 2,

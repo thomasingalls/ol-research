@@ -83,6 +83,13 @@ pub struct View<'a> {
     /// (merge plan §8). Empty until the reader sets it.
     #[serde(borrow)]
     pub set: &'a str,
+    /// The sets of the record's other standing copies, the ones the copy
+    /// in `set` speaks over, sorted: where an incremental merge reads
+    /// them back, since a record's references are the union over all of
+    /// them (merge version 15, 2026-09-25). Empty for a record delivered
+    /// once; [`Owned::fill_from`] adds to it as copies join.
+    #[serde(borrow)]
+    pub superseded: Vec<&'a str>,
     /// The titles, raw markup and all.
     #[serde(borrow)]
     pub titles: Titles<'a>,
@@ -510,6 +517,8 @@ pub struct Owned {
     pub version: u32,
     #[allow(missing_docs)]
     pub set: Box<str>,
+    /// See [`View::superseded`].
+    pub superseded: SmallVec<[Box<str>; 1]>,
     #[allow(missing_docs)]
     pub title: Option<Box<str>>,
     #[allow(missing_docs)]
@@ -547,6 +556,7 @@ struct Raw {
     revised: Option<Date>,
     version: u32,
     set: Box<str>,
+    superseded: SmallVec<[Box<str>; 1]>,
     title: Option<Box<str>>,
     vernacular: Option<Box<str>>,
     has_abstract: bool,
@@ -568,6 +578,7 @@ impl From<Raw> for Owned {
             revised: r.revised,
             version: r.version,
             set: r.set,
+            superseded: r.superseded,
             titles: OwnedTitles::of(Titles {
                 title: r.title.as_deref(),
                 vernacular: r.vernacular.as_deref(),
@@ -624,6 +635,7 @@ impl Owned {
             revised: view.revised,
             version: view.version,
             set: view.set.into(),
+            superseded: view.superseded.iter().map(|s| Box::from(*s)).collect(),
             title: view.titles.title.map(Box::from),
             vernacular: view.titles.vernacular.map(Box::from),
             titles: OwnedTitles::of(view.titles),
@@ -652,6 +664,7 @@ impl Owned {
             revised: self.revised,
             version: self.version,
             set: &self.set,
+            superseded: self.superseded.iter().map(|s| &**s).collect(),
             titles: Titles {
                 title: self.title.as_deref(),
                 vernacular: self.vernacular.as_deref(),
@@ -692,6 +705,12 @@ impl Owned {
     /// name one journal, and a later copy that moved the article would
     /// otherwise leave a venue no journal has.
     pub fn fill_from(&mut self, older: &Self) {
+        for set in std::iter::once(&older.set).chain(&older.superseded) {
+            if !set.is_empty() && *set != self.set && !self.superseded.contains(set) {
+                self.superseded.push(set.clone());
+            }
+        }
+        self.superseded.sort_unstable();
         if self.title.is_none() || self.vernacular.is_none() {
             self.title = self.title.take().or_else(|| older.title.clone());
             self.vernacular = self.vernacular.take().or_else(|| older.vernacular.clone());

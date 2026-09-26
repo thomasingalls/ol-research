@@ -111,4 +111,38 @@ On the sample the works, names and cited-as artifacts are byte for byte
 what they were, `epoch check` passes, and the works pass's peak went from
 776 to 605 MiB in the publish and from 539 to 367 MiB in the check (M).
 
+## Measured on the corpus, epoch 6 (2026-09-25)
+
+`ol-rht-publish-corpus-v2` on ol-rht 699d381 (model 9, merge 15, serve 8)
+published epoch 6 from the second merge of record in 2,233 s, and
+`epoch check` passed it in 1,705 s: names and works rebuilt byte for byte,
+all 41,990,153 rows' 92,996,997 promoted names and public ids resolving,
+the lexical index holding all 39,984,110 held works. The waiting server
+switched to epoch 6 the moment it was published. The heap at its worst in
+each step, from the allocator (M):
+
+| step | peak heap |
+|---|---|
+| names lookup | 0.8 GiB |
+| documents read from the merged sets (the join) | 4.8 GiB |
+| text read from the normalized sets | 3.4 GiB |
+| works and lexical indexes, one pass | 2.3 GiB |
+| lexical index committed | 0.5 GiB |
+| cited-as lookup | 0.8 GiB |
+| graph | 3.4 GiB |
+| `epoch check`'s cross-check | 15 MiB |
+
+So the 18 GB of epoch 5's publish was mostly not heap. The works pass
+now peaks at 2.3 GiB of heap where it held about 10 GB (D) before the
+public ids went to a slot per id and a range went before the next; the
+rest of the 18 GB `VmRSS` was mapped pages and freed memory the allocator
+kept, which `VmRSS` counts and the allocator does not. The lexical index's
+merges were never large in heap. The container's `memory.peak` is its
+48 GiB limit again, page cache of what it writes. The most the publish
+holds at once is 4.8 GiB, in the join: a publish Job could ask for far
+less than 48 GiB, the page cache yielding to the limit.
+
+On disk, both epochs: names 3.0, works 36, cited 6.1, graph 7.3 and
+search 34 GB on the serving claim, about half of each epoch 5's.
+
 The merge of record does not wait on any of this: it writes the merged sets these stages read, and the site keeps serving the epoch it has until one it can read is published.

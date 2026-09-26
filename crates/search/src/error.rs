@@ -16,8 +16,8 @@ pub enum Error {
     },
     /// The engine.
     Engine(#[allow(missing_docs)] tantivy::TantivyError),
-    /// A query the engine's parser refuses.
-    Query(#[allow(missing_docs)] tantivy::query::QueryParserError),
+    /// A search that ran past its time limit.
+    Deadline,
     /// A facet path that is not one.
     Facet(#[allow(missing_docs)] String),
     /// The manifest beside the index.
@@ -43,7 +43,7 @@ impl fmt::Display for Error {
         match self {
             Self::Io { path, source } => write!(f, "{}: {source}", path.display()),
             Self::Engine(e) => write!(f, "tantivy: {e}"),
-            Self::Query(e) => write!(f, "query: {e}"),
+            Self::Deadline => f.write_str("the search ran past its time limit"),
             Self::Facet(what) => write!(f, "facet: {what}"),
             Self::Manifest { path, source } => write!(f, "{}: {source}", path.display()),
             Self::Mismatch(what) => f.write_str(what),
@@ -56,9 +56,8 @@ impl std::error::Error for Error {
         match self {
             Self::Io { source, .. } => Some(source),
             Self::Engine(e) => Some(e),
-            Self::Query(e) => Some(e),
             Self::Manifest { source, .. } => Some(source),
-            Self::Facet(_) | Self::Mismatch(_) => None,
+            Self::Deadline | Self::Facet(_) | Self::Mismatch(_) => None,
         }
     }
 }

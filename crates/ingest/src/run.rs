@@ -179,10 +179,14 @@ pub struct Outcome<K> {
 /// shares, one wart the wiser. Collapsing that loop is the mode's whole
 /// purpose, and a parse failure is a wart like any other.
 ///
-/// What a parse failure costs is the rest of its file. A normalize
-/// failure is one record's; a parse failure leaves the reader's place in
-/// the byte stream untrustworthy, and [`Source::records`] has no way to
-/// be asked for the next record after it — so the file is abandoned and
+/// What a parse failure costs depends on the framing. A normalize
+/// failure is one record's. So is a parse failure where the framing
+/// found the record's end before parsing it — a line, a result of an
+/// API page — and [`Source::records`] hands the failure over and reads
+/// on (2026-09-26: the Crossref survey lost 24,545 of 35,908 files to a
+/// first failure, and most of the file unread with them). Where the
+/// framing cannot — PubMed's XML, whose reader is lost inside the record
+/// — the reader's place is untrustworthy, so the file is abandoned and
 /// the next one taken. That is a hole in the run, and a survey that hid
 /// it would be worse than one that stopped, so every abandoned file is
 /// named in [`Survey::abandoned`] and in the report.
@@ -332,7 +336,8 @@ pub(crate) struct Progress<'a> {
     pending: &'a AtomicU64,
     halt: &'a AtomicBool,
     /// Tally failures instead of stopping at the first: a normalize
-    /// failure costs its record, a parse failure the rest of its file.
+    /// failure costs its record, and so does a parse failure the framing
+    /// can read past; one it cannot costs the rest of its file.
     survey: bool,
 }
 
@@ -504,16 +509,23 @@ where
             held = false;
             progress.consume();
             records += 1;
-            match step(native, sink) {
-                Ok(()) => {}
-                Err(Step::Normalize(e)) if progress.survey => {
+            match native.map(|native| step(native, sink)) {
+                Ok(Ok(())) => {}
+                // The framing found where this record ends, so a survey
+                // tallies it and reads the next; every other mode stops.
+                Err(e) if progress.survey => survey.note(e.signature(), e.to_string()),
+                Err(e) => {
+                    failed = Some(fail(records, Stage::Parse, Box::new(e)));
+                    return ControlFlow::Break(());
+                }
+                Ok(Err(Step::Normalize(e))) if progress.survey => {
                     survey.note(e.signature(), e.to_string());
                 }
-                Err(Step::Normalize(e)) => {
+                Ok(Err(Step::Normalize(e))) => {
                     failed = Some(fail(records, Stage::Normalize, Box::new(e)));
                     return ControlFlow::Break(());
                 }
-                Err(Step::Write(e)) => {
+                Ok(Err(Step::Write(e))) => {
                     failed = Some(fail(records, Stage::Write, Box::new(e)));
                     return ControlFlow::Break(());
                 }
@@ -535,9 +547,10 @@ where
     }
     match read {
         Ok(()) => {}
-        // A survey gives up on the file, not on the run: nothing after
-        // this record was read, so the file is named along with the
-        // signature. Every other mode stops here, as always.
+        // A record the framing lost its place in: a survey gives up on
+        // the file, not on the run, and names the file along with the
+        // signature, because nothing after this record was read. Every
+        // other mode stops here, as always.
         Err(ReadError::Parse(e)) if progress.survey => {
             survey.abandon(path, records + 1, e.signature(), e.to_string());
         }
@@ -656,8 +669,9 @@ pub fn parse_parallel<S: Source, P: AsRef<Path> + Sync>(
 /// from a shared queue until none is left. Never more workers than files.
 /// With `survey`, a record that does not normalize is tallied in the
 /// outcome's [`Survey`] instead of stopping the run; the sink may have
-/// received part of it. So is a record that does not parse, at the price
-/// of the rest of its file, which the survey then names as abandoned.
+/// received part of it. So is a record that does not parse: at the price
+/// of that record where the framing can read past it, and otherwise of
+/// the rest of its file, which the survey then names as abandoned.
 pub fn normalize_parallel<S, K, F, P>(
     paths: &[P],
     limit: Option<u64>,
@@ -899,8 +913,10 @@ mod tests {
     use crate::source::{Count, Sink, Source};
 
     /// A toy source: one record per line. `3: 4 5` is work 3 citing 4 and
-    /// 5; `del 7` withdraws 7; a line starting with `#` fails to parse; a
-    /// line that is not a number fails to normalize.
+    /// 5; `del 7` withdraws 7; a line starting with `#` fails to parse,
+    /// and one starting with `!` fails to parse and loses the reader its
+    /// place, as a record of an XML stream would; a line that is not a
+    /// number fails to normalize.
     struct Lines;
 
     #[derive(Debug)]
@@ -931,13 +947,15 @@ mod tests {
 
         fn records<R: BufRead, F>(input: R, mut each: F) -> Result<(), ReadError<BadLine>>
         where
-            F: FnMut(&&str) -> ControlFlow<()>,
+            F: FnMut(Result<&&str, BadLine>) -> ControlFlow<()>,
         {
             frame::lines(input, |_, line| {
-                if line.starts_with('#') {
+                if line.starts_with('!') {
                     Err(BadLine(line.to_owned()))
+                } else if line.starts_with('#') {
+                    Ok(each(Err(BadLine(line.to_owned()))))
                 } else {
-                    Ok(each(&line))
+                    Ok(each(Ok(&line)))
                 }
             })
         }
@@ -1160,8 +1178,49 @@ mod tests {
     }
 
     #[test]
-    fn a_survey_tallies_a_parse_failure_and_goes_on_to_the_next_file() {
+    fn a_survey_tallies_a_parse_failure_the_framing_can_read_past_and_goes_on() {
         let a = file("1: 2\n#bad\n3: 4\n", false);
+        let b = file("5: 6\n#worse\n", false);
+        let outcome = normalize_parallel::<Lines, Count, _, _>(&[&a, &b], None, 1, true, |_| {
+            Ok(Count::default())
+        });
+        let report = outcome
+            .result
+            .expect("a parse failure does not stop a survey");
+        assert_eq!(
+            (report.files, report.records, total(&outcome.sinks).works),
+            (2, 5, 3),
+            "the line after the bad one was read, and failed lines count as read"
+        );
+        assert_eq!((outcome.survey.failed, outcome.survey.seen.len()), (2, 1));
+        assert_eq!(outcome.survey.seen["bad line"].count, 2);
+        assert!(
+            outcome.survey.abandoned.is_empty(),
+            "a line costs itself and no more"
+        );
+        assert!(!outcome.survey.is_empty(), "a survey that found this fails");
+        let report = outcome.survey.to_string();
+        assert!(
+            report.starts_with("2 records failed, 1 distinct signature\n"),
+            "{report}"
+        );
+        assert!(!report.contains("given up on"), "{report}");
+
+        // The default path is untouched: without a survey the same file
+        // stops the run at the record that would not parse.
+        let outcome = normalize_parallel::<Lines, Count, _, _>(&[&a], None, 1, false, |_| {
+            Ok(Count::default())
+        });
+        let err = outcome.result.unwrap_err();
+        assert_eq!((err.stage, err.record, &err.path), (Stage::Parse, 2, &a));
+        for f in [a, b] {
+            std::fs::remove_file(f).unwrap();
+        }
+    }
+
+    #[test]
+    fn a_survey_abandons_a_file_whose_framing_is_lost_and_goes_on_to_the_next() {
+        let a = file("1: 2\n!lost\n3: 4\n", false);
         let b = file("5: 6\n7: 8\n", false);
         // One worker, so the files are read in order and the assertions
         // below are about what one worker did with both.

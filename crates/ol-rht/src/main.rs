@@ -70,10 +70,13 @@
 //! `--survey` (plan §6) keeps going past records this build cannot read
 //! and reports every distinct failure signature with counts and examples;
 //! it writes no output and exits non-zero when anything failed. A record
-//! that does not normalize costs that record; a record that does not
-//! parse costs the rest of its file, which the report names as abandoned,
-//! because nothing after it in that byte stream can be trusted to be a
-//! record boundary. Without `--survey` the first of either stops the run.
+//! that does not normalize costs that record, and so does one that does
+//! not parse in a lines file or an API page (Crossref, OpenAlex), where
+//! the next record starts on the next line or item regardless. A PubMed
+//! record that does not parse costs the rest of its file, which the
+//! report names as abandoned, because nothing after it in that XML stream
+//! can be trusted to be a record boundary. Without `--survey` the first
+//! failure of any kind stops the run.
 //! `--store` is the root of the store of record, `data` by default.
 //! `--mailto <address>` puts an address in the User-Agent for sources
 //! that reward it; none is sent unless given.
@@ -104,6 +107,7 @@ use merge::record::{Edge, NameRow};
 use merge::{Builder, Contributor, Identity, OwnedName, WorkId};
 use model::{Claim, Doi, OpenAlexId, ParseError, Pmid};
 use source_crossref::Crossref;
+use source_crossref::normalize::LicenseStart;
 use source_openalex::OpenAlex;
 use source_openalex::normalize::LocationId;
 use source_pubmed::Pubmed;
@@ -140,7 +144,11 @@ const USAGE: &str = "usage:
   ol-rht query search <words>... [--store <root>] [--limit N]
   ol-rht query expand <name|#id>... [--store <root>] [--limit N] [--walk <references|citers|both>]
   ol-rht query related <name|#id> --by <cites-same|cited-alongside> [--store <root>] [--limit N]
-  ol-rht query path <name|#id> <name|#id> [--store <root>] [--depth N] [--limit N]";
+  ol-rht query path <name|#id> <name|#id> [--store <root>] [--depth N] [--limit N]
+  ol-rht evaluate load <trec-pm <topics.xml> <qrels> | relish <RELISH_v1.json.gz>> --out <suite> [--store <root>] [--held-out]
+  ol-rht evaluate run <suite | queries> --out <run> [--store <root>] [--limit depth] [--workers N] [--restricted]
+  ol-rht evaluate score <suite | key> <run> [--test]
+  ol-rht evaluate compare <suite | key> <base run> <new run> [--test]";
 
 /// Who we say we are; `--mailto` adds an address inside the parenthesis.
 const USER_AGENT: &str = "ol-rht/0.1 (citation-graph ingestion";
@@ -187,6 +195,14 @@ fn main() -> ExitCode {
             let Some(opts) = Options::parse(&rest) else {
                 return usage();
             };
+            // The evaluation's own switches, each refused anywhere else.
+            let evaluating = |named: &str| *source == "evaluate" && *action == named;
+            if (opts.restricted && !evaluating("run"))
+                || (opts.held_out && !evaluating("load"))
+                || (opts.test && !(evaluating("score") || evaluating("compare")))
+            {
+                return usage();
+            }
             match (*source, *action) {
                 ("pubmed", "check") => check::<Pubmed>(&opts),
                 ("pubmed", "normalize") => normalize::<Pubmed, PubmedStats>(&opts),
@@ -226,6 +242,10 @@ fn main() -> ExitCode {
                 ("query", "expand") => query_expand(&opts),
                 ("query", "related") => query_related(&opts),
                 ("query", "path") => query_path(&opts),
+                ("evaluate", "load") => evaluate_load(&opts),
+                ("evaluate", "run") => evaluate_run(&opts),
+                ("evaluate", "score") => evaluate_score(&opts),
+                ("evaluate", "compare") => evaluate_compare(&opts),
                 _ => usage(),
             }
         }
@@ -234,6 +254,9 @@ fn main() -> ExitCode {
 }
 
 /// The paths and trailing options of a source command.
+// Each bool is one switch as typed, and each command refuses the ones it
+// does not take; an enum of them would only be spelled back into these.
+#[allow(clippy::struct_excessive_bools)]
 struct Options {
     paths: Vec<PathBuf>,
     limit: Option<u64>,
@@ -251,6 +274,13 @@ struct Options {
     related: Option<serve::By>,
     walk: Option<serve::Walk>,
     depth: Option<u32>,
+    /// `evaluate run`'s date cutoff (evaluation plan §3.2).
+    restricted: bool,
+    /// `evaluate load`'s: the whole suite its test half (§7).
+    held_out: bool,
+    /// `evaluate score` and `compare`'s: read the test half, at a
+    /// milestone (§7).
+    test: bool,
 }
 
 impl Options {
@@ -263,7 +293,7 @@ impl Options {
         let (mut limit, mut workers, mut out, mut store, mut mailto, mut seed, mut by) =
             (None, None, None, None, None, None, None);
         let (mut walk, mut depth, mut related) = (None, None, None);
-        let mut survey = false;
+        let (mut survey, mut restricted, mut held_out, mut test) = (false, false, false, false);
         loop {
             match rest {
                 [before @ .., "--survey"] => {
@@ -271,6 +301,27 @@ impl Options {
                         return None;
                     }
                     survey = true;
+                    rest = before;
+                }
+                [before @ .., "--restricted"] => {
+                    if restricted {
+                        return None;
+                    }
+                    restricted = true;
+                    rest = before;
+                }
+                [before @ .., "--held-out"] => {
+                    if held_out {
+                        return None;
+                    }
+                    held_out = true;
+                    rest = before;
+                }
+                [before @ .., "--test"] => {
+                    if test {
+                        return None;
+                    }
+                    test = true;
                     rest = before;
                 }
                 [before @ .., "--store", p] => {
@@ -369,6 +420,9 @@ impl Options {
             related,
             walk,
             depth,
+            restricted,
+            held_out,
+            test,
         })
     }
 
@@ -575,6 +629,7 @@ where
                     for kind in Kind::NORMALIZED {
                         let _ = std::fs::remove_file(kind.path(&w.prefix));
                     }
+                    let _ = std::fs::remove_file(ingest::binary::Index::path(&w.prefix));
                 }
                 eprintln!("{} write: {e}", S::NAME);
                 eprintln!("no output written");
@@ -1907,10 +1962,21 @@ impl serve::incremental::Records for Normalized<'_> {
         native: &OwnedName,
         set: &str,
     ) -> Result<Option<serve::incremental::Incoming>, String> {
+        Ok(self
+            .records(source, std::slice::from_ref(native), set)?
+            .pop())
+    }
+
+    fn records(
+        &self,
+        source: merge::SourceId,
+        natives: &[OwnedName],
+        set: &str,
+    ) -> Result<Vec<serve::incremental::Incoming>, String> {
         match source {
-            merge::SourceId::Pubmed => record_in::<Pubmed>(self.store, native, set),
-            merge::SourceId::Crossref => record_in::<Crossref>(self.store, native, set),
-            merge::SourceId::OpenAlex => record_in::<OpenAlex>(self.store, native, set),
+            merge::SourceId::Pubmed => records_in::<Pubmed>(self.store, natives, set),
+            merge::SourceId::Crossref => records_in::<Crossref>(self.store, natives, set),
+            merge::SourceId::OpenAlex => records_in::<OpenAlex>(self.store, natives, set),
         }
     }
 }
@@ -1918,74 +1984,138 @@ impl serve::incremental::Records for Normalized<'_> {
 /// A copy's rank inside one set: its stamp, its version, its place.
 type InSet = (Option<model::Date>, u32, u64);
 
-/// One record of `S` from the set its speaking copy came from: the
-/// newest copy there, joined with the others as the copy rule joins them
-/// (merge plan §8), and every reference the set beside it gives.
-fn record_in<S: Contributor>(
+/// The records of `S` among `natives` that `set` holds: each the newest
+/// copy there, joined with the others as the copy rule joins them (merge
+/// plan §8), with every reference the set beside it gives. A set with an
+/// index is sought, a record a seek and a frame; one without is scanned
+/// whole (serving plan §11, item 35).
+fn records_in<S: Contributor>(
     store: &Store,
-    native: &OwnedName,
+    natives: &[OwnedName],
     set: &str,
-) -> Result<Option<serve::incremental::Incoming>, String> {
-    let dir = store.normalized(model::VERSION, S::NAME);
-    let prefix = dir.join(set);
-    let works_path = Kind::Works.path(&prefix);
+) -> Result<Vec<serve::incremental::Incoming>, String> {
+    let prefix = store.normalized(model::VERSION, S::NAME).join(set);
+    let index = ingest::binary::Index::read(&prefix)
+        .map_err(|e| format!("{}: {e}", ingest::binary::Index::path(&prefix).display()))?;
+    let best = match index {
+        Some(index) => records_sought::<S>(&prefix, set, natives, &index)?,
+        None => records_scanned::<S>(&prefix, set, natives)?,
+    };
+    let mut out: Vec<serve::incremental::Incoming> =
+        best.into_values().map(|(_, record)| record).collect();
+    out.sort_by(|a, b| a.native.cmp(&b.native));
+    Ok(out)
+}
+
+/// What a set holds of each record asked for: its rank among the set's
+/// copies, and the copy as the copy rule joins them.
+type Held = HashMap<OwnedName, (InSet, serve::incremental::Incoming)>;
+
+/// One copy of a record, from a work of `S` read from `set`, where it is
+/// the `ordinal`th work.
+fn copy_of<S: Contributor>(
+    work: &S::Work<'_>,
+    table: &model::symbol::Table,
+    set: &str,
+    native: OwnedName,
+    ordinal: u64,
+) -> Result<(InSet, serve::incremental::Incoming), String> {
+    let mut asserts = Vec::new();
+    S::names(work, &mut |a| {
+        asserts.push(merge::build::OwnedAssert {
+            name: a.name.to_owned(),
+            field: a.field.into(),
+            native: a.native,
+        });
+    });
+    let view = S::view(work, table).map_err(|e| e.to_string())?;
+    let text = S::text(work, table).map_err(|e| e.to_string())?;
+    let mut relations = Vec::new();
+    S::relations(work, table, &mut |r| relations.push(r)).map_err(|e| e.to_string())?;
+    let mut view = merge::view::Owned::resolve(&view, table);
+    view.set = set.into();
+    let rank = (view.revised, view.version, ordinal + 1);
+    Ok((
+        rank,
+        serve::incremental::Incoming {
+            source: S::SOURCE,
+            native,
+            asserts,
+            view,
+            text,
+            relations,
+            references: Vec::new(),
+        },
+    ))
+}
+
+/// Joins a copy into what the set holds of its record: the newer speaks,
+/// the older fills it (merge plan §8).
+fn join_copy(best: &mut Held, (rank, copy): (InSet, serve::incremental::Incoming)) {
+    let native = copy.native.clone();
+    let joined = match best.remove(&native) {
+        None => (rank, copy),
+        Some((seen, older)) if seen < rank => {
+            let mut newer = copy;
+            newer.absorb(&older);
+            (rank, newer)
+        }
+        Some((seen, mut newer)) => {
+            newer.absorb(&copy);
+            (seen, newer)
+        }
+    };
+    best.insert(native, joined);
+}
+
+/// One reference of `S` as a batch carries it.
+fn reference_of<S: Contributor>(
+    reference: &S::Reference<'_>,
+    table: Option<&model::symbol::Table>,
+) -> serve::incremental::Reference {
+    let mut names = Vec::new();
+    S::targets(reference, &mut |n| names.push(n.to_owned()));
+    serve::incremental::Reference {
+        names,
+        citation: merge::build::OwnedCitation::of(&S::citation(reference), table),
+    }
+}
+
+/// [`records_in`] for a set with no index: every work and every
+/// reference read.
+fn records_scanned<S: Contributor>(
+    prefix: &Path,
+    set: &str,
+    natives: &[OwnedName],
+) -> Result<Held, String> {
+    let wanted: HashSet<&OwnedName> = natives.iter().collect();
+    let works_path = Kind::Works.path(prefix);
     let say = |path: &Path, e: &dyn Display| format!("{}: {e}", path.display());
     let reader =
         merge::sets::open::<S>(&works_path, Kind::Works).map_err(|e| say(&works_path, &e))?;
     let table = reader
         .table()
         .ok_or_else(|| say(&works_path, &"no symbol table"))?;
-    let mut best: Option<(InSet, serve::incremental::Incoming)> = None;
+    let mut best: Held = HashMap::new();
     reader.with_table(|| -> Result<(), String> {
         for (i, work) in reader.records::<S::Work<'_>>().enumerate() {
             let work = work.map_err(|e| say(&works_path, &e))?;
-            if merge::copies::native_of::<S>(&work) != Some(native.as_name()) {
+            let Some(native) = merge::copies::native_of::<S>(&work)
+                .map(|n| n.to_owned())
+                .filter(|n| wanted.contains(n))
+            else {
                 continue;
-            }
-            let mut asserts = Vec::new();
-            S::names(&work, &mut |a| {
-                asserts.push(merge::build::OwnedAssert {
-                    name: a.name.to_owned(),
-                    field: a.field.into(),
-                    native: a.native,
-                });
-            });
-            let view = S::view(&work, table).map_err(|e| say(&works_path, &e))?;
-            let text = S::text(&work, table).map_err(|e| say(&works_path, &e))?;
-            let mut relations = Vec::new();
-            S::relations(&work, table, &mut |r| relations.push(r))
-                .map_err(|e| say(&works_path, &e))?;
-            let mut view = merge::view::Owned::resolve(&view, table);
-            view.set = set.into();
-            let rank = (view.revised, view.version, i as u64 + 1);
-            let copy = serve::incremental::Incoming {
-                source: S::SOURCE,
-                native: native.clone(),
-                asserts,
-                view,
-                text,
-                relations,
-                references: Vec::new(),
             };
-            best = Some(match best.take() {
-                None => (rank, copy),
-                Some((seen, older)) if seen < rank => {
-                    let mut newer = copy;
-                    newer.absorb(&older);
-                    (rank, newer)
-                }
-                Some((seen, mut newer)) => {
-                    newer.absorb(&copy);
-                    (seen, newer)
-                }
-            });
+            let copy = copy_of::<S>(&work, table, set, native, i as u64)
+                .map_err(|e| say(&works_path, &e))?;
+            join_copy(&mut best, copy);
         }
         Ok(())
     })?;
-    let Some((_, mut record)) = best else {
-        return Ok(None);
-    };
-    let references_path = Kind::References.path(&prefix);
+    if best.is_empty() {
+        return Ok(best);
+    }
+    let references_path = Kind::References.path(prefix);
     if references_path.exists() {
         let reader = merge::sets::open::<S>(&references_path, Kind::References)
             .map_err(|e| say(&references_path, &e))?;
@@ -1993,20 +2123,162 @@ fn record_in<S: Contributor>(
         reader.with_table(|| -> Result<(), String> {
             for row in reader.records::<(S::Id<'_>, S::Reference<'_>)>() {
                 let (id, reference) = row.map_err(|e| say(&references_path, &e))?;
-                if S::native(&id) != native.as_name() {
-                    continue;
+                if let Some((_, record)) = best.get_mut(&S::native(&id).to_owned()) {
+                    record.references.push(reference_of::<S>(&reference, table));
                 }
-                let mut names = Vec::new();
-                S::targets(&reference, &mut |n| names.push(n.to_owned()));
-                record.references.push(serve::incremental::Reference {
-                    names,
-                    citation: merge::build::OwnedCitation::of(&S::citation(&reference), table),
-                });
             }
             Ok(())
         })?;
     }
-    Ok(Some(record))
+    Ok(best)
+}
+
+/// The frame of a table holding record `ordinal`: its place in the table
+/// and its first record.
+fn frame_of(frames: &[(u64, u64)], ordinal: u64) -> Option<(usize, u64)> {
+    let k = frames.partition_point(|f| f.1 <= ordinal).checked_sub(1)?;
+    Some((k, frames[k].1))
+}
+
+/// A frame into the cache, read unless it is there.
+fn load_frame(
+    frames: &mut HashMap<(Kind, usize), ingest::binary::Frame>,
+    kind: Kind,
+    path: &Path,
+    k: usize,
+    offset: u64,
+) -> Result<(), String> {
+    if let std::collections::hash_map::Entry::Vacant(slot) = frames.entry((kind, k)) {
+        slot.insert(
+            ingest::binary::frame(path, offset).map_err(|e| format!("{}: {e}", path.display()))?,
+        );
+    }
+    Ok(())
+}
+
+/// The references of the `i`th work of a set with an index, `native`:
+/// the ones that follow it in the references file, by seeks to the
+/// frames that hold them.
+fn sought_references<S: Contributor>(
+    prefix: &Path,
+    index: &ingest::binary::Index,
+    table: &model::symbol::Table,
+    frames: &mut HashMap<(Kind, usize), ingest::binary::Frame>,
+    i: usize,
+    native: &OwnedName,
+) -> Result<Vec<serve::incremental::Reference>, String> {
+    let references_path = Kind::References.path(prefix);
+    let say = |e: &dyn Display| format!("{}: {e}", references_path.display());
+    let start = index.works[i].1;
+    let end = index.works.get(i + 1).map_or(index.references, |w| w.1);
+    let mut out = Vec::new();
+    let mut at = start;
+    while at < end {
+        let (k, first) = frame_of(&index.references_frames, at)
+            .ok_or_else(|| say(&format!("no frame holds reference {at}")))?;
+        load_frame(
+            frames,
+            Kind::References,
+            &references_path,
+            k,
+            index.references_frames[k].0,
+        )?;
+        let frame = &frames[&(Kind::References, k)];
+        let before = out.len();
+        model::symbol::with_reading(table, || -> Result<(), String> {
+            let skip = usize::try_from(at - first).map_err(|e| e.to_string())?;
+            for row in frame
+                .records::<(S::Id<'_>, S::Reference<'_>)>()
+                .skip(skip)
+                .take(usize::try_from(end - at).unwrap_or(usize::MAX))
+            {
+                let (id, reference) = row.map_err(|e| say(&e))?;
+                if S::native(&id).to_owned() != *native {
+                    return Err(say(&format!(
+                        "a reference of {native} is another record's, where the index says"
+                    )));
+                }
+                out.push(reference_of::<S>(&reference, Some(table)));
+            }
+            Ok(())
+        })?;
+        let read = out.len() - before;
+        if read == 0 {
+            return Err(say(&format!("reference {at} is not in its frame")));
+        }
+        at += read as u64;
+    }
+    Ok(out)
+}
+
+/// [`records_in`] for a set with an index: each record's works by a seek
+/// to its frame, and its references — which follow it in the references
+/// file — by seeks to the frames that hold them. A record the index
+/// names that the file does not hold where it says, or a reference that
+/// is not the record's, is a broken set and stops the read.
+fn records_sought<S: Contributor>(
+    prefix: &Path,
+    set: &str,
+    natives: &[OwnedName],
+    index: &ingest::binary::Index,
+) -> Result<Held, String> {
+    let wanted: HashMap<String, &OwnedName> = natives.iter().map(|n| (n.to_string(), n)).collect();
+    let ordinals: Vec<(usize, &OwnedName)> = index
+        .works
+        .iter()
+        .enumerate()
+        .filter_map(|(i, (key, _))| wanted.get(key.as_str()).map(|n| (i, *n)))
+        .collect();
+    let mut best: Held = HashMap::new();
+    if ordinals.is_empty() {
+        return Ok(best);
+    }
+    let works_path = Kind::Works.path(prefix);
+    let say = |path: &Path, e: &dyn Display| format!("{}: {e}", path.display());
+    let table = ingest::binary::table(prefix)
+        .map_err(|e| say(prefix, &e))?
+        .ok_or_else(|| say(prefix, &"no symbol table"))?;
+    let mut frames: HashMap<(Kind, usize), ingest::binary::Frame> = HashMap::new();
+    for &(i, native) in &ordinals {
+        let (k, first) = frame_of(&index.works_frames, i as u64)
+            .ok_or_else(|| say(&works_path, &format!("no frame holds work {i}")))?;
+        load_frame(
+            &mut frames,
+            Kind::Works,
+            &works_path,
+            k,
+            index.works_frames[k].0,
+        )?;
+        let frame = &frames[&(Kind::Works, k)];
+        let copy = model::symbol::with_reading(&table, || -> Result<_, String> {
+            let skip = usize::try_from(i as u64 - first).map_err(|e| e.to_string())?;
+            let work = frame
+                .records::<S::Work<'_>>()
+                .nth(skip)
+                .ok_or_else(|| say(&works_path, &format!("work {i} is not in its frame")))?
+                .map_err(|e| say(&works_path, &e))?;
+            if merge::copies::native_of::<S>(&work)
+                .map(|n| n.to_owned())
+                .as_ref()
+                != Some(native)
+            {
+                return Err(say(
+                    &works_path,
+                    &format!("work {i} is not {native}, as the index says"),
+                ));
+            }
+            copy_of::<S>(&work, &table, set, native.clone(), i as u64)
+                .map_err(|e| say(&works_path, &e))
+        })?;
+        join_copy(&mut best, copy);
+    }
+    for &(i, native) in &ordinals {
+        let references = sought_references::<S>(prefix, index, &table, &mut frames, i, native)?;
+        if let Some((_, record)) = best.get_mut(native) {
+            record.references.extend(references);
+        }
+    }
+    Ok(best)
 }
 
 /// Reads one prefix's works, references and deletions sets of `S` into a
@@ -2293,11 +2565,14 @@ fn merge_batch(opts: &Options, public_key: Option<&Path>) -> ExitCode {
     let a = &applied;
     println!("batch {} at {}", a.batch, a.at);
     println!(
-        "  records: {} merged ({} copies superseded by a newer one, {} of them read for their citations alone, {} withdrawn), {} deletions ({} of records no work had, {} not applying to the copy that speaks)",
+        "  records: {} merged ({} copies superseded by a newer one, {} of them read for their citations alone, {} withdrawn; {} earlier copies read back for their citations, {} citing records restated for a name the batch moved, {} normalized sets read), {} deletions ({} of records no work had, {} not applying to the copy that speaks)",
         a.records,
         a.superseded,
         a.cited_only,
         a.withdrawn,
+        a.earlier_copies,
+        a.restated,
+        a.sets_read,
         a.deleted,
         a.deletions_unknown,
         a.deletions_not_applying
@@ -3541,8 +3816,15 @@ fn query_search(opts: &Options) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    let asked = match query_parser::parse(&text) {
+        Ok(asked) => asked,
+        Err(e) => {
+            eprintln!("{what}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
     let started = std::time::Instant::now();
-    let hits = match serving.search(&text, limit) {
+    let hits = match serving.search(&asked, limit) {
         Ok(hits) => hits,
         Err(e) => {
             eprintln!("{what}: {e}");
@@ -3592,6 +3874,823 @@ fn query_search(opts: &Options) -> ExitCode {
     })();
     match printed {
         Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("{what}: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// How deep a run goes unless `--limit` says (evaluation plan §3.3).
+const RUN_DEPTH: usize = 1000;
+
+/// How many times its depth a restricted run asks the search for, since
+/// the date cutoff is applied after the search (evaluation plan §3.2).
+const RESTRICTED_ASK: usize = 2;
+
+/// One query's part of a run.
+struct Answer {
+    /// The works kept, with their scores.
+    works: Vec<evaluation::trec::Scored>,
+    /// How long the search took.
+    took: std::time::Duration,
+    /// Whether the date cutoff left the query short of the depth though
+    /// the search had more to give.
+    short: bool,
+}
+
+type Searched = Result<Answer, String>;
+
+/// What a run searches: a suite's queries and filters, or a queries
+/// file's queries and no filters.
+struct Asked {
+    queries: Vec<(String, String)>,
+    filters: BTreeMap<String, evaluation::suite::Filter>,
+    /// Of the queries file, and of the filters when there are any.
+    digest: String,
+}
+
+/// Reads what a run searches from a suite's directory or a queries file.
+fn evaluate_asked(path: &Path) -> Result<Asked, String> {
+    if path.is_dir() {
+        let suite = evaluation::suite::Suite::read(path).map_err(|e| e.to_string())?;
+        let mut hasher = blake3::Hasher::new();
+        for name in [evaluation::suite::QUERIES, evaluation::suite::FILTERS] {
+            let bytes = std::fs::read(path.join(name))
+                .map_err(|e| format!("{}: {e}", path.join(name).display()))?;
+            hasher.update(&bytes);
+        }
+        return Ok(Asked {
+            queries: suite.queries,
+            filters: suite.filters,
+            digest: hasher.finalize().to_hex().to_string(),
+        });
+    }
+    let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let queries =
+        evaluation::trec::read_queries(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok(Asked {
+        queries,
+        filters: BTreeMap::new(),
+        digest: blake3::hash(text.as_bytes()).to_hex().to_string(),
+    })
+}
+
+/// `evaluate run <suite | queries> --out <run> [--restricted]`: every
+/// query through the store's search, in process — the parser and the
+/// translation the search box uses, with no time limit and no page cap —
+/// written as a TREC run, and beside it `<run>.about` naming what was
+/// searched (evaluation plan §6). A suite's filters leave a query's own
+/// seed out of its results, and with `--restricted` every work published
+/// after the suite's year (§3.2). The queries are searched in parallel and
+/// written in the file's order, so the run never depends on which search
+/// finished first. A run is kept: an existing `--out` is refused.
+// Read, search, stamp, write: one step after another, and long together.
+#[allow(clippy::too_many_lines)]
+fn evaluate_run(opts: &Options) -> ExitCode {
+    let what = "evaluate run";
+    let ([asked_path], Some(out)) = (opts.paths.as_slice(), opts.out.as_ref()) else {
+        return usage();
+    };
+    if opts.mailto.is_some()
+        || opts.seed.is_some()
+        || opts.by.is_some()
+        || opts.related.is_some()
+        || opts.walk.is_some()
+        || opts.depth.is_some()
+        || opts.survey
+        || opts.limit == Some(0)
+    {
+        return usage();
+    }
+    let depth = opts
+        .limit
+        .map_or(RUN_DEPTH, |n| usize::try_from(n).unwrap_or(usize::MAX));
+    let about_path = PathBuf::from(format!("{}.about", out.display()));
+    for path in [out, &about_path] {
+        if path.exists() {
+            eprintln!(
+                "{what}: {} exists; a run is kept, so name a new one",
+                path.display()
+            );
+            return ExitCode::FAILURE;
+        }
+    }
+    let asked = match evaluate_asked(asked_path) {
+        Ok(asked) => asked,
+        Err(e) => {
+            eprintln!("{what}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if opts.restricted && !asked.filters.values().any(|f| f.until.is_some()) {
+        eprintln!(
+            "{what}: {} names no year for any query; --restricted needs a suite that does",
+            asked_path.display()
+        );
+        return ExitCode::FAILURE;
+    }
+    let mut jobs = Vec::with_capacity(asked.queries.len());
+    for (id, query) in &asked.queries {
+        match query_parser::parse(query) {
+            Ok(parsed) => jobs.push((parsed, asked.filters.get(id).cloned())),
+            Err(e) => {
+                eprintln!("{what}: query {id}: {e}");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+    let store = opts.store();
+    let serving = match serve::Serving::open(&store) {
+        Ok(serving) => serving,
+        Err(e) => {
+            eprintln!("{what}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let started = std::time::Instant::now();
+    let searched = evaluate_search(&serving, &jobs, depth, opts.restricted, opts.workers());
+    let mut run = evaluation::trec::Run::default();
+    let mut slowest: Option<(std::time::Duration, &str)> = None;
+    let (mut returned, mut empty, mut short) = (0_usize, 0_usize, 0_usize);
+    for ((id, _), result) in asked.queries.iter().zip(searched) {
+        let mut answer = match result {
+            Ok(answer) => answer,
+            Err(e) => {
+                eprintln!("{what}: query {id}: {e}");
+                return ExitCode::FAILURE;
+            }
+        };
+        if slowest.is_none_or(|(t, _)| answer.took > t) {
+            slowest = Some((answer.took, id));
+        }
+        returned += answer.works.len();
+        empty += usize::from(answer.works.is_empty());
+        short += usize::from(answer.short);
+        evaluation::trec::order(&mut answer.works);
+        run.queries.insert(id.clone(), answer.works);
+    }
+    let elapsed = started.elapsed();
+
+    let epoch = serving.epoch();
+    let index = serving.search_index();
+    let absorbed = match index.batch() {
+        Ok(batch) => batch,
+        Err(e) => {
+            eprintln!("{what}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let about = serde_json::json!({
+        "asked": asked_path.display().to_string(),
+        "asked_blake3": asked.digest,
+        "queries_count": asked.queries.len(),
+        "depth": depth,
+        "restricted": opts.restricted,
+        "short_of_depth": short,
+        "epoch": epoch,
+        "search": index.manifest(),
+        "search_absorbed_batch": absorbed,
+        "ol_rht": env!("CARGO_PKG_VERSION"),
+    });
+    let tag = format!("ol-rht-epoch{}", epoch.epoch);
+    if let Err(e) = evaluate_write(out, &about_path, &run, &tag, &about) {
+        eprintln!("{what}: {e}");
+        return ExitCode::FAILURE;
+    }
+    println!(
+        "{what}: {} queries, {returned} works returned, {empty} queries with none, \
+         depth {depth}{}, epoch {}, {:.1} s",
+        asked.queries.len(),
+        if opts.restricted {
+            format!(", restricted by year ({short} queries short of the depth)")
+        } else {
+            String::new()
+        },
+        epoch.epoch,
+        elapsed.as_secs_f64()
+    );
+    if let Some((took, id)) = slowest {
+        println!(
+            "  slowest: query {id}, {:.1} ms",
+            took.as_secs_f64() * 1000.0
+        );
+    }
+    println!("  run: {}", out.display());
+    ExitCode::SUCCESS
+}
+
+/// Searches every query on `workers` threads, taking the next query as
+/// each finishes one, and returns the answers in the queries' order.
+fn evaluate_search(
+    serving: &serve::Serving,
+    jobs: &[(query_parser::Query, Option<evaluation::suite::Filter>)],
+    depth: usize,
+    restricted: bool,
+    workers: usize,
+) -> Vec<Searched> {
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let mut answered: Vec<(usize, Searched)> = std::thread::scope(|scope| {
+        let threads: Vec<_> = (0..workers.max(1))
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut mine = Vec::new();
+                    loop {
+                        let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let Some((query, filter)) = jobs.get(i) else {
+                            break mine;
+                        };
+                        mine.push((
+                            i,
+                            evaluate_one(serving, query, filter.as_ref(), depth, restricted),
+                        ));
+                    }
+                })
+            })
+            .collect();
+        threads
+            .into_iter()
+            .flat_map(|t| t.join().expect("a search thread panicked"))
+            .collect()
+    });
+    answered.sort_unstable_by_key(|(i, _)| *i);
+    answered.into_iter().map(|(_, a)| a).collect()
+}
+
+/// One query's works, each named by its public id: its own seed left out,
+/// and in a restricted run every work published after its year, or of no
+/// known year, left out too.
+fn evaluate_one(
+    serving: &serve::Serving,
+    query: &query_parser::Query,
+    filter: Option<&evaluation::suite::Filter>,
+    depth: usize,
+    restricted: bool,
+) -> Searched {
+    let exclude = filter.and_then(|f| f.exclude.as_deref());
+    let until = filter.and_then(|f| f.until).filter(|_| restricted);
+    let ask = if until.is_some() {
+        depth.saturating_mul(RESTRICTED_ASK)
+    } else {
+        depth
+    }
+    .saturating_add(usize::from(exclude.is_some()));
+    let started = std::time::Instant::now();
+    let hits = serving
+        .search_facets(query, ask, 0, None)
+        .map_err(|e| e.to_string())?;
+    let took = started.elapsed();
+    let rows = match until {
+        Some(_) => {
+            let ids: Vec<WorkId> = hits.hits.iter().map(|h| h.id).collect();
+            serving.rows(&ids).map_err(|e| e.to_string())?
+        }
+        None => HashMap::new(),
+    };
+    let mut works = Vec::with_capacity(depth.min(hits.hits.len()));
+    for hit in &hits.hits {
+        if works.len() == depth {
+            break;
+        }
+        let Some(public) = serving.public_of(hit.id) else {
+            return Err(format!(
+                "work {} has no public id; a run names works by public id only",
+                hit.id
+            ));
+        };
+        if exclude == Some(public.as_str()) {
+            continue;
+        }
+        if let Some(until) = until {
+            let year = rows
+                .get(&hit.id)
+                .and_then(|row| row.fields.published.as_ref())
+                .map(|p| p.value.year.get());
+            if year.is_none_or(|y| y > until) {
+                continue;
+            }
+        }
+        works.push(evaluation::trec::Scored {
+            work: public,
+            score: f64::from(hit.score),
+        });
+    }
+    let short = until.is_some() && works.len() < depth && hits.hits.len() == ask;
+    Ok(Answer { works, took, short })
+}
+
+/// Writes the run and its sidecar through `.partial` names, renamed only
+/// once both are whole, so a failed run leaves nothing behind.
+fn evaluate_write(
+    out: &Path,
+    about_path: &Path,
+    run: &evaluation::trec::Run,
+    tag: &str,
+    about: &serde_json::Value,
+) -> io::Result<()> {
+    let run_partial = PathBuf::from(format!("{}.partial", out.display()));
+    let about_partial = PathBuf::from(format!("{}.partial", about_path.display()));
+    let written = (|| -> io::Result<()> {
+        let mut file = io::BufWriter::new(std::fs::File::create(&run_partial)?);
+        run.write(tag, &mut file)?;
+        file.into_inner()
+            .map_err(io::IntoInnerError::into_error)?
+            .sync_all()?;
+        let mut text = serde_json::to_string_pretty(about).map_err(io::Error::other)?;
+        text.push('\n');
+        std::fs::write(&about_partial, text)?;
+        std::fs::rename(&run_partial, out)?;
+        std::fs::rename(&about_partial, about_path)
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&run_partial);
+        let _ = std::fs::remove_file(&about_partial);
+    }
+    written
+}
+
+/// What a set's loader makes: the suite before its halves are drawn, what
+/// the corpus holds of its key, the queries left out and why, and what
+/// `about.json` says of how it was read.
+struct Loaded {
+    suite: evaluation::suite::Suite,
+    coverage: evaluation::sets::Coverage,
+    left_out: Vec<(String, &'static str)>,
+    details: serde_json::Value,
+}
+
+/// What the store holds of a PMID, and the work when one work has it.
+fn evaluate_find(
+    serving: &serve::Serving,
+    pmid: &str,
+) -> Result<(evaluation::sets::Found, Option<WorkId>), String> {
+    use evaluation::sets::Found;
+    match serving
+        .resolve(&format!("pmid:{pmid}"))
+        .map_err(|e| e.to_string())?
+    {
+        None => Ok((Found::Missing, None)),
+        Some(serve::Resolved::One(id)) => {
+            let public = serving
+                .public_of(id)
+                .ok_or_else(|| format!("work {id} has no public id"))?;
+            if serving.is_stub(id) {
+                Ok((Found::Stub(public), Some(id)))
+            } else {
+                Ok((Found::Held(public), Some(id)))
+            }
+        }
+        Some(serve::Resolved::Shared(_) | serve::Resolved::Split { .. }) => {
+            Ok((Found::Ambiguous, None))
+        }
+    }
+}
+
+/// The year TREC Precision Medicine's judges saw PubMed up to: 2019 and
+/// 2020 both searched the MEDLINE 2019 baseline, a snapshot of mid-December
+/// 2018 (benchmarks note §2.4). Other years searched another snapshot,
+/// with conference abstracts beside it, not yet read.
+fn trec_pm_until(year: u16) -> Result<u16, String> {
+    match year {
+        2019 | 2020 => Ok(2018),
+        other => Err(format!(
+            "TREC Precision Medicine {other}: its snapshot year is not written down yet"
+        )),
+    }
+}
+
+/// TREC Precision Medicine, scientific abstracts: `<topics> <qrels>`.
+fn evaluate_load_trec_pm(
+    serving: &serve::Serving,
+    files: &[(PathBuf, Vec<u8>)],
+) -> Result<Loaded, String> {
+    let [(topics_path, topics), (qrels_path, qrels)] = files else {
+        return Err("trec-pm takes its topics file and its trec_eval qrels".to_owned());
+    };
+    let text = |path: &Path, bytes: &[u8]| {
+        std::str::from_utf8(bytes)
+            .map(str::to_owned)
+            .map_err(|e| format!("{}: {e}", path.display()))
+    };
+    let topics = evaluation::sets::read_pm_topics(&text(topics_path, topics)?)
+        .map_err(|e| format!("{}: {e}", topics_path.display()))?;
+    let judged = evaluation::trec::Key::read(&text(qrels_path, qrels)?)
+        .map_err(|e| format!("{}: {e}", qrels_path.display()))?;
+    if let Some(stray) = judged
+        .queries
+        .keys()
+        .find(|q| !topics.topics.iter().any(|t| &&t.number == q))
+    {
+        return Err(format!(
+            "{}: topic {stray} is not in the topics file",
+            qrels_path.display()
+        ));
+    }
+    let until = trec_pm_until(topics.year)?;
+    let judgments = judged.queries.iter().flat_map(|(q, works)| {
+        works
+            .iter()
+            .map(move |(pmid, grade)| (q.as_str(), pmid.as_str(), *grade))
+    });
+    let (key, coverage) = evaluation::sets::key_of(judgments, |pmid| {
+        evaluate_find(serving, pmid).map(|(f, _)| f)
+    })
+    .map_err(|e| e.to_string())?;
+    let mut suite = evaluation::suite::Suite::default();
+    for topic in &topics.topics {
+        suite.queries.push((topic.number.clone(), topic.query()));
+        suite.filters.insert(
+            topic.number.clone(),
+            evaluation::suite::Filter {
+                until: Some(until),
+                exclude: None,
+            },
+        );
+    }
+    suite.key = key;
+    let left_out = topics
+        .topics
+        .iter()
+        .filter(|t| !suite.key.queries.contains_key(&t.number))
+        .map(|t| (t.number.clone(), "the key judges nothing for it"))
+        .collect();
+    Ok(Loaded {
+        suite,
+        coverage,
+        left_out,
+        details: serde_json::json!({
+            "year": topics.year,
+            "topics": topics.topics.len(),
+            "query": "the disease and the gene, and the treatment where the topic names one (evaluation plan §12, item 15)",
+            "until": until,
+        }),
+    })
+}
+
+/// RELISH v1: `<RELISH_v1.json.gz>`.
+fn evaluate_load_relish(
+    serving: &serve::Serving,
+    files: &[(PathBuf, Vec<u8>)],
+) -> Result<Loaded, String> {
+    use evaluation::sets::Found;
+    /// RELISH's candidates came from PubMed as of 2018-07-03.
+    const UNTIL: u16 = 2018;
+    let [(path, bytes)] = files else {
+        return Err("relish takes RELISH_v1.json.gz".to_owned());
+    };
+    let records =
+        evaluation::sets::read_relish_gz(bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+    let annotations = records.len();
+    let (kept, dropped) = evaluation::sets::first_per_seed(records);
+    let mut suite = evaluation::suite::Suite::default();
+    let mut left_out = Vec::new();
+    let mut judgments = Vec::new();
+    for record in &kept {
+        let seed = record.pmid.as_str();
+        let (found, id) = evaluate_find(serving, seed)?;
+        let (public, id) = match (found, id) {
+            (Found::Held(public), Some(id)) => (public, id),
+            (Found::Stub(_), _) => {
+                left_out.push((seed.to_owned(), "the seed is known only as cited"));
+                continue;
+            }
+            (Found::Missing, _) => {
+                left_out.push((seed.to_owned(), "the seed is not in the corpus"));
+                continue;
+            }
+            _ => {
+                left_out.push((seed.to_owned(), "the seed's PMID names more than one work"));
+                continue;
+            }
+        };
+        let title = serving
+            .work(id)
+            .map_err(|e| e.to_string())?
+            .and_then(|row| row.text)
+            .and_then(|text| text.title)
+            .map(|t| t.split_whitespace().collect::<Vec<_>>().join(" "))
+            .filter(|t| !t.is_empty());
+        let Some(title) = title else {
+            left_out.push((seed.to_owned(), "the seed has no title"));
+            continue;
+        };
+        suite.queries.push((seed.to_owned(), title));
+        suite.filters.insert(
+            seed.to_owned(),
+            evaluation::suite::Filter {
+                until: Some(UNTIL),
+                exclude: Some(public),
+            },
+        );
+        judgments.extend(
+            record
+                .judgments()
+                .into_iter()
+                .map(|(pmid, grade)| (seed, pmid, grade)),
+        );
+    }
+    let (key, coverage) = evaluation::sets::key_of(judgments, |pmid| {
+        evaluate_find(serving, pmid).map(|(f, _)| f)
+    })
+    .map_err(|e| e.to_string())?;
+    suite.key = key;
+    Ok(Loaded {
+        suite,
+        coverage,
+        left_out,
+        details: serde_json::json!({
+            "annotations": annotations,
+            "seeds": kept.len(),
+            "later_annotations_of_a_seed_left_out": dropped,
+            "query": "the seed paper's title as the works index holds it (evaluation plan §12, item 15)",
+            "until": UNTIL,
+        }),
+    })
+}
+
+/// `evaluate load <trec-pm | relish> <file>... --out <suite>`: a published
+/// set's own files read into a suite (evaluation plan §6) — its queries,
+/// its key with every PMID found through the store's names, the filters,
+/// the halves when it is large enough to halve — and beside it
+/// `about.json`: the files' digests, the epoch, what the corpus holds of
+/// the key and which queries were left out and why.
+// Read, find, write, report: one step after another, and long together.
+#[allow(clippy::too_many_lines)]
+fn evaluate_load(opts: &Options) -> ExitCode {
+    let what = "evaluate load";
+    let (Some((set, files)), Some(out)) = (opts.paths.split_first(), opts.out.as_ref()) else {
+        return usage();
+    };
+    if opts.limit.is_some()
+        || opts.workers.is_some()
+        || opts.mailto.is_some()
+        || opts.seed.is_some()
+        || opts.by.is_some()
+        || opts.related.is_some()
+        || opts.walk.is_some()
+        || opts.depth.is_some()
+        || opts.survey
+    {
+        return usage();
+    }
+    if out.exists() {
+        eprintln!(
+            "{what}: {} exists; a suite is kept, so name a new version",
+            out.display()
+        );
+        return ExitCode::FAILURE;
+    }
+    let mut read = Vec::with_capacity(files.len());
+    for path in files {
+        match std::fs::read(path) {
+            Ok(bytes) => read.push((path.clone(), bytes)),
+            Err(e) => {
+                eprintln!("{what}: {}: {e}", path.display());
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+    let store = opts.store();
+    let serving = match serve::Serving::open(&store) {
+        Ok(serving) => serving,
+        Err(e) => {
+            eprintln!("{what}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let loaded = match set.to_str() {
+        Some("trec-pm") => evaluate_load_trec_pm(&serving, &read),
+        Some("relish") => evaluate_load_relish(&serving, &read),
+        _ => return usage(),
+    };
+    let Loaded {
+        mut suite,
+        coverage,
+        left_out,
+        details,
+    } = match loaded {
+        Ok(loaded) => loaded,
+        Err(e) => {
+            eprintln!("{what}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let scored = suite.scored();
+    suite.halves = if opts.held_out {
+        evaluation::suite::held_out(&scored)
+    } else {
+        evaluation::suite::halves(&scored)
+    };
+    let working = suite
+        .halves
+        .values()
+        .filter(|h| **h == evaluation::suite::Half::Working)
+        .count();
+    let coverage_json: serde_json::Map<String, serde_json::Value> = coverage
+        .by_grade
+        .iter()
+        .map(|(grade, [held, stub, missing, ambiguous])| {
+            (
+                grade.to_string(),
+                serde_json::json!({
+                    "held": held, "stub": stub, "missing": missing, "ambiguous": ambiguous,
+                }),
+            )
+        })
+        .collect();
+    let about = serde_json::json!({
+        "set": set.display().to_string(),
+        "files": read.iter().map(|(path, bytes)| serde_json::json!({
+            "path": path.display().to_string(),
+            "bytes": bytes.len(),
+            "blake3": blake3::hash(bytes).to_hex().to_string(),
+        })).collect::<Vec<_>>(),
+        "epoch": serving.epoch(),
+        "details": details,
+        "queries": suite.queries.len(),
+        "scored": scored.len(),
+        "halves": if suite.is_held_out() {
+            serde_json::json!("held out whole: its total is read at milestones")
+        } else if suite.halves.is_empty() {
+            serde_json::json!("whole: too few queries to halve")
+        } else {
+            serde_json::json!({ "working": working, "test": suite.halves.len() - working })
+        },
+        "left_out": left_out.iter().map(|(q, why)| serde_json::json!({ "query": q, "why": why })).collect::<Vec<_>>(),
+        "coverage_by_grade": coverage_json,
+        "collided": coverage.collided,
+        "ol_rht": env!("CARGO_PKG_VERSION"),
+    });
+    let written = suite.write(out).and_then(|()| {
+        let mut text = serde_json::to_string_pretty(&about).map_err(io::Error::other)?;
+        text.push('\n');
+        std::fs::write(out.join("about.json"), text)
+    });
+    if let Err(e) = written {
+        eprintln!("{what}: {}: {e}", out.display());
+        return ExitCode::FAILURE;
+    }
+    println!(
+        "{what}: {} queries, {} with a relevant work, {} left out; {}",
+        suite.queries.len(),
+        scored.len(),
+        left_out.len(),
+        if suite.is_held_out() {
+            "held out whole".to_owned()
+        } else if suite.halves.is_empty() {
+            "kept whole, too few to halve".to_owned()
+        } else {
+            format!("halved, {working} working")
+        }
+    );
+    println!("  judged works by grade: held (searchable), stub (cited only), missing, ambiguous");
+    for (grade, [held, stub, missing, ambiguous]) in &coverage.by_grade {
+        println!(
+            "    grade {grade}: {held} held, {stub} stub, {missing} missing, {ambiguous} ambiguous"
+        );
+    }
+    if coverage.collided > 0 {
+        println!(
+            "  {} judgments landed on a work judged already",
+            coverage.collided
+        );
+    }
+    println!("  suite: {}", out.display());
+    ExitCode::SUCCESS
+}
+
+/// The half of a suite `score` and `compare` read.
+fn evaluate_half(opts: &Options) -> evaluation::suite::Half {
+    if opts.test {
+        evaluation::suite::Half::Test
+    } else {
+        evaluation::suite::Half::Working
+    }
+}
+
+/// The options `evaluate score` and `evaluate compare` do not take: they
+/// read files and nothing else.
+fn evaluate_reads_only(opts: &Options) -> bool {
+    opts.limit.is_none()
+        && opts.workers.is_none()
+        && opts.out.is_none()
+        && opts.store.is_none()
+        && opts.mailto.is_none()
+        && opts.seed.is_none()
+        && opts.by.is_none()
+        && opts.related.is_none()
+        && opts.walk.is_none()
+        && opts.depth.is_none()
+        && !opts.survey
+}
+
+/// What `score` and `compare` read their answers from: a suite, or a
+/// bare answer key.
+enum Judged {
+    Suite(evaluation::suite::Suite),
+    Key(evaluation::trec::Key),
+}
+
+/// Reads a suite's directory or an answer key, and runs, naming the file
+/// that fails.
+fn evaluate_read(
+    judged: &Path,
+    runs: &[PathBuf],
+) -> Result<(Judged, Vec<evaluation::trec::Run>), String> {
+    let read =
+        |path: &Path| std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()));
+    let judged = if judged.is_dir() {
+        Judged::Suite(evaluation::suite::Suite::read(judged).map_err(|e| e.to_string())?)
+    } else {
+        Judged::Key(
+            evaluation::trec::Key::read(&read(judged)?)
+                .map_err(|e| format!("{}: {e}", judged.display()))?,
+        )
+    };
+    let runs = runs
+        .iter()
+        .map(|path| {
+            evaluation::trec::Run::read(&read(path)?)
+                .map_err(|e| format!("{}: {e}", path.display()))
+        })
+        .collect::<Result<_, _>>()?;
+    Ok((judged, runs))
+}
+
+/// `evaluate score <suite | key> <run> [--test]`: the run's report
+/// (evaluation plan §4) — of a suite, its working half, or with `--test`
+/// its test half at a milestone, open and condensed.
+fn evaluate_score(opts: &Options) -> ExitCode {
+    let what = "evaluate score";
+    let [judged, run] = opts.paths.as_slice() else {
+        return usage();
+    };
+    if !evaluate_reads_only(opts) {
+        return usage();
+    }
+    let (judged, runs) = match evaluate_read(judged, std::slice::from_ref(run)) {
+        Ok(read) => read,
+        Err(e) => {
+            eprintln!("{what}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let mut out = io::BufWriter::new(io::stdout().lock());
+    let written = match &judged {
+        Judged::Suite(suite) => {
+            evaluation::report::score_suite(suite, &runs[0], evaluate_half(opts), &mut out)
+        }
+        Judged::Key(_) if opts.test => return usage(),
+        Judged::Key(key) => evaluation::report::score(key, &runs[0], &mut out),
+    };
+    match written.and_then(|()| out.flush()) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("{what}: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// `evaluate compare <suite | key> <base run> <new run> [--test]`: both
+/// runs query by query, the interval of every difference, and the
+/// acceptance rule's verdict (evaluation plan §4) — exit 1 when the new
+/// run is refused, and when a level has too few queries for the rule to
+/// speak. Of a suite, the working half, or with `--test` the test half.
+fn evaluate_compare(opts: &Options) -> ExitCode {
+    let what = "evaluate compare";
+    let [judged, base, new] = opts.paths.as_slice() else {
+        return usage();
+    };
+    if !evaluate_reads_only(opts) {
+        return usage();
+    }
+    let (judged, runs) = match evaluate_read(judged, &[base.clone(), new.clone()]) {
+        Ok(read) => read,
+        Err(e) => {
+            eprintln!("{what}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let mut out = io::BufWriter::new(io::stdout().lock());
+    let verdict = match &judged {
+        Judged::Suite(suite) => evaluation::report::compare_suite(
+            suite,
+            &runs[0],
+            &runs[1],
+            evaluate_half(opts),
+            &mut out,
+        ),
+        Judged::Key(_) if opts.test => return usage(),
+        Judged::Key(key) => evaluation::report::compare(key, &runs[0], &runs[1], &mut out),
+    }
+    .and_then(|verdict| out.flush().map(|()| verdict));
+    match verdict {
+        Ok(evaluation::report::Verdict::Passes) => ExitCode::SUCCESS,
+        Ok(evaluation::report::Verdict::Refused | evaluation::report::Verdict::TooFewQueries) => {
+            ExitCode::FAILURE
+        }
         Err(e) => {
             eprintln!("{what}: {e}");
             ExitCode::FAILURE
@@ -3956,8 +5055,15 @@ fn search_query(opts: &Options) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    let asked = match query_parser::parse(&text) {
+        Ok(asked) => asked,
+        Err(e) => {
+            eprintln!("{what}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
     let started = std::time::Instant::now();
-    let hits = match opened.search(&text, limit, 5) {
+    let hits = match opened.search(&asked, limit, 5, None) {
         Ok(hits) => hits,
         Err(e) => {
             eprintln!("{what}: {e}");
@@ -4097,10 +5203,10 @@ impl Absorb for u64 {
     }
 }
 
-impl<const N: usize> Absorb for [u64; N] {
+impl<T: Absorb, const N: usize> Absorb for [T; N] {
     fn absorb(&mut self, other: Self) {
         for (a, b) in self.iter_mut().zip(other) {
-            *a += b;
+            a.absorb(b);
         }
     }
 }
@@ -4620,6 +5726,12 @@ struct CrossrefStats {
     works: u64,
     deletions: u64,
     types: BTreeMap<source_crossref::vocab::WorkType, u64>,
+    /// Records with no `type`.
+    untyped: u64,
+    /// Records the checked-in exclusion list kept out, by reason.
+    excluded: BTreeMap<&'static str, u64>,
+    /// Values read and not kept, by field and value.
+    set_aside: BTreeMap<(&'static str, &'static str), u64>,
     doi_lowercased: u64,
     owner_differs: u64,
     /// What `alternative-id` became as a name (merge plan §3.1).
@@ -4632,23 +5744,39 @@ struct CrossrefStats {
     persons: u64,
     orgs: u64,
     with_orcid: u64,
-    affiliations_with_ror: u64,
+    orcid_malformed: u64,
+    /// `<institution>`s: authors' affiliations, then works' own.
+    institutions: [InstitutionCounts; 2],
     issns: u64,
-    isbns: u64,
+    /// ISBNs: valid, malformed.
+    isbns: [u64; 2],
     languages: BTreeMap<&'static str, u64>,
     references: u64,
     reference_doi: [u64; 3],
     reference_empty: u64,
     updates: BTreeMap<source_crossref::vocab::UpdateType, u64>,
+    /// Updates written in an older word than Crossmark's, by the word.
+    update_words: BTreeMap<&'static str, u64>,
     relations: BTreeMap<String, u64>,
     licenses: BTreeMap<source_crossref::vocab::ContentVersion, u64>,
+    /// License starts: from publication, on a day, unreadable.
+    license_starts: [u64; 3],
+    /// The dates beside the publication dates, by what each is.
+    dates: BTreeMap<&'static str, u64>,
+    /// Works with a version label, and with a part number.
+    version_part: [u64; 2],
+    /// Works with no `member`, and with no `publisher`.
+    unowned: [u64; 2],
     malformed_samples: Vec<String>,
 }
 
 impl<'n> Sink<'n, Crossref> for CrossrefStats {
     fn work(&mut self, w: &source_crossref::normalize::Work<'n>) {
         self.works += 1;
-        *self.types.entry(w.kind).or_default() += 1;
+        match w.kind {
+            Some(kind) => *self.types.entry(kind).or_default() += 1,
+            None => self.untyped += 1,
+        }
         self.doi_lowercased += u64::from(!w.doi.is_borrowed());
         self.owner_differs += u64::from(w.owner != w.doi.registrant());
         let scope = source_crossref::view::publisher_scope(w);
@@ -4676,24 +5804,61 @@ impl<'n> Sink<'n, Crossref> for CrossrefStats {
                 source_crossref::normalize::AuthorName::Person { .. } => self.persons += 1,
                 source_crossref::normalize::AuthorName::Org(_) => self.orgs += 1,
             }
-            self.with_orcid += u64::from(a.orcid.is_some());
-            self.affiliations_with_ror +=
-                a.affiliations.iter().filter(|x| x.ror.is_some()).count() as u64;
+            match &a.orcid {
+                None => {}
+                Some(Claim::Valid(_)) => self.with_orcid += 1,
+                Some(Claim::Malformed { raw, error }) => {
+                    self.orcid_malformed += 1;
+                    sample(&mut self.malformed_samples, raw, error);
+                }
+            }
+            for i in &a.affiliations {
+                self.institutions[0].see(i, &mut self.malformed_samples);
+            }
+        }
+        for i in &w.institutions {
+            self.institutions[1].see(i, &mut self.malformed_samples);
         }
         self.issns += w.issns.len() as u64;
-        self.isbns += w.isbns.len() as u64;
+        for t in &w.isbns {
+            match &t.isbn {
+                Claim::Valid(_) => self.isbns[0] += 1,
+                Claim::Malformed { raw, error } => {
+                    self.isbns[1] += 1;
+                    sample(&mut self.malformed_samples, raw, error);
+                }
+            }
+        }
         if let Some(l) = w.language {
             *self.languages.entry(l.alpha_3()).or_default() += 1;
         }
         for u in w.updates_to.iter().chain(&w.updated_by) {
             *self.updates.entry(u.kind).or_default() += 1;
+            if !u.word.is_crossmark() {
+                *self.update_words.entry(u.word.as_str()).or_default() += 1;
+            }
         }
         for r in &w.relations {
             bump(&mut self.relations, r.kind.as_text().unwrap_or(""));
         }
         for l in &w.licenses {
             *self.licenses.entry(l.version).or_default() += 1;
+            match l.start {
+                LicenseStart::FromPublication => self.license_starts[0] += 1,
+                LicenseStart::On(_) => self.license_starts[1] += 1,
+                LicenseStart::Unreadable { raw, error } => {
+                    self.license_starts[2] += 1;
+                    sample(&mut self.malformed_samples, raw, &error);
+                }
+            }
         }
+        for d in &w.dates {
+            *self.dates.entry(d.kind.field()).or_default() += 1;
+        }
+        self.version_part[0] += u64::from(w.version.is_some());
+        self.version_part[1] += u64::from(w.part_number.is_some());
+        self.unowned[0] += u64::from(w.member.is_none());
+        self.unowned[1] += u64::from(w.publisher.is_none());
     }
 
     fn reference(&mut self, _from: &Doi<'n>, r: &source_crossref::normalize::Reference<'n>) {
@@ -4720,12 +5885,23 @@ impl<'n> Sink<'n, Crossref> for CrossrefStats {
     fn deletion(&mut self, _: &Doi<'n>) {
         self.deletions += 1;
     }
+
+    fn excluded(&mut self, _: &Doi<'n>, reason: &'static str) {
+        *self.excluded.entry(reason).or_default() += 1;
+    }
+
+    fn set_aside(&mut self, _: &Doi<'n>, field: &'static str, value: &'static str) {
+        *self.set_aside.entry((field, value)).or_default() += 1;
+    }
 }
 
 impl StatsReport for CrossrefStats {
     fn report(&self) {
         eprintln!("works {}  deletions {}", self.works, self.deletions);
-        eprintln!("  types {:?}", self.types);
+        if !self.excluded.is_empty() {
+            eprintln!("  kept out by the exclusion list {:?}", self.excluded);
+        }
+        eprintln!("  types {:?}  untyped {}", self.types, self.untyped);
         eprintln!(
             "  doi lowercased (allocations) {}  owner prefix != registrant {}",
             self.doi_lowercased, self.owner_differs
@@ -4741,14 +5917,35 @@ impl StatsReport for CrossrefStats {
             self.abstracts[0], self.abstracts[1], self.abstracts[2]
         );
         eprintln!(
-            "  authors persons {} orgs {} with orcid {}  affiliations with ror {}",
-            self.persons, self.orgs, self.with_orcid, self.affiliations_with_ror
+            "  authors persons {} orgs {} with orcid {} malformed {}",
+            self.persons, self.orgs, self.with_orcid, self.orcid_malformed
         );
-        eprintln!("  issns {}  isbns {}", self.issns, self.isbns);
+        eprintln!(
+            "  affiliations {}  the works' own institutions {}",
+            self.institutions[0], self.institutions[1]
+        );
+        eprintln!(
+            "  issns {}  isbns {} malformed {}",
+            self.issns, self.isbns[0], self.isbns[1]
+        );
         eprintln!("  languages {:?}", self.languages);
-        eprintln!("  updates {:?}", self.updates);
+        eprintln!(
+            "  updates {:?}  from older words {:?}",
+            self.updates, self.update_words
+        );
+        if !self.set_aside.is_empty() {
+            eprintln!("  set aside {:?}", self.set_aside);
+        }
         eprintln!("  relations {:?}", self.relations);
-        eprintln!("  licenses {:?}", self.licenses);
+        eprintln!(
+            "  licenses {:?}  from publication {} on a day {} unreadable {}",
+            self.licenses, self.license_starts[0], self.license_starts[1], self.license_starts[2]
+        );
+        eprintln!("  dates {:?}", self.dates);
+        eprintln!(
+            "  version labels {}  part numbers {}  no member {}  no publisher {}",
+            self.version_part[0], self.version_part[1], self.unowned[0], self.unowned[1]
+        );
         eprintln!("references {}", self.references);
         eprintln!(
             "  doi valid {} malformed {} none {}  empty {}",
@@ -4763,6 +5960,74 @@ impl StatsReport for CrossrefStats {
                 eprintln!("    {s}");
             }
         }
+    }
+}
+
+/// What Crossref's `<institution>`s in one place carry.
+#[derive(Default, Clone, Copy)]
+struct InstitutionCounts {
+    all: u64,
+    ror: u64,
+    ror_malformed: u64,
+    isni: u64,
+    isni_malformed: u64,
+    wikidata: u64,
+    acronym: u64,
+    nameless: u64,
+}
+
+impl InstitutionCounts {
+    fn see(&mut self, i: &source_crossref::normalize::Institution<'_>, samples: &mut Vec<String>) {
+        self.all += 1;
+        match i.ror.map(|r| r.id) {
+            None => {}
+            Some(Claim::Valid(_)) => self.ror += 1,
+            Some(Claim::Malformed { raw, error }) => {
+                self.ror_malformed += 1;
+                sample(samples, raw, &error);
+            }
+        }
+        match i.isni.map(|a| a.id) {
+            None => {}
+            Some(Claim::Valid(_)) => self.isni += 1,
+            Some(Claim::Malformed { raw, error }) => {
+                self.isni_malformed += 1;
+                sample(samples, raw, &error);
+            }
+        }
+        self.wikidata += u64::from(i.wikidata.is_some());
+        self.acronym += u64::from(!i.acronyms.is_empty());
+        self.nameless += u64::from(i.name.is_none());
+    }
+}
+
+impl Absorb for InstitutionCounts {
+    fn absorb(&mut self, o: Self) {
+        self.all += o.all;
+        self.ror += o.ror;
+        self.ror_malformed += o.ror_malformed;
+        self.isni += o.isni;
+        self.isni_malformed += o.isni_malformed;
+        self.wikidata += o.wikidata;
+        self.acronym += o.acronym;
+        self.nameless += o.nameless;
+    }
+}
+
+impl Display for InstitutionCounts {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} (ror {} malformed {}, isni {} malformed {}, wikidata {}, with acronym {}, nameless {})",
+            self.all,
+            self.ror,
+            self.ror_malformed,
+            self.isni,
+            self.isni_malformed,
+            self.wikidata,
+            self.acronym,
+            self.nameless
+        )
     }
 }
 
@@ -5035,7 +6300,7 @@ impl Merge for PubmedStats {
 
 impl Merge for CrossrefStats {
     fn merge(&mut self, other: Self) {
-        absorb_all!(self, other: CrossrefStats { works, deletions, types, doi_lowercased, owner_differs, publisher, issued, title, alternate_titles, subtitle_empty, abstracts, persons, orgs, with_orcid, affiliations_with_ror, issns, isbns, languages, references, reference_doi, reference_empty, updates, relations, licenses, malformed_samples });
+        absorb_all!(self, other: CrossrefStats { works, deletions, types, untyped, excluded, set_aside, doi_lowercased, owner_differs, publisher, issued, title, alternate_titles, subtitle_empty, abstracts, persons, orgs, with_orcid, orcid_malformed, institutions, issns, isbns, languages, references, reference_doi, reference_empty, updates, update_words, relations, licenses, license_starts, dates, version_part, unowned, malformed_samples });
     }
 }
 

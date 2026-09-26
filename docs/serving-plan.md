@@ -375,6 +375,25 @@ seeding is bounded by the **arcs** walking it would read and not by a
 count of seeds, since a seed's own list may be any length, and both
 numbers come back so a bounded answer reads as one.
 
+**The search box** (2026-09-25, §10). What a person types is read by
+our own parser (`crates/query-parser`) into a query tree that every
+engine is asked from, and never handed to an engine as its own query
+language: Tantivy's parser, which read the box until then, took `:`,
+quotes, brackets, `^`, `~`, `*`, `+`, `-` and `AND`/`OR`/`NOT` for
+commands, refused `5'-UTR` and `(2R,3S)-dihydroxy`, let `id:[1 TO
+100]` walk the internal numbering, and took a second to read twenty
+nested parentheses, each one more doubling it. The language's first
+pass is plain text — every character is text, a word is what lies
+between whitespace — and its one refusal is size: 1,024 words, 64 KiB.
+Each engine's translation of the tree lives beside the engine
+(`search::translate` for Tantivy); the tree keeps each word as typed,
+with its place in the text, for the engines to split as they indexed
+and for a highlighter to mirror. A search runs on a thread of its own,
+never on the threads that answer requests, at most `--search-threads`
+at once and each within `--search-deadline`, and writes one line to the
+query log on standard output, apart from the fault log on standard
+error. Its second pass is §11, item 36; what comes next, item 37.
+
 **One hydrated row shape** across the three lists that carry works —
 an arc of a page, a neighbour of an expansion, a step on a path — since
 they had drifted into three (2026-09-19, §10): `public_id`, `stub`,
@@ -431,6 +450,10 @@ state kept outside the store, and a limit per principal on calls and on
   §11, item 7) live in `merge::view`, since the sinks are not the only
   readers, and every `Contributor` answers `text`: the abstract, the
   author names and the venue name of a record as plain text.
+- **`crates/query-parser`**, the search box's text read into the query
+  tree (2026-09-25): no engine in it, so that every engine's translation
+  reads the same tree, and so that it can be compiled for a browser if
+  the highlighter that mirrors it is built that way.
 - **`crates/ol-rht-serve`**, the transport binary, and in `ol-rht` the
   build commands.
 - **Layout**, under the store: `merged/journal.jsonl` and
@@ -451,8 +474,11 @@ state kept outside the store, and a limit per principal on calls and on
   merge over the normalized sets at the paths (set files, prefixes or
   directories), with a report of what it minted, merged, dropped, added
   and removed; `ol-rht-serve --store <root> [--listen <addr>] [--http
-  <addr>|off] [--allow-origin <origin>]… [--poll <seconds>]`, which
-  folds the journal every poll, one second by default, and serves §7's
+  <addr>|off] [--allow-origin <origin>]… [--poll <seconds>]
+  [--search-threads <n>] [--search-deadline <seconds>]`, which folds
+  the journal every poll, one second by default, runs at most
+  `--search-threads` searches at once (half the cores unless told), each
+  within `--search-deadline` (ten seconds unless told), and serves §7's
   JSON facade on a second listener — `127.0.0.1:50052` unless told
   otherwise, `off` to leave the port unbound, and the origins named
   exactly, the Vite dev server's two in both spellings of loopback when
@@ -1212,6 +1238,107 @@ state kept outside the store, and a limit per principal on calls and on
   batch closes each component over a name's refusers as well as its
   holders, and gives each row's refused claims back to the record that
   made them, so the identity pass decides them with every claimant in it.
+- 2026-09-25, the search box reads any text — the user's "stray
+  characters can bring down the server! we need to be able to support
+  arbitrary queries, including special characters", with PubMed whole in
+  the index. A probe of about 120 inputs against Tantivy's own parser on
+  a three-document index found:
+  - **Nested parentheses doubling its time per level**, valid or not:
+    twenty deep a second to read, twenty-two four seconds, twenty-three
+    past the probe's five-second cap (release build). The search ran on the threads
+    that answer every request, so a few such queries held them all,
+    health checks among them.
+  - **Ordinary scientific text refused as syntax**: `5'-UTR`,
+    `(2R,3S)-dihydroxy`, `doi:10.1000/x`, `http://…`, an unmatched quote,
+    `aspirin AND`, `-aspirin`. Every refusal went out as `INTERNAL` (500),
+    whole query and all into the fault log, and the browser client
+    retried it once, as it retries any `internal`.
+  - **The engine's commands reaching past the text**: `id:[1 TO 100]`
+    searched by internal `WorkId` and answered with public ids, the
+    mapping the keyed public id keeps opaque (§6); `*` matched every
+    work; `^` boosts made every score infinite or zero; no size limit.
+
+  The user's calls, one at a time:
+  - **Our own parser** on the server, `crates/query-parser`, and later a
+    syntax highlighter in the client that mirrors it, designed later.
+    The parser reads into a query tree with no engine in it, since the
+    user wants the reader "adaptable to several query backends"; each
+    engine's translation of the tree sits beside the engine
+    (`search::translate`). The tree keeps each word as typed with its
+    byte span: splitting a word is the engine's, as it split the
+    documents, and the spans are what the highlighter needs. A vector
+    engine reads the same tree: its text embedded, its filters and
+    exclusions applied as filters.
+  - **Plain text first**, every character text, a word what lies between
+    whitespace, so the first pass is about the interface being right;
+    PubMed's shape — phrases, exclusions, fields, `AND`/`OR`/`NOT`,
+    parentheses — in a later pass (§11, item 36). Whatever is built
+    should be easy to change, the first pass being temporary.
+  - **Words split at punctuation stay Tantivy's**, the pieces of a word
+    side by side as a phrase (`IL-6` is `il` then `6`), though the
+    tokenizer is wrong for this dataset and is its own project (§11,
+    item 11). Where Tantivy's parser read plain words at all, the
+    translation finds the same documents at the same scores, down to two
+    things it did quietly: a word typed twice counts once, and every
+    word in every field is one flat list of alternatives. A property
+    test holds the two to it.
+  - **A size cap**, 1,024 words as typed — "i'd start much longer";
+    words as the unit is tentative — and 64 KiB, checked first, so one
+    enormous word cannot slip past. Over either is `INVALID_ARGUMENT`
+    (400) naming the cap: `the query is 1025 words; the limit is 1024`.
+    The user wants long queries dealt with now; over GET a URI is capped
+    at 65,534 bytes by the `http` crate and answered `414` before any
+    route sees it, so the byte cap is only reached over gRPC, and a
+    query in any script but ASCII, three bytes of URL to each of its
+    own, gets a third of it. Whether search becomes a POST, and keeps a
+    little state per client, is open (§11, item 36).
+  - **An empty query finds nothing**, on both transports. proto3 has no
+    required field and cannot tell an empty string from an absent one;
+    the JSON surface can, and keeps refusing a missing `query` as a URL
+    built wrong, while `?query=` is now the query that finds nothing
+    (`query::MaybeEmpty`, the one parameter declared so).
+  - **Searches on threads of their own** — "oh was that not happening
+    already?" It was not. At most `--search-threads` at once, half the
+    cores unless told, each within `--search-deadline`, ten seconds
+    unless told, from the request's arrival. No thread free within the
+    limit is `RESOURCE_EXHAUSTED` (429), the machines' trouble and in the
+    fault log; a search past it is `DEADLINE_EXCEEDED` (504). Tantivy
+    cannot cancel a search, but a collector may walk a segment's matches
+    itself, and `search::until` does, looking at the clock every 4,096
+    documents, so a search past its time gives its thread back. Hits,
+    the count and the facet counts are now one pass over the matches,
+    where they were two.
+  - **Failed queries out of the fault log, into a log of their own** —
+    "isn't the fault log how we figured out that there was a problem in
+    the first place?" One line per search on standard output, whatever
+    became of it (`answered`, `too-long`, `busy`, `timed-out`,
+    `failed`), with its bytes, words, hits and milliseconds, and the
+    query last, whole up to the byte cap and "escaped/encoded so it's
+    readable but not dangerous": every invisible or controlling
+    character — escape sequences, right-to-left overrides, zero-width
+    characters, line separators, combining marks — written as a
+    `\u{…}` escape, a backslash as `\\`, everything visible in any
+    script as typed. Plain text, not JSON, because a JSON reader undoes
+    its escapes on the way out and these are undone by nothing.
+  - **Tests generated, not listed**: the user's "*strong* preference for
+    hypothesis-style property-based testing, for this and in general";
+    `proptest` (and `fast-check` for the client when the highlighter
+    comes). Properties: any text reads into exactly its own words; the
+    word cap counts words as typed; plain words find what Tantivy's
+    parser found, at its scores; any word of a title that the index
+    split into pieces finds that title; the log's line is visible
+    character by character and undoes to the whole query. The probe's
+    inputs are a fixed list beside them, to grow.
+- 2026-09-26, measurement before any search improvement — the user's
+  "before getting lost down a rabbit hole of potential search
+  improvements, i want a very reliable way to measure 'goodness' of the
+  search i have", and "we have no users yet", so item 37's first step, a
+  query log, has nothing to read. The measurement is its own plan,
+  [`docs/evaluation-plan.md`](evaluation-plan.md): precision, recall and F
+  with an interval on every number, suites built from the corpus leading
+  and published ones checking them. Items 11 and 36 wait on it. Later the
+  same day the user scrapped the suites built from the corpus; the
+  published sets lead (evaluation plan §9).
 
 ## 11. Open items
 
@@ -1231,6 +1358,15 @@ state kept outside the store, and a limit per principal on calls and on
    object store, which is where the store is going — or OpenSearch. SP2
    compares on the sample what the sample can show: relevance, typo
    tolerance, facets, the sink's shape; scale is measured on the box.
+
+   The user, 2026-09-25: what is thin is mature, feature-complete
+   libraries like Lucene, which is why everyone uses Lucene; Tantivy
+   claims to do what Lucene does and clearly does not, and by the
+   search-benchmark-game (tantivy-search.github.io/bench) recent Lucene
+   (10.3.0) now leads it on every measure — Lucene's only cost is Java.
+   Vespa may have strengths. No change of engine now; a fork of Tantivy
+   may be interesting later. The query parser's tree (§7) keeps the
+   engine a translation away either way.
 5. **The works index's block size and dictionary**, and whether a record
    is served whole or by field; SP3's measurement.
 6. **The names transducer's update cost.** An FST is immutable; the
@@ -1314,6 +1450,26 @@ state kept outside the store, and a limit per principal on calls and on
     vernacular and sub-titles; keywords, MeSH terms, chemicals and topics
     as text or as facets; which sources' abstracts the terms allow in an
     index at all; and one document per work against one per record.
+
+    The tokenizer is wrong for this dataset and is a project of its own,
+    top to bottom (the user, 2026-09-25). Its thesis, what the current
+    mapping does to scientific text, the literature and the ideas so far
+    are `docs/inbox/text-analysis.md`. Until the project lands, a query
+    word is split as the index split the documents — by hand now, in
+    `search::translate`, rather than through Tantivy's parser, which is
+    what that note's idea 6 needs before query-time analysis can differ
+    from the index's. What the search box showed that day:
+    - `of` matched every document it was in, so `trial of aspirin`
+      counts nearly everything. Whether that is a stop list's to answer
+      is the project's: the note argues against one, since IDF already
+      discounts `of` in the ranking and Tantivy's English list turns
+      `vitamin A` into `vitamin`; what it costs is the count and the
+      facets, which is the next point's.
+    - Whether every word must match or any may (any, today) is a
+      product choice the user has not settled — any until users want
+      every match enumerated, which is how researchers tend to work.
+    - An `é` typed as `e` and a combining accent found nothing, the
+      index holding the other spelling.
 12. **The registry fold in `names build` and `epoch check`.** Most of a
     gigabyte on the sample to learn two retirements; at scale, tens of
     gigabytes. The retirements should be readable without folding the
@@ -1738,39 +1894,193 @@ state kept outside the store, and a limit per principal on calls and on
     so the server that reads it is deployed before a client that sends
     it.
 
-35. **Two divergences behind item 24.** Found 2026-09-25, once merge
-    plan §11 item 24 let the update-files harness past the registry
-    check to the comparison (before, it stopped one `drop` apart and
-    never compared). On the sample store at model 8, `1335`–`1339` held
-    out, the committed code (4eef069) gave 38 differences and now 5
-    remain (M). Both remaining cases were in the 38; neither is item
-    24's.
+35. **The batch's evidence, and the list of events.** Found 2026-09-25,
+    once merge plan §11 item 24 let the update-files harness past the
+    registry check to the comparison (before, it stopped one `drop` apart
+    and never compared), and built the same day on the user's choices:
+    stored decisions kept up to date by a named list of events, not
+    facts worked out on demand; a reference two copies of a record carry
+    is one reference; a record's earlier copies read back from the
+    normalized layer. On the sample store at model 9, the comparison now
+    also checks every cited-as row and every unresolved row, which it
+    never did — the reason stale evidence surfaced batches after it went
+    stale.
 
-    - **A reference whose landing a division made held gets no cited-as
-      rows.** A reference names a PMID, a DOI its own text repeats and
-      a PMC id, none held: one stub. A batch brings the PMID's record;
-      the stub's PMID is a held work's, the reference now names a held
-      work, so its DOI and PMC id make no stub (item 14) and it lands on
-      the held work. The full merge writes cited-as rows for that
-      landing — the DOI and PMC id beside it, the DOI in its text. The
-      batch writes none, because the citing record is not in the batch.
-      When a later batch makes a stub of the DOI, item 26's settling
-      again reads the cited-as rows, finds nothing, and the arc stays;
-      the full merge moves it to the stub by §6. On the sample: #3202's
-      reference, #46038, #1313865. The test
-      `a_name_a_division_left_beside_a_held_work_is_settled_again_when_it_becomes_a_stub`
-      reproduces it and is ignored until this is answered. A fix restates
-      the citing pair's cited-as rows whole when a division changes its
-      landing from a stub to a held work, reading the record's references
-      from the normalized layer as `twins` reads records. And
-      `compare::differences` checks no cited-as rows at all, which is
-      why this surfaced two batches after it happened.
-    - **One citer's `held_beside` on a stub.** Stub #1293222: a citing
-      record (#376705) gave the stub's PMID through two references, one
-      of which named a held work too. The full merge marks the PMID's
-      citer `held_beside: false` (a record's other reference named none);
-      the batch marks it `true`. Not yet reduced to a test.
+    Measured (M), `1335`–`1339` held out: the committed code (4eef069)
+    gave 38 differences before the comparison could see evidence; with
+    it, 5,018; now 1. The `1334` hold-out: 85, now 0.
 
+    What each part fixed:
+
+    - **A reference counted once** (merge version 15): the full merge
+      counted a reference once a copy, so an arc two copies repeat was
+      no one reference's (`sole` false) and its unresolved row was
+      written twice. Now by fingerprint — the names and the citation,
+      whole, the citation read as text so the same reference in two sets
+      prints alike.
+    - **A record's references are every copy's**: a batch rewrote a
+      re-delivered record's cited-as and unresolved rows from its newest
+      copy alone. A record's view names the sets of the copies its
+      speaking copy supersedes (merge version 15), and the batch reads
+      them back, each set once (`earlier_copies`), for its own records and
+      for the older copies it carries for their citations — whose pair it
+      restates with the row's relations too.
+    - **The list of events** (`Engine::moved_names`): a citing record the
+      batch does not carry keeps rows drawn from where its references'
+      names pointed. Every event that makes them stale is a name's target
+      changing — a stub becoming a held work (the case of #3202, #46038,
+      #1313865) or a held work a stub, a name given to a work or a stub,
+      a name dropped, a work merged or split, a name becoming shared or
+      ceasing to be. The batch asks every name it touched where it
+      pointed before and where after; for each that changed, the records
+      that gave it — by their cited-as rows, or as citers of the stub
+      that held it — are read back from the normalized layer and their
+      cited-as rows, unresolved rows and relations restated through the
+      final table. A relation keeps its cited-as row on a stub too (merge
+      version 15), since it leaves no citer there.
+    - **A pair is every record of its source**: a work holding two
+      records of one source (twins) had its lists rewritten from the
+      re-delivered one alone; the twin is read back too, and each pair's
+      lists are gathered from every path that restates it and written
+      once.
+    - **Smaller**: a relation's row with no reference beside it is `sole`,
+      as the full merge counts it; a stub landing counts toward `sole`.
+
+    **One citer's mark on a divided stub**, built the same day (the user:
+    "go ahead with the divided-stub case"). Stub #1293222: a record's two
+    copies cite it differently — one by its DOI beside a PMID that no
+    record held yet, one by another PMID alone. Both references land on
+    the stub, whose row keeps one citer of the record per name, and when a
+    later batch makes the first PMID a held work the stub divides: the
+    batch could not tell which reference gave which name, settled the two
+    as one, and marked the second PMID's citer as naming a held work
+    beside it, where the full merge does not. Now a stub that divides —
+    a name left over, or names going to different parts — has its citing
+    records' references read back (`Engine::stub_citations`: the batch's
+    own copy where it carries the record, else every copy the normalized
+    layer has), and each reference is settled by §6 on its own, with its
+    own marks; the landing key gains which reference it was. A stub taken
+    over whole by one part reads nothing back, since every reference
+    lands there whatever it gave. The test
+    `a_records_copies_citing_one_stub_differently_mark_each_name_by_its_own_reference`
+    reproduces it and passes.
+
+    **Both harnesses now pass** (M, the sample store at model 9): the
+    update files with 0 differences, cited-as and unresolved rows
+    included, where the committed code of the morning gave 38 before the
+    comparison could see the evidence and 5,018 once it could; the `1334`
+    hold-out with 0.
+
+    **What it costs, and what is next.** The batches on the update files
+    took 5.5, 19.8, 11.5, 13.9 and 23.2 s before this item and 9.2, 28.4,
+    15.0, 21.1 and 38.7 s once it was built (M, the laptop). Every read
+    back scans a whole normalized set to find its records.
+
+    Step 1, the same day (the user: "go ahead with step 1"): the division
+    reads set by set too. Which stub divides is known only as its
+    component resolves, so the citing records of every stub the
+    components hold are read ahead, one scan a set, into a cache the
+    division and the list of events read from (`Engine::read_ahead`,
+    `Engine::read_copies`); a stub taken over whole reads for nothing,
+    but the cost is the sets, not the records. The batch's report counts
+    the sets it scanned. Now 8.0, 27.1, 15.0, 20.9 and 30.4 s, scanning
+    7, 11, 13, 15 and 18 sets (M): the sample has seven, and a batch reads
+    them in up to three passes — the earlier copies and the read-ahead
+    before the components resolve, the list of events after, since it
+    needs the final table. One scan is about half a second (M, as a
+    dump).
+
+    The last two steps, the same day (the user: "let's do the remaining
+    two steps"). The two passes before the rules run are one: a stub a
+    record arriving can divide is one its names reach, so its citers are
+    known right after the copy rule, and they are read with the earlier
+    copies into one cache (`ReadBack`); the engine's read-ahead reads only
+    what that could not foresee. Then 7.3, 25.1, 13.5, 18.3 and 28.9 s,
+    scanning 5, 8, 9, 10 and 12 sets (M). And a normalized set can be
+    sought (ingestion plan §10, 2026-09-25): its works and references
+    files are written in frames of 256 KiB with an index of each frame
+    and each work's native name, so a reader finds a record by a seek and
+    one frame, and scans only a set normalized before. On the sample,
+    normalized again, both harnesses still pass with 0 differences; the
+    update-file batches are within noise of before (7.4, 27.0, 12.6, 20.6
+    and 32.7 s) and the `1334` hold-out's from 6.2 to 3.9 s (M). The
+    sample's batches want thousands of records from each of its seven
+    sets, where a scan is nearly as cheap as seeking; a batch on the
+    corpus wants a few from each of hundreds, which is what the index is
+    for (E). The corpus is normalized again for model 9 anyway, and its
+    sets will carry the index then.
+
+36. **The query language's second pass.** The first (2026-09-25, §7)
+    is plain text, so that the interface is right first; the second is
+    PubMed's shape — quoted phrases, `-` to exclude, fields under names
+    of our own, `AND`/`OR`/`NOT` and parentheses, nesting capped — read
+    in one pass as the first is, so that nothing typed can cost more to
+    read than its length. Waiting on it:
+    - *What an exclusion alone means.* `-mice` with nothing to find is
+      "everything but mice" in the user's reading; over the whole corpus
+      that is every work at one score, so it wants a filter or a sort to
+      go with it.
+    - *Identifiers typed into the box* — a DOI, a PMID, an `ol:` id —
+      found as the work they name before any text search.
+    - *Year, genre and the other facets as filters*, partly in the text
+      and partly beside it; the user partly agrees.
+    - *A word typed twice counts once*, as Tantivy's parser counted it
+      and the first pass keeps; whether it should is the product's.
+    - *Long queries.* Words as the cap's unit is tentative. A GET's URI
+      stops at 65,534 bytes, a third of that in any script but ASCII,
+      so search may become a POST, and may keep a little state per
+      client "to keep track of their experience"; both undecided.
+    - *The highlighter* in the client, mirroring the parser: the tree's
+      spans are bytes of UTF-8 and a browser counts UTF-16, so the
+      design says which side converts, and whether the client runs this
+      parser compiled for the browser or a twin held to it by the same
+      properties (`fast-check` beside `proptest`).
+37. **Search after its first pass.** Superseded 2026-09-26 (§10) by
+    measurement first, [`docs/evaluation-plan.md`](evaluation-plan.md);
+    the steps below stand as what the measurement is for. Since written,
+    epoch 6 of the corpus has been published from a build that has the
+    first pass (`docs/inbox/serving-memory.md`). As written 2026-09-25:
+    the first pass (2026-09-25, §7) has not met the corpus: the local store's newest epoch (8) is built
+    from merged v2.9, far older than the merged layer this build reads,
+    so the server waits rather than opens it, and the first pass was
+    tested against a fake and small indexes in memory only. In the
+    order proposed on 2026-09-25, and not yet agreed as a plan:
+    1. *Deploy it and read the query log.* What people type, which
+       queries find nothing — where the tokenizer fails them — and which
+       are slow, which is what a search costs at forty-two million
+       works. Both items below would be steered by it. For the
+       deployment: `--search-threads` defaults to half the cores the
+       process is given, which is the pod's CPU limit, so the manifest
+       may want it said outright; and the query log is on standard
+       output beside the fault log on standard error, one stream in the
+       pod's log, holding what people typed — fine while the only user
+       is the user, and worth a second look before anyone else is one.
+    2. *The tokenizer* (item 11, `docs/inbox/text-analysis.md`): a
+       change of mapping, so a new index version and a rebuild on the
+       box. The query parser needs nothing from it: the engine splits.
+    3. *The language's second pass and the highlighter* (item 36),
+       designed together, on top of whatever the tokenizer makes of a
+       word.
+
+    Beside them, loose:
+    - *Counting every match.* A search's total and its facet counts
+      visit every document that matches, so no top-k shortcut prunes
+      anything, and under "any word matches" a broad query is most of
+      the corpus. The time limit bounds it; whether exact counts are
+      what the product wants is the ranking's question, with item 11's
+      any-or-every.
+    - *The other calls still run on the request threads.* `expand`,
+      `related` and `path` are bounded by their caps (§7) and were left
+      where they are; if one is ever slow enough to matter, it takes the
+      search's way.
+    - *The browser client* retries an `internal` once and a refusal
+      never, so a `429` (busy) or a `504` (past the limit) is shown as
+      its code and message and not retried; whether "busy" deserves a
+      retry after a moment, and plainer words for either, is the
+      client's.
+    - *The engine* stays Tantivy for now (item 4).
+
+## 12. Sources consulted
 
 The serving-shape and feeds conversations of 2026-09-15 and the notes
 kept of them; the graph plan's §5 and §11; crates.io on 2026-09-15 for

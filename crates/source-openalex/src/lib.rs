@@ -145,9 +145,14 @@ impl ingest::Source for OpenAlex {
 
     fn records<R: BufRead, F>(input: R, each: F) -> Result<(), ingest::ReadError<Error>>
     where
-        F: FnMut(&Work<'_>) -> ControlFlow<()>,
+        F: FnMut(Result<&Work<'_>, Error>) -> ControlFlow<()>,
     {
         records(input, each)
+    }
+
+    /// The work's native name as the merge writes it, for the set's index.
+    fn native_key(work: &Self::Work<'_>) -> Option<String> {
+        merge::copies::native_of::<Self>(work).map(|name| name.to_string())
     }
 
     fn normalize<'n, K: ingest::Sink<'n, Self>>(

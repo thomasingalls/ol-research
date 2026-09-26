@@ -4,8 +4,13 @@
 //! returned as text, one line a difference, so a test or a check can
 //! print it; nothing is a difference.
 
+use std::collections::BTreeMap;
+
 use fst::Streamer;
-use merge::WorkId;
+use merge::build::OwnedUnresolved;
+use merge::delta::UnresolvedLine;
+use merge::record::Unresolved;
+use merge::{SourceId, WorkId};
 
 use crate::core::Serving;
 use crate::error::Error;
@@ -28,6 +33,10 @@ pub const QUERIES: [&str; 6] = [
 /// # Errors
 ///
 /// A row that does not decode, or the engine.
+///
+/// # Panics
+///
+/// Never: every fixed query is within the query parser's caps.
 #[allow(clippy::too_many_lines)]
 pub fn differences(a: &Serving, b: &Serving, limit: usize) -> Result<Vec<String>, Error> {
     let mut out: Vec<String> = Vec::new();
@@ -149,8 +158,23 @@ pub fn differences(a: &Serving, b: &Serving, limit: usize) -> Result<Vec<String>
             }
         }
     }
+    // Who cited each name, beside the work each reference landed on:
+    // the evidence a later batch settles references again from (serving
+    // plan §11, items 26, 28 and 35), which a batch can leave stale while
+    // every arc is right.
+    let mut cited: std::collections::BTreeSet<String> = a.cited_as_names().into_iter().collect();
+    cited.extend(b.cited_as_names());
+    for key in cited {
+        let (x, y) = (a.cited_as_key(&key), b.cited_as_key(&key));
+        if x != y {
+            note(format!(
+                "{key}: cited-as rows differ\n  a: {x:?}\n  b: {y:?}"
+            ));
+        }
+    }
     for query in QUERIES {
-        let (ha, hb) = (a.search(query, 100)?, b.search(query, 100)?);
+        let asked = query_parser::parse(query).expect("a comparison query is within the caps");
+        let (ha, hb) = (a.search(&asked, 100)?, b.search(&asked, 100)?);
         if ha.total != hb.total {
             note(format!(
                 "search {query:?}: {} hits against {}",
@@ -177,4 +201,94 @@ pub fn differences(a: &Serving, b: &Serving, limit: usize) -> Result<Vec<String>
         ));
     }
     Ok(out)
+}
+
+/// Every unresolved row of the store as it stands, by citing work and
+/// source: the merged sets' rows with the delta log's lines laid over
+/// them. The serving layer answers none of these, so a comparison takes
+/// this before a full merge replaces the merged directory and again after
+/// (serving plan §11, item 35, the user, 2026-09-25). Each pair's rows are
+/// sorted, since the order a record's copies were read in is no part of
+/// what they say.
+///
+/// # Errors
+///
+/// I/O, or a set or a line that does not read.
+pub fn unresolved(
+    store: &ingest::Store,
+) -> Result<BTreeMap<(WorkId, SourceId), Vec<OwnedUnresolved>>, Error> {
+    let merged = merge::layout::dir(store);
+    let mut rows: BTreeMap<(WorkId, SourceId), Vec<OwnedUnresolved>> = BTreeMap::new();
+    for path in
+        merge::sets::find(&merged, ingest::Kind::Unresolved).map_err(|e| Error::io(&merged, e))?
+    {
+        let reader = merge::layout::open(&path).map_err(|e| Error::io(&path, e))?;
+        let table = reader.table();
+        reader.with_table(|| -> Result<(), Error> {
+            for row in reader.records::<Unresolved<'_>>() {
+                let row = row.map_err(|e| Error::io(&path, e))?;
+                rows.entry((row.from, row.by))
+                    .or_default()
+                    .push(OwnedUnresolved::of(&row, table));
+            }
+            Ok(())
+        })?;
+    }
+    let log = merge::delta::dir(&merged).join(merge::delta::UNRESOLVED);
+    let bytes = std::fs::metadata(&log).map_or(0, |m| m.len());
+    let lines: Vec<UnresolvedLine> =
+        merge::delta::read(&log, 0, bytes, None).map_err(|e| Error::io(&log, e))?;
+    for line in lines {
+        match line {
+            UnresolvedLine::Put {
+                from,
+                by,
+                rows: put,
+                ..
+            } => {
+                if put.is_empty() {
+                    rows.remove(&(from, by));
+                } else {
+                    rows.insert((from, by), put);
+                }
+            }
+            UnresolvedLine::Move { from, into, .. } => {
+                let moved: Vec<(WorkId, SourceId)> =
+                    rows.keys().filter(|(f, _)| *f == from).copied().collect();
+                for key in moved {
+                    let mut list = rows.remove(&key).unwrap_or_default();
+                    for row in &mut list {
+                        row.from = into;
+                    }
+                    rows.entry((into, key.1)).or_default().extend(list);
+                }
+            }
+        }
+    }
+    for list in rows.values_mut() {
+        list.sort_by_cached_key(|r| format!("{r:?}"));
+    }
+    Ok(rows)
+}
+
+/// What differs between two stores' unresolved rows, as
+/// [`unresolved`] takes them: at most `limit` lines.
+#[must_use]
+pub fn unresolved_differences(
+    a: &BTreeMap<(WorkId, SourceId), Vec<OwnedUnresolved>>,
+    b: &BTreeMap<(WorkId, SourceId), Vec<OwnedUnresolved>>,
+    limit: usize,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    let keys: std::collections::BTreeSet<&(WorkId, SourceId)> = a.keys().chain(b.keys()).collect();
+    for key in keys {
+        let (x, y) = (a.get(key), b.get(key));
+        if x != y && out.len() < limit {
+            out.push(format!(
+                "{} by {}: unresolved rows differ\n  a: {x:?}\n  b: {y:?}",
+                key.0, key.1
+            ));
+        }
+    }
+    out
 }

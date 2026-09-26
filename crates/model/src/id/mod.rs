@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 mod openalex;
 mod pmc;
 mod pmid;
+mod wikidata;
 
 use std::fmt;
 
@@ -23,6 +24,7 @@ pub use openalex::{
 };
 pub use pmc::PmcId;
 pub use pmid::Pmid;
+pub use wikidata::Qid;
 
 /// Why an identifier failed to parse.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

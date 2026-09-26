@@ -50,8 +50,12 @@ pub use row::Row;
 /// that made each and its field, as merge version 14's do, and the names
 /// base keeps every refused name with the works refusing it
 /// ([`names::REFUSED`]), which is how a batch finds a refused name's other
-/// claimants (merge plan §11, item 24).
-pub const VERSION: u32 = 7;
+/// claimants (merge plan §11, item 24). Version 8 (2026-09-25): a row's
+/// records carry merge version 15's views, which name the sets of every
+/// copy their speaking copy supersedes, and the cited-as lookup holds a
+/// relation's row whatever its target, a stub's included (serving plan
+/// §11, item 35).
+pub const VERSION: u32 = 8;
 
 /// The directory name for this binary's versions.
 #[must_use]

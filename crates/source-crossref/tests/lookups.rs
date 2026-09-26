@@ -4,7 +4,7 @@
 
 use ingest::Sink;
 use model::Doi;
-use source_crossref::normalize::{Reference, Work, normalize};
+use source_crossref::normalize::{LicenseStart, Reference, Work, normalize};
 
 fn fixture(name: &str) -> String {
     std::fs::read_to_string(format!(
@@ -62,8 +62,31 @@ fn an_affiliation_may_carry_an_isni_beside_its_ror() {
         .collect();
     assert!(!with_isni.is_empty());
     assert_eq!(
-        with_isni[0].isni.map(|i| i.to_string()).as_deref(),
+        with_isni[0]
+            .isni
+            .and_then(|i| i.id.valid().map(ToString::to_string))
+            .as_deref(),
         Some("0000000404370279")
     );
-    assert!(with_isni[0].ror.is_some(), "beside the ROR");
+    assert!(
+        with_isni[0].ror.is_some_and(|r| r.id.valid().is_some()),
+        "beside the ROR"
+    );
+}
+
+/// 10.3389/fmicb.2019.02678, looked up 2026-09-26: Frontiers deposited
+/// `start_date="0001-01-01"`, a date library's "no date", and the API
+/// writes it in all three forms. The one such start the survey of the
+/// March 2026 file found; kept as written beside why, and the record
+/// normalizes.
+#[test]
+fn a_license_starting_in_year_one_is_unreadable_and_kept() {
+    let out = run("license_start_year_one");
+    assert_eq!(
+        out.works[0].licenses[0].start,
+        LicenseStart::Unreadable {
+            raw: "0001-01-01T00:00:00Z",
+            error: model::DateError::YearRange
+        }
+    );
 }

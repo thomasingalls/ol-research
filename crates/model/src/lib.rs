@@ -98,7 +98,47 @@
 /// records of 2006 to 2017 that still stopped the run, because they do not
 /// begin with a year. Both change what normalized output holds. Output
 /// under version 7 is rebuilt, not patched.
-pub const VERSION: u32 = 8;
+///
+/// Version 9 (2026-09-25): U+2010 HYPHEN in a DOI's suffix is read as `-`
+/// ([`Doi`], the user's decision). Crossref's March 2026 sample carries it
+/// in 13,305 of its 262,499 reference DOIs, every one from Wiley, and the
+/// merge had been dropping those references without a trace, since a
+/// reference whose one name is malformed has nothing to land on. A DOI
+/// that was malformed under version 8 is a name now, wherever a source
+/// writes it, which changes what normalized output holds. Output under
+/// version 8 is rebuilt, not patched.
+///
+/// Version 10 (2026-09-26): what the survey of Crossref's whole March 2026
+/// file found (ingestion plan §10). Institutions: an author's affiliation
+/// and a work's own `institution[]` — one element of the deposit schema —
+/// normalize alike, keeping a name, acronyms, places and departments as
+/// written, and a ROR (a claim: one record's fails its checksum), an ISNI
+/// and a Wikidata item ([`Qid`]), each with who asserted it; 1,957 shards
+/// stopped at a Wikidata id and 892 at an affiliation's acronym. The
+/// work's own institutions were dropped before. Types: a Crossref record
+/// may have no `type`, which is unknown rather than guessed (2,243
+/// shards); an update keeps the word it was written in beside what it is
+/// read as, Crossmark's free-text years having left `err`,
+/// `corrected-article`, `Erratum` and others in the data (about 600
+/// shards); and an update can be a comment, which Crossmark's twelve lack.
+/// Dates: a license's start may be absent (3,272 shards), and is read as
+/// from publication, as a day, or as written and unreadable, its delay
+/// checked and dropped; and the dates beside the publication dates —
+/// approved, posted, accepted, published-other, a dataset's content
+/// created and updated (9,641 shards) — are kept with what each is.
+/// Fields: a work's version label and its part of a multi-volume set are
+/// kept as written, and posted content's `status` — withdrawn or removed,
+/// when, and why. After the survey of the whole file on version 10, an
+/// empty affiliation is set aside rather than failing, as is an author
+/// with nothing in it (303,155 records), a resource link may be `null`
+/// or the resource absent, a journal issue may hold only its date,
+/// a record may name no member and no publisher (a DOI moved to an owner
+/// Crossref's index does not attach), an ISNI, an ISBN and an author's
+/// ORCID are claims, and a language may be a three-letter code; nothing
+/// was ever normalized under the version 10 builds before
+/// those (only surveyed), so they are version 10 too. Output under version
+/// 9 is rebuilt, not patched.
+pub const VERSION: u32 = 10;
 
 pub mod claim;
 pub mod code;
@@ -122,7 +162,7 @@ pub use date::{
     Quarter, Season, Seasons, TimeOfDay, VolumeMonth, Year,
 };
 pub use doi::{Doi, Error as DoiError, Registrant};
-pub use id::{OpenAlexId, ParseError, PmcId, Pmid};
+pub use id::{OpenAlexId, ParseError, PmcId, Pmid, Qid};
 pub use isbn::{Error as IsbnError, Isbn};
 pub use isni::{Error as IsniError, Isni};
 pub use issn::{Error as IssnError, Issn};
