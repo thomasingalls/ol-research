@@ -2,6 +2,7 @@
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 @import "@fontsource-variable/geist";
+@import "tw-shimmer";
 
 /* The Oxidation Labs wordmark face, copied from ol-homepage
    (prototype/parts/fonts). A subset: it holds only the glyphs of
@@ -61,6 +62,22 @@
     --radius-2xl: calc(var(--radius) * 1.8);
     --radius-3xl: calc(var(--radius) * 2.2);
     --radius-4xl: calc(var(--radius) * 2.6);
+    @keyframes collapsible-down {
+        from {
+            height: 0;
+        }
+        to {
+            height: var(--radix-collapsible-content-height, var(--collapsible-panel-height, auto));
+        }
+    }
+    @keyframes collapsible-up {
+        from {
+            height: var(--radix-collapsible-content-height, var(--collapsible-panel-height, auto));
+        }
+        to {
+            height: 0;
+        }
+    }
 }
 
 :root {
@@ -275,3 +292,7 @@
     transform: translateX(4rem);
   }
 }
+
+@custom-variant data-open (&:where([data-state="open"], [data-open]:not([data-open="false"])));
+
+@custom-variant data-closed (&:where([data-state="closed"], [data-closed]:not([data-closed="false"])));

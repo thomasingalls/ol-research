@@ -44,10 +44,10 @@ product ambitions:
   `openalex:W…`, `reg1038:…` — a publisher's own id) or a public id. One work jumps straight there; a **shared**
   name offers the choice between the works it was accepted into; an id retired
   by a **split** says so.
-- **Chat** — a shell and nothing behind it yet. What you send is shown, the
-  page says that no agent is connected, and nothing answers. The
-  conversation is held by the screen, not the URL, and is gone when you
-  leave it.
+- **Chat** — an assistant-ui thread with a local streaming preview. Sending,
+  stopping, editing, regenerating and switching branches work, but no agent
+  is connected and the canned reply says so. The conversation is held by
+  the screen, not the URL, and is gone when you leave it.
 
 Vocabulary, kept the same as the pipeline: a **work** is one entity; its
 **names** are the identifiers that point at it; a **stub** is a work we know
@@ -106,7 +106,7 @@ No file-based codegen — four screens do not earn a generated route tree.
 | `/work/$workId`  | `/work/ol:3FWKF485MRW1QF?q=protein+folding`  | `workId` is a public id; `q` is the search beside it, if any |
 | `/work/$workId`  | `/work/ol:3FWKF485MRW1QF?list=cited-alongside` | which list is open: `references` (the default, which normalises away), `cites-same`, `citers`, `cited-alongside` |
 | `/resolve`       | `/resolve?text=pmid:10410805`                | one outcome redirects to the work           |
-| `/chat`          | `/chat`                                      | a shell; the conversation is not in the URL |
+| `/chat`          | `/chat`                                      | local preview; the conversation is not in the URL |
 
 A link from one work to another keeps `q` and `list`, so the results stay
 beside it and the same list opens on it.
@@ -356,7 +356,8 @@ Keep the version pinned to something at least two weeks old. Currently
 installed: `button`, `input`, `card`, `badge`, `skeleton`, `alert`,
 `input-group`, `empty`, `textarea`, which `input-group` imports,
 `dropdown-menu` and `button-group`, the Read button's, and `separator`,
-which `button-group` imports.
+which `button-group` imports. Chat also brings `tooltip`, `avatar`,
+`collapsible` and `dialog` through the assistant-ui registry.
 
 The list tabs beside a work are not a `tabs` component. Which tab is open lives in
 the URL, so each tab is a `Link` — a real one, that can be middle-clicked,
@@ -364,8 +365,8 @@ copied and pasted to someone else — styled as a segmented control. A component
 holding that in its own state would have to be kept in step with the URL, and
 would not be a link.
 
-`components.json` records the choices made at init: the Radix UI primitives,
-the `radix-nova` style, neutral base color, and the `@/` import alias.
+`components.json` records the choices: the Radix UI primitives,
+the `radix-rhea` style, zinc base color, and the `@/` import alias.
 
 Dark mode follows the system setting, in CSS alone. Init puts the dark
 palette under a `.dark` class that something would have to set; here it is
@@ -373,3 +374,63 @@ under `@media (prefers-color-scheme: dark)` instead, and Tailwind's `dark:`
 means that same query (the `@custom-variant` line in `src/index.css`). A
 component added later needs nothing: its `dark:` classes go through the same
 variant. A toggle, if one is ever wanted, means putting the class back.
+
+## Chat UI
+
+The [dated library survey](../docs/inbox/ai-chat-ui-landscape.md) records why
+assistant-ui was chosen. Its own CLI is optional. This project used the
+existing shadcn CLI, with the `@assistant-ui` registry in `components.json`:
+
+```sh
+pnpm exec shadcn add @assistant-ui/thread
+```
+
+The UI source is in `src/components/assistant-ui/elements`; its runtime is
+an ordinary dependency (`@assistant-ui/react`, with
+`@assistant-ui/react-markdown` for markdown). Existing shared shadcn
+components were kept. No cloud account, assistant-ui CLI, AI SDK provider,
+or Next.js migration is needed to run it.
+
+The September 26 live registry referenced APIs newer than the runtime
+allowed by the 14-day release-age policy. The copied assistant-ui elements
+and their two hooks were therefore aligned with upstream
+[`af7466155560aa3ff364abf57e89c7209882ab0d`](https://github.com/assistant-ui/assistant-ui/commit/af7466155560aa3ff364abf57e89c7209882ab0d)
+(September 10, React runtime `0.15.19`, markdown `0.14.15`). Upstream source
+is under `packages/ui/src/components/react/assistant-ui/elements` and
+`packages/ui/src/hooks`. Its Base UI tooltip/dialog triggers were adapted
+to this app's Radix `asChild` API, as the registry does. The tooltip button
+retains Radix `Slot.Slottable` for its icon and accessible label.
+
+Local customizations are the literature placeholder, keeping Send on the
+right without attachments, hiding attachment controls without an adapter,
+an accessible edit-field label, and the welcome component supplied by
+`src/components/chat.tsx`. The shared header wraps on narrow screens so
+the added Chat link fits. The registry includes renderers for richer
+message parts; the mock currently
+exercises text only. Upgrades should review both the copied sources and
+runtime package versions together, then typecheck and exercise the UI.
+Running the registry command again fetches its **current** source, not
+the snapshot documented here. The dependency-age policy is unchanged.
+
+`src/routes/chat.tsx` loads the chat screen lazily. `src/components/chat.tsx`
+creates an assistant-ui `LocalRuntime` scoped to that screen, and
+`src/lib/mock-chat.ts` is the only model adapter. It streams a fixed,
+explicitly labeled preview in the browser, respecting cancellation.
+Assistant-ui owns the composer, messages, edit branches and regeneration.
+There is no chat endpoint, persistence, tool execution, upload service or
+provider request. The shell's existing `/v1/epoch` request remains separate.
+
+**Credentials:** no key is required, so there is no reason to populate even
+a dummy provider key to run this preview. The adapter does not read keys or
+environment variables, and real credentials cannot enable it. Any future
+credential plumbing must initially use inert dummy values and must not
+connect to a provider; real access is a separate user decision. Do not put
+provider keys in `VITE_*` variables, which are compiled into browser code.
+
+Run `pnpm dev` and open `/chat`. Check that an empty/whitespace draft cannot
+send, Enter sends, Shift+Enter adds a line, IME composition does not send,
+Stop freezes an in-progress reply, Refresh creates another response branch,
+and editing a sent message preserves the earlier branch. Leaving Chat and
+returning, or reloading, starts an empty conversation. The local-preview
+label remains visible throughout. Attachments and voice controls stay
+hidden until their adapters exist.
