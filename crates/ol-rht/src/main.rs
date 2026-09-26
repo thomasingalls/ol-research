@@ -5747,7 +5747,8 @@ struct CrossrefStats {
     /// `<institution>`s: authors' affiliations, then works' own.
     institutions: [InstitutionCounts; 2],
     issns: u64,
-    isbns: u64,
+    /// ISBNs: valid, malformed.
+    isbns: [u64; 2],
     languages: BTreeMap<&'static str, u64>,
     references: u64,
     reference_doi: [u64; 3],
@@ -5811,7 +5812,15 @@ impl<'n> Sink<'n, Crossref> for CrossrefStats {
             self.institutions[1].see(i, &mut self.malformed_samples);
         }
         self.issns += w.issns.len() as u64;
-        self.isbns += w.isbns.len() as u64;
+        for t in &w.isbns {
+            match &t.isbn {
+                Claim::Valid(_) => self.isbns[0] += 1,
+                Claim::Malformed { raw, error } => {
+                    self.isbns[1] += 1;
+                    sample(&mut self.malformed_samples, raw, error);
+                }
+            }
+        }
         if let Some(l) = w.language {
             *self.languages.entry(l.alpha_3()).or_default() += 1;
         }
@@ -5907,7 +5916,10 @@ impl StatsReport for CrossrefStats {
             "  affiliations {}  the works' own institutions {}",
             self.institutions[0], self.institutions[1]
         );
-        eprintln!("  issns {}  isbns {}", self.issns, self.isbns);
+        eprintln!(
+            "  issns {}  isbns {} malformed {}",
+            self.issns, self.isbns[0], self.isbns[1]
+        );
         eprintln!("  languages {:?}", self.languages);
         eprintln!(
             "  updates {:?}  from older words {:?}",

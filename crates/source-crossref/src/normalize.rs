@@ -49,6 +49,13 @@ pub type IssnClaim<'n> = Claim<'n, Issn, IssnError>;
 /// (10.25189/2675-4916.2023.v4.n1.id679, 2026-09-26). Kept as written
 /// beside why, as an ISSN is, and never matched on.
 pub type RorClaim<'n> = Claim<'n, Ror, RorError>;
+/// An ISBN as the source wrote it, or why it is none: 1,290 records of the
+/// March 2026 file carry one whose check digit fails or whose length is
+/// wrong (2026-09-26) — Hanser's and AIAA's check digits, Blackwell's
+/// ISBN-10 `X` on a thirteen-digit number, twelve digits, fourteen with a
+/// stray `9` in front. Kept as written beside why, as an ISSN is (the
+/// user's call), and never matched on.
+pub type IsbnClaim<'n> = Claim<'n, Isbn, IsbnError>;
 /// An ISNI as the source wrote it, or why its check character is wrong.
 pub type IsniClaim<'n> = Claim<'n, Isni, IsniError>;
 
@@ -101,7 +108,8 @@ pub struct Work<'n> {
     #[serde(borrow)]
     pub issns: Few<TypedIssn<'n>, 2>,
     /// From `isbn-type`, checked against `ISBN`.
-    pub isbns: Few<TypedIsbn, 2>,
+    #[serde(borrow)]
+    pub isbns: Few<TypedIsbn<'n>, 2>,
     #[allow(missing_docs)]
     #[serde(borrow)]
     pub volume: Option<&'n str>,
@@ -244,11 +252,12 @@ pub struct TypedIssn<'n> {
 
 /// An ISBN with its kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TypedIsbn {
+pub struct TypedIsbn<'n> {
     #[allow(missing_docs)]
     pub kind: SerialKind,
     #[allow(missing_docs)]
-    pub isbn: Isbn,
+    #[serde(borrow)]
+    pub isbn: IsbnClaim<'n>,
 }
 
 /// That posted content was withdrawn or removed, when, and the reasons
@@ -457,7 +466,6 @@ pub enum ErrorKind {
     Orcid(OrcidError),
     Isni(IsniError),
     Issn(IssnError),
-    Isbn(IsbnError),
     Date(DateError),
     Lang(LangError),
     Id(ParseError),
@@ -485,7 +493,6 @@ impl fmt::Display for ErrorKind {
             ErrorKind::Orcid(e) => write!(f, "{e}"),
             ErrorKind::Isni(e) => write!(f, "{e}"),
             ErrorKind::Issn(e) => write!(f, "{e}"),
-            ErrorKind::Isbn(e) => write!(f, "{e}"),
             ErrorKind::Date(e) => write!(f, "{e}"),
             ErrorKind::Lang(e) => write!(f, "{e}"),
             ErrorKind::Id(e) => write!(f, "{e}"),
@@ -1119,7 +1126,7 @@ pub fn normalize<'n, K: Sink<'n, Crossref>>(w: &'n Native<'_>, emit: &mut K) -> 
             "isbn-type",
             w.isbn_type.as_deref(),
             w.isbn.as_deref(),
-            |s| Isbn::parse(s).map_err(ErrorKind::Isbn),
+            |s| Ok(Claim::from_parse(s, Isbn::parse(s))),
         )?
         .into_iter()
         .map(|(kind, isbn)| TypedIsbn { kind, isbn })

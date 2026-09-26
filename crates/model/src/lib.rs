@@ -133,7 +133,8 @@
 /// with nothing in it (303,155 records), a resource link may be `null`
 /// or the resource absent, a journal issue may hold only its date,
 /// a record may name no member and no publisher (a DOI moved to an owner
-/// Crossref's index does not attach), and an ISNI is a claim; nothing
+/// Crossref's index does not attach), and an ISNI and an ISBN are claims;
+/// nothing
 /// was ever normalized under the version 10 builds before
 /// those (only surveyed), so they are version 10 too. Output under version
 /// 9 is rebuilt, not patched.

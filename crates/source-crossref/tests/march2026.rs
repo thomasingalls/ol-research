@@ -7,7 +7,7 @@ use ingest::Sink;
 use merge::OwnedName;
 use merge::kind::Genre;
 use merge::relation::{Kind, Related, Update};
-use model::{Claim, Date, Doi, IsniError, PartialDate, RorError, Table};
+use model::{Claim, Date, Doi, IsbnError, IsniError, PartialDate, RorError, Table};
 use source_crossref::normalize::{
     DateKind, Dated, Institution, LicenseStart, Reference, Work, normalize,
 };
@@ -753,4 +753,47 @@ fn a_journal_issue_may_hold_only_its_date() {
 fn a_record_may_have_no_resource() {
     assert!(native("resource_absent").resource.is_none());
     run("resource_absent");
+}
+
+/// The ISBNs of the record that are not ISBNs, as written beside why.
+fn bad_isbns(name: &str) -> Vec<(&'static str, IsbnError)> {
+    run(name)
+        .isbns
+        .iter()
+        .filter_map(|t| match t.isbn {
+            Claim::Malformed { raw, error } => Some((raw, error)),
+            Claim::Valid(_) => None,
+        })
+        .collect()
+}
+
+/// 10.3139/9783446428143, shard 25409 line 3608: a Carl Hanser book whose
+/// ISBN's check digit fails: kept as written beside why, as on 1,290
+/// records of the file, and the book normalizes.
+#[test]
+fn an_isbn_whose_check_digit_fails_is_a_claim() {
+    assert_eq!(
+        bad_isbns("isbn_bad_checksum"),
+        [("9783446428143", IsbnError::Checksum)]
+    );
+}
+
+/// 10.1111/b.978063121285x.2001.00001.x, shard 31580 line 1977: Blackwell
+/// wrote an ISBN-10's `X` on a thirteen-digit number.
+#[test]
+fn an_isbn_ten_check_on_thirteen_digits_is_a_claim() {
+    assert_eq!(
+        bad_isbns("isbn_ten_check_on_thirteen"),
+        [("978063121285X", IsbnError::Shape)]
+    );
+}
+
+/// 10.1214/lnms/1196285108, shard 30231 line 3907: the Institute of
+/// Mathematical Statistics wrote twelve digits.
+#[test]
+fn a_twelve_digit_isbn_is_a_claim() {
+    assert_eq!(
+        bad_isbns("isbn_twelve_digits"),
+        [("978094060069", IsbnError::Shape)]
+    );
 }

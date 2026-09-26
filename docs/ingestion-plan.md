@@ -108,7 +108,9 @@ wart is a claim the POC run confirms or refutes, not a commitment.
   (186) passes its checksum; every timestamp's `date-parts`, `date-time`
   and `timestamp` agree; `URL` is exactly `https://doi.org/` + DOI;
   `references-count` equals the array; `published` equals `issued`. Those
-  are strict types and enforced invariants in the normalizer. `prefix` is
+  are strict types and enforced invariants in the normalizer — but for
+  the ISSN and, since the whole March 2026 file was surveyed, the ISBN,
+  which a few publishers get wrong and which are claims (§10). `prefix` is
   the DOI's *current owner*, not its registrant — they differ on 67 works,
   because DOIs move between publishers. 47 reference DOIs (0.2 %) carry a
   Unicode hyphen (U+2010) for an ASCII one: the `Claim<Doi>` category
@@ -2021,6 +2023,15 @@ cross-IDs and a second edge namespace early.
   full-text links still). Neither is kept by the normalizer; both are
   read as absent. Of the 33,476 records the first dump holds, 4 now
   fail: two ISBNs, one language, one author with only a given name.
+- 2026-09-26, still model 10: an ISBN is a claim (the user's call). 1,290
+  records of the file carry one that is not an ISBN, and a record — a
+  book, a chapter — stopped on it: publishers' check digits (Carl
+  Hanser's, AIAA's), an ISBN-10's `X` on thirteen digits (Blackwell's),
+  twelve digits (the Institute of Mathematical Statistics'), fourteen
+  with a stray `9` in front. As an ISSN, a ROR and an ISNI are, it is
+  kept as written beside why and never matched on, and the record
+  normalizes. The sample's 186 of 2026-09-15 all passed, which is why it
+  was strict.
 
 ## 11. Dependencies
 
