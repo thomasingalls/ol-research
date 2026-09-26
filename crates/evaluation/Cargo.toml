@@ -1,0 +1,21 @@
+[package]
+name = "evaluation"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Measuring search (evaluation plan): runs and answer keys in TREC's formats, precision, recall and F with their intervals, held to trec_eval's arithmetic."
+
+# No engine and no store here: a run is a file, and so is an answer key.
+# What produces a run from the store is the command line's. The published
+# sets' own files are read here: topics in XML, RELISH in gzipped JSON.
+[dependencies]
+flate2.workspace = true
+quick-xml.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

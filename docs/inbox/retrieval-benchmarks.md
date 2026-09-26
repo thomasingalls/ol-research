@@ -10,6 +10,12 @@ to the [retrieval frontier](retrieval-frontier.md). Every fact is marked
 **P** (primary: the paper, repository, dataset card or track page),
 **S** (secondary only) or **U** (could not verify).
 
+**Since, 2026-09-26:** a third survey, of more judged sets and of the
+starter set's practical facts, is §2.4; it corrects §2.2's TREC Precision
+Medicine topic counts and RELISH's BM25 figures, which are marked where
+they stand. The sets are chosen for use in the [evaluation
+plan](../evaluation-plan.md).
+
 ## 1. Two caveats for every run
 
 - **Judged pools.** Relevance judgments cover only the documents someone
@@ -97,7 +103,8 @@ Suggested, weighted toward biomedicine, where the corpus is strongest:
    ([2019](https://www.trec-cds.org/2019.html),
    [data](https://trec.nist.gov/data/precmed2019.html)). Topics: 30 in
    2017 and 50 in 2018 (P, via ir_datasets), 40 in 2019 (S; the track
-   page suggests 30), 30 in 2020 (P). Three grades — not, possibly,
+   page suggests 30), 30 in 2020 (P). *Corrected 2026-09-26 (§2.4): 40
+   in 2019 and 40 in 2020 (P), the 2020 phase-1 qrels covering 31.* Three grades — not, possibly,
    definitely — in 2017–2018, about 22,000–23,000 judgments a year (P).
    2017–2018: a PubMed snapshot plus AACR and ASCO conference abstracts
    without PMIDs; 2019–2020: the MEDLINE 2019 baseline (P). PMIDs (P);
@@ -124,7 +131,8 @@ Suggested, weighted toward biomedicine, where the corpus is strongest:
    relevant, somewhat, irrelevant — judged largely by the seed articles'
    own authors. Candidates pooled from BM25, TF-IDF and PubMed's related
    articles, which favours lexical methods. PMIDs; CC0. BM25, relevant
-   against not: MRR 0.878, P@5 0.642.
+   against not: MRR 0.878, P@5 0.642. *The paper's own figures, on its
+   2,233 analysed seeds, are MRR 0.859 and P@5 0.622 (P, §2.4).*
 9. **SciRepEval** (Ai2, 2022, P,
    [repository](https://github.com/allenai/scirepeval),
    [test sets](https://huggingface.co/datasets/allenai/scirepeval_test)).
@@ -226,6 +234,99 @@ BRIGHT (web pages, not works); SCIDOCS and SciFact (small pools on
 Semantic Scholar ids); PaperFindingBench (hosted tools and a model
 judge); DORIS-MAE (labels written by a model); SciRepEval's search task
 (reranks ten candidates); TREC BioGen (per-sentence judgments).
+
+### 2.4 More sets, surveyed 2026-09-26
+
+A third survey (page reads, web searches and public APIs; no dataset
+downloaded, nothing registered, a few small PDFs and one qrels file read),
+made when the user asked, of the [evaluation plan](../evaluation-plan.md),
+whether more sets like TREC's and RELISH are "worth our time" — breadth
+across fields mattering, since the user is "opposed to optimizing
+exclusively around" any one narrow set. Kinds: T topical, K known-item, D
+query by document, R recall (systematic reviews), C clicks.
+
+**The starter set, checked.**
+
+- **TREC Precision Medicine.** Topics, trec_eval qrels and judgment CSVs
+  are open on trec.nist.gov with no login (P, fetched); no licence stated
+  (P, by absence). 2017: 30 topics, 22,642 judgments; 2018: 50, 22,429
+  (P, ir_datasets); both over 26.76 million MEDLINE abstracts plus AACR
+  and ASCO abstracts without PMIDs (P). **2019: 40 topics** — 30 cancer
+  from MD Anderson, 10 genetic disease (P, overview) — over the "MEDLINE
+  2019 baseline", 29,138,916 abstracts of mid-December 2018 (P); the
+  overview's per-topic tables sum to 18,316 judgments (2,571 definitely,
+  2,973 partially, 12,772 not relevant), its text repeating 2018's 22,429
+  (P); topics 5 and 6 have nothing definitely relevant. **2020: 40
+  topics** over the same corpus, but the phase-1 qrels cover **31**, nine
+  dropped for two or fewer relevant (P, NIST's page); phase 2 grades
+  evidence strength (P). The "sample" qrels are for inferred measures
+  through NIST's `sample_eval.pl`; the trec_eval qrels are the ones for
+  this plan. No numeric BM25 figure in the 2019 overview (P); a run named
+  BM25 sits near 0.45 median infNDCG on a box plot (U). Every year is
+  precision oncology, 2019's genetic diseases aside: narrow by itself.
+- **RELISH.** One figshare item, `RELISH_v1` (DOI
+  10.6084/m9.figshare.7722905.v1), one file, `RELISH_v1.json.gz`, 978,490
+  bytes, MD5 `64e93f32da691bc756a25a3fa8e44451`, CC0 (P, figshare API; its
+  web pages refuse automated reads). JSON records: `uid`, `pmid` (the
+  seed), `experience`, `is_anonymous`, `response` with candidate PMIDs
+  under relevant, partial, irrelevant (P). Seeds: 3,278 by the file's
+  description, 3,017 annotated and 2,233 analysed by the paper (P). The
+  60 candidates are the top 20 each of BM25, TF-IDF and PubMed's related
+  articles, round-robin, over 18,345,070 PubMed articles of 2018-07-03
+  (P); 91% of seeds judged by one of their own authors (P). The paper's
+  BM25 on the 2,233 seeds is MRR 0.859 and P@5 0.622 (P), not §2.2's
+  0.878 and 0.642, whose subset is unknown. The paper's second copy,
+  relishdb.ict.griffith.edu.au, no longer resolves: figshare's is the only
+  one.
+- **TREC-COVID.** The collection to use is "TREC-COVID Complete",
+  `qrels-covid_d5_j0.5-5.txt`, with `topics-rnd5.xml` and
+  `docids-rnd5.txt` (P, ir.nist.gov); no submission was scored on it, and
+  NIST warns against training on one round's qrels and testing on a
+  later's (P). 69,318 judgments on three grades (P). Per-round qrels over
+  five CORD-19 releases make a small time-slice test (P). CORD-19 of
+  2020-07-16: 192,509 documents (P), `metadata.csv` with DOI, PMC id and
+  PMID per document (P), under a licence "for text and data mining only"
+  (P); a crosswalk of ids reads as within it (a reading, not advice).
+
+**New candidates.**
+
+| set | kind · field | queries · judgments | judged by | ids | access | BM25 | verdict |
+|---|---|---|---|---|---|---|---|
+| TREC Genomics 2004–05 ad hoc | T · genomics | 50 + 50; about 975 judged a topic in 2004, pool top 75 of 27 runs; three grades (P) | pooled, biologists (P) | PMID (P) | open, no password (P) | TF·IDF MAP 0.2343 in 2004 (P) | now |
+| TREC Clinical Decision Support 2014–16 | T · clinical | 30 a year; about 37,800 qrels a year; three grades (P) | pooled clinicians (P) | PMC id (P), to PMID through PubMed (S) | open (P) | U | now; judged on full text, so abstracts score low |
+| MeSH as query (Kim et al., BioNLP 2018) | T, pseudo-judged · biomedicine | 1,735 multi-word MeSH headings (P) | indexing: a work carrying the heading is relevant (P) | PMID (P) | the paper's files are gone (404, P); rebuilt from our own PubMed records | Solr BM25 MAP 0.305 over PubMed (P) | now, built in-house |
+| SYNERGY (ASReview) | R · medicine, psychology, CS, biology, chemistry, mathematics | 26 reviews, 169,288 records, 2,834 included (P) | the reviews' own inclusions (P) | OpenAlex id and DOI (P) | CC0 (P) | none | now for medicine by DOI; whole with OpenAlex |
+| OAG-QA (OAG-Bench) | K-ish · 22 fields, mathematics to economics | 17,948 questions, 87 topics, one gold paper typical (P) | the paper cited in a StackExchange or Zhihu answer (P) | OAG/AMiner, by title or DOI (U) | mirrors (S), licence U | U | later |
+| iSearch / iSearch++ (2026) | T · physics | 65 topics by 23 physicists (S), four grades (S) | the topic's author (S); ++ adds model re-judgments (P) | arXiv id map (P) | assessments on Zenodo, licence unstated (P); texts by emailed request (P) | U | later |
+| Reference strings to DOIs (Crossref's method) | K · every field | 2,000 real strings and 7,374 in 11 styles (P) | algorithms and hand checks (P) | DOI | framework MIT (P), data U | n/a | later, built from Crossref's own references |
+| TripClick / TripJudge | C and T · health | 3 × 1,175 test queries; TripJudge 1,136 queries, 12,590 pairs, four grades (P) | clicks; students, κ 0.63 (P) | Trip ids with PubMed URL and DOI (P) | form emailed to Trip, non-commercial, no sharing (P) | nDCG@10 0.199–0.267 click, 0.570 judged (P) | later, the user's call |
+| SPARBench (2025) | T · CS, medicine | 50 queries, 556 relevant (P) | a model, then experts (P) | S2 and arXiv (P) | MIT (P) | U | later |
+
+Not worth it, with the reason: TREC Genomics 2006–07 (passages of full
+text); OHSUMED (no MEDLINE-UI-to-PMID crosswalk found, shallow pools,
+research use only); CLEF Domain-Specific (a fee, German and Russian, no
+DOIs); NTCIR-1/2 (Japanese records, a mailed agreement); TREC-CHEM and
+CLEF-IP (patents); CLEF SimpleText (CS only, registration); ACM-CR, MAPLE,
+SciNet (tiny or one field); NASA-IR (paragraphs as gold); pathfinder
+(unreleased); ChemRxiv Retrieval (queries written by a model); TREC Fair
+Ranking (reranking); Multi-XScience (the citation scoreboard does the
+same at scale); SciFact-Open (claims on S2 ids); CheckThat 2025 4b (COVID
+only, a pool of 7,718); PubMed's search logs (NLM: "Due to privacy
+concerns, we are not able to release the PubMed search logs", P).
+
+**The gap.** No judged set over papers in the humanities, law,
+engineering, materials or earth science turned up, beyond OAG-QA's
+topics and BRIGHT's web pages. Breadth there comes from sets built out
+of the corpus: citations, reference strings, and indexers' vocabularies
+as queries — MeSH now; ERIC and zbMATH Open are ideas not checked (U).
+
+**MeSH as query, and one condition.** The normalized PubMed records keep
+their MeSH headings (`source-pubmed`'s `mesh`), and the index does not
+search them (`crates/search/src/schema.rs`), so a suite of headings as
+queries asks whether text finds what indexers tagged, without the answer
+in the index. Indexing MeSH as text — one of serving plan §11 item 11's
+open questions — would put the answer key in the index and end the
+suite's use.
 
 ## 3. Deep research: what can be reproduced
 

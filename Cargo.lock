@@ -452,6 +452,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "evaluation"
+version = "0.1.0"
+dependencies = [
+ "flate2",
+ "proptest",
+ "quick-xml",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "fastdivide"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1139,6 +1150,8 @@ dependencies = [
 name = "ol-rht"
 version = "0.1.0"
 dependencies = [
+ "blake3",
+ "evaluation",
  "graph",
  "ingest",
  "merge",

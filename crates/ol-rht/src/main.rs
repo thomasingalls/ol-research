@@ -144,7 +144,11 @@ const USAGE: &str = "usage:
   ol-rht query search <words>... [--store <root>] [--limit N]
   ol-rht query expand <name|#id>... [--store <root>] [--limit N] [--walk <references|citers|both>]
   ol-rht query related <name|#id> --by <cites-same|cited-alongside> [--store <root>] [--limit N]
-  ol-rht query path <name|#id> <name|#id> [--store <root>] [--depth N] [--limit N]";
+  ol-rht query path <name|#id> <name|#id> [--store <root>] [--depth N] [--limit N]
+  ol-rht evaluate load <trec-pm <topics.xml> <qrels> | relish <RELISH_v1.json.gz>> --out <suite> [--store <root>] [--held-out]
+  ol-rht evaluate run <suite | queries> --out <run> [--store <root>] [--limit depth] [--workers N] [--restricted]
+  ol-rht evaluate score <suite | key> <run> [--test]
+  ol-rht evaluate compare <suite | key> <base run> <new run> [--test]";
 
 /// Who we say we are; `--mailto` adds an address inside the parenthesis.
 const USER_AGENT: &str = "ol-rht/0.1 (citation-graph ingestion";
@@ -191,6 +195,14 @@ fn main() -> ExitCode {
             let Some(opts) = Options::parse(&rest) else {
                 return usage();
             };
+            // The evaluation's own switches, each refused anywhere else.
+            let evaluating = |named: &str| *source == "evaluate" && *action == named;
+            if (opts.restricted && !evaluating("run"))
+                || (opts.held_out && !evaluating("load"))
+                || (opts.test && !(evaluating("score") || evaluating("compare")))
+            {
+                return usage();
+            }
             match (*source, *action) {
                 ("pubmed", "check") => check::<Pubmed>(&opts),
                 ("pubmed", "normalize") => normalize::<Pubmed, PubmedStats>(&opts),
@@ -230,6 +242,10 @@ fn main() -> ExitCode {
                 ("query", "expand") => query_expand(&opts),
                 ("query", "related") => query_related(&opts),
                 ("query", "path") => query_path(&opts),
+                ("evaluate", "load") => evaluate_load(&opts),
+                ("evaluate", "run") => evaluate_run(&opts),
+                ("evaluate", "score") => evaluate_score(&opts),
+                ("evaluate", "compare") => evaluate_compare(&opts),
                 _ => usage(),
             }
         }
@@ -238,6 +254,9 @@ fn main() -> ExitCode {
 }
 
 /// The paths and trailing options of a source command.
+// Each bool is one switch as typed, and each command refuses the ones it
+// does not take; an enum of them would only be spelled back into these.
+#[allow(clippy::struct_excessive_bools)]
 struct Options {
     paths: Vec<PathBuf>,
     limit: Option<u64>,
@@ -255,6 +274,13 @@ struct Options {
     related: Option<serve::By>,
     walk: Option<serve::Walk>,
     depth: Option<u32>,
+    /// `evaluate run`'s date cutoff (evaluation plan §3.2).
+    restricted: bool,
+    /// `evaluate load`'s: the whole suite its test half (§7).
+    held_out: bool,
+    /// `evaluate score` and `compare`'s: read the test half, at a
+    /// milestone (§7).
+    test: bool,
 }
 
 impl Options {
@@ -267,7 +293,7 @@ impl Options {
         let (mut limit, mut workers, mut out, mut store, mut mailto, mut seed, mut by) =
             (None, None, None, None, None, None, None);
         let (mut walk, mut depth, mut related) = (None, None, None);
-        let mut survey = false;
+        let (mut survey, mut restricted, mut held_out, mut test) = (false, false, false, false);
         loop {
             match rest {
                 [before @ .., "--survey"] => {
@@ -275,6 +301,27 @@ impl Options {
                         return None;
                     }
                     survey = true;
+                    rest = before;
+                }
+                [before @ .., "--restricted"] => {
+                    if restricted {
+                        return None;
+                    }
+                    restricted = true;
+                    rest = before;
+                }
+                [before @ .., "--held-out"] => {
+                    if held_out {
+                        return None;
+                    }
+                    held_out = true;
+                    rest = before;
+                }
+                [before @ .., "--test"] => {
+                    if test {
+                        return None;
+                    }
+                    test = true;
                     rest = before;
                 }
                 [before @ .., "--store", p] => {
@@ -373,6 +420,9 @@ impl Options {
             related,
             walk,
             depth,
+            restricted,
+            held_out,
+            test,
         })
     }
 
@@ -3824,6 +3874,823 @@ fn query_search(opts: &Options) -> ExitCode {
     })();
     match printed {
         Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("{what}: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// How deep a run goes unless `--limit` says (evaluation plan §3.3).
+const RUN_DEPTH: usize = 1000;
+
+/// How many times its depth a restricted run asks the search for, since
+/// the date cutoff is applied after the search (evaluation plan §3.2).
+const RESTRICTED_ASK: usize = 2;
+
+/// One query's part of a run.
+struct Answer {
+    /// The works kept, with their scores.
+    works: Vec<evaluation::trec::Scored>,
+    /// How long the search took.
+    took: std::time::Duration,
+    /// Whether the date cutoff left the query short of the depth though
+    /// the search had more to give.
+    short: bool,
+}
+
+type Searched = Result<Answer, String>;
+
+/// What a run searches: a suite's queries and filters, or a queries
+/// file's queries and no filters.
+struct Asked {
+    queries: Vec<(String, String)>,
+    filters: BTreeMap<String, evaluation::suite::Filter>,
+    /// Of the queries file, and of the filters when there are any.
+    digest: String,
+}
+
+/// Reads what a run searches from a suite's directory or a queries file.
+fn evaluate_asked(path: &Path) -> Result<Asked, String> {
+    if path.is_dir() {
+        let suite = evaluation::suite::Suite::read(path).map_err(|e| e.to_string())?;
+        let mut hasher = blake3::Hasher::new();
+        for name in [evaluation::suite::QUERIES, evaluation::suite::FILTERS] {
+            let bytes = std::fs::read(path.join(name))
+                .map_err(|e| format!("{}: {e}", path.join(name).display()))?;
+            hasher.update(&bytes);
+        }
+        return Ok(Asked {
+            queries: suite.queries,
+            filters: suite.filters,
+            digest: hasher.finalize().to_hex().to_string(),
+        });
+    }
+    let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let queries =
+        evaluation::trec::read_queries(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok(Asked {
+        queries,
+        filters: BTreeMap::new(),
+        digest: blake3::hash(text.as_bytes()).to_hex().to_string(),
+    })
+}
+
+/// `evaluate run <suite | queries> --out <run> [--restricted]`: every
+/// query through the store's search, in process — the parser and the
+/// translation the search box uses, with no time limit and no page cap —
+/// written as a TREC run, and beside it `<run>.about` naming what was
+/// searched (evaluation plan §6). A suite's filters leave a query's own
+/// seed out of its results, and with `--restricted` every work published
+/// after the suite's year (§3.2). The queries are searched in parallel and
+/// written in the file's order, so the run never depends on which search
+/// finished first. A run is kept: an existing `--out` is refused.
+// Read, search, stamp, write: one step after another, and long together.
+#[allow(clippy::too_many_lines)]
+fn evaluate_run(opts: &Options) -> ExitCode {
+    let what = "evaluate run";
+    let ([asked_path], Some(out)) = (opts.paths.as_slice(), opts.out.as_ref()) else {
+        return usage();
+    };
+    if opts.mailto.is_some()
+        || opts.seed.is_some()
+        || opts.by.is_some()
+        || opts.related.is_some()
+        || opts.walk.is_some()
+        || opts.depth.is_some()
+        || opts.survey
+        || opts.limit == Some(0)
+    {
+        return usage();
+    }
+    let depth = opts
+        .limit
+        .map_or(RUN_DEPTH, |n| usize::try_from(n).unwrap_or(usize::MAX));
+    let about_path = PathBuf::from(format!("{}.about", out.display()));
+    for path in [out, &about_path] {
+        if path.exists() {
+            eprintln!(
+                "{what}: {} exists; a run is kept, so name a new one",
+                path.display()
+            );
+            return ExitCode::FAILURE;
+        }
+    }
+    let asked = match evaluate_asked(asked_path) {
+        Ok(asked) => asked,
+        Err(e) => {
+            eprintln!("{what}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if opts.restricted && !asked.filters.values().any(|f| f.until.is_some()) {
+        eprintln!(
+            "{what}: {} names no year for any query; --restricted needs a suite that does",
+            asked_path.display()
+        );
+        return ExitCode::FAILURE;
+    }
+    let mut jobs = Vec::with_capacity(asked.queries.len());
+    for (id, query) in &asked.queries {
+        match query_parser::parse(query) {
+            Ok(parsed) => jobs.push((parsed, asked.filters.get(id).cloned())),
+            Err(e) => {
+                eprintln!("{what}: query {id}: {e}");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+    let store = opts.store();
+    let serving = match serve::Serving::open(&store) {
+        Ok(serving) => serving,
+        Err(e) => {
+            eprintln!("{what}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let started = std::time::Instant::now();
+    let searched = evaluate_search(&serving, &jobs, depth, opts.restricted, opts.workers());
+    let mut run = evaluation::trec::Run::default();
+    let mut slowest: Option<(std::time::Duration, &str)> = None;
+    let (mut returned, mut empty, mut short) = (0_usize, 0_usize, 0_usize);
+    for ((id, _), result) in asked.queries.iter().zip(searched) {
+        let mut answer = match result {
+            Ok(answer) => answer,
+            Err(e) => {
+                eprintln!("{what}: query {id}: {e}");
+                return ExitCode::FAILURE;
+            }
+        };
+        if slowest.is_none_or(|(t, _)| answer.took > t) {
+            slowest = Some((answer.took, id));
+        }
+        returned += answer.works.len();
+        empty += usize::from(answer.works.is_empty());
+        short += usize::from(answer.short);
+        evaluation::trec::order(&mut answer.works);
+        run.queries.insert(id.clone(), answer.works);
+    }
+    let elapsed = started.elapsed();
+
+    let epoch = serving.epoch();
+    let index = serving.search_index();
+    let absorbed = match index.batch() {
+        Ok(batch) => batch,
+        Err(e) => {
+            eprintln!("{what}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let about = serde_json::json!({
+        "asked": asked_path.display().to_string(),
+        "asked_blake3": asked.digest,
+        "queries_count": asked.queries.len(),
+        "depth": depth,
+        "restricted": opts.restricted,
+        "short_of_depth": short,
+        "epoch": epoch,
+        "search": index.manifest(),
+        "search_absorbed_batch": absorbed,
+        "ol_rht": env!("CARGO_PKG_VERSION"),
+    });
+    let tag = format!("ol-rht-epoch{}", epoch.epoch);
+    if let Err(e) = evaluate_write(out, &about_path, &run, &tag, &about) {
+        eprintln!("{what}: {e}");
+        return ExitCode::FAILURE;
+    }
+    println!(
+        "{what}: {} queries, {returned} works returned, {empty} queries with none, \
+         depth {depth}{}, epoch {}, {:.1} s",
+        asked.queries.len(),
+        if opts.restricted {
+            format!(", restricted by year ({short} queries short of the depth)")
+        } else {
+            String::new()
+        },
+        epoch.epoch,
+        elapsed.as_secs_f64()
+    );
+    if let Some((took, id)) = slowest {
+        println!(
+            "  slowest: query {id}, {:.1} ms",
+            took.as_secs_f64() * 1000.0
+        );
+    }
+    println!("  run: {}", out.display());
+    ExitCode::SUCCESS
+}
+
+/// Searches every query on `workers` threads, taking the next query as
+/// each finishes one, and returns the answers in the queries' order.
+fn evaluate_search(
+    serving: &serve::Serving,
+    jobs: &[(query_parser::Query, Option<evaluation::suite::Filter>)],
+    depth: usize,
+    restricted: bool,
+    workers: usize,
+) -> Vec<Searched> {
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let mut answered: Vec<(usize, Searched)> = std::thread::scope(|scope| {
+        let threads: Vec<_> = (0..workers.max(1))
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut mine = Vec::new();
+                    loop {
+                        let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let Some((query, filter)) = jobs.get(i) else {
+                            break mine;
+                        };
+                        mine.push((
+                            i,
+                            evaluate_one(serving, query, filter.as_ref(), depth, restricted),
+                        ));
+                    }
+                })
+            })
+            .collect();
+        threads
+            .into_iter()
+            .flat_map(|t| t.join().expect("a search thread panicked"))
+            .collect()
+    });
+    answered.sort_unstable_by_key(|(i, _)| *i);
+    answered.into_iter().map(|(_, a)| a).collect()
+}
+
+/// One query's works, each named by its public id: its own seed left out,
+/// and in a restricted run every work published after its year, or of no
+/// known year, left out too.
+fn evaluate_one(
+    serving: &serve::Serving,
+    query: &query_parser::Query,
+    filter: Option<&evaluation::suite::Filter>,
+    depth: usize,
+    restricted: bool,
+) -> Searched {
+    let exclude = filter.and_then(|f| f.exclude.as_deref());
+    let until = filter.and_then(|f| f.until).filter(|_| restricted);
+    let ask = if until.is_some() {
+        depth.saturating_mul(RESTRICTED_ASK)
+    } else {
+        depth
+    }
+    .saturating_add(usize::from(exclude.is_some()));
+    let started = std::time::Instant::now();
+    let hits = serving
+        .search_facets(query, ask, 0, None)
+        .map_err(|e| e.to_string())?;
+    let took = started.elapsed();
+    let rows = match until {
+        Some(_) => {
+            let ids: Vec<WorkId> = hits.hits.iter().map(|h| h.id).collect();
+            serving.rows(&ids).map_err(|e| e.to_string())?
+        }
+        None => HashMap::new(),
+    };
+    let mut works = Vec::with_capacity(depth.min(hits.hits.len()));
+    for hit in &hits.hits {
+        if works.len() == depth {
+            break;
+        }
+        let Some(public) = serving.public_of(hit.id) else {
+            return Err(format!(
+                "work {} has no public id; a run names works by public id only",
+                hit.id
+            ));
+        };
+        if exclude == Some(public.as_str()) {
+            continue;
+        }
+        if let Some(until) = until {
+            let year = rows
+                .get(&hit.id)
+                .and_then(|row| row.fields.published.as_ref())
+                .map(|p| p.value.year.get());
+            if year.is_none_or(|y| y > until) {
+                continue;
+            }
+        }
+        works.push(evaluation::trec::Scored {
+            work: public,
+            score: f64::from(hit.score),
+        });
+    }
+    let short = until.is_some() && works.len() < depth && hits.hits.len() == ask;
+    Ok(Answer { works, took, short })
+}
+
+/// Writes the run and its sidecar through `.partial` names, renamed only
+/// once both are whole, so a failed run leaves nothing behind.
+fn evaluate_write(
+    out: &Path,
+    about_path: &Path,
+    run: &evaluation::trec::Run,
+    tag: &str,
+    about: &serde_json::Value,
+) -> io::Result<()> {
+    let run_partial = PathBuf::from(format!("{}.partial", out.display()));
+    let about_partial = PathBuf::from(format!("{}.partial", about_path.display()));
+    let written = (|| -> io::Result<()> {
+        let mut file = io::BufWriter::new(std::fs::File::create(&run_partial)?);
+        run.write(tag, &mut file)?;
+        file.into_inner()
+            .map_err(io::IntoInnerError::into_error)?
+            .sync_all()?;
+        let mut text = serde_json::to_string_pretty(about).map_err(io::Error::other)?;
+        text.push('\n');
+        std::fs::write(&about_partial, text)?;
+        std::fs::rename(&run_partial, out)?;
+        std::fs::rename(&about_partial, about_path)
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&run_partial);
+        let _ = std::fs::remove_file(&about_partial);
+    }
+    written
+}
+
+/// What a set's loader makes: the suite before its halves are drawn, what
+/// the corpus holds of its key, the queries left out and why, and what
+/// `about.json` says of how it was read.
+struct Loaded {
+    suite: evaluation::suite::Suite,
+    coverage: evaluation::sets::Coverage,
+    left_out: Vec<(String, &'static str)>,
+    details: serde_json::Value,
+}
+
+/// What the store holds of a PMID, and the work when one work has it.
+fn evaluate_find(
+    serving: &serve::Serving,
+    pmid: &str,
+) -> Result<(evaluation::sets::Found, Option<WorkId>), String> {
+    use evaluation::sets::Found;
+    match serving
+        .resolve(&format!("pmid:{pmid}"))
+        .map_err(|e| e.to_string())?
+    {
+        None => Ok((Found::Missing, None)),
+        Some(serve::Resolved::One(id)) => {
+            let public = serving
+                .public_of(id)
+                .ok_or_else(|| format!("work {id} has no public id"))?;
+            if serving.is_stub(id) {
+                Ok((Found::Stub(public), Some(id)))
+            } else {
+                Ok((Found::Held(public), Some(id)))
+            }
+        }
+        Some(serve::Resolved::Shared(_) | serve::Resolved::Split { .. }) => {
+            Ok((Found::Ambiguous, None))
+        }
+    }
+}
+
+/// The year TREC Precision Medicine's judges saw PubMed up to: 2019 and
+/// 2020 both searched the MEDLINE 2019 baseline, a snapshot of mid-December
+/// 2018 (benchmarks note §2.4). Other years searched another snapshot,
+/// with conference abstracts beside it, not yet read.
+fn trec_pm_until(year: u16) -> Result<u16, String> {
+    match year {
+        2019 | 2020 => Ok(2018),
+        other => Err(format!(
+            "TREC Precision Medicine {other}: its snapshot year is not written down yet"
+        )),
+    }
+}
+
+/// TREC Precision Medicine, scientific abstracts: `<topics> <qrels>`.
+fn evaluate_load_trec_pm(
+    serving: &serve::Serving,
+    files: &[(PathBuf, Vec<u8>)],
+) -> Result<Loaded, String> {
+    let [(topics_path, topics), (qrels_path, qrels)] = files else {
+        return Err("trec-pm takes its topics file and its trec_eval qrels".to_owned());
+    };
+    let text = |path: &Path, bytes: &[u8]| {
+        std::str::from_utf8(bytes)
+            .map(str::to_owned)
+            .map_err(|e| format!("{}: {e}", path.display()))
+    };
+    let topics = evaluation::sets::read_pm_topics(&text(topics_path, topics)?)
+        .map_err(|e| format!("{}: {e}", topics_path.display()))?;
+    let judged = evaluation::trec::Key::read(&text(qrels_path, qrels)?)
+        .map_err(|e| format!("{}: {e}", qrels_path.display()))?;
+    if let Some(stray) = judged
+        .queries
+        .keys()
+        .find(|q| !topics.topics.iter().any(|t| &&t.number == q))
+    {
+        return Err(format!(
+            "{}: topic {stray} is not in the topics file",
+            qrels_path.display()
+        ));
+    }
+    let until = trec_pm_until(topics.year)?;
+    let judgments = judged.queries.iter().flat_map(|(q, works)| {
+        works
+            .iter()
+            .map(move |(pmid, grade)| (q.as_str(), pmid.as_str(), *grade))
+    });
+    let (key, coverage) = evaluation::sets::key_of(judgments, |pmid| {
+        evaluate_find(serving, pmid).map(|(f, _)| f)
+    })
+    .map_err(|e| e.to_string())?;
+    let mut suite = evaluation::suite::Suite::default();
+    for topic in &topics.topics {
+        suite.queries.push((topic.number.clone(), topic.query()));
+        suite.filters.insert(
+            topic.number.clone(),
+            evaluation::suite::Filter {
+                until: Some(until),
+                exclude: None,
+            },
+        );
+    }
+    suite.key = key;
+    let left_out = topics
+        .topics
+        .iter()
+        .filter(|t| !suite.key.queries.contains_key(&t.number))
+        .map(|t| (t.number.clone(), "the key judges nothing for it"))
+        .collect();
+    Ok(Loaded {
+        suite,
+        coverage,
+        left_out,
+        details: serde_json::json!({
+            "year": topics.year,
+            "topics": topics.topics.len(),
+            "query": "the disease and the gene, and the treatment where the topic names one (evaluation plan §12, item 15)",
+            "until": until,
+        }),
+    })
+}
+
+/// RELISH v1: `<RELISH_v1.json.gz>`.
+fn evaluate_load_relish(
+    serving: &serve::Serving,
+    files: &[(PathBuf, Vec<u8>)],
+) -> Result<Loaded, String> {
+    use evaluation::sets::Found;
+    /// RELISH's candidates came from PubMed as of 2018-07-03.
+    const UNTIL: u16 = 2018;
+    let [(path, bytes)] = files else {
+        return Err("relish takes RELISH_v1.json.gz".to_owned());
+    };
+    let records =
+        evaluation::sets::read_relish_gz(bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+    let annotations = records.len();
+    let (kept, dropped) = evaluation::sets::first_per_seed(records);
+    let mut suite = evaluation::suite::Suite::default();
+    let mut left_out = Vec::new();
+    let mut judgments = Vec::new();
+    for record in &kept {
+        let seed = record.pmid.as_str();
+        let (found, id) = evaluate_find(serving, seed)?;
+        let (public, id) = match (found, id) {
+            (Found::Held(public), Some(id)) => (public, id),
+            (Found::Stub(_), _) => {
+                left_out.push((seed.to_owned(), "the seed is known only as cited"));
+                continue;
+            }
+            (Found::Missing, _) => {
+                left_out.push((seed.to_owned(), "the seed is not in the corpus"));
+                continue;
+            }
+            _ => {
+                left_out.push((seed.to_owned(), "the seed's PMID names more than one work"));
+                continue;
+            }
+        };
+        let title = serving
+            .work(id)
+            .map_err(|e| e.to_string())?
+            .and_then(|row| row.text)
+            .and_then(|text| text.title)
+            .map(|t| t.split_whitespace().collect::<Vec<_>>().join(" "))
+            .filter(|t| !t.is_empty());
+        let Some(title) = title else {
+            left_out.push((seed.to_owned(), "the seed has no title"));
+            continue;
+        };
+        suite.queries.push((seed.to_owned(), title));
+        suite.filters.insert(
+            seed.to_owned(),
+            evaluation::suite::Filter {
+                until: Some(UNTIL),
+                exclude: Some(public),
+            },
+        );
+        judgments.extend(
+            record
+                .judgments()
+                .into_iter()
+                .map(|(pmid, grade)| (seed, pmid, grade)),
+        );
+    }
+    let (key, coverage) = evaluation::sets::key_of(judgments, |pmid| {
+        evaluate_find(serving, pmid).map(|(f, _)| f)
+    })
+    .map_err(|e| e.to_string())?;
+    suite.key = key;
+    Ok(Loaded {
+        suite,
+        coverage,
+        left_out,
+        details: serde_json::json!({
+            "annotations": annotations,
+            "seeds": kept.len(),
+            "later_annotations_of_a_seed_left_out": dropped,
+            "query": "the seed paper's title as the works index holds it (evaluation plan §12, item 15)",
+            "until": UNTIL,
+        }),
+    })
+}
+
+/// `evaluate load <trec-pm | relish> <file>... --out <suite>`: a published
+/// set's own files read into a suite (evaluation plan §6) — its queries,
+/// its key with every PMID found through the store's names, the filters,
+/// the halves when it is large enough to halve — and beside it
+/// `about.json`: the files' digests, the epoch, what the corpus holds of
+/// the key and which queries were left out and why.
+// Read, find, write, report: one step after another, and long together.
+#[allow(clippy::too_many_lines)]
+fn evaluate_load(opts: &Options) -> ExitCode {
+    let what = "evaluate load";
+    let (Some((set, files)), Some(out)) = (opts.paths.split_first(), opts.out.as_ref()) else {
+        return usage();
+    };
+    if opts.limit.is_some()
+        || opts.workers.is_some()
+        || opts.mailto.is_some()
+        || opts.seed.is_some()
+        || opts.by.is_some()
+        || opts.related.is_some()
+        || opts.walk.is_some()
+        || opts.depth.is_some()
+        || opts.survey
+    {
+        return usage();
+    }
+    if out.exists() {
+        eprintln!(
+            "{what}: {} exists; a suite is kept, so name a new version",
+            out.display()
+        );
+        return ExitCode::FAILURE;
+    }
+    let mut read = Vec::with_capacity(files.len());
+    for path in files {
+        match std::fs::read(path) {
+            Ok(bytes) => read.push((path.clone(), bytes)),
+            Err(e) => {
+                eprintln!("{what}: {}: {e}", path.display());
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+    let store = opts.store();
+    let serving = match serve::Serving::open(&store) {
+        Ok(serving) => serving,
+        Err(e) => {
+            eprintln!("{what}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let loaded = match set.to_str() {
+        Some("trec-pm") => evaluate_load_trec_pm(&serving, &read),
+        Some("relish") => evaluate_load_relish(&serving, &read),
+        _ => return usage(),
+    };
+    let Loaded {
+        mut suite,
+        coverage,
+        left_out,
+        details,
+    } = match loaded {
+        Ok(loaded) => loaded,
+        Err(e) => {
+            eprintln!("{what}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let scored = suite.scored();
+    suite.halves = if opts.held_out {
+        evaluation::suite::held_out(&scored)
+    } else {
+        evaluation::suite::halves(&scored)
+    };
+    let working = suite
+        .halves
+        .values()
+        .filter(|h| **h == evaluation::suite::Half::Working)
+        .count();
+    let coverage_json: serde_json::Map<String, serde_json::Value> = coverage
+        .by_grade
+        .iter()
+        .map(|(grade, [held, stub, missing, ambiguous])| {
+            (
+                grade.to_string(),
+                serde_json::json!({
+                    "held": held, "stub": stub, "missing": missing, "ambiguous": ambiguous,
+                }),
+            )
+        })
+        .collect();
+    let about = serde_json::json!({
+        "set": set.display().to_string(),
+        "files": read.iter().map(|(path, bytes)| serde_json::json!({
+            "path": path.display().to_string(),
+            "bytes": bytes.len(),
+            "blake3": blake3::hash(bytes).to_hex().to_string(),
+        })).collect::<Vec<_>>(),
+        "epoch": serving.epoch(),
+        "details": details,
+        "queries": suite.queries.len(),
+        "scored": scored.len(),
+        "halves": if suite.is_held_out() {
+            serde_json::json!("held out whole: its total is read at milestones")
+        } else if suite.halves.is_empty() {
+            serde_json::json!("whole: too few queries to halve")
+        } else {
+            serde_json::json!({ "working": working, "test": suite.halves.len() - working })
+        },
+        "left_out": left_out.iter().map(|(q, why)| serde_json::json!({ "query": q, "why": why })).collect::<Vec<_>>(),
+        "coverage_by_grade": coverage_json,
+        "collided": coverage.collided,
+        "ol_rht": env!("CARGO_PKG_VERSION"),
+    });
+    let written = suite.write(out).and_then(|()| {
+        let mut text = serde_json::to_string_pretty(&about).map_err(io::Error::other)?;
+        text.push('\n');
+        std::fs::write(out.join("about.json"), text)
+    });
+    if let Err(e) = written {
+        eprintln!("{what}: {}: {e}", out.display());
+        return ExitCode::FAILURE;
+    }
+    println!(
+        "{what}: {} queries, {} with a relevant work, {} left out; {}",
+        suite.queries.len(),
+        scored.len(),
+        left_out.len(),
+        if suite.is_held_out() {
+            "held out whole".to_owned()
+        } else if suite.halves.is_empty() {
+            "kept whole, too few to halve".to_owned()
+        } else {
+            format!("halved, {working} working")
+        }
+    );
+    println!("  judged works by grade: held (searchable), stub (cited only), missing, ambiguous");
+    for (grade, [held, stub, missing, ambiguous]) in &coverage.by_grade {
+        println!(
+            "    grade {grade}: {held} held, {stub} stub, {missing} missing, {ambiguous} ambiguous"
+        );
+    }
+    if coverage.collided > 0 {
+        println!(
+            "  {} judgments landed on a work judged already",
+            coverage.collided
+        );
+    }
+    println!("  suite: {}", out.display());
+    ExitCode::SUCCESS
+}
+
+/// The half of a suite `score` and `compare` read.
+fn evaluate_half(opts: &Options) -> evaluation::suite::Half {
+    if opts.test {
+        evaluation::suite::Half::Test
+    } else {
+        evaluation::suite::Half::Working
+    }
+}
+
+/// The options `evaluate score` and `evaluate compare` do not take: they
+/// read files and nothing else.
+fn evaluate_reads_only(opts: &Options) -> bool {
+    opts.limit.is_none()
+        && opts.workers.is_none()
+        && opts.out.is_none()
+        && opts.store.is_none()
+        && opts.mailto.is_none()
+        && opts.seed.is_none()
+        && opts.by.is_none()
+        && opts.related.is_none()
+        && opts.walk.is_none()
+        && opts.depth.is_none()
+        && !opts.survey
+}
+
+/// What `score` and `compare` read their answers from: a suite, or a
+/// bare answer key.
+enum Judged {
+    Suite(evaluation::suite::Suite),
+    Key(evaluation::trec::Key),
+}
+
+/// Reads a suite's directory or an answer key, and runs, naming the file
+/// that fails.
+fn evaluate_read(
+    judged: &Path,
+    runs: &[PathBuf],
+) -> Result<(Judged, Vec<evaluation::trec::Run>), String> {
+    let read =
+        |path: &Path| std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()));
+    let judged = if judged.is_dir() {
+        Judged::Suite(evaluation::suite::Suite::read(judged).map_err(|e| e.to_string())?)
+    } else {
+        Judged::Key(
+            evaluation::trec::Key::read(&read(judged)?)
+                .map_err(|e| format!("{}: {e}", judged.display()))?,
+        )
+    };
+    let runs = runs
+        .iter()
+        .map(|path| {
+            evaluation::trec::Run::read(&read(path)?)
+                .map_err(|e| format!("{}: {e}", path.display()))
+        })
+        .collect::<Result<_, _>>()?;
+    Ok((judged, runs))
+}
+
+/// `evaluate score <suite | key> <run> [--test]`: the run's report
+/// (evaluation plan §4) — of a suite, its working half, or with `--test`
+/// its test half at a milestone, open and condensed.
+fn evaluate_score(opts: &Options) -> ExitCode {
+    let what = "evaluate score";
+    let [judged, run] = opts.paths.as_slice() else {
+        return usage();
+    };
+    if !evaluate_reads_only(opts) {
+        return usage();
+    }
+    let (judged, runs) = match evaluate_read(judged, std::slice::from_ref(run)) {
+        Ok(read) => read,
+        Err(e) => {
+            eprintln!("{what}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let mut out = io::BufWriter::new(io::stdout().lock());
+    let written = match &judged {
+        Judged::Suite(suite) => {
+            evaluation::report::score_suite(suite, &runs[0], evaluate_half(opts), &mut out)
+        }
+        Judged::Key(_) if opts.test => return usage(),
+        Judged::Key(key) => evaluation::report::score(key, &runs[0], &mut out),
+    };
+    match written.and_then(|()| out.flush()) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("{what}: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// `evaluate compare <suite | key> <base run> <new run> [--test]`: both
+/// runs query by query, the interval of every difference, and the
+/// acceptance rule's verdict (evaluation plan §4) — exit 1 when the new
+/// run is refused, and when a level has too few queries for the rule to
+/// speak. Of a suite, the working half, or with `--test` the test half.
+fn evaluate_compare(opts: &Options) -> ExitCode {
+    let what = "evaluate compare";
+    let [judged, base, new] = opts.paths.as_slice() else {
+        return usage();
+    };
+    if !evaluate_reads_only(opts) {
+        return usage();
+    }
+    let (judged, runs) = match evaluate_read(judged, &[base.clone(), new.clone()]) {
+        Ok(read) => read,
+        Err(e) => {
+            eprintln!("{what}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let mut out = io::BufWriter::new(io::stdout().lock());
+    let verdict = match &judged {
+        Judged::Suite(suite) => evaluation::report::compare_suite(
+            suite,
+            &runs[0],
+            &runs[1],
+            evaluate_half(opts),
+            &mut out,
+        ),
+        Judged::Key(_) if opts.test => return usage(),
+        Judged::Key(key) => evaluation::report::compare(key, &runs[0], &runs[1], &mut out),
+    }
+    .and_then(|verdict| out.flush().map(|()| verdict));
+    match verdict {
+        Ok(evaluation::report::Verdict::Passes) => ExitCode::SUCCESS,
+        Ok(evaluation::report::Verdict::Refused | evaluation::report::Verdict::TooFewQueries) => {
+            ExitCode::FAILURE
+        }
         Err(e) => {
             eprintln!("{what}: {e}");
             ExitCode::FAILURE

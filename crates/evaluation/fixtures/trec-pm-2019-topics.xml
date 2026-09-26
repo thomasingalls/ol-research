@@ -1,0 +1,17 @@
+<topics task="2019 TREC Precision Medicine">
+  <topic number="1">
+    <disease>melanoma</disease>
+    <gene>BRAF (E586K)</gene>
+    <demographic>64-year-old female</demographic>
+  </topic>
+  <topic number="2">
+    <disease>cholangiocarcinoma</disease>
+    <gene>BRAF (V600E)</gene>
+    <demographic>64-year-old male</demographic>
+  </topic>
+  <topic number="40">
+    <disease>malignant hyperthermia</disease>
+    <gene>RYR1</gene>
+    <demographic>54-year-old male</demographic>
+  </topic>
+</topics>

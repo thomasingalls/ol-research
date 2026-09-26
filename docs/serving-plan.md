@@ -1329,6 +1329,16 @@ state kept outside the store, and a limit per principal on calls and on
     split into pieces finds that title; the log's line is visible
     character by character and undoes to the whole query. The probe's
     inputs are a fixed list beside them, to grow.
+- 2026-09-26, measurement before any search improvement — the user's
+  "before getting lost down a rabbit hole of potential search
+  improvements, i want a very reliable way to measure 'goodness' of the
+  search i have", and "we have no users yet", so item 37's first step, a
+  query log, has nothing to read. The measurement is its own plan,
+  [`docs/evaluation-plan.md`](evaluation-plan.md): precision, recall and F
+  with an interval on every number, suites built from the corpus leading
+  and published ones checking them. Items 11 and 36 wait on it. Later the
+  same day the user scrapped the suites built from the corpus; the
+  published sets lead (evaluation plan §9).
 
 ## 11. Open items
 
@@ -2025,8 +2035,12 @@ state kept outside the store, and a limit per principal on calls and on
       design says which side converts, and whether the client runs this
       parser compiled for the browser or a twin held to it by the same
       properties (`fast-check` beside `proptest`).
-37. **Search after its first pass.** The first pass (2026-09-25, §7)
-    has not met the corpus: the local store's newest epoch (8) is built
+37. **Search after its first pass.** Superseded 2026-09-26 (§10) by
+    measurement first, [`docs/evaluation-plan.md`](evaluation-plan.md);
+    the steps below stand as what the measurement is for. Since written,
+    epoch 6 of the corpus has been published from a build that has the
+    first pass (`docs/inbox/serving-memory.md`). As written 2026-09-25:
+    the first pass (2026-09-25, §7) has not met the corpus: the local store's newest epoch (8) is built
     from merged v2.9, far older than the merged layer this build reads,
     so the server waits rather than opens it, and the first pass was
     tested against a fake and small indexes in memory only. In the
