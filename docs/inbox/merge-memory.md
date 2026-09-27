@@ -604,6 +604,35 @@ harness-src`, the harnesses' store now): the full/incremental harness,
 511,014 ids; the update-files harness, 1335 to 1339 batched in order,
 0 differences in 1,836,438 ids (M).
 
+**On the box** (`ol-rht-merge-survey-v7`, ol-rht 463f41a, 2026-09-26/27;
+the same PubMed baseline and eighth of Crossref as v6; M). Exit 0, in
+5,764 s against v6's 5,781. The report is v6's line for line but for the
+16 `cites` records, whose 19 relations are now kept (4 more stubs). The
+heap, and its peak so far, in GiB:
+
+| phase | v6 | v7 |
+|---|---|---|
+| copies read (and settled) | 7.51 (9.84) | 0.93 (9.91) |
+| records and names read | 12.55 (14.03) | 5.97 (9.91) |
+| identity resolved | 25.58 (34.19) | 9.48 (27.60) |
+| identity and registry done | 26.40 | 8.08 |
+| names table built | 30.81 (43.06) | 9.06 (27.60) |
+| merged rows finished, peak | 52.10 | 30.36 |
+
+Resident high-water 24.6 GB against 43.1. Once the stubs are numbered
+the resolution holds 6.91 GiB — names 1.22, stub names 0.36, records
+3.50, works 1.83 — of a 7.05 GiB heap: the 6 GB nobody accounted for
+was the two hashed tables, gone. Where the peaks are now, read off the
+minute lines: the copies read, 10.7 GB resident, the table by name
+while it fills; `resolve`, 17.4 GB resident in its last minute against
+27.6 GiB asked for, most of the difference memory asked for and never
+touched; and the finish, 24.6 GB resident, about 15 over the 9.2 GiB
+pass 2 carries, which a spill range bounds. Scaled to the whole file by
+records, about 3.5 times the eighth's (E): the copies read near 35 GB
+resident, `resolve` near 60, the finish near 45 — under what ol-rht may
+take of the box, `resolve` the tallest, and the one whose own parts no
+progress line yet separates.
+
 ## Walls behind this one
 
 - **Time.** Pass 1 decodes on one thread: 26 minutes for 36.5 GiB. The
