@@ -66,6 +66,11 @@
 //!   merge.
 //! * `merge dump <set.zst>... [--limit N]` prints a merged set as JSON
 //!   lines, for eyes.
+//! * `survey placement [--store <root>] [--limit N]` counts what PubMed
+//!   and Crossref say about where a work was published — volume, issue,
+//!   pages, article number, dates — and compares the two records of each
+//!   work the merged set pairs; it writes nothing (citation fields plan
+//!   §7, CF0; see [`survey`]).
 //!
 //! `--survey` (plan §6) keeps going past records this build cannot read
 //! and reports every distinct failure signature with counts and examples;
@@ -113,6 +118,8 @@ use source_openalex::normalize::LocationId;
 use source_pubmed::Pubmed;
 use source_pubmed::normalize::{Citation, HistoryDate, HistoryTime, Published, Reference};
 
+mod survey;
+
 /// Allocations per record are part of every report (plan §5, rule 13).
 #[global_allocator]
 static ALLOC: ingest::alloc::Counting = ingest::alloc::Counting;
@@ -131,6 +138,7 @@ const USAGE: &str = "usage:
   ol-rht merge [--store <root>] [--limit N] [--survey] [--public-key <file>]
   ol-rht merge --batch <path>... [--store <root>] [--public-key <file>]
   ol-rht merge dump <set.zst>... [--limit N]
+  ol-rht survey placement [--store <root>] [--limit N]
   ol-rht graph build [--store <root>] [--held]
   ol-rht graph query <#id|name> [--store <root>] [--held] [--limit N]
   ol-rht graph check [--store <root>] [--held]
@@ -228,6 +236,7 @@ fn main() -> ExitCode {
                 ("openalex", "ingest") => ingest::<OpenAlex, OpenAlexStats>(&opts),
                 ("merge", "identity") => merge_identity(&opts),
                 ("merge", "dump") => merge_dump(&opts),
+                ("survey", "placement") => survey::placement(&opts),
                 ("graph", "build") => graph_build(&opts, held),
                 ("graph", "query") => graph_query(&opts, held),
                 ("graph", "check") => graph_check(&opts, held),
