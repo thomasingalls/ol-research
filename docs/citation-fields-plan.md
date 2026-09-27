@@ -59,7 +59,7 @@ The sources give the rest. They lose it in two places:
 - The shape is a chain of containers that works for journals, books,
   series and proceedings alike, not a journal-shaped group (§4).
 - Page ranges are read at normalization, and `123-9` is stored as
-  123–129 (model version 12).
+  123–129 (model version 13).
 - The issue's date and the online date stay apart.
 - `publisher` is dropped.
 - A survey comes before any of it.
@@ -202,7 +202,7 @@ names. A split name keeps family, given (PubMed's `ForeName`, else its
 **D8. Pages are read at normalization and stored whole.** The user:
 `123-9` "has to become 123-129 when stored", and what a later formatter
 does with a range is an access pattern, not what gets stored.
-- **Where the reading happens:** normalization, as model version 12, as
+- **Where the reading happens:** normalization, as model version 13, as
   dates and DOIs are read today. The daily path reads updates the same
   way.
 - **The expansion rule** is checked against evidence before it is built,
@@ -227,7 +227,7 @@ proceedings, but filling them waits: editors, edition and publisher place
 are read and not kept by the Crossref reader, and the user has no
 bandwidth for books now. `publisher` is dropped: citation styles do not
 print one for a journal article, and it would come back as an entity
-(§8). Model 12 reopens "no source reader changes" for three things only:
+(§8). Model 13 reopens "no source reader changes" for three things only:
 - the reading of pages;
 - labels, if CF0 shows they need it;
 - Crossref's `short-container-title`. The user, 2026-09-27: use it where
@@ -300,7 +300,7 @@ journal's or a book's title and a journal's abbreviation are text. That
 keeps the view small, and row size matters on the corpus.
 
 **Where each part is built:**
-- Normalization (model 12) reads the values in the source's own shape:
+- Normalization (model 13) reads the values in the source's own shape:
   Crossref's `page` and PubMed's `Pagination` become `Pages`, and labels
   are read if CF0 shows they need it (`45 Suppl 1`).
 - Each source's view (merge version 17) assembles the chain from those
@@ -343,7 +343,7 @@ pub struct Text {
     pub authors: Vec<Author>,          // was Vec<String>
     pub venue: Option<String>,
     /// PubMed's `ISOAbbreviation`, else `MedlineTA`, else Crossref's
-    /// `short-container-title` (kept from model 12).
+    /// `short-container-title` (kept from model 13).
     pub venue_short: Option<String>,
 }
 ```
@@ -400,24 +400,27 @@ assembler's.
 
 ## 6. Versions, rebuilds, order
 
-- **The current merge of record comes first.** Model 11 and merge 16 run
-  all the way through, published, before any of this lands (the user,
-  2026-09-27).
-- **Model version 11 → 12.** Pages are read (D8), and labels too if CF0
-  says so.
+- **The current merge of record comes first.** It runs all the way
+  through, published, before any of this lands (the user, 2026-09-27).
+  It is at model 12 and merge 16: model 12 (ol-rht 6323949, 2026-09-27)
+  keeps a PubMed relation named only by a DOI, which the whole-file
+  survey at model 11 stopped for.
+- **Model version 12 → 13.** Pages are read (D8), and labels too if CF0
+  says so; Crossref's `short-container-title` is kept (D9). Draft 2 called
+  this model 12, which the relation DOIs took first.
   - Both sources are normalized again. The v11 normalize took about 35
     minutes for both side by side on the box (**R**, ingestion plan §10).
-  - The sets need room for a second copy until the v11 sets are deleted,
+  - The sets need room for a second copy until the v12 sets are deleted,
     which is the user's call.
   - The Jobs are the user's.
   - The harness store (`target/scratch/harness-src`) is normalized again
-    at 12.
+    at 13.
 - **Merge version 16 → 17:**
   - the placement and the online date in `View` and `Fields`;
   - authors follow D5;
   - the rows' layout changes.
 
-  This means a full merge into `merged/v12.17/`. The registry is
+  This means a full merge into `merged/v13.17/`. The registry is
   untouched, and a full merge should append nothing to it. The full
   merge and `epoch publish` are the user's, locally and on the box.
 - **Serve version 8 → 9:** the row's text changes. This means
@@ -490,7 +493,7 @@ D3's order, the page grammar and its fallback, labels as numbers or
 text, the level kinds, and the journal as a level or the venue. §4 is
 then revised to match as draft 3.
 
-**CF1 — Model 12: reading at normalization.**
+**CF1 — Model 13: reading at normalization.**
 - Pages are read in each source (D8), and labels if CF0 says so.
 - Crossref's `short-container-title` is kept (D9).
 - The stats report counts each reading, as DOI readings are counted.
@@ -523,7 +526,7 @@ split name, a whole name, a given-name-only name, and `venue_short` from
 a record that is not the venue's; both harnesses read 0 differences.
 
 **CF4 — The rebuild (the user's).**
-- A full merge at 12.17, then `epoch publish`, on the local store.
+- A full merge at 13.17, then `epoch publish`, on the local store.
 - A read of a few works by hand:
   - a work with two sources;
   - an online-first article;
@@ -660,3 +663,10 @@ D2's rule and D8's fallback are added here once CF0 settles them.
   - The date-style fallback for pages is confirmed, and later parser
     churn is expected.
   - Titles stay text.
+- **2026-09-27, model 13, not 12.** Model 12 went to a PubMed relation
+  named only by a DOI (ol-rht 6323949). The whole-file merge survey at
+  model 11 stopped on the SVIN erratum for want of it, so it comes before
+  the merge of record. The page reading and `short-container-title` are
+  therefore model 13, and this plan's merge is into `merged/v13.17/`. The
+  entries above say 12 as it was said then. CF0 runs on the store at
+  model 12 and merge 16.

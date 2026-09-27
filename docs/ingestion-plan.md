@@ -2193,7 +2193,6 @@ cross-IDs and a second edge namespace early.
   renormalize, about 35 minutes for both sources side by side, is paid
   once. The first merge of record with Crossref is at model 11; the v10
   sets were surveyed and never merged of record.
-<<<<<<< HEAD
 - 2026-09-27, model 12: a PubMed `CommentsCorrections` entry with no PMID
   keeps its `RefSource` as the other record's DOI where the `RefSource`
   reads whole as one, each reading counted as any DOI's, and the report
@@ -2209,10 +2208,9 @@ cross-IDs and a second edge namespace early.
   call. On the two baseline files on this machine no relation lacks a
   PMID; the model 12 normalize of the whole baseline counts them. The
   model 11 sets were only surveyed; model 12's are rebuilt, not patched.
-||||||| parent of 72df4db (citation fields plan, draft 2: a chain of containers, the survey first)
-=======
-- 2026-09-27, page ranges read at normalization, planned as model 12
-  ([citation fields plan](citation-fields-plan.md) D8). The user: `123-9`
+- 2026-09-27, page ranges read at normalization, planned as model 13
+  ([citation fields plan](citation-fields-plan.md) D8; planned as 12,
+  which the entry above took first). The user: `123-9`
   "has to become 123-129 when stored", and what a formatter later does
   with a range is an access pattern, not what gets stored. So Crossref's
   `page` and PubMed's `Pagination` are read into ranges where dates and
@@ -2222,9 +2220,9 @@ cross-IDs and a second edge namespace early.
   `S12-5`, `123-9; 131`) is learned from the plan's survey (CF0). What it
   cannot read whole falls back as `MedlineDate` does, keeping what is
   certain beside the raw text, unless the user decides otherwise on the
-  survey's counts. It waits until model 11's merge of record has run and
-  been published.
->>>>>>> 72df4db (citation fields plan, draft 2: a chain of containers, the survey first)
+  survey's counts. Crossref's `short-container-title` is kept in the same
+  model version. It waits until the merge of record at model 12 has run
+  and been published.
 
 ## 11. Dependencies
 
