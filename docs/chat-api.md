@@ -1,4 +1,4 @@
-# Local chat API
+# Chat API
 
 First implementation, 2026-09-26, on `feature/chat`. The library comparison
 remains a [dated research snapshot](inbox/ai-chat-ui-landscape.md); this file
@@ -30,6 +30,11 @@ There is no authentication system, upload service, approval workflow or
 run reconnection protocol. Generation is still owned by the browser's HTTP
 connection.
 
+The hosted deployment is an explicitly public shared demo. See
+[production rollout](chat-deployment.md) for runtime configuration, usage
+limits, the NVIDIA notice, and the staged GitOps release. Development keeps
+its loopback-only defaults.
+
 ## Start it
 
 For OpenRouter, copy `.env.example` to `.env` in the repository root if it
@@ -37,7 +42,7 @@ does not already exist, then fill in the key locally:
 
 ```dotenv
 OL_RHT_CHAT_PROVIDER=openrouter
-OL_RHT_CHAT_MODEL=qwen/qwen3.8-27b:free
+OL_RHT_CHAT_MODEL=nvidia/nemotron-3-ultra-550b-a55b:free
 OPENROUTER_API_KEY=your-key-here
 ```
 
@@ -117,7 +122,10 @@ When invoking `cargo run` directly, export the environment variables first;
 the binary itself does not load `.env`. Use `--provider openrouter` to select
 OpenRouter, with `OPENROUTER_API_KEY` exported. Its endpoint is fixed to
 `https://openrouter.ai/api/v1/chat/completions`; `--upstream` is local-only.
-The listener, local model URL and corpus URL remain restricted to loopback.
+In development mode, the listener and corpus URL remain restricted to loopback;
+the local model URL always does. `--mode public-demo` permits a deployed
+listener and an operator-configured HTTP(S) corpus service, and enables
+shared usage limits. See [deployment configuration](chat-deployment.md).
 The client disables environment proxies and redirects. Authorization is set
 only on model requests and redacted from debug output, never attached to
 corpus requests. Local mode still uses the deliberately inert `local-dev-only`
@@ -132,7 +140,8 @@ application server or a reverse proxy. The proxy must stream responses
 without buffering and propagate disconnects. Neither Vite nor a Node
 frontend server needs to run in production. The browser uses a relative
 `/v1/chat` URL and has no provider hostname or key. This documents the
-routing shape; production authentication and deployment are separate work.
+routing shape; the [public demo deployment](chat-deployment.md) uses it without
+authentication and explicitly discloses shared history.
 
 ## Corpus tools
 
@@ -233,7 +242,8 @@ All endpoints below are under `/v1/chat/sessions` and send `Cache-Control: no-st
 | `GET /v1/chat/sessions/<session-uuid>/history` | `{ "revision": n, "history": { "head_id": "…", "messages": […] } }`; an empty session is revision 0 |
 | `PUT /v1/chat/sessions/<session-uuid>/history` | Save `{ "checkpoint_id": "uuid", "expected_revision": n, "history": … }`; return the committed revision |
 
-The loopback binary provisions one stable **local development project**.
+Development mode provisions one stable **local development project**;
+public-demo mode uses a separate stable **public demo project**.
 It has no users or project picker. Internal reads/writes are project-scoped;
 that does not provide authentication or authorization for deployment. The
 server refuses unknown runner/format envelopes rather than guessing or

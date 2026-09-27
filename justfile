@@ -53,7 +53,7 @@ test-one crate:
 
 # Release binaries: the CLI and the server
 build:
-    cargo build --release -p ol-rht -p ol-rht-serve
+    cargo build --release -p ol-rht -p ol-rht-serve -p ol-rht-chat -p workbench-store
 
 # ----------------------------------------------------------------- dev
 

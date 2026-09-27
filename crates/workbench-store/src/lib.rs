@@ -73,6 +73,33 @@ impl Store {
         Ok(())
     }
 
+    /// Check that this binary's migrations have been applied, without changing schema.
+    /// Later successful migrations are allowed so compatible releases can roll back.
+    ///
+    /// # Errors
+    /// Returns a database error for an unavailable, missing, dirty or mismatched schema.
+    pub async fn ready(&self) -> Result<(), sqlx::Error> {
+        let applied: Vec<(i64, Vec<u8>, bool)> = sqlx::query_as(
+            "SELECT version, checksum, success FROM _sqlx_migrations ORDER BY version",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        if applied.iter().any(|(_, _, success)| !success)
+            || MIGRATOR.iter().any(|migration| {
+                !applied.iter().any(|(version, checksum, _)| {
+                    *version == migration.version
+                        && checksum.as_slice() == migration.checksum.as_ref()
+                })
+            })
+        {
+            return Err(sqlx::Error::Protocol(
+                "Application schema is not ready; run the release's workbench-db migrate job."
+                    .into(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Close the pool after outstanding operations release their connections.
     pub async fn close(&self) {
         self.pool.close().await;

@@ -32,11 +32,12 @@ pub(crate) struct Storage {
     pub project_id: Uuid,
 }
 
-pub(crate) fn routes() -> Router<Arc<App>> {
+pub(crate) fn routes(app: Arc<App>) -> Router<Arc<App>> {
     Router::new()
         .route("/v1/chat/sessions", get(list))
         .route("/v1/chat/sessions/{id}", axum::routing::put(create))
         .route("/v1/chat/sessions/{id}/history", get(load).put(save))
+        .route_layer(axum::middleware::from_fn_with_state(app, limit_writes))
         .layer(DefaultBodyLimit::max(MAX_HISTORY_BYTES))
         .layer(axum::middleware::map_response(
             |mut response: Response| async {
@@ -47,6 +48,20 @@ pub(crate) fn routes() -> Router<Arc<App>> {
                 response
             },
         ))
+}
+
+async fn limit_writes(
+    State(app): State<Arc<App>>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    if request.method() == axum::http::Method::PUT
+        && let Some(admission) = &app.admission
+        && let Err(rejected) = admission.write()
+    {
+        return rejected.into_response();
+    }
+    next.run(request).await
 }
 
 struct ApiError(StatusCode, &'static str);

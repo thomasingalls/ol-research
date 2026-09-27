@@ -38,6 +38,7 @@ async fn setup(pool: PgPool) -> (Store, Uuid, Uuid) {
 async fn migrations_are_explicit_and_repeatable(pool: PgPool) {
     let store = Store::from_pool(pool.clone());
     store.health().await.unwrap();
+    assert!(store.ready().await.is_err());
     let absent: Option<String> =
         sqlx::query_scalar("SELECT to_regclass('workbench_projects')::text")
             .fetch_one(&pool)
@@ -45,6 +46,7 @@ async fn migrations_are_explicit_and_repeatable(pool: PgPool) {
             .unwrap();
     assert_eq!(absent, None);
     store.migrate().await.unwrap();
+    store.ready().await.unwrap();
     let id = Uuid::new_v4();
     let project = store
         .create_project(id, "Survives migration retry")

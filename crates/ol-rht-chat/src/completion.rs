@@ -109,6 +109,9 @@ fn request(app: &App, messages: &[Value], remaining: usize) -> reqwest::RequestB
     if app.config.provider == Provider::OpenRouter {
         // Match the local recipe's reasoning-off behavior.
         body["reasoning"] = json!({"enabled": false});
+        if let Some(provider) = &app.config.openrouter_provider {
+            body["provider"] = json!({"only": [provider], "allow_fallbacks": false});
+        }
     }
     app.client
         .post(app.config.endpoint.clone())
@@ -215,6 +218,14 @@ mod tests {
         let key = "test-openrouter-secret";
         for (config, expected_key, endpoint) in [
             (
+                Config::openrouter(OPENROUTER_MODEL, key)
+                    .unwrap()
+                    .with_openrouter_provider("nvidia")
+                    .unwrap(),
+                key,
+                "https://openrouter.ai/api/v1/chat/completions",
+            ),
+            (
                 Config::openrouter(OPENROUTER_MODEL, key).unwrap(),
                 key,
                 "https://openrouter.ai/api/v1/chat/completions",
@@ -226,6 +237,7 @@ mod tests {
             ),
         ] {
             let app = App {
+                admission: None,
                 config,
                 client: reqwest::Client::new(),
                 storage: None,
@@ -255,6 +267,14 @@ mod tests {
                     assert_eq!(body["reasoning"], json!({"enabled": false}));
                 } else {
                     assert!(body.get("reasoning").is_none());
+                }
+                if let Some(provider) = &app.config.openrouter_provider {
+                    assert_eq!(
+                        body["provider"],
+                        json!({"only": [provider], "allow_fallbacks": false})
+                    );
+                } else {
+                    assert!(body.get("provider").is_none());
                 }
             }
             for url in [app.config.corpus, app.config.work] {

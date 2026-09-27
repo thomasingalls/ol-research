@@ -3,7 +3,7 @@ name = "ol-rht-chat"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "A local development chat API over an OpenAI-compatible model server."
+description = "A streaming literature chat API with local and public demo deployment modes."
 
 [dependencies]
 async-stream.workspace = true

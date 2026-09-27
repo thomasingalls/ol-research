@@ -32,8 +32,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         store.migrate().await?;
         println!("Application migrations are current.");
     } else {
-        store.health().await?;
-        println!("Application database is reachable.");
+        store.ready().await?;
+        println!("Application database and schema are ready.");
     }
     store.close().await;
     Ok(())

@@ -44,10 +44,12 @@ product ambitions:
   `openalex:W…`, `reg1038:…` — a publisher's own id) or a public id. One work jumps straight there; a **shared**
   name offers the choice between the works it was accepted into; an id retired
   by a **split** says so.
-- **Chat** — an assistant-ui thread connected to the local development model
-  through the Rust chat API. Sending, stopping, editing, regenerating and
-  switching branches work. The model has no corpus tools yet. The
-  conversation is held by the screen and is gone when you leave it.
+- **Chat** — an assistant-ui thread connected through the Rust chat API,
+  with corpus search, paper retrieval and Postgres-backed conversation history.
+  The hosted version is a public shared demo: anyone can read and change its
+  conversations. A persistent notice explains this and reproduces NVIDIA's
+  free-endpoint disclosure with links to its privacy policy and trial terms.
+  See [deployment](../docs/chat-deployment.md) before changing the provider.
 
 Vocabulary, kept the same as the pipeline: a **work** is one entity; its
 **names** are the identifiers that point at it; a **stub** is a work we know
@@ -437,7 +439,7 @@ stored in the `/chat?session=…` URL. Failed saves retain an exportable local
 snapshot; they never silently overwrite a newer revision.
 
 Copy the repository root's `.env.example` to `.env` if needed and fill in
-`OPENROUTER_API_KEY` there. The example selects `qwen/qwen3.8-27b:free` on
+`OPENROUTER_API_KEY` there. The example selects `nvidia/nemotron-3-ultra-550b-a55b:free` on
 OpenRouter. Run `just db-up db-migrate` first, then `just chat-api` and
 `just web` in separate terminals, then open `/chat`. The API runs on
 loopback port 50053; `just` loads the root `.env` automatically.

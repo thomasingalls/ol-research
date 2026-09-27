@@ -58,7 +58,8 @@ export function Chat() {
   }
 
   return (
-    <section aria-label="Chat" className="flex h-[calc(100dvh-12rem)] min-h-80 flex-col xl:h-[calc(100dvh-7rem)]">
+    <section aria-label="Chat" className="flex h-[calc(100dvh-12rem)] min-h-[40rem] flex-col xl:h-[calc(100dvh-7rem)]">
+      <PublicChatNotice />
       <div className="flex flex-wrap items-center gap-2 border-b px-4 py-2">
         <label className="sr-only" htmlFor="chat-session">Conversation</label>
         <select id="chat-session" className="min-w-0 max-w-72 rounded-lg border bg-background px-2 py-1 text-sm"
@@ -81,6 +82,18 @@ export function Chat() {
         : history.data ? <SavedChat key={session} session={session} initial={history.data} onBusy={setBusy} reload={() => void history.refetch()} /> : null}
     </section>
   )
+}
+
+function PublicChatNotice() {
+  return <aside aria-labelledby="public-chat-notice" className="shrink-0 border-2 border-amber-600 bg-amber-50 px-4 py-3 text-sm text-amber-950 dark:border-amber-400 dark:bg-amber-950/40 dark:text-amber-100">
+    <h2 id="public-chat-notice" className="text-base font-bold">Public shared demo — your chats are visible to everyone</h2>
+    <p className="mt-1 font-semibold">Anyone can read, continue or change any conversation. Do not enter private, personal or confidential information.</p>
+    <p className="mt-2">The hosted demo uses NVIDIA’s free Nemotron endpoint through OpenRouter. NVIDIA’s notice:</p>
+    <blockquote className="mt-1 border-l-2 border-current pl-3">
+      <p>For the free endpoint, please do not upload any confidential information or personal data (such as voices or faces of people). Your use is logged for security purposes and to improve NVIDIA products and services. The logged session data for improvement purposes is not linked to your identity or any persistent identifier. For more information about NVIDIA&apos;s data processing practices, see <a className="underline underline-offset-2" href="https://www.nvidia.com/en-us/about-nvidia/privacy-policy/" target="_blank" rel="noreferrer">Privacy Policy</a>. By using this free endpoint, you consent to NVIDIA&apos;s collection, recording, and use of such information and the <a className="underline underline-offset-2" href="https://assets.ngc.nvidia.com/products/api-catalog/legal/NVIDIA%20API%20Trial%20Terms%20of%20Service.pdf" target="_blank" rel="noreferrer">NVIDIA API Trial Terms of Service</a>.</p>
+    </blockquote>
+    <p className="mt-2">Replies and saves have shared usage limits. <a className="underline underline-offset-2" href="https://openrouter.ai/privacy" target="_blank" rel="noreferrer">OpenRouter’s privacy policy</a> also applies. NVIDIA’s statement about identifiers does not make conversations on this site private.</p>
+  </aside>
 }
 
 function SavedChat({ session, initial, onBusy, reload }: {
@@ -144,7 +157,7 @@ function ChatWelcome() {
         </EmptyMedia>
         <EmptyTitle>Chat</EmptyTitle>
         <EmptyDescription>
-          Find papers in the literature corpus with the local development model.
+          Explore the literature corpus in a public, shared conversation.
           Search for papers or look one up by ID for a citation and reading links.
         </EmptyDescription>
       </EmptyHeader>

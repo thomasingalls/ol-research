@@ -72,7 +72,9 @@ not apply migrations; `Store::from_pool` supports caller-managed pools.
 
 `workbench-db migrate` explicitly applies embedded SQLx migrations, including
 their checksum validation and migration locking. `workbench-db check` tests
-connectivity only; it does not certify that the schema is current. Both use
+connectivity and verifies that the binary's embedded migrations have been
+applied successfully with matching checksums. It does not run migrations.
+Later successful migrations are allowed, supporting compatible rollbacks. Both use
 `OL_RHT_DATABASE_URL` and have no implicit database URL when invoked directly:
 
 ```sh

@@ -1,5 +1,104 @@
 //! Real loopback sockets, a deterministic fake model, and no model downloads.
 
+#[tokio::test]
+async fn demo_limits_hold_slots_for_stream_lifetime_and_release_on_disconnect() {
+    let (model, model_task) = serve(Router::new().route(
+        "/v1/chat/completions",
+        post(|| async { std::future::pending::<String>().await }),
+    ))
+    .await;
+    let (api, api_task) = serve(
+        ol_rht_chat::router(
+            Config::local(&format!("{model}/v1"), "test")
+                .unwrap()
+                .with_limits(ol_rht_chat::Limits {
+                    concurrent_replies: 1,
+                    replies_per_minute: 2,
+                    history_writes_per_minute: 1,
+                })
+                .unwrap(),
+        )
+        .unwrap(),
+    )
+    .await;
+    let http = client();
+    let url = format!("{api}/v1/chat");
+    let first = http.post(&url).json(&request()).send().await.unwrap();
+    assert_eq!(first.status(), StatusCode::OK);
+    let rejected = http.post(&url).json(&request()).send().await.unwrap();
+    assert_eq!(rejected.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(rejected.headers()["retry-after"], "5");
+    drop(first);
+    // Disconnection propagates asynchronously through the real HTTP sockets.
+    let next = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let response = http.post(&url).json(&request()).send().await.unwrap();
+            if response.status() == StatusCode::OK {
+                break response;
+            }
+            assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("disconnect releases the reply slot");
+    drop(next);
+    let rejected = http.post(&url).json(&request()).send().await.unwrap();
+    assert_eq!(rejected.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(
+        http.get(format!("{api}/health"))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        http.get(format!("{api}/ready"))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+
+    let session = format!("{api}/v1/chat/sessions/{}", uuid::Uuid::new_v4());
+    assert_eq!(
+        http.put(&session)
+            .json(&json!({"title":"Test"}))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    let rejected = http
+        .put(&session)
+        .json(&json!({"title":"Test"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(rejected.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert!(
+        rejected.headers()["retry-after"]
+            .to_str()
+            .unwrap()
+            .parse::<u64>()
+            .unwrap()
+            <= 60
+    );
+    assert_eq!(
+        http.get(format!("{api}/v1/chat/sessions"))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    model_task.abort();
+    api_task.abort();
+}
+
 use axum::{Json, Router, http::StatusCode, routing::post};
 use ol_rht_chat::{Config, DEV_KEY};
 use serde_json::{Value, json};

@@ -1,5 +1,54 @@
 //! HTTP + real Postgres, isolated per test. No model or corpus required.
 
+#[sqlx::test(migrator = "workbench_store::MIGRATOR")]
+#[ignore = "requires local Postgres; run just db-test"]
+async fn readiness_checks_schema_and_db_but_liveness_stays_independent(pool: PgPool) {
+    let store = Store::from_pool(pool.clone());
+    let api = Api::start(store.clone(), Uuid::new_v4()).await;
+    let base = api.url.trim_end_matches("/v1/chat/sessions");
+    assert_eq!(
+        api.client
+            .get(format!("{base}/ready"))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::OK
+    );
+    sqlx::query("UPDATE _sqlx_migrations SET checksum = decode('00', 'hex')")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        api.client
+            .get(format!("{base}/ready"))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    store.close().await;
+    assert_eq!(
+        api.client
+            .get(format!("{base}/ready"))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    assert_eq!(
+        api.client
+            .get(format!("{base}/health"))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::OK
+    );
+}
+
 use axum::http::StatusCode;
 use ol_rht_chat::Config;
 use serde_json::{Value, json};

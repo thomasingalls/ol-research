@@ -159,7 +159,7 @@ export const chatAdapter: ChatModelAdapter = {
     }
     if (!response.ok) {
       const error = await response.json().catch(() => null)
-      throw new Error(error?.message ?? `Chat service returned HTTP ${response.status}. Start \`just chat-api\` if it is not running.`)
+      throw new Error(error?.message ?? `Chat service returned HTTP ${response.status}. Please try again later.`)
     }
     if (!response.body || !response.headers.get("content-type")?.startsWith("application/x-ndjson")) {
       await response.body?.cancel()
