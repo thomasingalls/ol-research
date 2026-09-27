@@ -1935,8 +1935,38 @@ stays.
     components: the ids, the names that moved and the records behind
     them, so the user can see what Crossref's evidence changes before a
     merge of record writes it (the user: "hey fun, system is working.
-    looking forward to that report when we get there"). Not built.
-21. ~~**The public id.**~~ Built 2026-09-16 (serving plan SP3):
+    looking forward to that report when we get there"). Not built. Over
+    the whole file (2026-09-27, `ol-rht-merge-survey-v8`; M): 150,262,057
+    minted, 41,973,023 reused, 3,787 merged, 13,312 split, 2,066,673
+    names attached, none dropped.
+28. **Crossref aliases that point outside their work — before a merge
+    of record.** A Crossref record's `aliases` are other DOIs the
+    registry holds for the work, and the merge makes each a name of it
+    (model 10, the user: "we should not drop this, this is important
+    info"). The survey of the whole file (2026-09-27,
+    `ol-rht-merge-survey-v8`) stopped on three components the rules
+    could not resolve, and each is aliases that name other works (M,
+    looked up at Crossref's API and NCBI the same day, four requests):
+    - 36 article records of J Altern Complement Med 2004, volume 10,
+      each with `aliases: ["10.1089/acm.2004.10"]`, the volume's DOI cut
+      short: the one alias ties the articles and their 30 PubMed twins
+      into one component of 66 records (PubMed's own copies carry the
+      right DOIs, `10.1089/acm.2004.10.911`);
+    - `10.1161/svin.122.000762`, "Correction to: Stroke: Vascular and
+      Interventional Neurology Volume 1, No. S1", a journal-article
+      whose aliases are 102 of that supplement's abstract DOIs, with its
+      PubMed twin;
+    - `10.1007/43630.1474-9092`, the journal-level record (`type:
+      journal`) of Photochemical & Photobiological Sciences since it
+      moved from the RSC to Springer, whose aliases are 655 of the RSC's
+      article DOIs (649 in the March 2026 file).
+    The first is the shape an existing rule already refuses for
+    publisher ids — a value one source claims for more than one of its
+    records is no article's id (§3.1) — not yet applied to an alias. The
+    other two are one work claiming a hundred and more DOIs, which the
+    rules' size limit (64 names) stops though no two records disagree;
+    as names, a citation to an RSC article or an abstract would land on
+    the journal or the correction. To decide with the user. Built 2026-09-16 (serving plan SP3):
     `merge::public` mints one for every id lacking it when `merge` is
     given `--public-key <file>` — a keyed BLAKE3 hash of the id, `ol:`
     and fourteen Crockford characters — into `merged/public.jsonl`; and

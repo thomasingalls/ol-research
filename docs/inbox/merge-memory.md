@@ -633,6 +633,43 @@ resident, `resolve` near 60, the finish near 45 — under what ol-rht may
 take of the box, `resolve` the tallest, and the one whose own parts no
 progress line yet separates.
 
+**The whole file** (`ol-rht-merge-survey-v8`, the same image, on the
+store itself: the PubMed baseline and all of Crossref's March 2026 file,
+219,531,073 records; 2026-09-27; M). It ran to the end, 22,819 s, six
+hours and twenty minutes, no kill, and exited 1 on three components the
+rules could not resolve (merge plan §11 item 28). The phases:
+
+| phase | ends at | heap (peak) | resident high-water |
+|---|---|---|---|
+| copies read and settled (253,568,864 names, a dictionary of 1,901 MiB) | 1,182 s | 2.30 (20.62) | 22.8 GB |
+| records and names read | 2,366 s | 21.41 (27.24) | 31.2 GB |
+| identity resolved (1,302,924 conflict components) | 7,184 s | 23.25 (81.04) | 50.7 GB |
+| stub names numbered (3,506,761) | — | 22.94 | — |
+| identity and registry done | 7,334 s | 24.69 | — |
+| names table built | — | 27.30 | — |
+| views read | 8,640 s | 27.66 | — |
+| references read (5,851,637,147 rows spilled, 320 GiB) | 17,363 s | 27.66 | 51.5 GB |
+| merged rows finished | 22,819 s | 1.34 (81.04) | 62.2 GB |
+
+The resolution holds 22.47 of the 22.94 GiB once the stubs are
+numbered: names 3.20, stub names 0.09, records 14.00, works 5.18. The
+records are most of it now. The stubs were 25.4 million at the eighth
+and are 3.5 million over the whole file, most names an eighth cited
+being records of another. The container's peak was its 96 GiB limit,
+the spill's page cache, as before. Against the estimates from v7: the
+copies read 22.8 GB resident where 35 was guessed, `resolve` 50.7
+against 60 (81 GiB asked for, much of it never touched), the finish
+62.2 against 45 — a spill range holds about 16 million rows over the
+whole file against 9.6 million over the eighth, so the finish's own
+share grew with the file after all. A merge of record also writes the
+sets, promotes 152 million registry lines and mints about 150 million
+public ids through `Public`'s two string maps, about 119 bytes an id,
+some 30 GB (D) — after the finish, on a heap of 1.3 GiB. So the whole
+file fits in what ol-rht may take of the box, at 62 GB resident, with
+the finish the tallest; nothing here has to change before a merge of
+record, and the records and the finish's range are where to look if
+the next source brings it closer.
+
 ## Walls behind this one
 
 - **Time.** Pass 1 decodes on one thread: 26 minutes for 36.5 GiB. The
