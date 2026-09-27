@@ -213,9 +213,11 @@ does with a range is an access pattern, not what gets stored.
   how often expanding one reproduces the other.
 - **Shapes that are not a plain range** (`iii-xiv`, `S12-5`,
   `123-9; 131`) get a grammar learned from CF0's counts. Whatever that
-  grammar cannot read whole falls back the way dates do by default:
-  keep what is certain, and the raw text beside it, counted. The
-  fallback is the user's to confirm on CF0's numbers.
+  grammar cannot read whole falls back the way dates do: keep what is
+  certain, and the raw text beside it, counted. The user confirmed this
+  on 2026-09-27 and expects the grammar to be refined later ("some churn
+  on refining the parser at a later stage"), as the date grammar was
+  over models 5 to 8.
 - **An article number** is kept apart only where the source marks one
   (Crossref's `article-number`). An `e0123456` in a page field is a page
   and stays as written.
@@ -225,8 +227,13 @@ proceedings, but filling them waits: editors, edition and publisher place
 are read and not kept by the Crossref reader, and the user has no
 bandwidth for books now. `publisher` is dropped: citation styles do not
 print one for a journal article, and it would come back as an entity
-(§8). Model 12 reopens "no source reader changes" for the reading of
-pages, and for labels if CF0 shows they need it, nothing else.
+(§8). Model 12 reopens "no source reader changes" for three things only:
+- the reading of pages;
+- labels, if CF0 shows they need it;
+- Crossref's `short-container-title`. The user, 2026-09-27: use it where
+  there is nothing else. It becomes the journal abbreviation where PubMed
+  gives none. The user tied it to the entity work: a journal's own id
+  would later own its abbreviation (§8).
 
 **D10. The free PDF link: left out.** Its source is OpenAlex, which is
 not in the merge yet.
@@ -335,7 +342,8 @@ pub struct Text {
     pub abstract_text: Option<String>,
     pub authors: Vec<Author>,          // was Vec<String>
     pub venue: Option<String>,
-    /// PubMed's `ISOAbbreviation`, else `MedlineTA`.
+    /// PubMed's `ISOAbbreviation`, else `MedlineTA`, else Crossref's
+    /// `short-container-title` (kept from model 12).
     pub venue_short: Option<String>,
 }
 ```
@@ -345,7 +353,8 @@ pub struct Text {
   so nothing that shows authors today changes shape.
 - **Each text field names the record it comes from.** Authors come from
   the promoted `authors` field's source (D5). The venue comes from the
-  venue's, as now. `venue_short` comes from the work's PubMed record.
+  venue's, as now. `venue_short` comes from the work's PubMed record,
+  else its Crossref record.
 - **The assembler becomes a table.** `Assembler`'s `Wanted` and `fill`
   become a table over those four fields rather than three `if`s.
 
@@ -444,6 +453,10 @@ one, its merged set. It opens no writer.
   - For volume, issue, first page, last page and article number, and
     for the pair as a whole: same, compatible, conflicting, or nothing to
     compare (D2), with examples.
+    - Compatible is split by which source gives more.
+    - Nothing to compare is split in two: only one source gives
+      anything, which is harmless, or each gives values the other does
+      not, which is the case D2's rule would join unchecked.
   - Conflicts that differ only in notation (space, case, leading zeros,
     `Pt` or `Suppl` spellings) are counted apart.
   - Pairs where one record gives a volume and the other does not, by
@@ -455,11 +468,22 @@ one, its merged set. It opens no writer.
     how much (D4).
   - How often the venue's promoted source is not the record D3 would
     choose (§4, open).
+- **Part 3, from Crossref's raw file:** what the Crossref reader reads
+  and does not keep, which the normalized sets therefore cannot show.
+  It is counted by `crossref normalize --survey` through the reader's
+  set-aside counts, so nothing a set holds changes and no model version
+  is needed.
+  - A second `container-title`, by work type. The normalized record keeps
+    only the first, so a journal's parent collection (§11 item 1) would
+    be lost there.
+  - `short-container-title`, by work type (D9).
+  - The `journal-issue` object's own dates against the article's (§10).
 - **Where it runs.** Part 1 runs on the laptop over the harness store:
   PubMed's harness files and the Crossref 100-shard sample, which is
   enough to build and test it. Part 2 needs a merged set holding both
   sources, so its numbers come from the box after the current merge of
-  record, in a Job the user runs.
+  record, in a Job the user runs. Part 3 is a survey of the raw file,
+  run on the box like the model 10 and 11 surveys.
 
 *Done when:* the numbers are reported to the user, who settles D2's rule,
 D3's order, the page grammar and its fallback, labels as numbers or
@@ -468,6 +492,7 @@ then revised to match as draft 3.
 
 **CF1 — Model 12: reading at normalization.**
 - Pages are read in each source (D8), and labels if CF0 says so.
+- Crossref's `short-container-title` is kept (D9).
 - The stats report counts each reading, as DOI readings are counted.
 - Fixtures cover each shape CF0 found.
 - The `lib.rs` version 12 paragraph and ingestion plan §10 are written.
@@ -554,7 +579,7 @@ Nothing here closes a door the entity work needs:
 | Names as printed, never a person's known name (D6) | A page shows the byline's spelling, which varies across a person's papers | Entity ids for persons |
 | Names no source split stay whole (D7) | Styles that print a family name and initials print these whole. That is right for `ASDEX Upgrade Team`, and wrong for `Nguyen Minh Duc` or `F.` | A source that splits the name, or a person entity with a split name |
 | Journal articles filled only (D9) | A book chapter cites without editors, edition or place, and its chain holds only what the source already gives | A model version that keeps Crossref's editor, `edition-number` and `publisher-location`, and filling the book levels |
-| The journal abbreviation comes from PubMed alone | A work PubMed does not hold has none, and styles that abbreviate print the full name | Crossref's `short-container-title` (a model version; §11 item 2) or NLM's catalogue |
+| The journal abbreviation is PubMed's, else the one in Crossref's record (D9) | The two are written differently: NLM's abbreviations follow its own rules, while a publisher's deposit follows whatever that publisher uses. One journal can appear abbreviated two ways, and a work neither source abbreviates has none | A journal entity that owns its abbreviation (§8), or NLM's catalogue |
 | Stubs cite as identifiers only | Most rows of a reference list export with no fields | The corpus holding the works they name |
 | `published` kept as the derived earliest date (D4) | Search's year facet, sorting and the page still use one date | Date search over the separate dates, and a display rule (§10) |
 | `publisher` dropped (D9) | Nothing for journal articles; a book's citation needs it | Books filled, or publisher entities |
@@ -584,14 +609,11 @@ D2's rule and D8's fallback are added here once CF0 settles them.
 ## 11. Open items
 
 1. **The journal as a level or as the venue** (§4). Decided in draft 3,
-   on CF0's count.
-2. **Crossref's `short-container-title` in model 12.** Model 12 happens
-   anyway, so the journal abbreviation for works PubMed does not hold
-   could ride on it. Its presence and its style (ISO 4 or the
-   publisher's own) are **?**: the normalized sets do not keep it, so
-   counting it needs the raw file. The user's call. It is a journal
-   field, not a book one.
-3. **Crossref records that give only `issued`,** whose date is of no
+   on CF0's count. The user, 2026-09-27: "i think it's rare but on
+   occasion a journal will have a parent collection". So CF0 also looks
+   for journal articles whose record names a second container: two
+   `container-title`s, or ISSNs that are not the journal's.
+2. **Crossref records that give only `issued`,** whose date is of no
    stated kind (D4). CF0 counts them, and draft 3 says where their date
    goes.
 
@@ -627,3 +649,14 @@ D2's rule and D8's fallback are added here once CF0 settles them.
   - **D8:** pages are read and stored whole, at normalization (model 12),
     the user's choice over reading them in the view.
   - **Order:** the survey (CF0) comes first.
+- **2026-09-27, draft 2 reviewed.** The user committed it and answered
+  its five open points:
+  - `ol-rht survey placement` is fine as the name.
+  - The journal as a level or as the venue: "idk", to be settled from
+    the survey. A journal sometimes has a parent collection, which CF0
+    part 3 looks for.
+  - Crossref's `short-container-title` is kept in model 12 and used where
+    PubMed gives no abbreviation. The user tied it to the entity work.
+  - The date-style fallback for pages is confirmed, and later parser
+    churn is expected.
+  - Titles stay text.
