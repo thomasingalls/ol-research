@@ -11,25 +11,40 @@ and artifact provenance. The [Postgres storage foundation](workbench-storage.md)
 now backs the chat history API and browser history adapter. Native runner
 integration, handoff and the rest remain proposals.
 
-The application can now talk to a local model through a small Rust service:
+The application talks to OpenRouter or a local model through a small Rust service:
 
 ```text
 assistant-ui LocalRuntime
     → POST /v1/chat (same origin, Vite proxy during development)
     → ol-rht-chat on 127.0.0.1:50053
-    → POST /v1/chat/completions on llama.cpp, 127.0.0.1:8081
+    → POST /api/v1/chat/completions on https://openrouter.ai
+      (or /v1/chat/completions on local llama.cpp, 127.0.0.1:8081)
     → GET /v1/search or /v1/work on ol-rht-serve, 127.0.0.1:50052
-    → return tool results to llama.cpp, then stream its answer
+    → return tool results to the model provider, then stream its answer
 ```
 
 `ol-rht-chat` calls the existing corpus HTTP API; it does not open the store
 or index itself. Its tools are `search` and `get_paper`, executed by Rust.
 Conversations and edit/regeneration branches are stored in Postgres.
-There is no authentication system, upload service, approval workflow,
-run reconnection protocol or cloud provider configuration. Generation is
-still owned by the browser's HTTP connection.
+There is no authentication system, upload service, approval workflow or
+run reconnection protocol. Generation is still owned by the browser's HTTP
+connection.
 
 ## Start it
+
+For OpenRouter, copy `.env.example` to `.env` in the repository root if it
+does not already exist, then fill in the key locally:
+
+```dotenv
+OL_RHT_CHAT_PROVIDER=openrouter
+OL_RHT_CHAT_MODEL=qwen/qwen3.8-27b:free
+OPENROUTER_API_KEY=your-key-here
+```
+
+`just` loads this worktree's `.env` automatically; existing shell variables
+take precedence. `.env` is gitignored. The key is used by Rust only; do not
+put it in `web/.env` or a `VITE_` variable. With OpenRouter selected, chat
+messages and corpus tool results are sent to OpenRouter for inference.
 
 Start the local database and apply migrations explicitly first:
 
@@ -37,11 +52,10 @@ Start the local database and apply migrations explicitly first:
 just db-up db-migrate
 ```
 
-Then, from this workspace, in four terminals:
+Then, from this workspace, in three terminals:
 
 ```sh
 just serve
-just chat-model
 just chat-api
 just web
 ```
@@ -56,7 +70,21 @@ The corpus defaults to permitting browser origins `http://localhost:5173`
 and `http://127.0.0.1:5173`; a different frontend port needs a corresponding
 corpus origin setting for the footer and paper detail pages.
 
-The model recipe uses the installed `llama-server`, the cached
+No `just chat-model` process is needed for OpenRouter. Requests use the
+exact configured model ID, without a fallback model. Missing/empty keys
+fail startup before connecting to Postgres. Provider HTTP failures are
+shown with their status and guidance, including rate limits on free models.
+Reasoning is disabled for OpenRouter. Each model completion allows up to
+65,536 output tokens, subject to the existing request/run deadlines. The stream adapter accepts
+both OpenRouter's `reasoning` and llama.cpp's `reasoning_content` fields.
+It also accepts OpenRouter's final usage chunk, which repeats the finish
+reason with an empty delta before `[DONE]`. New text/tool calls after a
+finish reason, conflicting finish reasons, and missing `[DONE]` still fail.
+
+To return to the local model, set `OL_RHT_CHAT_PROVIDER=local` and
+`OL_RHT_CHAT_MODEL=local-gemma` in `.env`, and run `just chat-model` in a
+fourth terminal. With no provider/model settings, local Gemma remains the
+default. The model recipe uses the installed `llama-server`, the cached
 `unsloth/gemma-4-E2B-it-qat-GGUF:Q4_K_XL`, an 8192-token context and one
 generation slot. `--offline` prevents downloads. It binds to loopback,
 disables its built-in web UI and unused multimodal projector, and starts
@@ -73,22 +101,29 @@ machine-specific; the recipe uses the repository/quantization cache lookup.
 `just chat-api` supplies the local `OL_RHT_DATABASE_URL` unless explicitly
 overridden. Calling the binary directly requires this variable; there is no
 silent fallback to browser-only history and startup never applies migrations.
-The chat server also accepts explicit settings:
+The chat server also accepts explicit settings, which override the provider
+and model environment variables:
 
 ```sh
 cargo run -p ol-rht-chat -- \
+  --provider local \
   --listen 127.0.0.1:50053 \
   --upstream http://127.0.0.1:8081/v1 \
   --model local-gemma \
   --corpus http://127.0.0.1:50052
 ```
 
-Its listener, model URL and corpus URL are restricted to loopback for this
-development step. The client disables environment proxies and redirects.
-The only authorization value is the deliberately inert `local-dev-only`,
-shared with the llama-server recipe. It reads no model provider credentials. `OL_RHT_DATABASE_URL` is a separate
-application database setting, used only by Rust. No key is sent to or bundled in the browser.
-Real provider access remains a separate decision.
+When invoking `cargo run` directly, export the environment variables first;
+the binary itself does not load `.env`. Use `--provider openrouter` to select
+OpenRouter, with `OPENROUTER_API_KEY` exported. Its endpoint is fixed to
+`https://openrouter.ai/api/v1/chat/completions`; `--upstream` is local-only.
+The listener, local model URL and corpus URL remain restricted to loopback.
+The client disables environment proxies and redirects. Authorization is set
+only on model requests and redacted from debug output, never attached to
+corpus requests. Local mode still uses the deliberately inert `local-dev-only`
+shared with the llama-server recipe. `OL_RHT_DATABASE_URL` is a separate
+application database setting, used only by Rust. No key is sent to or bundled
+in the browser.
 
 **Vite is only the development proxy, not a production requirement.**
 `pnpm build` produces static frontend assets. In production, serve those
@@ -155,10 +190,14 @@ matching `role: tool` messages. Partial or token-truncated calls never run.
 Tool arguments are not streamed to the browser in this first version; the
 tool indicator appears once a complete call is ready to execute.
 
-Each reply permits at most six tool calls, executed sequentially. This
-allows one search followed by lookups for its five default results. Once
-the budget is used, the final model request sets `tool_choice: none`; a model
-that ignores that setting receives a stream error. Each corpus request has a
+Each reply permits at most 30 tool calls, executed sequentially, allowing
+multiple searches and paper lookups. Once the budget is used, the final
+model request sets `tool_choice: none` and adds
+an explicit instruction to answer from the available results, explaining
+any gaps. This runner instruction uses a new user-role message for the model
+only; it is not added to the saved conversation or displayed as user input.
+A model that returns structured tool calls after that receives a stream error.
+Each corpus request has a
 15-second deadline, a 1 MiB response-body cap and a 24 KiB metadata result
 cap. The entire model/tool loop has a three-minute deadline.
 
@@ -261,8 +300,11 @@ Roles are `user` and `assistant`; parts are `text`, `reasoning` and
 `tool_call`. Reasoning and tool calls are permitted only on assistant
 messages. Message ids must be distinct within the branch. The last message must be a user message. Unknown fields
 and unsupported part types are refused, so adding future tools/files
-requires an explicit contract change. The server owns the system prompt,
-model choice, tool definitions, one-choice setting and 1024-token output cap
+requires an explicit contract change. The server adds the current UTC month
+and year to the system prompt for each new reply, including follow-ups and
+regenerations, to anchor requests about recent research and relative dates.
+The server owns the system prompt,
+model choice, tool definitions, one-choice setting and 65,536-token output cap
 per model completion.
 
 The browser sends all supported parts. When constructing the model's chat
@@ -283,7 +325,7 @@ persisted as a UI history projection, not an authenticated execution log.
 
 Limits are 128 messages, 128 parts per message, 64 KiB of total text
 (including reasoning and serialized tool arguments/results), and a 256 KiB
-JSON request body. These are transport limits, not a tokenizer or context-window estimator. If llama.cpp refuses
+JSON request body. These are transport limits, not a tokenizer or context-window estimator. If the model provider refuses
 an oversized context, the UI reports the refusal; it does not silently
 discard older messages. Starting a new chat creates a separate session; earlier sessions remain available.
 
@@ -352,10 +394,9 @@ body drops the active model or corpus HTTP request and its socket. It does
 not schedule the next model turn. Closing the corpus socket does not promise
 to interrupt search work already scheduled inside the separate corpus service.
 
-This is deliberately coupled to the tested llama.cpp behavior: a closed
-stream cancels its generation. A different OpenAI-compatible server is not
-guaranteed to do that merely because it implements chat completions. Verify
-cancellation for any replacement backend. Introducing background runs,
+With the tested llama.cpp backend, a closed stream cancels its generation.
+With OpenRouter, Stop closes our upstream connection; cancellation inside
+the remote provider has not been verified. Introducing background runs,
 reconnection or approvals would require explicit run ownership and a stop
 operation instead of relying on this connection lifetime.
 
@@ -378,7 +419,8 @@ The Rust tests use a fake model over real loopback sockets. They cover
 history conversion, ordered text/reasoning deltas, errors, truncation,
 invalid tools, fragmented tool arguments, result provenance and warning
 flags, identifier forwarding, promoted reading links, metadata truncation, empty/error searches, tool budgets, replay of completed results,
-omission of cancelled calls, request limits, loopback configuration, and
+omission of cancelled calls, request limits, loopback configuration,
+OpenRouter request authentication/redaction, startup validation, and
 socket closure before model headers, during generation and during search. A property test
 varies UTF-8 content, SSE line endings and network chunk boundaries. No
 model is needed for these tests.
@@ -396,7 +438,7 @@ unsupported formats and unavailable storage.
 
 For a live smoke check, send a short prompt in `/chat`, follow up with a
 question about it, edit it, and regenerate a response. Then request a long
-answer and press Stop while it streams. Inspect llama.cpp's `/slots` with
+answer and press Stop while it streams. For local mode, inspect llama.cpp's `/slots` with
 the dummy authorization header: `is_processing` should become false
 promptly, and the browser's partial answer should stop changing.
 
@@ -419,8 +461,11 @@ citation-style compliance. The mobile check remained within 320px and
 showed no browser exceptions. Stop after search released the model slot in
 about 171 ms in the observed run, retaining the completed search card.
 
-Upstream reference: [llama.cpp server documentation](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md).
-The application API is intentionally smaller than that server's API.
+Upstream references: [OpenRouter quickstart](https://openrouter.ai/docs/quickstart),
+[Qwen3.8 27B (free)](https://openrouter.ai/qwen/qwen3.8-27b:free),
+[reasoning settings](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens),
+and [llama.cpp server documentation](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md).
+The application API is intentionally smaller than either provider's API.
 
 The persistence browser check on September 26 used a separate local test
 database and the existing cached Gemma server. It passed save/reload, a

@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 use crate::protocol::{ToolCall, ToolResult};
 use crate::{App, paper, search};
 
-pub(crate) const MAX_CALLS: usize = 6;
+pub(crate) const MAX_CALLS: usize = 30;
 
 pub(crate) fn definitions() -> Value {
     json!([search::definition(), paper::definition()])

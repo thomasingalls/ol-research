@@ -27,6 +27,24 @@ fn chunk(delta: &Value, reason: &Value) -> String {
         json!({ "choices": [{ "delta": delta, "finish_reason": reason }] })
     )
 }
+
+fn usage_chunk(delta: &Value, reason: &Value) -> String {
+    format!(
+        "data: {}\n\n",
+        json!({
+            "choices": [{"index":0, "delta":delta, "finish_reason":reason}],
+            "usage": {"prompt_tokens":10, "completion_tokens":3, "total_tokens":13}
+        })
+    )
+}
+
+fn with_usage(wire: &str, reason: &str) -> String {
+    wire.replace(
+        "data: [DONE]\n\n",
+        &(usage_chunk(&json!({"role":"assistant", "content":""}), &json!(reason))
+            + "data: [DONE]\n\n"),
+    )
+}
 async fn events(url: &str, request: Value) -> Vec<Value> {
     let response = client()
         .post(format!("{url}/v1/chat"))
@@ -50,7 +68,7 @@ async fn preserves_interleaved_parts_and_selected_history() {
     let (sent, received) = tokio::sync::oneshot::channel();
     let sent = std::sync::Arc::new(std::sync::Mutex::new(Some(sent)));
     let wire = chunk(&json!({"reasoning_content":"Thinking λ"}), &Value::Null)
-        + &chunk(&json!({"reasoning_content":"…"}), &Value::Null)
+        + &chunk(&json!({"reasoning":"…"}), &Value::Null)
         + &chunk(&json!({"content":"Answer 😀"}), &Value::Null)
         + &chunk(&json!({"reasoning_content":"Check"}), &Value::Null)
         + &chunk(&json!({"content":"Done"}), &json!("length"))
@@ -93,6 +111,7 @@ async fn preserves_interleaved_parts_and_selected_history() {
     assert_ne!(output[2]["part_id"], output[3]["part_id"]);
     assert_ne!(output[3]["part_id"], output[4]["part_id"]);
     assert_eq!(output[1]["text"], "Thinking λ");
+    assert_eq!(output[2]["text"], "…");
     assert_eq!(output[3]["text"], "Answer 😀");
     assert_eq!(
         output.last().unwrap(),
@@ -100,6 +119,67 @@ async fn preserves_interleaved_parts_and_selected_history() {
     );
     model_task.abort();
     api_task.abort();
+}
+
+#[tokio::test]
+async fn final_usage_chunks_preserve_the_answer_and_finish_reason() {
+    for reason in ["stop", "length"] {
+        for trailer in [
+            usage_chunk(&json!({"content":"", "role":"assistant"}), &json!(reason)),
+            usage_chunk(&json!({"content":null, "tool_calls":[]}), &json!(reason)),
+            "data: {\"choices\":[],\"usage\":{\"total_tokens\":13}}\n\n".to_owned(),
+        ] {
+            let wire = chunk(&json!({"content":"Answer."}), &json!(reason))
+                + &trailer
+                + "data: [DONE]\n\n";
+            let (model, model_task, _) = scripted_model(vec![wire]).await;
+            let (api, api_task) = serve(
+                ol_rht_chat::router(Config::local(&format!("{model}/v1"), "test").unwrap())
+                    .unwrap(),
+            )
+            .await;
+            let output = events(&api, request()).await;
+            assert_eq!(output.len(), 3);
+            assert_eq!(output[1]["text"], "Answer.");
+            assert_eq!(output[2], json!({"type":"finish", "reason":reason}));
+            model_task.abort();
+            api_task.abort();
+        }
+    }
+}
+
+#[tokio::test]
+async fn usage_chunks_do_not_hide_late_output_conflicting_finishes_or_errors() {
+    let mut trailers = vec![
+        usage_chunk(&json!({}), &json!("length")),
+        chunk(&json!({}), &json!("stop")),
+        "data: {\"error\":{\"message\":\"provider failure\"},\"choices\":[]}\n\n".to_owned(),
+    ];
+    for delta in [
+        json!({"content":"late text"}),
+        json!({"content":"\n"}),
+        json!({"reasoning":"late reasoning"}),
+        json!({"reasoning_content":"late reasoning"}),
+        json!({"tool_calls":[{"index":0, "id":"late"}]}),
+        json!({"function_call":{"name":"search"}}),
+    ] {
+        trailers.push(usage_chunk(&delta, &json!("stop")));
+    }
+    for trailer in trailers {
+        let wire =
+            chunk(&json!({"content":"Answer."}), &json!("stop")) + &trailer + "data: [DONE]\n\n";
+        let (model, model_task, _) = scripted_model(vec![wire]).await;
+        let (api, api_task) = serve(
+            ol_rht_chat::router(Config::local(&format!("{model}/v1"), "test").unwrap()).unwrap(),
+        )
+        .await;
+        let output = events(&api, request()).await;
+        assert_eq!(output.len(), 3);
+        assert_eq!(output[1]["text"], "Answer.");
+        assert_eq!(output[2]["type"], "error");
+        model_task.abort();
+        api_task.abort();
+    }
 }
 
 #[tokio::test]
@@ -204,6 +284,21 @@ fn development_config_cannot_target_a_remote_provider() {
         );
     }
     assert!(Config::local("http://[::1]:8081/v1", "test").is_ok());
+}
+
+#[test]
+fn openrouter_requires_a_key_and_keeps_corpus_on_loopback() {
+    for key in ["", "   ", "secret\r\ninjected: header"] {
+        let error = Config::openrouter(ol_rht_chat::OPENROUTER_MODEL, key).unwrap_err();
+        assert!(!error.contains("secret"));
+    }
+    assert!(Config::openrouter(" ", "test-key").is_err());
+    assert!(
+        Config::openrouter(ol_rht_chat::OPENROUTER_MODEL, "test-key")
+            .unwrap()
+            .with_corpus("https://example.com")
+            .is_err()
+    );
 }
 
 #[tokio::test]
@@ -316,12 +411,10 @@ fn answer() -> String {
 
 #[tokio::test]
 async fn search_round_trip_and_followup_preserve_results_without_reexecuting_history() {
-    let (model, model_task, requests) = scripted_model(vec![
-        search_call(&json!({"query":"protein & λ","limit":2})),
-        answer(),
-        answer(),
-    ])
-    .await;
+    let call = search_call(&json!({"query":"protein & λ","limit":2}));
+    let reply = with_usage(&answer(), "stop");
+    let (model, model_task, requests) =
+        scripted_model(vec![with_usage(&call, "tool_calls"), reply, answer()]).await;
     let (sent, received) = tokio::sync::oneshot::channel();
     let sent = std::sync::Arc::new(std::sync::Mutex::new(Some(sent)));
     let (corpus, corpus_task) = serve(Router::new().route("/v1/search", axum::routing::get(move |axum::extract::Query(query): axum::extract::Query<std::collections::HashMap<String, String>>, headers: axum::http::HeaderMap| {
@@ -464,10 +557,11 @@ async fn search_errors_and_no_matches_are_tool_results_the_model_can_use() {
 }
 
 #[tokio::test]
-async fn tool_budget_allows_six_calls_then_requires_an_answer() {
+async fn tool_budget_allows_thirty_calls_then_requires_an_answer() {
+    let budget = 30;
     for ignores_budget in [false, true] {
         let call = search_call(&json!({"query":"protein"}));
-        let mut wires = vec![call.clone(); 6];
+        let mut wires = vec![call.clone(); budget];
         wires.push(if ignores_budget { call } else { answer() });
         let (model, model_task, requests) = scripted_model(wires).await;
         let (corpus, corpus_task) = serve(Router::new().route(
@@ -488,13 +582,48 @@ async fn tool_budget_allows_six_calls_then_requires_an_answer() {
         let output = events(&api, request()).await;
         assert_eq!(
             output.iter().filter(|e| e["type"] == "tool_result").count(),
-            6
+            budget
         );
         assert_eq!(
             output.last().unwrap()["type"],
             if ignores_budget { "error" } else { "finish" }
         );
-        assert_eq!(requests.lock().unwrap()[6]["tool_choice"], "none");
+        {
+            let requests = requests.lock().unwrap();
+            assert_eq!(requests[budget - 1]["tool_choice"], "auto");
+            assert_eq!(
+                requests[budget - 1]["messages"]
+                    .as_array()
+                    .unwrap()
+                    .last()
+                    .unwrap()["role"],
+                "tool"
+            );
+            assert_eq!(requests[budget]["tool_choice"], "none");
+            let final_instruction = requests[budget]["messages"]
+                .as_array()
+                .unwrap()
+                .last()
+                .unwrap();
+            assert_eq!(final_instruction["role"], "user");
+            assert!(
+                final_instruction["content"]
+                    .as_str()
+                    .unwrap()
+                    .contains("tool budget for this reply is now exhausted")
+            );
+            assert!(
+                final_instruction["content"]
+                    .as_str()
+                    .unwrap()
+                    .contains("Answer the user now using those results")
+            );
+            assert!(!output.iter().any(|event| {
+                event["text"].as_str().is_some_and(|text| {
+                    text.contains("tool budget for this reply is now exhausted")
+                })
+            }));
+        }
         for task in [model_task, corpus_task, api_task] {
             task.abort();
         }
@@ -506,6 +635,7 @@ async fn incomplete_or_invalid_calls_never_execute() {
     let good = search_call(&json!({"query":"protein"}));
     let mut wires = vec![
         good.replace("data: [DONE]\n\n", ""),
+        with_usage(&good, "tool_calls").replace("data: [DONE]\n\n", ""),
         good.replace("tool_calls\"}]", "stop\"}]"),
         good.replace("tool_calls\"}]", "length\"}]"),
         good.replace("rch", "rch_unknown"),

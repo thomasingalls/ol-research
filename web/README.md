@@ -106,7 +106,7 @@ No file-based codegen — four screens do not earn a generated route tree.
 | `/work/$workId`  | `/work/ol:3FWKF485MRW1QF?q=protein+folding`  | `workId` is a public id; `q` is the search beside it, if any |
 | `/work/$workId`  | `/work/ol:3FWKF485MRW1QF?list=cited-alongside` | which list is open: `references` (the default, which normalises away), `cites-same`, `citers`, `cited-alongside` |
 | `/resolve`       | `/resolve?text=pmid:10410805`                | one outcome redirects to the work           |
-| `/chat`          | `/chat`                                      | local model; the conversation is not in the URL |
+| `/chat`          | `/chat`                                      | model configured by the chat backend; session ID in the URL |
 
 A link from one work to another keeps `q` and `list`, so the results stay
 beside it and the same list opens on it.
@@ -436,25 +436,28 @@ message's save, and exposes save/retry/conflict status. Session selection is
 stored in the `/chat?session=…` URL. Failed saves retain an exportable local
 snapshot; they never silently overwrite a newer revision.
 
-Run `just db-up db-migrate` first, then `just chat-model`, `just chat-api` and
-`just web` in separate terminals,
-then open `/chat`. The first uses the cached Gemma E2B model with llama.cpp
-in offline mode; the second starts `ol-rht-chat` on loopback port 50053.
+Copy the repository root's `.env.example` to `.env` if needed and fill in
+`OPENROUTER_API_KEY` there. The example selects `qwen/qwen3.8-27b:free` on
+OpenRouter. Run `just db-up db-migrate` first, then `just chat-api` and
+`just web` in separate terminals, then open `/chat`. The API runs on
+loopback port 50053; `just` loads the root `.env` automatically.
 Vite proxies `/v1/chat` there **during development only**. Production serves
 the static build and routes `/v1/chat` to Rust without Vite. Run `just serve`
 for both corpus tools; plain conversation works without it. The shell's
 existing `/v1/epoch` request remains separate.
 
-Only the dummy value `local-dev-only` is used, between the Rust service and
-local llama.cpp. The browser has no model hostname or credentials. Neither
-service connects to a remote provider. The chat API currently accepts only
-loopback upstream URLs; real credential/provider setup remains a separate
-decision. See [the chat API documentation](../docs/chat-api.md) for startup,
+The browser has no model hostname or credentials. Rust sends chat messages
+and corpus tool results to OpenRouter over HTTPS. For offline Gemma, set
+`OL_RHT_CHAT_PROVIDER=local` and `OL_RHT_CHAT_MODEL=local-gemma` in the root
+`.env`, and also run `just chat-model`. That mode uses llama.cpp's cached
+model and the dummy key `local-dev-only`.
+See [the chat API documentation](../docs/chat-api.md) for startup,
 the wire contract, limits, cancellation behavior and tests.
 
 Check that an empty/whitespace draft cannot send, Enter sends, Shift+Enter
 adds a line, and IME composition does not send. Stop should freeze the
-partial answer **and free the llama.cpp generation slot**. Refresh creates
+partial answer and close the upstream connection (also freeing the generation
+slot with the tested local llama.cpp backend). Refresh creates
 another response branch; editing preserves the earlier branch. Leaving
 Chat and reopening the same session URL, or reloading after `Saved`, restores
 that conversation. Selecting **New chat** keeps earlier conversations.

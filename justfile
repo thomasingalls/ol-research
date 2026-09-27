@@ -7,6 +7,9 @@
 # recipe, so that line is the summary and anything longer sits above a
 # blank line, where just ignores it.
 
+# Read this worktree's optional configuration, without searching parent directories.
+set dotenv-path := ".env"
+
 store := env_var_or_default("OL_RHT_STORE", "data")
 key := env_var_or_default("OL_RHT_PUBLIC_KEY", env_var("HOME") / ".config/ol-rht/public.key")
 cli := "cargo run --release -p ol-rht --"
@@ -72,7 +75,7 @@ web:
 chat-model:
     llama-server --offline -hf unsloth/gemma-4-E2B-it-qat-GGUF:Q4_K_XL --no-mmproj --alias local-gemma --host 127.0.0.1 --port 8081 --ctx-size 8192 --parallel 1 --api-key local-dev-only --reasoning off --no-webui --slots
 
-# Local chat API on :50053; run beside chat-model and web, plus serve for corpus tools.
+# Chat API on :50053; provider/key from .env, plus web and serve for corpus tools.
 chat-api:
     @OL_RHT_DATABASE_URL={{quote(database_url)}} cargo run -p ol-rht-chat
 

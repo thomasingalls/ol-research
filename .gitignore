@@ -3,6 +3,12 @@
 /upstream-contributions/
 .kube
 
+# Local credentials and configuration; keep shareable examples.
+.env
+.env.*
+!.env.example
+.env
+
 ### macOS ###
 .DS_Store
 

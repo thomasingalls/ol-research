@@ -70,7 +70,7 @@ export function Chat() {
         </select>
         <Button variant="outline" disabled={busy || creating} onClick={() => void newChat()}>{creating ? "Creating…" : createError ? "Retry new chat" : "New chat"}</Button>
         {sessions.hasNextPage && <Button variant="ghost" disabled={sessions.isFetchingNextPage} onClick={() => void sessions.fetchNextPage()}>More conversations</Button>}
-        <span className="text-muted-foreground ml-auto text-xs">Local model · Corpus tools</span>
+        <span className="text-muted-foreground ml-auto text-xs">Corpus tools</span>
       </div>
       {(sessions.error || createError) && <div role="alert" className="px-4 py-2 text-sm">
         {createError ?? sessions.error?.message}
