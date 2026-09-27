@@ -2193,6 +2193,21 @@ cross-IDs and a second edge namespace early.
   renormalize, about 35 minutes for both sources side by side, is paid
   once. The first merge of record with Crossref is at model 11; the v10
   sets were surveyed and never merged of record.
+- 2026-09-27, model 12: a PubMed `CommentsCorrections` entry with no PMID
+  keeps its `RefSource` as the other record's DOI where the `RefSource`
+  reads whole as one, each reading counted as any DOI's, and the report
+  counts them by kind. The survey of the whole file at model 11 and merge
+  16 (`ol-rht-merge-survey-v9`) stopped on one component alone: the
+  erratum PMID 41585761, whose Crossref twin `10.1161/svin.122.000762`
+  gives the 102 supplement abstracts it corrects as aliases. PubMed says
+  it is the erratum for all 102 — `ErratumFor`, each `RefSource` a bare
+  DOI, no PMID, none of the abstracts being in PubMed — but the model
+  kept a relation's PMID and nothing else, so the merge's rule that a
+  work's aliases are not what it corrects (merge plan §11 item 28) saw
+  only the one abstract Crossref's own `update-to` names. The user's
+  call. On the two baseline files on this machine no relation lacks a
+  PMID; the model 12 normalize of the whole baseline counts them. The
+  model 11 sets were only surveyed; model 12's are rebuilt, not patched.
 
 ## 11. Dependencies
 

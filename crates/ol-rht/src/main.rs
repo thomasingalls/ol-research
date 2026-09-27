@@ -5410,6 +5410,9 @@ struct PubmedStats {
     history_time_malformed: BTreeMap<&'static str, u64>,
     publication_status: BTreeMap<&'static str, u64>,
     relations: BTreeMap<&'static str, u64>,
+    /// Relations with no PMID whose `RefSource` is a DOI, which names the
+    /// other record (model version 12), by kind.
+    relation_dois: BTreeMap<&'static str, u64>,
     references: u64,
     reference_ids: BTreeMap<&'static str, u64>,
     reference_doi_malformed: u64,
@@ -5419,6 +5422,17 @@ struct PubmedStats {
 }
 
 impl PubmedStats {
+    /// The relations, by kind, and those a DOI in `RefSource` names.
+    fn report_relations(&self) {
+        eprintln!("  relations {:?}", self.relations);
+        if !self.relation_dois.is_empty() {
+            eprintln!(
+                "  relations naming the other record by a DOI in RefSource, no PMID: {:?}",
+                self.relation_dois
+            );
+        }
+    }
+
     /// The `MedlineDate`s kept rather than read, with the commonest of
     /// them as written: what the grammar is taught from next.
     fn report_kept(&self) {
@@ -5549,7 +5563,7 @@ impl StatsReport for PubmedStats {
             );
         }
         eprintln!("  publication status {:?}", self.publication_status);
-        eprintln!("  relations {:?}", self.relations);
+        self.report_relations();
         eprintln!("references {}", self.references);
         eprintln!("  ids {:?}", self.reference_ids);
         if !self.reference_loose.is_empty() {
@@ -5712,6 +5726,9 @@ impl<'n> Sink<'n, Pubmed> for PubmedStats {
         }
         for r in &c.relations {
             *self.relations.entry(r.kind.token()).or_default() += 1;
+            if r.doi.is_some() {
+                *self.relation_dois.entry(r.kind.token()).or_default() += 1;
+            }
         }
     }
 
@@ -6371,7 +6388,7 @@ impl<'n> Sink<'n, OpenAlex> for OpenAlexStats {
 
 impl Merge for PubmedStats {
     fn merge(&mut self, other: Self) {
-        absorb_all!(self, other: PubmedStats { citations, deletions, corrected, excluded, doi, elocation_doi, doi_lowercased, doi_disagree, pii, pii_extra, publisher, pmc, pmc_malformed, published, published_kept, published_kept_why, published_kept_certain, electronic, revised, completed, status, languages, publication_types, unplaced_types, title, abstracts, sections, sections_markup, sections_math, other_abstracts, journal_issn, journal_issn_linking, journal_issn_malformed, persons, collectives, orcid, affiliations, affiliation_ids, investigators, mesh_headings, mesh_major, chemicals, keywords, grants, grants_with_country, data_banks, history, history_date_malformed, history_time_malformed, publication_status, relations, references, reference_ids, reference_loose, reference_doi_malformed, reference_pmid_malformed, reference_pmc_malformed, malformed_samples });
+        absorb_all!(self, other: PubmedStats { citations, deletions, corrected, excluded, doi, elocation_doi, doi_lowercased, doi_disagree, pii, pii_extra, publisher, pmc, pmc_malformed, published, published_kept, published_kept_why, published_kept_certain, electronic, revised, completed, status, languages, publication_types, unplaced_types, title, abstracts, sections, sections_markup, sections_math, other_abstracts, journal_issn, journal_issn_linking, journal_issn_malformed, persons, collectives, orcid, affiliations, affiliation_ids, investigators, mesh_headings, mesh_major, chemicals, keywords, grants, grants_with_country, data_banks, history, history_date_malformed, history_time_malformed, publication_status, relations, relation_dois, references, reference_ids, reference_loose, reference_doi_malformed, reference_pmid_malformed, reference_pmc_malformed, malformed_samples });
     }
 }
 

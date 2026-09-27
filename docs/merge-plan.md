@@ -2003,7 +2003,11 @@ stays.
     aliases instead of updates, so that doi.org sends each abstract to the
     notice; and the journal's aliases are not a move's old and new DOIs of
     one article — doi.org sends `10.1039/b418513g` to the journal's DOI,
-    and no new article DOI exists — so they are not the journal's. Built 2026-09-16 (serving plan SP3):
+    and no new article DOI exists — so they are not the journal's. The
+    survey at merge 16 (`ol-rht-merge-survey-v9`) settled the first and
+    third, and stopped on the correction alone: PubMed names the 102
+    abstracts it corrects by a DOI in `RefSource` and no PMID, which the
+    model did not keep; model 12 does (ingestion plan §10). Built 2026-09-16 (serving plan SP3):
     `merge::public` mints one for every id lacking it when `merge` is
     given `--public-key <file>` — a keyed BLAKE3 hash of the id, `ol:`
     and fourteen Crockford characters — into `merged/public.jsonl`; and

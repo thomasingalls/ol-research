@@ -198,3 +198,30 @@ fn an_unread_affiliation_identifier_source_still_stops_the_run() {
         "{err}"
     );
 }
+
+/// PMID 41585761, looked up on 2026-09-27: an erratum for 102 abstracts of
+/// a supplement, none of them in PubMed, each named by a `RefSource` that
+/// is its DOI and nothing else. Each is the relation's target (model
+/// version 12), where no PMID was the only thing kept: the merge's rule
+/// that a work's aliases are not what it corrects reads them (merge plan
+/// §11 item 28).
+#[test]
+fn a_relation_without_a_pmid_is_named_by_a_refsource_that_is_a_doi() {
+    use merge::Contributor;
+    let out = run("erratum_refsource_dois");
+    let citation = &out.citations[0];
+    assert_eq!(citation.relations.len(), 102);
+    assert!(citation.relations.iter().all(|r| r.pmid.is_none()));
+    assert_eq!(
+        citation.relations[0].doi.as_ref().map(model::Doi::as_str),
+        Some("10.1161/svin.01.suppl_1.000048")
+    );
+    let mut targets = Vec::new();
+    Pubmed::relations(citation, &model::Table::default(), &mut |r| {
+        assert!(r.kind.corrects(), "{:?}", r.kind);
+        targets.extend(r.target);
+    })
+    .unwrap();
+    assert_eq!(targets.len(), 102);
+    assert_eq!(targets[0].to_string(), "doi:10.1161/svin.01.suppl_1.000048");
+}

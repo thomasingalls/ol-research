@@ -163,7 +163,11 @@ impl merge::Contributor for Pubmed {
         for r in &work.relations {
             out(merge::relation::Related {
                 kind: view::relation_kind(r.kind),
-                target: r.pmid.map(merge::OwnedName::Pmid),
+                target: r.pmid.map(merge::OwnedName::Pmid).or_else(|| {
+                    r.doi
+                        .as_ref()
+                        .map(|doi| merge::Name::Doi(doi.as_str()).to_owned())
+                }),
             });
         }
         Ok(())
