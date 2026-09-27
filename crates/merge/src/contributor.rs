@@ -23,6 +23,14 @@ pub trait Contributor: Source {
     /// not a name and is not emitted.
     fn names<'w>(work: &'w Self::Work<'_>, out: &mut dyn FnMut(Assertion<'w>));
 
+    /// Whether the record is a container of other works — a journal, a
+    /// volume or issue, a series ([`crate::Form::is_container`]) — whose
+    /// aliases are then not its names (merge plan §11 item 28). No, unless
+    /// the source says so.
+    fn container(_work: &Self::Work<'_>) -> bool {
+        false
+    }
+
     /// The native id a references set carries with each edge, as a name.
     fn native<'w>(id: &'w Self::Id<'_>) -> Name<'w>;
 

@@ -56,10 +56,30 @@ pub fn identity(
     if s.collided > 0 {
         writeln!(
             out,
-            "  publisher ids one source claimed for more than one of its records, and so no article's id: {} values, {} assertions rejected",
+            "  publisher ids and aliases one source claimed for more than one of its records, and so no article's id: {} values, {} assertions rejected",
             s.collided, s.collided_assertions
         )?;
         for example in &s.collided_examples {
+            writeln!(out, "              {example}")?;
+        }
+    }
+    if s.corrected > 0 {
+        writeln!(
+            out,
+            "  aliases a record of their own work says it corrects, and so not its names: {} assertions rejected; the records giving most",
+            s.corrected
+        )?;
+        for example in &s.corrected_examples {
+            writeln!(out, "              {example}")?;
+        }
+    }
+    if s.container_aliases > 0 {
+        writeln!(
+            out,
+            "  aliases a container's record gives — a journal's, a volume's, an issue's, a series' — and so not its names: {} assertions rejected; the records giving most",
+            s.container_aliases
+        )?;
+        for example in &s.container_examples {
             writeln!(out, "              {example}")?;
         }
     }

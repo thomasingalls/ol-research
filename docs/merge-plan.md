@@ -1386,6 +1386,36 @@ stays.
   measured what the whole file would cost in memory ([the merge's
   memory](inbox/merge-memory.md)), which it does not yet fit, and found
   the first identity changes under ids of record (§11 item 27).
+- 2026-09-27, merge version 16: Crossref's aliases and the three rules
+  of §11 item 28 (the user's, on the three components the survey of the
+  whole March 2026 file could not resolve). An alias is held back from
+  the identity pass's joins until every record is in, as a publisher id
+  is (`identity::settle`). Rule 1: an alias several records of one source
+  give, and none holds as its own DOI, names none of them — refused as
+  no article's id, the publisher-id rule's verdict; an alias a record
+  holds as its own joins its claimants to it, as before. Rule 2: an
+  alias that a record of the claimant's own group says it corrects,
+  retracts or updates (`relation::Kind::corrects`: Crossref's
+  `update-to`, PubMed's erratum, retraction, expression of concern,
+  update and republication for) is refused on that claim
+  (`Reason::Corrected`); a group is the records the joins put together by
+  their own names before any claim joins them further. Rule 3: a
+  container's aliases (`Form::is_container`: a journal, volume, issue,
+  series or set; `Contributor::container`) are refused on its record
+  (`Reason::Container`). A name rules 2 and 3 take off every record that
+  gave it is in no work, a stub's where cited. The report counts each,
+  with the records giving the most. Tests give each of the three shapes
+  as the file has them, the Crossref crate's own records among its
+  fixtures as the REST API gave them. On the laptop's store the merged
+  sets and registry are byte for byte merge 15's; both harnesses pass (0
+  differences in 1,833,847 ids and in 1,836,438). A batch decides rules 1
+  and 3 as the full merge does — rule 1 over the refused names the rows
+  keep (merge version 14), rule 3 from a record's form — and rule 2 from
+  its own records' relations and, for a row's record, the names the full
+  merge refused it as corrected, since rows keep no relations. Where
+  that is not enough — two existing works joined into one where a record
+  gives aliases, or a batch record giving an alias its row did not — the
+  batch stops for a full merge.
 
 ## 11. Open items
 
@@ -1939,8 +1969,8 @@ stays.
     the whole file (2026-09-27, `ol-rht-merge-survey-v8`; M): 150,262,057
     minted, 41,973,023 reused, 3,787 merged, 13,312 split, 2,066,673
     names attached, none dropped.
-28. **Crossref aliases that point outside their work — before a merge
-    of record.** A Crossref record's `aliases` are other DOIs the
+28. ~~**Crossref aliases that point outside their work — before a merge
+    of record.**~~ Built 2026-09-27 as merge version 16 (§10). A Crossref record's `aliases` are other DOIs the
     registry holds for the work, and the merge makes each a name of it
     (model 10, the user: "we should not drop this, this is important
     info"). The survey of the whole file (2026-09-27,
@@ -1966,7 +1996,14 @@ stays.
     other two are one work claiming a hundred and more DOIs, which the
     rules' size limit (64 names) stops though no two records disagree;
     as names, a citation to an RSC article or an abstract would land on
-    the journal or the correction. To decide with the user. Built 2026-09-16 (serving plan SP3):
+    the journal or the correction. The user's calls: the 36 articles are
+    36 works ("that venue's doi should not eliminate the existence of 36
+    articles"); the correction was looked at, and is one erratum PubMed
+    records as `ErratumFor` 102 abstracts, which the deposit gave as
+    aliases instead of updates, so that doi.org sends each abstract to the
+    notice; and the journal's aliases are not a move's old and new DOIs of
+    one article — doi.org sends `10.1039/b418513g` to the journal's DOI,
+    and no new article DOI exists — so they are not the journal's. Built 2026-09-16 (serving plan SP3):
     `merge::public` mints one for every id lacking it when `merge` is
     given `--public-key <file>` — a keyed BLAKE3 hash of the id, `ol:`
     and fourteen Crockford characters — into `merged/public.jsonl`; and

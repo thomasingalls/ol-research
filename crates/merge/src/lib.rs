@@ -56,7 +56,7 @@ pub use contributor::Contributor;
 pub use document::{Assembler, Assembly, Document, Documents};
 pub use identity::Identity;
 pub use kind::{Form, Genre};
-pub use name::{Assertion, Name, OwnedName};
+pub use name::{ALIASES, Assertion, Name, OwnedName};
 pub use registry::Registry;
 pub use title::Titles;
 pub use view::View;
@@ -171,4 +171,21 @@ pub use work::{SourceId, Sources, WorkId};
 /// citation is read as text, a container given as a symbol of its set's
 /// table resolved, so that an unresolved row keeps its container and the
 /// same reference in two sets prints alike.
-pub const VERSION: u32 = 15;
+///
+/// Version 16 (2026-09-27): Crossref's `aliases` are held back from the
+/// identity pass's joins until every record is in, as publisher ids are,
+/// and three rules decide which name the record's work (merge plan §11
+/// item 28, the user's rules; the survey of Crossref's whole March 2026
+/// file stopped on one component of each shape). An alias several
+/// records of one source give, and none holds as its own DOI, names none
+/// of them ([`identity::Reason::NotAnArticleId`]): a volume's DOI, cut
+/// short, that 36 articles each give. An alias a record of the
+/// claimant's own work says it corrects, retracts or updates is not the
+/// work's name ([`identity::Reason::Corrected`]): a correction whose
+/// deposit gives the 102 abstracts it corrects as its aliases. And a
+/// container's aliases — a journal's, a volume's, an issue's, a series' —
+/// are not its names ([`identity::Reason::Container`]): a journal's
+/// record giving 655 of its articles' old DOIs. A name those rules take
+/// off every record that gave it is in no work, and a stub's where cited.
+/// Every other alias joins as before.
+pub const VERSION: u32 = 16;

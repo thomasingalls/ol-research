@@ -473,6 +473,13 @@ impl fmt::Display for Field {
     }
 }
 
+/// The field a record's aliases are asserted from: other DOIs the
+/// registry says resolve to the record, Crossref's `aliases`. An alias is
+/// held back from the identity pass's joins until every record is in, as
+/// a publisher id is, since whether it names the record depends on the
+/// other records and on the record itself (merge plan §11 item 28).
+pub const ALIASES: &str = "aliases";
+
 /// One record saying a name is its own (merge plan §3.1): the name, the
 /// field it came from, and whether it is the record's native id or a
 /// foreign id it carries.

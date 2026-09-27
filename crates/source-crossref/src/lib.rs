@@ -87,7 +87,7 @@ impl merge::Contributor for Crossref {
         for alias in work.aliases.iter().filter_map(model::Claim::valid) {
             out(merge::Assertion {
                 name: merge::Name::Doi(alias.as_str()),
-                field: "aliases",
+                field: merge::ALIASES,
                 native: false,
             });
         }
@@ -101,6 +101,11 @@ impl merge::Contributor for Crossref {
                 });
             }
         }
+    }
+
+    fn container(work: &normalize::Work<'_>) -> bool {
+        work.kind
+            .is_some_and(|kind| view::form(kind).is_container())
     }
 
     fn native<'w>(id: &'w model::Doi<'_>) -> merge::Name<'w> {

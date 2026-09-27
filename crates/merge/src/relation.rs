@@ -159,6 +159,28 @@ pub enum Kind {
 }
 
 impl Kind {
+    /// Whether the asserting record says it corrects, retracts or
+    /// otherwise updates the target: Crossref's `update-to`, and PubMed's
+    /// erratum, retraction, expression of concern, update and the two
+    /// republications for. A notice is not the work it notices, so the
+    /// target is never a name of the notice's work (merge plan §11 item 28,
+    /// the user's rule of 2026-09-27). The Crossmark words deposited among
+    /// `relation` types point the other way — the target is the notice —
+    /// and are not these.
+    #[must_use]
+    pub const fn corrects(self) -> bool {
+        matches!(
+            self,
+            Self::UpdateTo(_)
+                | Self::ErratumFor
+                | Self::RetractionOf
+                | Self::ExpressionOfConcernFor
+                | Self::UpdateOf
+                | Self::CorrectedAndRepublishedFrom
+                | Self::RetractedAndRepublishedFrom
+        )
+    }
+
     /// The spelling in reports: the set's spelling for a unit kind, and
     /// `update-to:<type>` / `updated-by:<type>` for an update.
     #[must_use]
