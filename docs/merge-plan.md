@@ -1899,7 +1899,9 @@ stays.
       page range say the rest ("Proceedings of the Physiological
       Society", a journal article over pp. 33–82). The parts' volume,
       issue and pages are in the normalized records but not yet in the
-      views, and C would add them.
+      views. The [citation fields plan](citation-fields-plan.md) puts
+      them there first (draft 2, 2026-09-27) as each record's chain of
+      containers, outermost first, which C can read shared levels from.
     - **The container is already a work.** The stub a citing reference
       lands on under B has a registry id, and C keeps it: the stub
       becomes the container, and nothing moves in the registry. Where a
