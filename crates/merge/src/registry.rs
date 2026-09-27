@@ -281,7 +281,17 @@ pub struct Assignment {
     pub attached: u64,
     #[allow(missing_docs)]
     pub dropped: u64,
+    /// The first merges, for the report (merge plan §11 item 27): the id
+    /// retired, the id it went into, and the work given that id, by its
+    /// place among the works assigned.
+    pub merge_examples: Vec<(WorkId, WorkId, usize)>,
+    /// The first splits, the same way: the id retired, and each part's id
+    /// and work.
+    pub split_examples: Vec<(WorkId, Vec<(WorkId, usize)>)>,
 }
+
+/// How many merges and splits [`Assignment`] keeps to show.
+const CHANGE_EXAMPLES: usize = 8;
 
 impl Registry {
     /// The log at `path`, folded; empty when there is no file yet.
@@ -922,7 +932,7 @@ pub fn assign_each<T: Table, W: Works<T::Name> + ?Sized>(
         let contested = |id: &WorkId, w: usize| -> bool {
             claimants.contains_key(id) && keeper.get(id) != Some(&w)
         };
-        let mut split_into: HashMap<WorkId, Vec<WorkId>> = HashMap::new();
+        let mut split_into: HashMap<WorkId, Vec<(WorkId, usize)>> = HashMap::new();
         for w in 0..works.len() {
             let names = works.names(w);
             let unique: Vec<WorkId> = claims(w)
@@ -957,6 +967,9 @@ pub fn assign_each<T: Table, W: Works<T::Name> + ?Sized>(
                             .expect("both live, winner older");
                         emit(line)?;
                         out.merged += 1;
+                        if out.merge_examples.len() < CHANGE_EXAMPLES {
+                            out.merge_examples.push((*loser, *winner, w));
+                        }
                     }
                     out.reused += 1;
                     *winner
@@ -973,21 +986,25 @@ pub fn assign_each<T: Table, W: Works<T::Name> + ?Sized>(
             }
             for claimed in claims(w) {
                 if claimants.contains_key(claimed) && !keeper.contains_key(claimed) {
-                    split_into.entry(*claimed).or_default().push(id);
+                    split_into.entry(*claimed).or_default().push((id, w));
                 }
             }
             out.ids.push(id);
         }
-        let mut splits: Vec<(WorkId, Vec<WorkId>)> = split_into.into_iter().collect();
+        let mut splits: Vec<(WorkId, Vec<(WorkId, usize)>)> = split_into.into_iter().collect();
         splits.sort_unstable();
-        for (id, mut into) in splits {
-            into.sort_unstable();
-            into.dedup();
+        for (id, mut parts) in splits {
+            parts.sort_unstable();
+            parts.dedup_by_key(|(part, _)| *part);
+            let into: Vec<WorkId> = parts.iter().map(|(part, _)| *part).collect();
             let line = table
                 .fold(Event::Split { id, into }, at)
                 .expect("the parts are live");
             emit(line)?;
             out.split += 1;
+            if out.split_examples.len() < CHANGE_EXAMPLES {
+                out.split_examples.push((id, parts));
+            }
         }
         Ok(out)
     }
@@ -1787,6 +1804,10 @@ mod tests {
         assert!(
             matches!(a.lines.last(), Some(Line::Split { id: split, into, .. }) if *split == id(3) && *into == [id(4), id(5)])
         );
+        // The report's examples (merge plan §11 item 27): each change with
+        // the work each id went to, by its place among the works given.
+        assert_eq!(a.merge_examples, [(id(2), id(1), 0)]);
+        assert_eq!(a.split_examples, [(id(3), vec![(id(4), 1), (id(5), 2)])]);
         // A run without the DOI drops it; the id stays.
         let b = r.assign(&[vec![n("pmid:2")]], 1, "t2", true);
         assert_eq!(b.ids, [id(1)]);

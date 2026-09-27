@@ -1362,6 +1362,8 @@ struct Assigned {
     /// The counts; its `lines` are empty, having been staged as made.
     assignment: merge::registry::Assignment,
     stub_works: merge::identity::StubWorks,
+    /// The first merges and splits, written out for the report.
+    changes: Vec<String>,
     dropped: u64,
     /// `None` on a partial run.
     pending: Option<merge::registry::Pending>,
@@ -1470,6 +1472,7 @@ fn merge_assign(
     };
     debug_assert_eq!(works.len(), order.len() + stub_works.len());
     drop(works);
+    let changes = merge_changes(res, &order, &stub_works, &assignment);
     let pending = merge_staged(what, path, stager, computed)?;
     let (held_ids, stub_ids) = assignment.ids.split_at(order.len());
     let mut ids = merge::Ids {
@@ -1487,10 +1490,66 @@ fn merge_assign(
         ids,
         assignment,
         stub_works,
+        changes,
         dropped,
         pending,
         totals,
     })
+}
+
+/// The first merges and splits an assignment made, written out for the
+/// report (merge plan §11 item 27): each id retired, where it went, and
+/// the work there — its records, then its names — so that what a new
+/// source changes under ids of record can be seen before a merge of
+/// record writes it. `order` is the held works in the order they were
+/// assigned; the stubs follow.
+fn merge_changes(
+    res: &Resolution,
+    order: &[u32],
+    stubs: &merge::identity::StubWorks,
+    assignment: &merge::registry::Assignment,
+) -> Vec<String> {
+    let describe = |w: usize| -> String {
+        if let Some(&held) = order.get(w) {
+            let work = res.works.get(held as usize);
+            let records: Vec<String> = work
+                .records
+                .iter()
+                .map(|&rix| {
+                    let r = &res.records[rix as usize];
+                    format!("{}={}", r.source, res.arena.get(r.native))
+                })
+                .collect();
+            let names: Vec<String> = work
+                .names
+                .iter()
+                .map(|n| res.arena.get(n.name).to_string())
+                .collect();
+            format!("{{{} | {}}}", records.join(" "), names.join(" "))
+        } else {
+            let names: Vec<String> = stubs
+                .names(w - order.len())
+                .iter()
+                .map(|&ix| res.stubs.get(ix).to_string())
+                .collect();
+            format!("{{a stub | {}}}", names.join(" "))
+        }
+    };
+    let mut changes: Vec<String> = assignment
+        .merge_examples
+        .iter()
+        .map(|&(id, into, w)| format!("merged {id} into {into}: {}", describe(w)))
+        .collect();
+    for (id, parts) in &assignment.split_examples {
+        let ids: Vec<String> = parts.iter().map(|(part, _)| part.to_string()).collect();
+        let works: Vec<String> = parts.iter().map(|&(_, w)| describe(w)).collect();
+        changes.push(format!(
+            "split {id} into {}: {}",
+            ids.join(", "),
+            works.join(" || ")
+        ));
+    }
+    changes
 }
 
 /// Bytes of the registry the last journal line already told readers
@@ -1647,6 +1706,7 @@ fn merge_identity(opts: &Options) -> ExitCode {
         &pass.res,
         &assigned.stub_works,
         Some(&assigned.assignment),
+        &assigned.changes,
     ) {
         eprintln!("{what}: {e}");
         return ExitCode::FAILURE;
@@ -1724,6 +1784,7 @@ fn merge_all(opts: &Options, public_key: Option<&Path>) -> ExitCode {
         &res,
         &assigned.stub_works,
         Some(&assigned.assignment),
+        &assigned.changes,
     ) {
         eprintln!("{what}: {e}");
         return ExitCode::FAILURE;
@@ -1733,6 +1794,7 @@ fn merge_all(opts: &Options, public_key: Option<&Path>) -> ExitCode {
         ids,
         assignment,
         stub_works,
+        changes: _,
         dropped,
         pending,
         totals,

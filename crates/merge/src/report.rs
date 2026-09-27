@@ -27,6 +27,7 @@ pub fn identity(
     res: &Resolution,
     stub_works: &StubWorks,
     registry: Option<&Assignment>,
+    changes: &[String],
 ) -> io::Result<()> {
     let s = &res.stats;
     writeln!(out, "identity")?;
@@ -217,6 +218,15 @@ pub fn identity(
             "  registry, held works then stubs: {} minted, {} reused, {} merged, {} split, {} names attached, {} dropped",
             a.minted, a.reused, a.merged, a.split, a.attached, a.dropped
         )?;
+    }
+    if !changes.is_empty() {
+        writeln!(
+            out,
+            "  ids of record merged and split, the first of each: the work each went into, its records then its names"
+        )?;
+        for change in changes {
+            writeln!(out, "              {change}")?;
+        }
     }
     Ok(())
 }

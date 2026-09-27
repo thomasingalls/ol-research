@@ -1954,8 +1954,12 @@ stays.
     the normalized layer as a `Claim::Malformed`, so keeping it — an
     unresolved row that carries the name as written — needs no
     re-normalizing; it is a merged-layout change. Not built.
-27. **Which ids a new source merges and splits — before the first merge
-    of record with Crossref.** The merge survey over the PubMed baseline
+27. ~~**Which ids a new source merges and splits — before the first merge
+    of record with Crossref.**~~ Built 2026-09-27: the identity report
+    prints the first eight merges and the first eight splits after the
+    registry's line — the id retired, where it went, and the work there,
+    its records then its names (`registry::Assignment::merge_examples`,
+    `split_examples`; written out in `merge_assign`). The merge survey over the PubMed baseline
     and an eighth of Crossref's March 2026 file (2026-09-26, homelab
     `ol-rht-merge-survey-v6`) is the first run to change identity under
     ids of record: 521 works merged and 1,563 split in the registry's
