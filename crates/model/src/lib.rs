@@ -157,11 +157,10 @@
 /// reference DOIs with a soft hyphen inside a word
 /// (`10.11646/zoo\u{ad}taxa.4966.5.3`) and after the slash (JAMA's
 /// `10.1001/\u{ad}jamasurg.2022.7640`), and a zero-width space in a page
-/// range (`10.1128/aem.45.4.1394-\u{200b}1397.1983`). The box's store
-/// holds version 10's sets (homelab `ol-rht-normalize-crossref-v1`,
-/// `ol-rht-normalize-baseline-v3`), and the user keeps the server on
-/// version 10 through a full merge of them; version 11 comes after, and
-/// its sets are rebuilt, not patched.
+/// range (`10.1128/aem.45.4.1394-\u{200b}1397.1983`). Version 10's sets
+/// were surveyed on the box but never merged of record; the user took
+/// version 11 in before the first merge of record with Crossref
+/// (2026-09-27), and its sets are rebuilt, not patched.
 pub const VERSION: u32 = 11;
 
 pub mod claim;

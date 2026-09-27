@@ -2175,12 +2175,24 @@ cross-IDs and a second edge namespace early.
   slash, and ASM's `10.1128/aem.45.4.1394-\u{200b}1397.1983` with a
   zero-width space in the page range). Each is counted, "a soft hyphen
   dropped" and "a zero-width space dropped", beside the other readings.
-  That is model version 11, since what a set holds changes, and it waits:
-  the user keeps the server on model 10 "all the way through a full
-  merge", so the first merge of record reads these v10 sets, and model
-  11 lands after it, on its own branch until then, with its sets rebuilt
-  rather than patched. Whitespace inside a DOI, in the same samples, is
-  open item 10 (§8), the user's "to deal with more carefully later".
+  That is model version 11, since what a set holds changes, and it was
+  to wait: the user kept the server on model 10 "all the way through a
+  full merge", so that the first merge of record would read these v10
+  sets, and model 11 was kept on its own branch until then, its sets to
+  be rebuilt rather than patched (see the entry below: it came in first).
+  Whitespace inside a DOI, in the same samples, is open item 10 (§8), the
+  user's "to deal with more carefully later".
+- 2026-09-27, model 11 before the first merge of record. The survey of
+  the whole file at model 10 and merge version 15
+  (`ol-rht-merge-survey-v8`) took six hours and stopped on three
+  Crossref alias shapes, which merge version 16 settles, so the next
+  whole-file survey was another six hours; the user: "if we're in for a
+  6 hour wait, i feel like we might as well pull in model-11 changes
+  too". The branch applied to main cleanly (no file both touched), and
+  nothing else waits on the model — open item 10 is deferred — so the
+  renormalize, about 35 minutes for both sources side by side, is paid
+  once. The first merge of record with Crossref is at model 11; the v10
+  sets were surveyed and never merged of record.
 
 ## 11. Dependencies
 
