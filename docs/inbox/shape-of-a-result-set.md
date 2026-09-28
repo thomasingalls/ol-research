@@ -264,6 +264,51 @@ not scholarly collections.
 - **Reproducible shapes.** A shape should be reproducible from its query,
   the epoch, the vector model's version and a seed.
 
+**Does the literature hold for a relentless agent?** The user: "i wonder
+if the clustering literature holds up if given a relentless ai agent
+that applies rules consistently." The conversation's reading, not a
+finding: nobody was found rerunning these experiments with an agent in
+the user's seat (report 3). It splits roughly in half.
+
+- **The half about people may not transfer.** Many of the negative
+  findings are about human limits:
+  - *Too many groups:* Käki's users found 20 too many (§4.1); an agent
+    can take two hundred.
+  - *Poor, unpredictable labels:* an agent can skip the label and read a
+    cluster's example works.
+  - *Mixed dimensions:* an agent can inspect each cluster rather than
+    trust its name.
+  - *Used only when the ranking fails* (Käki): people satisfice; an agent
+    can be told to touch every cluster.
+  - *Noisy human scorers:* Kong and Allan's annotators picked only 44 %
+    of the terms that would have helped
+    ([report 2](cuts-and-shape-agent-reports/02-suggested-cuts.md), [P]);
+    a trained classifier gives the same answer every time.
+- **The half about the data probably holds for anyone:**
+  - *Clusters do not find more.* Hearst and Pedersen's top cluster held
+    about half the relevant documents retrieved and the rest lay
+    elsewhere; clustering alone found less than ranked search (§4.1).
+    Consistency does not move where the relevant works sit.
+  - *Clusters cannot vouch for what the set missed:* that takes sampling
+    outside the set (§3).
+  - *Which lens is best depends on the task* (§4.5), whoever reads.
+- **Consistency cuts both ways.** A relentless agent with a wrong rule is
+  wrong every time. Knowledge Navigator's model drops the clusters it
+  judges off-topic (§4.4); an agent doing that with a flawed rule would
+  prune whole regions of relevant work, tirelessly. Consistency is worth
+  what the rule is worth, which returns to held-back marks and samples of
+  what was dropped ([the set builder](recall-accounted-set-builder.md)
+  §5).
+
+So, for agents, the shape is a plan for coverage rather than a finder:
+read one work from every cluster, record which clusters hold relevant
+works, and let the set builder account for recall. It is testable by
+rerunning the old protocols with an agent as the user: Hearst and
+Pedersen's "pick the best cluster", and coverage per work read at a fixed
+budget (§6.3). The nearest evidence is from question answering: one
+document per cluster, +1.22 points (Speculative RAG, [P]), and diverse
+documents, +17–47 % in answer correctness ([A]) (§6.2).
+
 ## 6. Why each audience
 
 ### 6.1 Researchers
@@ -343,7 +388,10 @@ the top of the ranking. Tempered: the shape does not find more
 4. **Sample, cluster, assign, name:** scored on ClusTREC-COVID, text lens
    against citation lens against both.
 5. **Agents:** reading by cluster against reading the top of the ranking
-   at a fixed budget, scored by subtopic and aspect coverage.
+   at a fixed budget, scored by subtopic and aspect coverage; and the old
+   protocols rerun with an agent as the user (Hearst and Pedersen's
+   choice of the best cluster), to see which findings were about people
+   and which about the data (§5).
 
 ## 9. Open
 
@@ -359,3 +407,6 @@ the top of the ranking. Tempered: the shape does not find more
 8. Vectors on the box: compression, and vectors as an artifact of their
    own ([future ambitions](future-ambitions.md)).
 9. Computed for every search, or on request.
+10. Which of the clustering literature's findings survive an agent in
+    the user's seat (§5): the ones about people, the ones about the data,
+    or both.
