@@ -168,6 +168,51 @@ labels (§3 step 2); a model can take the queue of works the classifier
 is unsure of; a model can explain a disagreement. What applies the
 method to millions of works is trained.
 
+**Expensive once, cheap for a long time.** The user, later the same day:
+
+> machines that build a deterministic, repeatable process that can run
+> for cheap, indefinitely - that's an appealing proposition. this would
+> also mean that high upfront cost (expensive llms) could establish the
+> pattern to train specialist traditional ml systems that take over for
+> 6months, a year, whatever, until a new epoch is called for a quality
+> control / freshness update
+
+So the costly model is a teacher, paid for once, and the trained method
+is the worker, cheap for as long as it holds. What says this can work:
+
+- *A cheap student can match its teacher:* the logistic regression
+  trained on GPT-4's labels matched GPT-4 (TnT-LLM, above, [P]); the
+  tracer-engine note's pattern of "one expensive call and thousands of
+  cheap ones" ([future ambitions: the tracer engine](future-ambitions-tracer-engine.md),
+  per the first note's [report 1](search-within-results-agent-reports/01-repository-notes.md)).
+- *Trained filters last:* Hedges strategies built in 1991 still worked in
+  2000 ([report 2](teach-it-your-method-agent-reports/02-evidence-outside.md),
+  [A]); Cochrane's fixed RCT classifier, calibrated to 99 % recall, runs
+  in front of its crowd of screeners, and took 185,039 of 449,480
+  records off their desks in 2018 (§5).
+- *Deterministic in fact, not only in hope:* a pinned model version, a
+  seed and the epoch make the same answer repeatable; the serving layer
+  already stamps every answer with its epoch (per
+  [report 1](teach-it-your-method-agent-reports/01-repository-notes.md)).
+  The teacher is where nondeterminism lives, and it runs only at teaching
+  time.
+
+**When to call a new epoch for a method.** The user's "6 months, a year,
+whatever" is a calendar; the measurement can say when instead:
+
+- when agreement with fresh held-back marks falls, because the corpus has
+  moved on (new vocabulary, a new subfield) and the boundary no longer
+  fits;
+- when a better teacher arrives and a re-teaching measures better, a
+  deliberate step rather than a silent drift;
+- when the researcher's own method changes.
+
+The project already uses "epoch" for a published index
+([the serving plan](../serving-plan.md), per report 1); a method's
+version could be tied to the epoch it was taught and last checked at.
+Between epochs the method is frozen, so works written in words it has
+never seen go to the queue near its boundary (§8), not silently out.
+
 ## 5. What exists, and the gap
 
 **Tools that learn from a researcher's marks, inside one review's
@@ -466,3 +511,5 @@ with the researcher's held-back marks as the check on them.
 9. A published method's format, and how it is cited.
 10. The cost of many methods on the box, measured.
 11. The tool an agent calls, and what it returns.
+12. When a method is re-taught: on a calendar, when fresh agreement
+    falls, when a better teacher measures better, or all three (§4).
