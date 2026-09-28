@@ -251,6 +251,18 @@ impl Answers for Fake {
         })
     }
 
+    /// Work 1 for any word with `titled` in it, as the search does, and
+    /// the same slow word; a citation's search is another question of
+    /// the same index.
+    fn candidates(
+        &self,
+        asked: &query_parser::Query,
+        limit: usize,
+        until: std::time::Instant,
+    ) -> Result<Vec<search::Hit>, serve::Error> {
+        Ok(self.search(asked, limit, 0, until)?.hits)
+    }
+
     // A seed count and a degree the fixture keeps in single digits.
     #[allow(clippy::cast_precision_loss)]
     fn expand(

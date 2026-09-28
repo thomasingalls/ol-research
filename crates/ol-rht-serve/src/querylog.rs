@@ -16,10 +16,22 @@
 //! past it), and inert ([`inert`]) — the user's condition for writing it
 //! whole (2026-09-25): readable, but nothing in it can act on a terminal
 //! or hide itself in a copy and paste.
+//!
+//! A citation looked up (citation lookup plan, D7) is a line of the same
+//! kind, `lookup:` where a search's says `query:`: the identifiers the
+//! citation carried, the candidates its words turned up, the works listed
+//! and the near misses, and the nearest miss's score and the fields it
+//! failed on — which is where the rules to loosen are found:
+//!
+//! ```text
+//! ol-rht-serve lookup: answered bytes=162 identifiers=0 candidates=20 matches=0 near=20 nearest=0.57:title ms=9 | Lowry OH, …
+//! ```
 
 use std::time::Duration;
 
 use query_parser::MAX_BYTES;
+
+use crate::service::CITATION_MAX_BYTES;
 
 /// What became of a search.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -79,6 +91,57 @@ fn line(
     )
 }
 
+/// What a lookup's line says of it past its outcome.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Looked {
+    /// Identifiers found in the citation.
+    pub(crate) identifiers: usize,
+    /// Works its words turned up.
+    pub(crate) candidates: usize,
+    /// Works listed as what it may be.
+    pub(crate) matches: usize,
+    /// Works its words turned up that failed the check.
+    pub(crate) near: usize,
+    /// The nearest miss: its score, and the fields it failed on.
+    pub(crate) nearest: Option<(f64, Vec<&'static str>)>,
+}
+
+/// Writes one citation lookup's line: `looked` is absent where the
+/// citation was not looked up.
+pub(crate) fn looked_up(outcome: Outcome, text: &str, looked: Option<&Looked>, elapsed: Duration) {
+    println!("{}", lookup_line(outcome, text, looked, elapsed));
+}
+
+fn lookup_line(outcome: Outcome, text: &str, looked: Option<&Looked>, elapsed: Duration) -> String {
+    let counts = looked.map_or_else(
+        || "identifiers=- candidates=- matches=- near=- nearest=-".to_owned(),
+        |l| {
+            let nearest = l.nearest.as_ref().map_or_else(
+                || "-".to_owned(),
+                |(score, failed)| {
+                    let failed = if failed.is_empty() {
+                        "-".to_owned()
+                    } else {
+                        failed.join("+")
+                    };
+                    format!("{score:.2}:{failed}")
+                },
+            );
+            format!(
+                "identifiers={} candidates={} matches={} near={} nearest={nearest}",
+                l.identifiers, l.candidates, l.matches, l.near
+            )
+        },
+    );
+    format!(
+        "ol-rht-serve lookup: {} bytes={} {counts} ms={} | {}",
+        outcome.name(),
+        text.len(),
+        elapsed.as_millis(),
+        inert(&text[..text.floor_char_boundary(CITATION_MAX_BYTES)]),
+    )
+}
+
 /// `text` with every character that is not plainly visible written as an
 /// escape — control characters and terminal escape sequences, line and
 /// paragraph separators, right-to-left overrides, zero-width and other
@@ -110,7 +173,7 @@ mod tests {
     use proptest::prelude::*;
     use query_parser::MAX_BYTES;
 
-    use super::{Outcome, inert, line};
+    use super::{CITATION_MAX_BYTES, Looked, Outcome, inert, line, lookup_line};
 
     /// `inert` undone, which nothing outside these tests does.
     fn undone(text: &str) -> String {
@@ -236,5 +299,45 @@ mod tests {
         )));
         let (_, query) = written.split_once(" | ").unwrap();
         assert_eq!(query.len(), MAX_BYTES);
+    }
+
+    #[test]
+    fn a_lookup_line_says_what_the_citation_led_to_and_how_near_it_came() {
+        let looked = Looked {
+            identifiers: 1,
+            candidates: 20,
+            matches: 1,
+            near: 19,
+            nearest: Some((0.571_428, vec!["title", "year"])),
+        };
+        assert_eq!(
+            lookup_line(
+                Outcome::Answered,
+                "Lowry OH. J Biol Chem. doi:10.1016/x.",
+                Some(&looked),
+                Duration::from_millis(3)
+            ),
+            "ol-rht-serve lookup: answered bytes=37 identifiers=1 candidates=20 matches=1 \
+             near=19 nearest=0.57:title+year ms=3 | Lowry OH. J Biol Chem. doi:10.1016/x."
+        );
+        let none_near = Looked {
+            near: 0,
+            nearest: None,
+            ..looked
+        };
+        assert!(
+            lookup_line(Outcome::Answered, "x", Some(&none_near), Duration::ZERO)
+                .contains(" near=0 nearest=- ")
+        );
+        // Over the cap: unread, and written up to the cap.
+        let text = "é".repeat(CITATION_MAX_BYTES);
+        let written = lookup_line(Outcome::TooLong, &text, None, Duration::ZERO);
+        assert!(written.starts_with(&format!(
+            "ol-rht-serve lookup: too-long bytes={} identifiers=- candidates=- matches=- \
+             near=- nearest=- ms=0 | ",
+            2 * CITATION_MAX_BYTES
+        )));
+        let (_, citation) = written.split_once(" | ").unwrap();
+        assert_eq!(citation.len(), CITATION_MAX_BYTES);
     }
 }

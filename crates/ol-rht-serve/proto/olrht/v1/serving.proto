@@ -11,6 +11,9 @@ service Serving {
   rpc Epoch(EpochRequest) returns (EpochInfo);
   // Which work a name or public id is.
   rpc Resolve(ResolveRequest) returns (ResolveResponse);
+  // Which works a citation may be — a line from a reference list, pasted
+  // as text — and why (docs/citation-lookup-plan.md).
+  rpc LookupCitation(LookupCitationRequest) returns (LookupCitationResponse);
   // Everything the merge knows about a work, and its text.
   rpc GetWork(GetWorkRequest) returns (GetWorkResponse);
   // The works a work cites, in pages, with who asserted each arc.
@@ -82,6 +85,82 @@ message Split {
   // The live works its names went to: what was once one work, now
   // several. Empty only where the parts are themselves gone.
   repeated string into = 2;
+}
+
+message LookupCitationRequest {
+  // One citation, as text: at most 4 KiB.
+  string text = 1;
+}
+
+message LookupCitationResponse {
+  Answered answered = 1;
+  // Every DOI, PMID and PMC id written in the citation, in the order they
+  // stand there, and what each names.
+  repeated CitedName identifiers = 2;
+  // The works the citation may be, best first: every work an identifier
+  // in it names, and every work its words turned up that passed the
+  // check. Empty when there are none.
+  repeated CitationMatch matches = 3;
+  // Why `matches` is empty, and empty when it is not: `nothing-to-go-on`,
+  // no text at all; `nothing-came-up`, nothing the citation names or says
+  // led to a work; `nothing-agreed`, its words turned up works and none
+  // passed the check.
+  string could_not = 4;
+  // The works its words turned up that failed the check, best first, each
+  // with what failed: shown while the lookup is young, to see where it
+  // falls short (docs/citation-lookup-plan.md, D5).
+  repeated CitationMatch near_misses = 5;
+  // An identifier in the citation names one work and its words match
+  // another: the two are different works, and the citation disagrees with
+  // itself (D2).
+  bool differ = 6;
+}
+
+// An identifier as a citation wrote it.
+message CitedName {
+  // What was read, as written, and where: byte offsets into the text.
+  string written = 1;
+  uint32 start = 2;
+  uint32 end = 3;
+  // The name it was read as, in text form: `doi:10.1000/x`.
+  string name = 4;
+  // What the name is: `one` work; `shared`, accepted into several; `split`,
+  // an id retired by a split, whose names went to others; `none`, a name
+  // nothing we hold answers to.
+  string resolved = 5;
+  // The works it names: one, several, or none.
+  repeated string public_ids = 6;
+}
+
+// A work a citation may be.
+message CitationMatch {
+  string public_id = 1;
+  // The names in the citation that name it, in text form. Two works named
+  // by one citation are two works the citation disagrees about.
+  repeated string named_by = 2;
+  // As on Arc: present when the work has a row.
+  Summary summary = 3;
+  // A search of the citation's words turned it up.
+  bool by_text = 4;
+  // What the citation says of it, field by field.
+  Verdict verdict = 5;
+}
+
+// A work's fields against a citation (docs/citation-lookup-plan.md, D4):
+// each of the five `agrees`, `not-in-citation`, or `work-does-not-say`.
+message Verdict {
+  string title = 1;
+  string first_author = 2;
+  string year = 3;
+  string volume = 4;
+  string first_page = 5;
+  // The citation's numbers nothing the work says accounts for.
+  repeated string unaccounted = 6;
+  // From 0 to 1, for ordering only: what agreed, over everything either
+  // side mentions.
+  double score = 7;
+  // The rule: every one of the five the work has agrees, and it has one.
+  bool passes = 8;
 }
 
 message GetWorkRequest {

@@ -41,6 +41,9 @@ import type {
 export type {
   Answered,
   Arc,
+  CitationMatch,
+  CitationParams,
+  CitedName,
   Disputed,
   EpochInfo,
   EpochParams,
@@ -51,6 +54,7 @@ export type {
   GetWorkResponse,
   Hit,
   ListParams,
+  LookupCitationResponse,
   Name,
   Neighbour,
   NoPath,
@@ -74,6 +78,7 @@ export type {
   SourceRecord,
   Split,
   Summary,
+  Verdict,
   Walk,
   Work,
   WorkPage,
@@ -251,6 +256,12 @@ export const api = {
 
   /** Which work a name or public id is. */
   resolve: (text: string) => get("/v1/resolve", { text }),
+
+  /**
+   * Which works a citation may be — a line from a reference list, pasted
+   * whole — each with the names in it that led there.
+   */
+  citation: (text: string) => get("/v1/citation", { text }),
 
   /** Everything the merge knows about one work. */
   work: (work: string) => get("/v1/work", { work }),

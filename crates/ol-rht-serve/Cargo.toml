@@ -15,6 +15,7 @@ path = "src/main.rs"
 
 [dependencies]
 axum.workspace = true
+citation-match.workspace = true
 graph.workspace = true
 ingest.workspace = true
 merge.workspace = true

@@ -691,6 +691,22 @@ impl Serving {
         Ok(self.search.search(asked, limit, facets, until)?)
     }
 
+    /// The top `limit` candidates for a citation's words: searched in the
+    /// fields a citation names a work by, with no facets (citation lookup
+    /// plan, D3), stopped at `until` when there is one.
+    ///
+    /// # Errors
+    ///
+    /// The engine, or `search::Error::Deadline` past `until`.
+    pub fn candidates(
+        &self,
+        asked: &query_parser::Query,
+        limit: usize,
+        until: Option<Instant>,
+    ) -> Result<Vec<search::Hit>, Error> {
+        Ok(self.search.candidates(asked, limit, until)?)
+    }
+
     /// A work's public id: minted since the epoch, or in the base's array.
     #[must_use]
     pub fn public_of(&self, id: WorkId) -> Option<String> {
