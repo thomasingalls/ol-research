@@ -263,6 +263,10 @@ pub struct Stats {
     pub corrected: u64,
     /// The records giving the most of them, written out, for the report.
     pub corrected_examples: Vec<String>,
+    /// The records whose aliases their source's list says are what they
+    /// correct ([`crate::Contributor::corrects_its_aliases`]), each
+    /// written out: every one a judgment by hand, for the report.
+    pub listed_corrections: Vec<String>,
     /// Aliases refused as a container's ([`Reason::Container`]).
     pub container_aliases: u64,
     /// The records giving the most of them, written out, for the report.
@@ -294,7 +298,9 @@ pub struct Identity {
     /// A container's aliases, which `settle` refuses.
     container_claims: Vec<(RecordIx, NameIx, Field)>,
     /// What each record says it corrects, retracts or updates, as names
-    /// of the run ([`crate::relation::Kind::corrects`]), for `settle`.
+    /// of the run ([`crate::relation::Kind::corrects`]), and a listed
+    /// record's aliases ([`Contributor::corrects_its_aliases`]), for
+    /// `settle`.
     corrects: Vec<(RecordIx, NameIx)>,
     /// The same given to [`Identity::push_with`] by name, found at
     /// `settle`, when every record is in.
@@ -488,6 +494,16 @@ impl Identity {
                         });
                     }
                 };
+                if S::corrects_its_aliases(&work) {
+                    S::names(&work, &mut |a| {
+                        if a.field == ALIASES
+                            && let Some(ix) = self.arena.find(a.name)
+                        {
+                            self.corrects.push((rix, ix));
+                        }
+                    });
+                    self.listed(rix);
+                }
                 let related = S::relations(&work, table, &mut |r| {
                     if let Some(target) = r.target {
                         // A name the record says it corrects is one no
@@ -632,7 +648,27 @@ impl Identity {
         for name in facts.corrects {
             self.corrects_named.push((rix, name.to_owned()));
         }
+        if facts.corrects_its_aliases {
+            let alias = Field::of(ALIASES);
+            for a in claims.iter().filter(|a| a.field == alias) {
+                self.corrects.push((rix, a.name));
+            }
+            self.listed(rix);
+        }
         Ok(rix)
+    }
+
+    /// A record whose source's list says its aliases are what it
+    /// corrects ([`Contributor::corrects_its_aliases`]), written out for
+    /// the report once however many of its copies speak.
+    fn listed(&mut self, rix: RecordIx) {
+        let native = self
+            .arena
+            .get(self.records[rix as usize].native)
+            .to_string();
+        if !self.stats.listed_corrections.contains(&native) {
+            self.stats.listed_corrections.push(native);
+        }
     }
 
     /// Interns one copy's names and joins them, unless a deletion
@@ -1941,14 +1977,18 @@ type Refusal = (NameIx, Reason, Option<RecordIx>, Field);
 
 /// What [`Identity::push_with`] is told of a record beside its names,
 /// which the set phases read from the record itself: whether it is a
-/// container's ([`crate::Contributor::container`]), and the names it says
-/// it corrects, retracts or updates ([`crate::relation::Kind::corrects`]).
+/// container's ([`crate::Contributor::container`]), the names it says
+/// it corrects, retracts or updates ([`crate::relation::Kind::corrects`]),
+/// and whether its source's list says its aliases are what it corrects
+/// ([`crate::Contributor::corrects_its_aliases`]).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Facts<'a> {
     #[allow(missing_docs)]
     pub container: bool,
     #[allow(missing_docs)]
     pub corrects: &'a [Name<'a>],
+    #[allow(missing_docs)]
+    pub corrects_its_aliases: bool,
 }
 
 /// Sorts one of a record's assertions: a publisher id or an alias is a
@@ -3963,8 +4003,8 @@ mod tests {
             &borrowed,
             "Correction to: Stroke: Vascular and Interventional Neurology Volume 1, No. S1",
             &super::Facts {
-                container: false,
                 corrects: &[Name::Doi(abstracts[0])],
+                ..super::Facts::default()
             },
         );
         let corrected: Vec<Name<'_>> = abstracts.iter().map(|a| Name::Doi(a)).collect();
@@ -3977,8 +4017,8 @@ mod tests {
             ],
             "Correction to: Stroke: Vascular and Interventional Neurology Volume 1, No. S1.",
             &super::Facts {
-                container: false,
                 corrects: &corrected,
+                ..super::Facts::default()
             },
         );
         id.mark();
@@ -4002,6 +4042,74 @@ mod tests {
         assert!(work.rejected.iter().all(|r| r.why == Reason::Corrected));
     }
 
+    /// Rule 2 on a source's list (§11 item 28): the same correction as
+    /// the 2026 baseline has its PubMed record, before NLM linked the
+    /// erratum to what it corrects, so nothing says what it corrects —
+    /// and its aliases name the abstracts' own records, which they would
+    /// join into one work. Its deposit is on Crossref's list, so its
+    /// aliases are what it corrects: each abstract stays a work of its
+    /// own, and the correction one with its PubMed record.
+    #[test]
+    fn a_listed_records_aliases_are_what_it_corrects() {
+        let mut id = Identity::new();
+        let abstracts = [
+            "10.1161/svin.01.suppl_1.000048",
+            "10.1161/svin.01.suppl_1.000065",
+            "10.1161/svin.01.suppl_1.000195",
+        ];
+        let doi = |s: &str| format!("doi:{s}");
+        for (k, a) in abstracts.iter().enumerate() {
+            let own = doi(a);
+            record_with(
+                &mut id,
+                SourceId::Crossref,
+                &[(own.as_str(), "doi", true)],
+                &format!("Abstract {k}"),
+                &super::Facts::default(),
+            );
+        }
+        let mut names: Vec<(String, &'static str, bool)> =
+            vec![(doi("10.1161/svin.122.000762"), "doi", true)];
+        names.extend(abstracts.iter().map(|a| (doi(a), crate::ALIASES, false)));
+        let borrowed: Vec<(&str, &'static str, bool)> =
+            names.iter().map(|(n, f, v)| (n.as_str(), *f, *v)).collect();
+        let crossref = record_with(
+            &mut id,
+            SourceId::Crossref,
+            &borrowed,
+            "Correction to: Stroke: Vascular and Interventional Neurology Volume 1, No. S1",
+            &super::Facts {
+                corrects_its_aliases: true,
+                ..super::Facts::default()
+            },
+        );
+        record_with(
+            &mut id,
+            SourceId::Pubmed,
+            &[
+                ("pmid:41585761", "pmid", true),
+                ("doi:10.1161/svin.122.000762", "ids.doi", false),
+            ],
+            "Correction to: Stroke: Vascular and Interventional Neurology Volume 1, No. S1.",
+            &super::Facts::default(),
+        );
+        id.mark();
+        let res = id.resolve(false).unwrap();
+        assert_eq!(res.works.len(), 4);
+        assert_eq!(
+            names_of(&res, crossref),
+            ["doi:10.1161/svin.122.000762", "pmid:41585761"]
+        );
+        assert_eq!(res.stats.corrected, 3);
+        assert_eq!(
+            res.stats.listed_corrections,
+            ["doi:10.1161/svin.122.000762"]
+        );
+        let rejected: Vec<_> = res.works.iter().flat_map(|w| w.rejected.iter()).collect();
+        assert_eq!(rejected.len(), 3);
+        assert!(rejected.iter().all(|r| r.why == Reason::Corrected));
+    }
+
     /// Rule 3 (§11 item 28): the journal-level record of Photochemical &
     /// Photobiological Sciences, `10.1007/43630.1474-9092`, giving its
     /// articles' old RSC DOIs as its aliases. They are not the journal's
@@ -4021,7 +4129,7 @@ mod tests {
             "Photochemical & Photobiological Sciences",
             &super::Facts {
                 container: true,
-                corrects: &[],
+                ..super::Facts::default()
             },
         );
         let article = record_with(

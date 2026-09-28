@@ -1416,6 +1416,27 @@ stays.
   that is not enough — two existing works joined into one where a record
   gives aliases, or a batch record giving an alias its row did not — the
   batch stops for a full merge.
+- 2026-09-28, merge version 16 amended: a source may list deposits whose
+  aliases are what they correct (`Contributor::corrects_its_aliases`),
+  and rule 2 takes a listed record's aliases as names it corrects, as
+  though a relation said so. Crossref's list
+  (`source_crossref::listed_corrections`) is keyed like its exclusions,
+  by DOI and `deposited` stamp, so a later deposit is judged on its own.
+  It holds one deposit, the correction of §11 item 28, which nothing in
+  PubMed's 2026 baseline settles. The report names each listed record.
+  A batch reads the answer from its record (`Incoming::corrects_its_aliases`),
+  and a row keeps the verdicts. The version was amended rather than
+  bumped because nothing was merged of record under 16, only surveyed
+  (v9), and the numbers after it belong to the citation fields plan
+  (model 13, merge 17, serve 9). On the laptop (M), a test gives the
+  shape. A scratch store holds the deposit, the baseline's copy of PMID
+  41585761 (its links taken out, as the baseline has it) and a record
+  citing three of the abstracts. With the deposit moved off the list,
+  that store is v9's stop ("a component of 2 records and 105 names is
+  beyond the rules"). With it listed, the survey exits 0: 102 aliases
+  are refused as corrected, and each cited abstract is a stub of its own.
+  Both harnesses pass (0 differences in 1,835,414 ids and in 1,833,848).
+  A compromise (§13).
 
 ## 11. Open items
 
@@ -2013,7 +2034,14 @@ stays.
     survey at merge 16 (`ol-rht-merge-survey-v9`) settled the first and
     third, and stopped on the correction alone: PubMed names the 102
     abstracts it corrects by a DOI in `RefSource` and no PMID, which the
-    model did not keep; model 12 does (ingestion plan §10). Built 2026-09-16 (serving plan SP3):
+    model did not keep; model 12 does (ingestion plan §10). But the
+    baseline's copy of the notice (`pubmed26n1333`) predates those links
+    and gives none, so model 12 alone does not settle it: PubMed's current
+    copy does, and comes with the update files. The user's call
+    (2026-09-27): a list for now, the update files when freshness brings
+    them in. Built 2026-09-28 as merge version 16 amended (§10), a
+    compromise (§13).
+21. ~~**The public id.**~~ Built 2026-09-16 (serving plan SP3):
     `merge::public` mints one for every id lacking it when `merge` is
     given `--public-key <file>` — a keyed BLAKE3 hash of the id, `ol:`
     and fourteen Crockford characters — into `merged/public.jsonl`; and
@@ -2024,3 +2052,21 @@ stays.
 
 The ingestion plan's §12; the census script and the dumps it read, in the
 session's scratch space, superseded by the merge's own report at MM2.
+
+## 13. Compromises
+
+What the merge trades away on purpose, each with its cost and what would
+lift it (the user's condition, 2026-09-26; the evaluation plan's §12 is
+the first such ledger). Started 2026-09-28; earlier trade-offs are in §10
+and §11, where they were made.
+
+- **A deposit judged by hand** (2026-09-28; §11 item 28; merge version 16
+  amended). The aliases of Crossref's `10.1161/svin.122.000762`, deposited
+  2024-05-13, are taken as the 102 abstracts it corrects because a list
+  says so (`source_crossref::listed_corrections`), not because a record
+  does. *Cost:* the merge acts on a judgment the data does not carry, and
+  the list is kept by hand; a later deposit of the DOI is not on it, and
+  stops a run again if it still gives the aliases. *Lifts it:* PubMed's
+  update files (freshness). Their copy of PMID 41585761 is the erratum
+  for all 102, which rule 2 reads through model 12. Then the entry goes,
+  and the list with it.

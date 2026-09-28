@@ -187,5 +187,10 @@ pub use work::{SourceId, Sources, WorkId};
 /// are not its names ([`identity::Reason::Container`]): a journal's
 /// record giving 655 of its articles' old DOIs. A name those rules take
 /// off every record that gave it is in no work, and a stub's where cited.
-/// Every other alias joins as before.
+/// Every other alias joins as before. Amended 2026-09-28, before anything
+/// was merged of record under it: a source may list deposits whose
+/// aliases are what they correct ([`Contributor::corrects_its_aliases`]),
+/// which rule 2 then reads as if a record said so. Crossref's list holds
+/// that correction alone, since PubMed's 2026 baseline predates its
+/// erratum's links to the abstracts (merge plan §13, a compromise).
 pub const VERSION: u32 = 16;

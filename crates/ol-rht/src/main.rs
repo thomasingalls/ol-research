@@ -2144,6 +2144,7 @@ fn copy_of<S: Contributor>(
             view,
             text,
             relations,
+            corrects_its_aliases: S::corrects_its_aliases(work),
             references: Vec::new(),
         },
     ))
@@ -2450,6 +2451,7 @@ fn batch_add<S: Contributor>(
                     view,
                     text,
                     relations,
+                    corrects_its_aliases: S::corrects_its_aliases(&work),
                     references: Vec::new(),
                 };
                 // Two copies of one record in the set: the newer speaks,

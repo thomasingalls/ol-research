@@ -74,6 +74,16 @@ pub fn identity(
             writeln!(out, "              {example}")?;
         }
     }
+    if !s.listed_corrections.is_empty() {
+        writeln!(
+            out,
+            "  records whose aliases their source's list says are what they correct, judged by hand: {}",
+            s.listed_corrections.len()
+        )?;
+        for record in &s.listed_corrections {
+            writeln!(out, "              {record}")?;
+        }
+    }
     if s.container_aliases > 0 {
         writeln!(
             out,

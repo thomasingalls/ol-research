@@ -60,6 +60,9 @@ pub struct Incoming {
     pub text: Text,
     #[allow(missing_docs)]
     pub relations: Vec<merge::relation::Related>,
+    /// Whether the source's list says the record's aliases are what it
+    /// corrects ([`merge::Contributor::corrects_its_aliases`]).
+    pub corrects_its_aliases: bool,
     #[allow(missing_docs)]
     pub references: Vec<Reference>,
 }
@@ -1083,14 +1086,16 @@ impl Engine<'_> {
         let mut existing: BTreeMap<WorkId, Row> = BTreeMap::new();
         // What the identity pass is told of each record beside its names
         // (merge plan §11 item 28): whether it is a container's, from its
-        // form, and what it corrects — a batch record's own relations, and
-        // for a row's record the names the full merge refused it as names
-        // its work corrects, since rows keep no relations.
+        // form, and what it corrects — a batch record's own relations and
+        // its source's list, and for a row's record the names the full
+        // merge refused it as names its work corrects, since rows keep no
+        // relations.
         let push = |identity: &mut Identity,
                     source: SourceId,
                     asserts: &[OwnedAssert],
                     view: &Owned,
-                    corrects: &[OwnedName]|
+                    corrects: &[OwnedName],
+                    corrects_its_aliases: bool|
          -> Result<u32, Error> {
             let assertions: Vec<Assertion<'_>> = asserts
                 .iter()
@@ -1111,6 +1116,7 @@ impl Engine<'_> {
                 &Facts {
                     container: view.form.is_some_and(merge::Form::is_container),
                     corrects: &corrects,
+                    corrects_its_aliases,
                 },
             )?)
         };
@@ -1167,7 +1173,14 @@ impl Engine<'_> {
                             })
                             .map(|r| r.name.clone())
                             .collect();
-                        let rix = push(&mut identity, record.source, &asserts, &view, &corrects)?;
+                        let rix = push(
+                            &mut identity,
+                            record.source,
+                            &asserts,
+                            &view,
+                            &corrects,
+                            false,
+                        )?;
                         if aliasing {
                             aliased.insert(rix);
                         }
@@ -1190,7 +1203,14 @@ impl Engine<'_> {
                         .filter(|rel| rel.kind.corrects())
                         .filter_map(|rel| rel.target.clone())
                         .collect();
-                    let rix = push(&mut identity, r.source, &r.asserts, &r.view, &corrects)?;
+                    let rix = push(
+                        &mut identity,
+                        r.source,
+                        &r.asserts,
+                        &r.view,
+                        &corrects,
+                        r.corrects_its_aliases,
+                    )?;
                     if aliasing {
                         aliased.insert(rix);
                     }

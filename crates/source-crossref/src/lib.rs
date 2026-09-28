@@ -25,6 +25,7 @@ pub mod date;
 pub mod error;
 pub mod exclusions;
 pub mod list;
+pub mod listed_corrections;
 pub mod normalize;
 pub mod parse;
 pub mod record;
@@ -106,6 +107,10 @@ impl merge::Contributor for Crossref {
     fn container(work: &normalize::Work<'_>) -> bool {
         work.kind
             .is_some_and(|kind| view::form(kind).is_container())
+    }
+
+    fn corrects_its_aliases(work: &normalize::Work<'_>) -> bool {
+        listed_corrections::corrects_its_aliases(&work.doi, work.deposited)
     }
 
     fn native<'w>(id: &'w model::Doi<'_>) -> merge::Name<'w> {
