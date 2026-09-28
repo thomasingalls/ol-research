@@ -6,9 +6,10 @@ import { searchRoute } from "@/routes/search"
 import { workRoute } from "@/routes/work-detail"
 import { resolveRoute } from "@/routes/resolve"
 import { citationRoute } from "@/routes/citation"
+import { findRoute } from "@/routes/find"
 
 /**
- * Code-based routes, not file-based. Four screens do not need a codegen step
+ * Code-based routes, not file-based. Three screens do not need a codegen step
  * and a generated route tree checked into the repo; each route is declared
  * beside the component it renders, and the tree is these few lines. Search
  * and work share a layout, `browse`, which holds the search panel so that it
@@ -19,6 +20,8 @@ import { citationRoute } from "@/routes/citation"
  */
 const routeTree = rootRoute.addChildren([
   browseRoute.addChildren([searchRoute, workRoute]),
+  findRoute,
+  // Find by ID's and Find by citation's old addresses, sent on to /find.
   resolveRoute,
   citationRoute,
 ])

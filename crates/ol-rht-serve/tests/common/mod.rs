@@ -32,6 +32,7 @@ pub(crate) struct Fake {
     epoch: Manifest,
     rows: BTreeMap<WorkId, Row>,
     names: BTreeMap<String, Resolved>,
+    publishers: Vec<String>,
 }
 
 fn row(n: u32, names: &[&str], stub: bool) -> Row {
@@ -122,6 +123,11 @@ impl Fake {
         for n in [1, 2, 3, 9] {
             names.insert(public_text(n), Resolved::One(id(n)));
         }
+        // A publisher's own id for work 1, and a number that is both a
+        // PMID and a PMC id, of different works.
+        names.insert("reg1016:S0000000000000001".to_owned(), Resolved::One(id(1)));
+        names.insert("pmid:77".to_owned(), Resolved::One(id(1)));
+        names.insert("pmc:PMC77".to_owned(), Resolved::One(id(3)));
         let mut rows = BTreeMap::new();
         rows.insert(id(1), row(1, &["pmid:1", "doi:10.1000/one"], false));
         rows.insert(id(2), row(2, &["pmid:2", "doi:10.1000/shared"], true));
@@ -136,6 +142,7 @@ impl Fake {
             },
             rows,
             names,
+            publishers: vec!["reg1016".to_owned(), "reg1053".to_owned()],
         }
     }
 
@@ -190,6 +197,10 @@ impl Answers for Fake {
 
     fn public_of(&self, id: WorkId) -> Option<String> {
         (id.get() <= 9).then(|| public_text(id.get()))
+    }
+
+    fn publisher_namespaces(&self) -> &[String] {
+        &self.publishers
     }
 
     fn page(&self, work: WorkId, direction: Direction, offset: u64, n: usize) -> Page {

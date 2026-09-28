@@ -72,7 +72,17 @@ message ResolveResponse {
     // An id retired by a split: no survivor answers for it, and the
     // works its names went to answer in its place.
     Split split = 4;
+    // Text that is no name as it stands — written without a namespace
+    // (`40975432`, `S0022522325007792`), or in a form no namespace reads
+    // as it is (a link, `PMID: 123`, a DOI in capitals): every name it can
+    // be read as that names something we hold, each with what it names
+    // (2026-09-28).
+    Found found = 5;
   }
+}
+
+message Found {
+  repeated CitedName names = 1;
 }
 
 message Shared {
@@ -114,9 +124,15 @@ message LookupCitationResponse {
   // another: the two are different works, and the citation disagrees with
   // itself (D2).
   bool differ = 6;
+  // The text is identifiers and nothing more — with their labels and
+  // links, and not a word besides — so its words were not searched: a DOI
+  // or a PMID pasted on its own, where a client may go straight to the work
+  // it names (2026-09-28).
+  bool only_names = 7;
 }
 
-// An identifier as a citation wrote it.
+// An identifier as a text wrote it — a citation, or what was typed into
+// Find by ID — and the name it was read as.
 message CitedName {
   // What was read, as written, and where: byte offsets into the text.
   string written = 1;
@@ -159,8 +175,12 @@ message Verdict {
   // From 0 to 1, for ordering only: what agreed, over everything either
   // side mentions.
   double score = 7;
-  // The rule: every one of the five the work has agrees, and it has one.
+  // It passes, by `rule`.
   bool passes = 8;
+  // The rule it passes by: `every-field`, every one of the five the work
+  // has agrees, and it has one (D4); `title-alone`, the citation is the
+  // work's title and nothing more. Empty when it does not pass.
+  string rule = 9;
 }
 
 message GetWorkRequest {

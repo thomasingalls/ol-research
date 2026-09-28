@@ -172,11 +172,15 @@ async fn epoch<A: Answers>(
 #[derive(Debug, Deserialize)]
 #[cfg_attr(test, derive(::ts_rs::TS), ts(export_to = "serving.ts"))]
 pub(crate) struct ResolveParams {
-    /// A name — `doi:10.1000/x`, `pmid:12345678` — or a public id.
+    /// A name — `doi:10.1000/x`, `pmid:12345678` — or a public id; or an
+    /// identifier with no namespace, or a link to one, which is read every
+    /// way it can be (2026-09-28).
     text: String,
 }
 
-/// `GET /v1/resolve?text=` — which work a name or public id is.
+/// `GET /v1/resolve?text=` — which work a name or public id is, or, for
+/// text that is no name as it stands, every name it can be read as that
+/// names something.
 async fn resolve<A: Answers>(
     State(service): State<Arc<Service<A>>>,
     Params(params): Params<ResolveParams>,

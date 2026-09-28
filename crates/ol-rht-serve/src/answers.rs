@@ -75,6 +75,9 @@ pub trait Answers: Send + Sync + 'static {
     fn rows(&self, ids: &[WorkId]) -> Result<HashMap<WorkId, Row>, serve::Error>;
     /// A work's public id.
     fn public_of(&self, id: WorkId) -> Option<String>;
+    /// The publisher namespaces names are held in (`reg1016`, …): where a
+    /// publisher's id typed with no namespace is looked for.
+    fn publisher_namespaces(&self) -> &[String];
     /// `n` arcs of a list from `offset`, and the list's length.
     fn page(&self, id: WorkId, direction: Direction, offset: u64, n: usize) -> Page;
     /// Works matching a query, as the query parser read it, stopped at
@@ -152,6 +155,10 @@ impl Answers for Serving {
 
     fn public_of(&self, id: WorkId) -> Option<String> {
         Self::public_of(self, id)
+    }
+
+    fn publisher_namespaces(&self) -> &[String] {
+        Self::publisher_namespaces(self)
     }
 
     fn page(&self, id: WorkId, direction: Direction, offset: u64, n: usize) -> Page {

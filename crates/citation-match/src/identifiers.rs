@@ -22,7 +22,7 @@
 
 use std::ops::Range;
 
-use model::{Doi, PmcId, Pmid};
+use model::{Doi, OpenAlexId, PmcId, Pmid};
 
 /// Which kind of identifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,6 +33,8 @@ pub enum Kind {
     Pmid,
     /// A PubMed Central id.
     Pmc,
+    /// An OpenAlex work id, found by its link.
+    OpenAlex,
 }
 
 /// One way to read an identifier: the name, and how much of the text it
@@ -62,6 +64,79 @@ impl Found {
     pub fn span(&self) -> Range<usize> {
         self.readings[0].span.clone()
     }
+
+    /// Where it stands in `text` — the text it was found in — with the
+    /// label or link it was written with: `doi:`, `https://doi.org/`,
+    /// `PMCID: `, `https://www.ncbi.nlm.nih.gov/pmc/articles/` before it,
+    /// and a link's closing `/` after. None of that says anything of the
+    /// work, so none of it is a citation's words.
+    #[must_use]
+    pub fn written(&self, text: &str) -> Range<usize> {
+        let span = self.span();
+        let mut start = span.start;
+        'more: loop {
+            for label in LABELS {
+                if ends_with_folded(&text.as_bytes()[..start], label) {
+                    start -= label.len();
+                    continue 'more;
+                }
+            }
+            break;
+        }
+        let end = if text.as_bytes().get(span.end) == Some(&b'/') {
+            span.end + 1
+        } else {
+            span.end
+        };
+        start..end
+    }
+}
+
+/// `text` with each of `ranges` — byte ranges of it, overlapping or not —
+/// written as a single space.
+#[must_use]
+pub fn without(text: &str, ranges: &[Range<usize>]) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut inside = false;
+    for (at, c) in text.char_indices() {
+        if ranges.iter().any(|r| r.contains(&at)) {
+            if !inside {
+                out.push(' ');
+                inside = true;
+            }
+        } else {
+            out.push(c);
+            inside = false;
+        }
+    }
+    out
+}
+
+/// What an identifier is introduced by, lowercase: links and labels, taken
+/// off one after another, so that `https://`, `www.` and
+/// `ncbi.nlm.nih.gov/pmc/articles/` add up to a whole PMC link. The longer
+/// of two that end alike comes first.
+const LABELS: &[&str] = &[
+    "https://",
+    "http://",
+    "www.",
+    "dx.doi.org/",
+    "doi.org/",
+    "doi: ",
+    "doi:",
+    "doi ",
+    "pmcid: ",
+    "pmcid:",
+    "pmcid ",
+    "pubmed ",
+    "ncbi.nlm.nih.gov/pmc/articles/",
+    "pmc.ncbi.nlm.nih.gov/articles/",
+];
+
+/// Whether `bytes` ends with `label`, ASCII case aside.
+fn ends_with_folded(bytes: &[u8], label: &str) -> bool {
+    bytes.len() >= label.len()
+        && bytes[bytes.len() - label.len()..].eq_ignore_ascii_case(label.as_bytes())
 }
 
 /// Every identifier written in `text`, in the order they stand there.
@@ -73,7 +148,11 @@ pub fn find(text: &str) -> Vec<Found> {
     // text is the same place in the text as written.
     let folded = text.to_ascii_lowercase();
     let mut found = dois(text);
-    for other in pmcs(text, &folded).into_iter().chain(pmids(text, &folded)) {
+    let others = pmcs(text, &folded)
+        .into_iter()
+        .chain(pmids(text, &folded))
+        .chain(openalex(text, &folded));
+    for other in others {
         let span = other.span();
         if found.iter().all(|f| !overlaps(&f.span(), &span)) {
             found.push(other);
@@ -254,6 +333,74 @@ fn pmid(text: &str, at: usize, digits: usize) -> Option<Found> {
     })
 }
 
+/// An OpenAlex work by its link, `openalex.org/W2741809807`. A bare `W…`
+/// in running text is not taken for one, as a bare number is not taken
+/// for a PMID.
+fn openalex(text: &str, folded: &str) -> Vec<Found> {
+    const LINK: &str = "openalex.org/";
+    places(folded, LINK)
+        .filter_map(|at| {
+            let from = at + LINK.len();
+            let letter = text.as_bytes().get(from)?;
+            if !letter.eq_ignore_ascii_case(&b'w') {
+                return None;
+            }
+            let (written, end) = digits_at(text, from + 1);
+            let id = OpenAlexId::from_bare(&format!("W{written}")).ok()?;
+            Some(Found {
+                kind: Kind::OpenAlex,
+                readings: vec![Reading {
+                    name: format!("openalex:{id}"),
+                    span: at..end,
+                }],
+            })
+        })
+        .collect()
+}
+
+/// Every name one token typed on its own, with no namespace, may be (the
+/// user, 2026-09-28: "i can't expect the general public to be able to come
+/// up with 'reg1016'"): itself in every namespace whose parser takes it —
+/// a DOI, a PMID, a PMC id with its `PMC` or without, an OpenAlex work id
+/// in either case, a public id without its `ol:`, and a publisher's own id
+/// in each of `publishers` (`reg1016`, …), which only the names table
+/// knows. `12345` is both `pmid:12345` and `pmc:PMC12345`, and both are
+/// offered.
+///
+/// Only for a token: never for text with a space or a colon in it, where
+/// the namespaces are written or the identifiers are [`find`]'s to find.
+/// A name offered here may name nothing, and one the table refuses is
+/// simply no name.
+#[must_use]
+pub fn bare(token: &str, publishers: &[String]) -> Vec<String> {
+    let token = token.trim();
+    if token.is_empty() || token.contains(char::is_whitespace) || token.contains(':') {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    if let Some(doi) = canonical(token) {
+        out.push(format!("doi:{doi}"));
+    }
+    if let Ok(pmid) = Pmid::from_digits(token) {
+        out.push(format!("pmid:{pmid}"));
+    }
+    let pmc_digits = match token.get(..3) {
+        Some(prefix) if prefix.eq_ignore_ascii_case("pmc") => &token[3..],
+        _ => token,
+    };
+    if let Ok(pmc) = PmcId::from_digits(pmc_digits) {
+        out.push(format!("pmc:{pmc}"));
+    }
+    if let Ok(work) = OpenAlexId::from_bare(&token.to_ascii_uppercase()) {
+        out.push(format!("openalex:{work}"));
+    }
+    out.push(format!("ol:{token}"));
+    for namespace in publishers {
+        out.push(format!("{namespace}:{token}"));
+    }
+    out
+}
+
 /// A PMC id: `PMC` and its digits, in any case, as a word of its own —
 /// `PMC1234567`, `PMCID: PMC1234567`, `…/pmc/articles/PMC1234567/`.
 fn pmcs(text: &str, folded: &str) -> Vec<Found> {
@@ -279,7 +426,7 @@ fn pmcs(text: &str, folded: &str) -> Vec<Found> {
 mod tests {
     use proptest::prelude::*;
 
-    use super::{Kind, find};
+    use super::{Kind, bare, find};
 
     /// Each identifier found, as the names it may be.
     fn names(text: &str) -> Vec<Vec<String>> {
@@ -408,6 +555,88 @@ mod tests {
         );
         assert_eq!(found[1].readings[0].name, "pmid:23851394");
         assert_eq!(found[2].readings[0].name, "pmc:PMC3737249");
+    }
+
+    #[test]
+    fn an_openalex_work_is_found_by_its_link_and_never_bare_in_text() {
+        assert_eq!(
+            names("https://openalex.org/W2741809807"),
+            [["openalex:W2741809807"]]
+        );
+        assert_eq!(names("openalex.org/w123."), [["openalex:W123"]]);
+        assert!(find("W2741809807").is_empty());
+    }
+
+    #[test]
+    fn a_bare_token_is_offered_in_every_namespace_that_takes_it() {
+        let publishers = ["reg1016".to_owned(), "reg1053".to_owned()];
+        assert_eq!(
+            bare("40975432", &publishers),
+            [
+                "pmid:40975432",
+                "pmc:PMC40975432",
+                "ol:40975432",
+                "reg1016:40975432",
+                "reg1053:40975432"
+            ]
+        );
+        assert_eq!(bare("PMC3737249", &[]), ["pmc:PMC3737249", "ol:PMC3737249"]);
+        assert_eq!(
+            bare("w2741809807", &[]),
+            ["openalex:W2741809807", "ol:w2741809807"]
+        );
+        assert_eq!(
+            bare("10.1038/NATURE12373", &[])[0],
+            "doi:10.1038/nature12373"
+        );
+        assert_eq!(
+            bare("S0022522325007792", &publishers),
+            [
+                "ol:S0022522325007792",
+                "reg1016:S0022522325007792",
+                "reg1053:S0022522325007792"
+            ]
+        );
+        // Written with its namespace, or more than one token: not bare.
+        assert!(bare("pmid:123", &publishers).is_empty());
+        assert!(bare("Lowry 1951", &publishers).is_empty());
+    }
+
+    /// What an identifier was written with is part of it, and no word of
+    /// the citation's.
+    #[test]
+    fn an_identifier_is_written_with_its_label_or_link() {
+        for (text, written) in [
+            ("https://doi.org/10.1000/x", "https://doi.org/10.1000/x"),
+            (
+                "See http://dx.doi.org/10.1000/x.",
+                "http://dx.doi.org/10.1000/x.",
+            ),
+            ("Nature. DOI: 10.1000/x", "DOI: 10.1000/x"),
+            ("PubMed PMID: 14907713", "PubMed PMID: 14907713"),
+            ("PMCID: PMC3737249", "PMCID: PMC3737249"),
+            (
+                "https://www.ncbi.nlm.nih.gov/pmc/articles/PMC3737249/",
+                "https://www.ncbi.nlm.nih.gov/pmc/articles/PMC3737249/",
+            ),
+            (
+                "https://pubmed.ncbi.nlm.nih.gov/14907713/",
+                "https://pubmed.ncbi.nlm.nih.gov/14907713/",
+            ),
+            (
+                "https://openalex.org/W2741809807",
+                "https://openalex.org/W2741809807",
+            ),
+        ] {
+            let found = find(text);
+            assert_eq!(found.len(), 1, "{text:?}");
+            assert_eq!(&text[found[0].written(text)], written, "{text:?}");
+        }
+        // And what is left once it is taken out.
+        let text = "Nature. DOI: 10.1000/x";
+        let written = find(text)[0].written(text);
+        assert_eq!(super::without(text, &[written]), "Nature.  ");
+        assert_eq!(super::without("abcdef", &[1..3, 2..5]), "a f");
     }
 
     #[test]

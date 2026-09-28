@@ -51,6 +51,7 @@ export type {
   ExpandResponse,
   Facet,
   FacetValue,
+  Found,
   GetWorkResponse,
   Hit,
   ListParams,

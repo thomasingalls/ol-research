@@ -691,6 +691,13 @@ impl Serving {
         Ok(self.search.search(asked, limit, facets, until)?)
     }
 
+    /// The publisher namespaces names are held in: see
+    /// [`Names::publisher_namespaces`](crate::names::Names::publisher_namespaces).
+    #[must_use]
+    pub fn publisher_namespaces(&self) -> &[String] {
+        self.names.publisher_namespaces()
+    }
+
     /// The top `limit` candidates for a citation's words: searched in the
     /// fields a citation names a work by, with no facets (citation lookup
     /// plan, D3), stopped at `until` when there is one.

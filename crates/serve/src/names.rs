@@ -446,6 +446,37 @@ fn write_files(
     Ok(files)
 }
 
+/// The distinct publisher namespaces among `map`'s keys, in key order:
+/// one range query a namespace, each starting past the last key of the
+/// one before. `reg10160:` sorts before `reg1016:` — a digit before a
+/// colon — which the skip allows for, starting each query at the
+/// namespace followed by `;`, the byte after `:`.
+fn publisher_namespaces_in<D: AsRef<[u8]>>(map: &Map<D>) -> Vec<String> {
+    use fst::{IntoStreamer, Streamer};
+    let mut out = Vec::new();
+    let mut from = b"reg".to_vec();
+    loop {
+        let mut stream = map.range().ge(&from).lt(b"reh").into_stream();
+        let Some((key, _)) = stream.next() else {
+            break;
+        };
+        let namespace = key
+            .iter()
+            .position(|b| *b == b':')
+            .map(|colon| &key[..colon])
+            .filter(|ns| ns.len() > 3 && ns[3..].iter().all(u8::is_ascii_digit));
+        from = match namespace {
+            Some(ns) => {
+                out.push(String::from_utf8_lossy(ns).into_owned());
+                [ns, b";"].concat()
+            }
+            // Not a publisher's name: past this key alone.
+            None => [key, b"\0"].concat(),
+        };
+    }
+    out
+}
+
 /// What a key names.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Resolved {
@@ -466,6 +497,8 @@ pub struct Names {
     stubs: Mapped,
     retired: HashMap<WorkId, Option<WorkId>>,
     split: HashMap<WorkId, Vec<WorkId>>,
+    /// [`Names::publisher_namespaces`], found on first asking.
+    publishers: std::sync::OnceLock<Vec<String>>,
 }
 
 impl std::fmt::Debug for Names {
@@ -546,7 +579,21 @@ impl Names {
             stubs,
             retired,
             split,
+            publishers: std::sync::OnceLock::new(),
         })
+    }
+
+    /// The publisher namespaces the base holds a name in — `reg1016`,
+    /// `reg1053`, … — each once, in key order: where a publisher's own id
+    /// typed with no namespace is looked for (citation lookup plan,
+    /// 2026-09-28: nobody can be expected to know `reg1016`). Found once a
+    /// base, by one range query a namespace: each starts past the last
+    /// key of the namespace before it. Namespaces first seen in the tail
+    /// past the epoch are not among them until the next epoch.
+    #[must_use]
+    pub fn publisher_namespaces(&self) -> &[String] {
+        self.publishers
+            .get_or_init(|| publisher_namespaces_in(&self.map))
     }
 
     /// Whether an id is a stub in the base: names and no records. False
@@ -659,5 +706,36 @@ impl Names {
     #[must_use]
     pub fn split_into(&self, id: WorkId) -> &[WorkId] {
         self.split.get(&id).map_or(&[], Vec::as_slice)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use fst::Map;
+
+    use super::publisher_namespaces_in;
+
+    /// Each publisher namespace once, however many names it holds, the
+    /// one that sorts before its own prefix (`reg10160` before `reg1016`)
+    /// included, and nothing that only looks like one.
+    #[test]
+    fn every_publisher_namespace_is_found_once() {
+        let map = Map::from_iter([
+            ("doi:10.1000/x", 1),
+            ("ol:ABC", 2),
+            ("pmid:1", 3),
+            ("reg10160:C", 4),
+            ("reg1016:A", 5),
+            ("reg1016:B", 6),
+            ("reg1053:D", 7),
+            ("regx:E", 8),
+        ])
+        .unwrap();
+        assert_eq!(
+            publisher_namespaces_in(&map),
+            ["reg10160", "reg1016", "reg1053"]
+        );
+        let none = Map::from_iter([("doi:10.1000/x", 1_u64)]).unwrap();
+        assert!(publisher_namespaces_in(&none).is_empty());
     }
 }

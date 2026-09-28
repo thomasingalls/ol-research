@@ -6,6 +6,7 @@
 
 use std::cmp::Ordering;
 use std::collections::HashMap;
+use std::ops::Range;
 use std::time::Instant;
 
 use citation_match::check::{self, Agreement, Citation, Verdict, Work};
@@ -58,12 +59,16 @@ pub(crate) fn lookup<A: Answers>(
     until: Instant,
 ) -> Result<(pb::LookupCitationResponse, Looked), Stopped> {
     let mut reached: Vec<Reached> = Vec::new();
-    let identifiers = named(a, text, &mut reached).map_err(Stopped::Answer)?;
+    let (identifiers, only_names) = named(a, text, &mut reached).map_err(Stopped::Answer)?;
 
-    // What its words turn up.
-    let hits = a
-        .candidates(asked, CANDIDATES, until)
-        .map_err(Stopped::Search)?;
+    // What its words turn up, when it has any: a text of names alone is
+    // not searched, a bare token being a name and not a word.
+    let hits = if only_names {
+        Vec::new()
+    } else {
+        a.candidates(asked, CANDIDATES, until)
+            .map_err(Stopped::Search)?
+    };
     for (rank, hit) in hits.iter().enumerate() {
         match reached.iter_mut().find(|r| r.id == hit.id) {
             Some(r) => r.rank = r.rank.or(Some(rank)),
@@ -134,54 +139,140 @@ pub(crate) fn lookup<A: Answers>(
             could_not: could_not.to_owned(),
             near_misses: entries(near)?,
             differ,
+            only_names,
         },
         looked,
     ))
 }
 
-/// What the citation names: every identifier found in it, with what it
-/// names, each work it names added to `reached` with the names that led
-/// there — first come, first listed, one entry a work.
+/// What the citation names: every name it is read as ([`read_names`]),
+/// with what it names, each work it names added to `reached` with the
+/// names that led there — first come, first listed, one entry a work; and
+/// whether the text is those names and nothing more — identifiers, with
+/// their labels and links, and not a word besides.
 fn named<A: Answers>(
     a: &A,
     text: &str,
     reached: &mut Vec<Reached>,
-) -> Result<Vec<pb::CitedName>, Status> {
+) -> Result<(Vec<pb::CitedName>, bool), Status> {
+    let reads = read_names(a, text)?;
+    let written: Vec<Range<usize>> = reads.iter().map(|r| r.written.clone()).collect();
+    let only_names = !reads.is_empty()
+        && !identifiers::without(text, &written)
+            .chars()
+            .any(citation_match::text::in_word);
     let mut identifiers = Vec::new();
-    for found in identifiers::find(text) {
-        let (reading, resolved) = first_held(a, &found)?;
-        let (outcome, ids) = match resolved {
-            Some(Resolved::One(id)) => ("one", vec![id]),
-            Some(Resolved::Shared(ids)) => ("shared", ids),
-            Some(Resolved::Split { into, .. }) => ("split", into),
-            None => ("none", Vec::new()),
-        };
-        for id in &ids {
-            match reached.iter_mut().find(|r| r.id == *id) {
-                Some(r) if !r.named_by.contains(&reading.name) => {
-                    r.named_by.push(reading.name.clone());
+    for read in reads {
+        let (cited, ids) = cited(a, text, read)?;
+        for id in ids {
+            match reached.iter_mut().find(|r| r.id == id) {
+                Some(r) if !r.named_by.contains(&cited.name) => {
+                    r.named_by.push(cited.name.clone());
                 }
                 Some(_) => {}
                 None => reached.push(Reached {
-                    id: *id,
-                    named_by: vec![reading.name.clone()],
+                    id,
+                    named_by: vec![cited.name.clone()],
                     rank: None,
                 }),
             }
         }
-        identifiers.push(pb::CitedName {
-            written: text[reading.span.clone()].to_owned(),
-            start: u32::try_from(reading.span.start).unwrap_or(u32::MAX),
-            end: u32::try_from(reading.span.end).unwrap_or(u32::MAX),
+        identifiers.push(cited);
+    }
+    Ok((identifiers, only_names))
+}
+
+/// One name a text was read as, where, and what it names.
+pub(crate) struct Read {
+    name: String,
+    span: Range<usize>,
+    /// Where it stands with its label or link.
+    written: Range<usize>,
+    resolved: Option<Resolved>,
+}
+
+impl Read {
+    /// Whether the name names anything.
+    pub(crate) const fn names_something(&self) -> bool {
+        self.resolved.is_some()
+    }
+}
+
+/// Every name `text` is read as, and what each names — for a citation,
+/// and for Find by ID when what was typed is no name as it stands:
+/// - each identifier the finder finds in it — a DOI in any of its
+///   spellings, `PMID: 123`, a PubMed or OpenAlex link — as the first of
+///   its readings the names table holds, or its last when none is;
+/// - when the finder finds none and the whole text is one token: the
+///   token as a name, as written (`reg1016:S…`, `ol:…`), and bare in every
+///   namespace whose parser takes it ([`identifiers::bare`]), keeping
+///   those that name something (the user, 2026-09-28: no namespace
+///   required). Never a bare number inside a longer citation: its volume
+///   of 193 would be PMID 193, another paper, and a work a name leads to
+///   is always listed.
+///
+/// # Errors
+///
+/// A name the finder read that the names table refuses, and the table's
+/// own failures.
+pub(crate) fn read_names<A: Answers>(a: &A, text: &str) -> Result<Vec<Read>, Status> {
+    let mut out = Vec::new();
+    for found in identifiers::find(text) {
+        let (reading, resolved) = first_held(a, &found)?;
+        out.push(Read {
             name: reading.name.clone(),
-            resolved: outcome.to_owned(),
-            public_ids: ids
-                .iter()
-                .map(|id| convert::public(a, *id))
-                .collect::<Result<_, _>>()?,
+            span: reading.span.clone(),
+            written: found.written(text),
+            resolved,
         });
     }
-    Ok(identifiers)
+    let token = text.trim();
+    if !out.is_empty() || token.is_empty() || token.contains(char::is_whitespace) {
+        return Ok(out);
+    }
+    let start = text.len() - text.trim_start().len();
+    let as_written = std::iter::once(token.to_owned()).filter(|t| t.contains(':'));
+    for name in as_written.chain(identifiers::bare(token, a.publisher_namespaces())) {
+        match a.resolve(&name) {
+            Ok(Some(resolved)) => out.push(Read {
+                name,
+                span: start..start + token.len(),
+                written: start..start + token.len(),
+                resolved: Some(resolved),
+            }),
+            // Offered on the chance: a namespace that does not take the
+            // token, or one that takes it and holds nothing by it.
+            Ok(None) | Err(serve::Error::NotAName(_)) => {}
+            Err(e) => return Err(status(&e)),
+        }
+    }
+    Ok(out)
+}
+
+/// A name as the protocol says it, and the works it names.
+pub(crate) fn cited<A: Answers>(
+    a: &A,
+    text: &str,
+    read: Read,
+) -> Result<(pb::CitedName, Vec<WorkId>), Status> {
+    let (outcome, ids) = match read.resolved {
+        Some(Resolved::One(id)) => ("one", vec![id]),
+        Some(Resolved::Shared(ids)) => ("shared", ids),
+        Some(Resolved::Split { into, .. }) => ("split", into),
+        None => ("none", Vec::new()),
+    };
+    let cited = pb::CitedName {
+        written: text[read.span.clone()].to_owned(),
+        start: u32::try_from(read.span.start).unwrap_or(u32::MAX),
+        end: u32::try_from(read.span.end).unwrap_or(u32::MAX),
+        name: read.name,
+        resolved: outcome.to_owned(),
+        public_ids: ids
+            .iter()
+            .map(|id| convert::public(a, *id))
+            .collect::<Result<_, _>>()?,
+    };
+    Ok((cited, ids))
 }
 
 /// The fields a verdict found not in the citation, by name.
@@ -247,6 +338,10 @@ fn entry<A: Answers>(
             unaccounted: verdict.unaccounted.clone(),
             score: verdict.score,
             passes: verdict.passes(),
+            rule: verdict
+                .rule
+                .map(|r| r.name().to_owned())
+                .unwrap_or_default(),
         }),
     })
 }

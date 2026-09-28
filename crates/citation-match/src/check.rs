@@ -14,7 +14,10 @@
 //! a surname of the first author in the first name of its author list;
 //! the year, and a numeric volume or page, among its numbers; any other
 //! volume or page as whole words. The rule is loosened only by rules
-//! found in the near misses and measured (D4). None is, yet.
+//! found in the near misses (D4), each named ([`Rule`]). Two are, both on
+//! the user's word of 2026-09-28 over lookups that missed: a title is
+//! compared without the full stop that closes it, and a citation that is
+//! a work's title and nothing more passes on the title alone.
 //!
 //! Numbers are read as Crossref's matcher reads them (its
 //! `cr_search_validation_matcher.py`, MIT): every run of digits, a page
@@ -80,6 +83,33 @@ pub struct Verdict {
     pub unaccounted: Vec<String>,
     /// From 0 to 1, for ordering: what agreed over everything mentioned.
     pub score: f64,
+    /// The rule the work passes by, when it passes.
+    pub rule: Option<Rule>,
+}
+
+/// A rule a work passes the check by: D4's, and each loosening of it,
+/// named so that an answer says which let a work through and each can be
+/// measured apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Rule {
+    /// Every one of the five the work has agrees, and it has one (D4).
+    EveryField,
+    /// The citation is the work's title and nothing more, closing full
+    /// stops aside: a title typed on its own names its work, whatever
+    /// else the work says, since the citation says nothing else at all
+    /// (the user, 2026-09-28, on two titles pasted alone that missed).
+    TitleAlone,
+}
+
+impl Rule {
+    /// The rule's name, as an answer gives it.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::EveryField => "every-field",
+            Self::TitleAlone => "title-alone",
+        }
+    }
 }
 
 impl Verdict {
@@ -95,12 +125,10 @@ impl Verdict {
         ]
     }
 
-    /// The rule (D4): every field the work has agrees, and it has one.
+    /// Whether the work passes, by any [`Rule`].
     #[must_use]
-    pub fn passes(&self) -> bool {
-        let fields = self.fields();
-        fields.iter().any(|(_, a)| *a == Agreement::Agrees)
-            && fields.iter().all(|(_, a)| *a != Agreement::NotInCitation)
+    pub const fn passes(&self) -> bool {
+        self.rule.is_some()
     }
 }
 
@@ -143,17 +171,19 @@ impl Citation {
 }
 
 /// What of a citation says something about its work: the text without the
-/// identifiers found in it, which are looked up by name, and without a
-/// leading label, which numbers the list. Both what the check reads and
-/// what a search for candidates is asked (citation lookup plan §3, step 2),
-/// as written — the search's own analyzer folds it as the index was folded.
+/// identifiers found in it, which are looked up by name, and the labels and
+/// links they were written with ([`identifiers::Found::written`]); and
+/// without a leading label, which numbers the list. Both what the check
+/// reads and what a search for candidates is asked (citation lookup plan
+/// §3, step 2), as written — the search's own analyzer folds it as the
+/// index was folded.
 #[must_use]
 pub fn searchable(text: &str) -> String {
-    let mut blanked = text.to_owned();
-    for found in identifiers::find(text).iter().rev() {
-        blanked.replace_range(found.span(), " ");
-    }
-    without_label(&blanked).to_owned()
+    let written = identifiers::find(text)
+        .iter()
+        .map(|found| found.written(text))
+        .collect::<Vec<_>>();
+    without_label(&identifiers::without(text, &written)).to_owned()
 }
 
 /// `text` without a leading label: a number in brackets, or followed by a
@@ -297,22 +327,38 @@ fn found(yes: bool) -> Agreement {
     }
 }
 
-/// Whether a surname of `name` is in the first name of the citation's
-/// author list. Any word of the printed name may be the surname, since
-/// the row does not say which (the plan's §12, item 4); a single letter
-/// never is, being an initial. A name with no word longer than a letter
-/// says nothing to look for.
+/// Whether the first author's family name is in the first name of the
+/// citation's author list. The row prints a name given names first —
+/// `Oliver H. Lowry`, `Alex G C de Sá` — so its family name is taken as its
+/// last word, or, where the printed name has a comma (`Lowry, Oliver H.`),
+/// the last word before it (the plan's §12, item 4). Any word at all was
+/// taken until 2026-09-28, when `Chinese Society of Health Management`
+/// agreed with a citation by its `of`. A family name of one letter is an
+/// initial, and says nothing to look for.
 fn author(name: Option<&str>, first_name: &str) -> Agreement {
     let Some(name) = name else {
         return Agreement::WorkDoesNotSay;
     };
     let name = caseless(name);
-    let surnames: Vec<&str> = words(&name).filter(|w| w.chars().count() > 1).collect();
-    if surnames.is_empty() {
+    let family_part = name
+        .split_once(',')
+        .map_or(name.as_str(), |(before, _)| before);
+    let Some(family) = words(family_part).last().filter(|w| w.chars().count() > 1) else {
         return Agreement::WorkDoesNotSay;
+    };
+    found(words(first_name).any(|w| w == family))
+}
+
+/// A title as compared: without the full stop that closes it. PubMed's
+/// titles carry one, and a citation may close the title with a comma or a
+/// quote instead (the user, 2026-09-28: "we can drop the period at the end
+/// of a title").
+fn title_form(title: &str) -> String {
+    let title = caseless(title);
+    match title.strip_suffix('.') {
+        Some(bare) => bare.trim_end().to_owned(),
+        None => title,
     }
-    let cited: Vec<&str> = words(first_name).collect();
-    found(surnames.iter().any(|s| cited.contains(s)))
 }
 
 /// Checks `work` against `citation`.
@@ -321,10 +367,14 @@ pub fn check(citation: &Citation, work: &Work<'_>) -> Verdict {
     let text = citation.text.as_str();
     let mut left = citation.numbers.clone();
 
-    let title = match work.title.map(caseless).filter(|t| !t.is_empty()) {
-        Some(title) => found(contains_words(text, &title)),
+    let title_text = work.title.map(title_form).filter(|t| !t.is_empty());
+    let title = match &title_text {
+        Some(title) => found(contains_words(text, title)),
         None => Agreement::WorkDoesNotSay,
     };
+    let title_alone = title_text
+        .as_deref()
+        .is_some_and(|title| title_form(text) == title);
     let first_author = author(work.first_author, &citation.first_name);
 
     // The five first, so that a number only the issue or the last page
@@ -374,6 +424,16 @@ pub fn check(citation: &Citation, work: &Work<'_>) -> Verdict {
     } else {
         agreed as f64 / mentioned as f64
     };
+    let five = [title, first_author, year, volume, first_page];
+    let every_field =
+        five.contains(&Agreement::Agrees) && !five.contains(&Agreement::NotInCitation);
+    let rule = if every_field {
+        Some(Rule::EveryField)
+    } else if title_alone {
+        Some(Rule::TitleAlone)
+    } else {
+        None
+    };
     Verdict {
         title,
         first_author,
@@ -382,6 +442,7 @@ pub fn check(citation: &Citation, work: &Work<'_>) -> Verdict {
         first_page,
         unaccounted: left,
         score,
+        rule,
     }
 }
 
@@ -390,7 +451,7 @@ mod tests {
     use proptest::prelude::*;
 
     use super::Agreement::{Agrees, NotInCitation, WorkDoesNotSay};
-    use super::{Citation, Verdict, Work, check, numbers, pages};
+    use super::{Citation, Rule, Verdict, Work, check, numbers, pages};
 
     fn checked(citation: &str, work: &Work<'_>) -> Verdict {
         check(&Citation::read(citation), work)
@@ -579,7 +640,23 @@ mod tests {
             ),
             Agrees
         );
-        assert_eq!(author("12. Lowry OH, Farr AL.", "Lowry OH"), Agrees);
+        assert_eq!(author("12. Lowry OH, Farr AL.", "Oliver H. Lowry"), Agrees);
+        assert_eq!(author("Lowry OH, Farr AL.", "Lowry, Oliver H."), Agrees);
+        // The family name, not any word: `of` is no one's surname.
+        assert_eq!(
+            author(
+                "Trends and multidisciplinary research of torch ginger.",
+                "Chinese Society of Health Management"
+            ),
+            NotInCitation
+        );
+        assert_eq!(
+            author(
+                "Chinese Society of Health Management. Consensus.",
+                "Chinese Society of Health Management"
+            ),
+            Agrees
+        );
         // The second author's surname is not the first's.
         assert_eq!(
             author("Jones A, Smith B. A title.", "B Smith"),
@@ -635,6 +712,54 @@ mod tests {
         );
         assert_eq!(v.first_page, Agrees);
         assert!(v.unaccounted.is_empty(), "{v:?}");
+    }
+
+    /// PubMed's titles close with a full stop, and IEEE closes a title with
+    /// a comma inside quotes (found on the dev store, 2026-09-27).
+    #[test]
+    fn a_title_s_closing_full_stop_is_not_asked_for() {
+        let work = Work {
+            title: Some("Aspirin hypersensitivity: a practical guide for cardiologists."),
+            first_author: Some("Silvia Grimaldi"),
+            year: Some(2024),
+            ..Work::default()
+        };
+        let v = checked(
+            "S. Grimaldi, P. Migliorini, and I. Puxeddu, “Aspirin hypersensitivity: \
+             a practical guide for cardiologists,” Eur. Heart J., 2024.",
+            &work,
+        );
+        assert_eq!(v.title, Agrees);
+        assert_eq!(v.rule, Some(Rule::EveryField));
+    }
+
+    /// A title typed on its own names its work (the two that missed on
+    /// 2026-09-28), with or without its full stop, in any case — and only
+    /// the whole of it, and nothing more.
+    #[test]
+    fn a_citation_that_is_a_title_alone_passes_on_its_title() {
+        let work = Work {
+            title: Some("Trends in biodiversity research in Brazilian marine protected areas."),
+            first_author: Some("Vinicius J Giglio"),
+            year: Some(2026),
+            ..Work::default()
+        };
+        for alone in [
+            "Trends in biodiversity research in Brazilian marine protected areas.",
+            "trends in biodiversity research in brazilian marine protected areas",
+            "  TRENDS IN BIODIVERSITY RESEARCH IN BRAZILIAN MARINE PROTECTED AREAS  ",
+        ] {
+            let v = checked(alone, &work);
+            assert_eq!(v.rule, Some(Rule::TitleAlone), "{alone:?}");
+            // The author and year are still said not to be in it.
+            assert_eq!((v.first_author, v.year), (NotInCitation, NotInCitation));
+        }
+        for more_or_less in [
+            "Trends in biodiversity research in Brazilian marine protected areas. 2025.",
+            "Trends in biodiversity research in Brazilian marine areas.",
+        ] {
+            assert!(!checked(more_or_less, &work).passes(), "{more_or_less:?}");
+        }
     }
 
     #[test]

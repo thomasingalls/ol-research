@@ -95,7 +95,14 @@ DOIs (the soft hyphen and the rest, model 11), and resolve it through
 the names table as "Find by ID" does. A DOI in running text has no clear
 end: `…/nature12373.` ends a sentence. So the longest DOI-shaped run is
 tried first, then shorter ones with a trailing `.`, `,`, `;` or `)`
-taken off, until one resolves (D2).
+taken off, until one resolves (D2). PubMed and OpenAlex links are read
+too.
+
+A citation that is one token, with no identifier the finder knows, is
+read as Find by ID reads it (D12): as a name as written, and bare in
+every namespace, publishers' included. A bare number inside a longer
+citation is never tried: its volume of 193 would be PMID 193, another
+paper, and a work a name leads to is always listed.
 
 **2. Candidates.** Take the identifiers and any bracketed labels (`[12]`)
 out of the citation's text. Search the rest against titles, authors and
@@ -245,6 +252,11 @@ Per possible match and per near miss:
 
 Per identifier found: what it was as written, and what it resolved to.
 
+Whether the text is identifiers and nothing more: `only_names`. The
+identifiers' labels and links (`doi:`, `https://doi.org/`, `PMCID:`) count
+as part of them. Such a text is not searched, since a bare token is a
+name and not a word (2026-09-28, for D8).
+
 When the identifier and the text land on different works, a statement
 that they differ (D2).
 
@@ -277,11 +289,25 @@ branch's dev proxy takes.
   bytes, milliseconds, what was listed, the top candidates' scores and
   failed fields, and the text, escaped.
 
-**D8. The tab.** *Recommended.* "Find by citation", beside "Find by ID":
-- a text box;
-- the text kept in the URL, as `resolve.tsx` keeps its id;
-- the list of possible matches as D5 has them;
-- "could not" with its reason.
+**D8. One view: "Find a paper".** *Decided* (the user, 2026-09-28: "for
+a visitor to the website, i think it makes more sense to consolidate the
+'Find by ID' and 'Find by citation' into one view. from a website
+visitor's perspective, these both do the same thing, even as from a
+technical perspective they definitely do not").
+- **One page and one call.** The page is `/find`: a text box that takes
+  an identifier of any kind, a link, a title or a whole citation. It asks
+  one thing of the server, `/v1/citation`, which reads identifiers of
+  every kind (D12) and searches the words when there are any.
+- **The text is kept in the URL**, so an answer is a link.
+- **The list of possible matches** is shown as D5 has them, and "could
+  not" with its reason.
+- **Identifiers alone go straight to the paper**, as Find by ID did. When
+  the text is identifiers and nothing more (the answer's `only_names`)
+  and they name one paper, the page goes to it. Anything with words in it
+  stays on the list.
+- **The old pages' addresses are kept.** `/resolve` and `/citation`
+  forward to `/find` with the same text. The API's `/v1/resolve` is
+  unchanged, for a client that wants a name and nothing else.
 
 The user looks at it and says whether it is right.
 
@@ -292,7 +318,7 @@ no server. The server supplies candidates and their fields; a batch
 could, later.
 - `search` gains a search over a chosen set of fields.
 - `ol-rht-serve` gains the route, the rpc and the service function.
-- `web` gains the tab.
+- `web` gains the page (D8).
 
 **D10. Tests.** *Recommended.* Properties, since the input is anything
 a person pastes (proptest, already in the workspace):
@@ -354,6 +380,36 @@ the data asks for it, "ok").
   and `ratio` but no `partial_ratio`. The rule of thumb that came out of
   it: a library where the knowledge is data (Unicode's tables), our own
   code where it is a formula (an edit distance).
+
+**D12. No namespace needed, for Find by ID or a citation.** *Decided*
+(the user, 2026-09-28: "'find by id' should not require namespace — for
+now we can run namespaceless requests through every namespace and return
+a list of matches … i can't expect the general public to be able to come
+up with 'reg1016' … i mean i don't even know what it maps to and i'm
+writing this system").
+- **A name as it stands answers as it always has.** `doi:10.1000/x`,
+  `pmid:123` and `ol:…` go straight to the names table.
+- **Anything else is read every way it can be**, and every reading that
+  names something is listed with what it names: `found` in Find by ID's
+  answer.
+  - The citation finder's reading: a DOI as a link or in capitals,
+    `PMID: 123`, a PubMed or OpenAlex link.
+  - Or, for a single token, the token in every namespace:
+    - DOI;
+    - PMID;
+    - PMC id, with or without its `PMC`;
+    - OpenAlex id, in either case;
+    - public id without its `ol:`;
+    - each publisher namespace, so a PII finds its `reg1016`.
+  - `12345` that is both a PMID and a PMC id lists both.
+  - When every reading leads to one work, the page goes straight to it
+    (D8).
+- **Publisher namespaces** are found in the names table itself: one range
+  query per namespace, once per epoch (`Names::publisher_namespaces`).
+- **A public id written wrong** (`ol:` then something that is not one) is
+  still refused as written. The `ol:` says what it was meant to be.
+- **Cost on the dev store**, measured 2026-09-28: about 2 ms a Find by
+  ID call, every namespace tried.
 
 ## 5. Milestones
 
@@ -466,7 +522,7 @@ written by hand, their volumes and pages made up):
   misses, most agreeing on the year alone, so the tab will want to show
   the nearest few (CL4).
 
-**CL4 — The tab's list.** D8 in full, near misses included. The user
+**CL4 — The page's list.** D8 in full, near misses included. The user
 looks.
 
 **CL5 — The first answer key run.** §6. It measures the strict rule and
@@ -566,6 +622,21 @@ its report (§6).
     fields plan;
   - search quality is the search track's to fix and ours to keep track
     of.
+- 2026-09-28, the user:
+  - Find by ID and Find by citation as one view, "Find a paper" (D8);
+  - no namespace needed, for Find by ID or a citation (D12);
+  - "we can drop the period at the end of a title": a title is compared
+    without the full stop that closes it (D4);
+  - on two titles pasted alone that missed, the title-alone rule (D4):
+    a citation that is a work's title and nothing more passes on the
+    title. Both titles were the search's first candidate. The rule
+    serves the evaluation plan's "type the exact title, get the paper"
+    (its §10, item 7).
+- 2026-09-28, found in the same misses: the first-author rule took any
+  word of the printed name as its surname, so `Chinese Society of Health
+  Management` agreed with an unrelated citation by its `of`. The family
+  name is now the last word of the printed name, or the last before a
+  comma (§12, item 4).
 
 ## 9. v2 to v4
 
@@ -596,12 +667,13 @@ Sketches, not plans.
 ## 10. Open items
 
 1. **The loosening rules** (D4): which, in what order, each measured on
-   the key. Seen so far, none taken:
-   - a title's closing full stop, which PubMed's titles carry and styles
-     that close a title with a comma or quote do not (the dev store,
-     2026-09-27);
-   - a citation without a title, passing on its other fields once
-     volume and pages are on the row (example B).
+   the key.
+   - Taken on the user's word, 2026-09-28:
+     - a title's closing full stop, which PubMed's titles carry and
+       styles that close a title with a comma or quote do not;
+     - title alone (`Rule::TitleAlone`).
+   - Seen, not taken: a citation without a title passing on its other
+     fields, once volume and pages are on the row (example B).
 2. ~~**What "all" means** (D4).~~ *Decided 2026-09-27*, as D4 reads.
 3. **Crossref's data licence.** The repository is MIT; whether that
    covers the generated citations needs settling before any copy lands
@@ -652,11 +724,15 @@ what it costs, and what would lift it.
    an online-first year, or a style without titles, and show as near
    misses rather than matches. Lifted by rules of our own, measured on
    the key (CL5).
-4. **The first author's surname is a guess.** Served authors are display
-   strings, so any word of the first author's name longer than a letter
-   counts as the surname. A given name that happens to match could count
-   as the surname. Lifted by family names on the row (citation fields
-   plan).
+4. **The first author's family name is a guess.** Served authors are
+   display strings, given names first, so the family name is taken as
+   the last word, or the last word before a comma. Where it falls short:
+   - a name printed family-first with no comma (`Lowry OH`);
+   - a family name of several words, whose last word stands for it (`de
+     Andrade Fernandes`, as `Fernandes`);
+   - a group author, whose last word stands for all of it.
+
+   Lifted by family names on the row (citation fields plan).
 5. **The first author is looked for in the first name of the author
    list**: the citation up to its first comma, semicolon or bracket.
    Costs:
@@ -698,4 +774,15 @@ what it costs, and what would lift it.
     year-either-side rule measured on the key.
 14. **Every candidate that fails is a near miss**, up to twenty, most of
     them agreeing on nothing but the year. Kept whole in the answer
-    while pre-v1 (D5); the tab is to show the nearest (CL4).
+    while pre-v1 (D5); the page is to show the nearest (CL4).
+15. **Title alone passes every work of that title.** A title shared by
+    many works (`Editorial`, `Reply`) lists every one the search turns
+    up, and only those in its top twenty. Lifted by the key showing how
+    often, and a rule for it.
+16. **No bare identifier inside a longer citation** (D12). A PMID or a
+    PII written without its label in the middle of a citation is not
+    tried, and the words must find the work. Lifted by a parser, which
+    would know which number is which.
+17. **Publisher namespaces are the epoch's** (D12). A publisher first
+    seen in a batch since the epoch is not tried for a bare id until the
+    next epoch.

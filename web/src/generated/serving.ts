@@ -94,7 +94,8 @@ export type CitationParams = {
 };
 
 /**
- * An identifier as a citation wrote it.
+ * An identifier as a text wrote it — a citation, or what was typed into
+ * Find by ID — and the name it was read as.
  */
 export type CitedName = {
   /**
@@ -191,6 +192,10 @@ export type FacetValue = {
   count: number,
 };
 
+export type Found = {
+  names: Array<CitedName>,
+};
+
 export type GetWorkResponse = {
   answered: Answered | null,
   work: Work | null,
@@ -267,6 +272,13 @@ export type LookupCitationResponse = {
    * itself (D2).
    */
   differ: boolean,
+  /**
+   * The text is identifiers and nothing more — with their labels and
+   * links, and not a word besides — so its words were not searched: a DOI
+   * or a PMID pasted on its own, where a client may go straight to the work
+   * it names (2026-09-28).
+   */
+  only_names: boolean,
 };
 
 export type Name = {
@@ -467,14 +479,17 @@ export type RelatedResponse = {
 export type ResolveOutcome =
   | { "public_id": string }
   | { "shared": Shared }
-  | { "split": Split };
+  | { "split": Split }
+  | { "found": Found };
 
 /**
  * What `/v1/resolve` takes.
  */
 export type ResolveParams = {
   /**
-   * A name — `doi:10.1000/x`, `pmid:12345678` — or a public id.
+   * A name — `doi:10.1000/x`, `pmid:12345678` — or a public id; or an
+   * identifier with no namespace, or a link to one, which is read every
+   * way it can be (2026-09-28).
    */
   text: string,
 };
@@ -609,9 +624,15 @@ export type Verdict = {
    */
   score: number,
   /**
-   * The rule: every one of the five the work has agrees, and it has one.
+   * It passes, by `rule`.
    */
   passes: boolean,
+  /**
+   * The rule it passes by: `every-field`, every one of the five the work
+   * has agrees, and it has one (D4); `title-alone`, the citation is the
+   * work's title and nothing more. Empty when it does not pass.
+   */
+  rule: string,
 };
 
 /**
