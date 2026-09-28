@@ -2245,6 +2245,13 @@ cross-IDs and a second edge namespace early.
   survey's counts. Crossref's `short-container-title` is kept in the same
   model version. It waits until the merge of record at model 12 has run
   and been published.
+- 2026-09-28, Crossref's `journal-issue` dates kept in model 13 (the
+  user). The reader has read the object's own print and online dates and
+  thrown them away. Over the whole file (`ol-rht-survey-crossref-v4`),
+  the issue's online date differs from the article's on 9,409,481 records,
+  and the issue gives a print date the article lacks on 1,669,210. They
+  are the issue's own dates (its month, or its year), which the citation
+  fields plan's D4 keeps apart from the article's online date.
 
 ## 11. Dependencies
 

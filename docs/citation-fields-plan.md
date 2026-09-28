@@ -176,6 +176,14 @@ apart at the data layer avoids "quite a lot of heartache".
 - Crossref's `issued` is Crossref's own earliest of print and online, not
   a third kind. CF0 counts the records that give only `issued`, whose kind
   is unknown.
+- Crossref's `journal-issue` object gives the issue's own print and
+  online dates, which model 13 keeps (the user, 2026-09-28) as the Issue
+  level's dates. Over the whole file it differs from the article's online
+  date on 9,409,481 records, and gives a print date where the article
+  gives none on 1,669,210 (**M**, CF0 part 3). Where it differs it is the
+  issue's month or year against the article's day: an article online on
+  2026-01-24 in an issue of 2026-02, or of 2026-12 where the issue is the
+  year.
 - `published`, the earliest date, stays as it is, for now as a value
   derived from the others. It keeps driving the year facet, sorting and
   the API. Date search over several dates, and the rule for which date a
@@ -227,13 +235,16 @@ proceedings, but filling them waits: editors, edition and publisher place
 are read and not kept by the Crossref reader, and the user has no
 bandwidth for books now. `publisher` is dropped: citation styles do not
 print one for a journal article, and it would come back as an entity
-(§8). Model 13 reopens "no source reader changes" for three things only:
+(§8). Model 13 reopens "no source reader changes" for four things only:
 - the reading of pages;
 - labels, if CF0 shows they need it;
 - Crossref's `short-container-title`. The user, 2026-09-27: use it where
   there is nothing else. It becomes the journal abbreviation where PubMed
   gives none. The user tied it to the entity work: a journal's own id
-  would later own its abbreviation (§8).
+  would later own its abbreviation (§8). It is on 107,434,316 of
+  119,956,318 journal articles (**M**, CF0 part 3);
+- the `journal-issue` object's own print and online dates (D4; the user,
+  2026-09-28).
 
 **D10. The free PDF link: left out.** Its source is OpenAlex, which is
 not in the merge yet.
@@ -406,7 +417,8 @@ assembler's.
   keeps a PubMed relation named only by a DOI, which the whole-file
   survey at model 11 stopped for.
 - **Model version 12 → 13.** Pages are read (D8), and labels too if CF0
-  says so; Crossref's `short-container-title` is kept (D9). Draft 2 called
+  says so; Crossref's `short-container-title` (D9) and `journal-issue`
+  dates (D4) are kept. Draft 2 called
   this model 12, which the relation DOIs took first.
   - Both sources are normalized again. The v11 normalize took about 35
     minutes for both side by side on the box (**R**, ingestion plan §10).
@@ -496,9 +508,10 @@ then revised to match as draft 3.
 **CF1 — Model 13: reading at normalization.**
 - Pages are read in each source (D8), and labels if CF0 says so.
 - Crossref's `short-container-title` is kept (D9).
+- Crossref's `journal-issue` print and online dates are kept (D4).
 - The stats report counts each reading, as DOI readings are counted.
 - Fixtures cover each shape CF0 found.
-- The `lib.rs` version 12 paragraph and ingestion plan §10 are written.
+- The `lib.rs` version 13 paragraph and ingestion plan §10 are written.
 
 *Done when:* each source's normalize survey over its whole file shows 0
 failures, or only the fallback the user chose, and the laptop's harness
@@ -599,9 +612,6 @@ D2's rule and D8's fallback are added here once CF0 settles them.
   shared levels become works, and each part is linked to its container.
 - **Books filled.** Editors, edition and place (the Crossref reader, a
   model version), chapters and entries, and the book levels of the chain.
-- **Crossref's issue-level dates.** The `journal-issue` object's own
-  print and online dates are read and not kept. They are worth keeping
-  only if CF0 shows the article's dates miss them.
 - **The journal abbreviation from NLM's catalogue,** which maps ISSNs to
   abbreviations for every journal NLM indexes. It is a table, not a
   source, and is not designed.
@@ -670,3 +680,19 @@ D2's rule and D8's fallback are added here once CF0 settles them.
   therefore model 13, and this plan's merge is into `merged/v13.17/`. The
   entries above say 12 as it was said then. CF0 runs on the store at
   model 12 and merge 16.
+- **2026-09-28, the numbering checked, and CF0 part 3.** Model 12 did not
+  settle the SVIN erratum after all: the baseline's copy of PMID 41585761
+  has no `CommentsCorrections`, as NLM added them after the cut. Merge 16
+  amended did (ol-rht f782d84, Crossref's list of deposits whose aliases
+  are what they correct), with no version bump. So the merge of record is
+  at model 12 and merge 16, after `ol-rht-merge-survey-v10`. Main and
+  every worktree are at or below model 12, merge 16 and serve 8, so this
+  plan's 13, 17 and 9 stand. The other session left them for this plan
+  on purpose.
+  - CF0 part 3 (`ol-rht-survey-crossref-v4`, the whole file, exit 0 in
+    every share) found, among 119,956,318 journal articles: a second
+    `container-title` on 173,277, `short-container-title` on 107,434,316,
+    and the `journal-issue` dates as in D4. It also found 5,064,105 other
+    records with a second title, a chapter's series and then its book.
+  - The user: keep the `journal-issue` dates in model 13 (D4). The
+    examples of the 173,277 come from `ol-rht-dump-crossref-v4`.
