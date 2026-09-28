@@ -227,11 +227,13 @@ full review).
 - **Suggested cuts (search-within-results §11.1).** Novel, and good for
   exploring; but the good score is agreement with marks, which leads
   back to the classifier, and many overlapping cuts are hard to show.
+  Its own research program: [suggested cuts](suggested-cuts.md).
 - **Shape (search-within-results §8).** The best first look for a
   person; the weakest evidence (citation clusters on systematic reviews
   were "highly variable",
   [Bascur et al., 2022](https://arxiv.org/abs/2207.03299), [A]) and the
-  least use to an agent.
+  least use to an agent. Its own research program:
+  [the shape of a result set](shape-of-a-result-set.md).
 
 ## 8. A path, measurement first
 
