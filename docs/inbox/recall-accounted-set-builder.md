@@ -6,7 +6,9 @@ the conversation behind [searching within a result set](search-within-results.md
 which one specialist tool looks most promising. The recommendation is
 the conversation's, not a decision, and nothing here is built, scheduled
 or decided; nothing in it amends the plans of record. Scope, the user's:
-academic literature, and associated scientific data later. Facts are
+academic literature as the wedge, for academics and researchers, with
+no kind of artifact out of scope in principle for its document type
+(see [searching within a result set](search-within-results.md)'s status). Facts are
 marked **P** (primary: this repository, or a paper read directly on
 2026-09-28), **S** (secondary: read through a search engine's summaries
 on 2026-09-28) or **U** (from memory, not checked). The bracketed tags

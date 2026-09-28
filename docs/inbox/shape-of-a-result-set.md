@@ -7,8 +7,10 @@ and [suggested cuts](suggested-cuts.md), built on
 [searching within a result set](search-within-results.md) §8.
 Speculative, not a plan: nothing here is built, scheduled or decided,
 and nothing in it amends the plans of record. Scope, the user's:
-academic literature in every field ("pubmed was just a convenient place
-to start"), and associated scientific data later. Facts are marked **P**
+academic literature in every field as the wedge ("pubmed was just a
+convenient place to start"), for academics and researchers, with no kind
+of artifact out of scope in principle for its document type (see
+[searching within a result set](search-within-results.md)'s status). Facts are marked **P**
 (primary: this repository, or a source read directly on 2026-09-28),
 **S** (secondary: read through a search engine's summaries that day) or
 **U** (from memory, not checked). The bracketed tags **[P]**, **[A]**

@@ -325,9 +325,18 @@ all kinds of things, and it's not just pharmas that need support", and
 waits on the corpus reaching its field (Crossref, OpenAlex, arXiv), not
 on its field.
 
+Kept, not dropped for their document type: TREC-CHEM and CLEF-IP
+(patents, which the corpus does not hold yet). The user, 2026-09-28: "i
+would not exclude any kind of artifact just because of document type.
+academic literature is the wedge i know best, but technically even code
+is in scope, internal documents are in scope, dna sequences are in
+scope, proofs are in scope, chemical formulae are in scope, experimental
+data are in scope, images are in scope." For now the product is a tool
+for academics and researchers, starting from academic literature; a set
+over another kind of artifact waits on the corpus reaching it.
+
 Not worth it, with the reason: OHSUMED (no MEDLINE-UI-to-PMID crosswalk found, shallow pools,
-research use only); TREC-CHEM and
-CLEF-IP (patents); NASA-IR (paragraphs as gold); pathfinder
+research use only); NASA-IR (paragraphs as gold); pathfinder
 (unreleased); ChemRxiv Retrieval (queries written by a model); TREC Fair
 Ranking (reranking); Multi-XScience (the citation scoreboard does the
 same at scale); SciFact-Open (claims on S2 ids); CheckThat 2025 4b (COVID

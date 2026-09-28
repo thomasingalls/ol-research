@@ -538,7 +538,13 @@ Commands:
   outside biomedicine is kept and waits on the corpus reaching it; the
   benchmarks note was amended the same day, and §12 item 8's breadth
   compromise now has SR4CS (computer science) and SYNERGY's other fields
-  beside the sets it names.
+  beside the sets it names. Later the same day, document type joined
+  them: "i would not exclude any kind of artifact just because of
+  document type" (patents, code, internal documents, DNA sequences,
+  proofs, chemical formulae, experimental data and images are all in
+  scope in principle); "academic literature is the wedge i know best",
+  and for the short term the product is a tool for academics and
+  researchers.
 
 ## 10. Open items
 

@@ -5,7 +5,12 @@ conversation the same day. In the user's words it is "still an incomplete
 thought": the user is circling the idea, and this note records how far
 the circling had got. Its scope, set by the user later the same day:
 "this is specifically about searching academic literature (and
-associated scientific data, later)". The research behind §12 is kept
+associated scientific data, later)". Later still, the user separated the
+wedge from the horizon: no kind of artifact is out of scope for its
+document type (patents, code, internal documents, DNA sequences, proofs,
+chemical formulae, experimental data, images), but "academic literature
+is the wedge i know best", and for the short term the product is a tool
+for academics and researchers. The research behind §12 is kept
 verbatim in [search-within-results-agent-reports/](search-within-results-agent-reports/).
 Speculative, not a plan: nothing here is built,
 scheduled or decided, and nothing in it amends the plans of record. The
