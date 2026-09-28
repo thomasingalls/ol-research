@@ -302,12 +302,32 @@ query by document, R recall (systematic reviews), C clicks.
 | TripClick / TripJudge | C and T · health | 3 × 1,175 test queries; TripJudge 1,136 queries, 12,590 pairs, four grades (P) | clicks; students, κ 0.63 (P) | Trip ids with PubMed URL and DOI (P) | form emailed to Trip, non-commercial, no sharing (P) | nDCG@10 0.199–0.267 click, 0.570 judged (P) | later, the user's call |
 | SPARBench (2025) | T · CS, medicine | 50 queries, 556 relevant (P) | a model, then experts (P) | S2 and arXiv (P) | MIT (P) | U | later |
 
-Not worth it, with the reason: TREC Genomics 2006–07 (passages of full
-text); OHSUMED (no MEDLINE-UI-to-PMID crosswalk found, shallow pools,
-research use only); CLEF Domain-Specific (a fee, German and Russian, no
-DOIs); NTCIR-1/2 (Japanese records, a mailed agreement); TREC-CHEM and
-CLEF-IP (patents); CLEF SimpleText (CS only, registration); ACM-CR, MAPLE,
-SciNet (tiny or one field); NASA-IR (paragraphs as gold); pathfinder
+Waiting on full text, not dropped: TREC Genomics 2006–07 (judged on
+passages of full text; aspect judgements, U). The user, 2026-09-28:
+"full text is a goal to include, it's just not here yet. full text is the
+gold standard!" A set judged on full text is kept for when full text is
+in the corpus, never dropped for being full text.
+
+Kept, not dropped for their language; what stands in the way is access,
+the user's call: CLEF Domain-Specific (German and Russian; a fee, no
+DOIs); NTCIR-1/2 (Japanese records; a mailed agreement). The user,
+2026-09-28: "'it is not in english' is no reason to exclude something of
+use". The index already facets works by language (P, `/language/` in
+`crates/search/src/schema.rs`).
+
+Kept, not dropped for their field: CLEF SimpleText (computer science;
+a registration); ACM-CR, MAPLE, SciNet (recorded as "tiny or one field":
+one field is no reason, so each is to be re-checked for size alone). The
+user, 2026-09-28: "'it is not biomed' is no reason to exclude something
+of use. biomed has a broad potential customer base, but academics study
+all kinds of things, and it's not just pharmas that need support", and
+"pubmed was just a convenient place to start". A set outside biomedicine
+waits on the corpus reaching its field (Crossref, OpenAlex, arXiv), not
+on its field.
+
+Not worth it, with the reason: OHSUMED (no MEDLINE-UI-to-PMID crosswalk found, shallow pools,
+research use only); TREC-CHEM and
+CLEF-IP (patents); NASA-IR (paragraphs as gold); pathfinder
 (unreleased); ChemRxiv Retrieval (queries written by a model); TREC Fair
 Ranking (reranking); Multi-XScience (the citation scoreboard does the
 same at scale); SciFact-Open (claims on S2 ids); CheckThat 2025 4b (COVID
@@ -353,7 +373,8 @@ works by id, and whether they were found is arithmetic.
    the paper, no cutoff found enforced in the tool (U). Best:
    Claude-Opus-4.6 9.39 % on Deep, Gemini-3.1-Pro 9.31 % IoU on Wide.
    **Reproducible with caveats:** the date can be pinned by the arXiv id's
-   year and month (up to 2604); CS only, and arXiv is not ingested.
+   year and month (up to 2604); its field is computer science, and arXiv
+   is not ingested yet.
 2. **LAB-Bench's LitQA2** (P:
    [dataset](https://huggingface.co/datasets/futurehouse/lab-bench)). 248
    multiple-choice questions with an "insufficient information" option,
@@ -455,7 +476,7 @@ works by id, and whether they were found is arithmetic.
     the corpus text and its ids are released is U.
 13. **ScholarGym** (P: [paper](https://arxiv.org/abs/2601.21654)). 2,536
     queries over 570,000 arXiv papers, deterministic recall and precision;
-    CS, physics and mathematics only.
+    CS, physics and mathematics, over arXiv, which is not ingested yet.
 14. **BioASQ Task B and Synergy** (P:
     [Task 14b](https://participants-area.bioasq.org/general_information/Task14b/),
     [overview](https://pmc.ncbi.nlm.nih.gov/articles/PMC10042099/)). Expert

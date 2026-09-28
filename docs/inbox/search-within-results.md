@@ -878,7 +878,11 @@ sample of dropped works supplies (§6).
   with the set tools added. One change between them.
 - *Answer key:* the systematic-review collections (§12.3): included
   studies judged by the reviews' authors, independent of both agents,
-  over PubMed, which this index holds.
+  over PubMed, which this index holds; and, since biomedicine is no
+  reason to stop there (the user: "pubmed was just a convenient place to
+  start"), SR4CS's 1,212 computer-science reviews and SYNERGY's reviews
+  in psychology, biology, chemistry and mathematics as the corpus reaches
+  their fields ([retrieval benchmarks](retrieval-benchmarks.md)).
 - *Measures:* recall of the included studies, with precision beside it;
   and cost as model calls, tokens and dollars. The result is a
   cost–recall curve per arm, as HarnessTax drew cost against success.

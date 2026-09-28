@@ -527,6 +527,18 @@ Commands:
   first, every time — and the mechanism is open, perhaps a citation
   parser, a lookup and high-confidence matches rather than BM25, with
   mistyped titles as its robustness measure (§10, item 7).
+- **2026-09-28, what is never a reason to leave a set out.** The user,
+  on the benchmarks note: "full text is a goal to include, it's just not
+  here yet. full text is the gold standard!"; "'it is not in english' is
+  no reason to exclude something of use"; "'it is not biomed' is no
+  reason to exclude something of use. biomed has a broad potential
+  customer base, but academics study all kinds of things, and it's not
+  just pharmas that need support"; and "pubmed was just a convenient
+  place to start". So a set judged on full text, in another language or
+  outside biomedicine is kept and waits on the corpus reaching it; the
+  benchmarks note was amended the same day, and §12 item 8's breadth
+  compromise now has SR4CS (computer science) and SYNERGY's other fields
+  beside the sets it names.
 
 ## 10. Open items
 
@@ -701,7 +713,9 @@ go"). Each line: the compromise, what it costs, what would lift it.
    medicine was found (benchmarks note §2.4). The guard against tuning to
    one narrow set is running several side by side, each its own row under
    the acceptance rule. Lifted, in part, as Crossref and OpenAlex bring
-   SYNERGY, OAG-QA and iSearch++ within reach.
+   SYNERGY, OAG-QA, iSearch++ and SR4CS within reach. Biomedicine is
+   where the published sets happen to be, not the scope: "pubmed was
+   just a convenient place to start" (the user, 2026-09-28; §9).
 9. **Finding a paper someone knows is not measured yet** — it waits for
    the mechanism of §10 item 7, whose own tests and mistyped titles will
    measure it.
