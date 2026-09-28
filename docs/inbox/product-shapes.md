@@ -128,7 +128,8 @@ so it cannot be settled before one is.
 Who the first user is. If the user, tracing their own concepts: the
 tracer, and the plans narrow. If the teams building research agents: the
 API and the citation checker, and the freshness and serving work already
-done is the head start.
+done is the head start. The user's leads for first conversations and
+first customers, 2026-09-28: [first customers and first conversations](first-customers-and-conversations.md).
 
 ## 8. Another mirror
 
