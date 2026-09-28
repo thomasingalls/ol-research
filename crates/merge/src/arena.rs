@@ -98,7 +98,7 @@ impl Arena {
                 self.publishers
                     .entry(registrant)
                     .or_default()
-                    .insert(publisher::canonical(registrant, value).into(), ix);
+                    .insert(publisher::canonical(value).into(), ix);
             }
             other => {
                 self.numbers
@@ -122,7 +122,7 @@ impl Arena {
             Name::Publisher(registrant, value) => self
                 .publishers
                 .get(&registrant)?
-                .get(&*publisher::canonical(registrant, value))
+                .get(&*publisher::canonical(value))
                 .copied(),
             other => self.numbers.get(&(other.key(), other.number()?)).copied(),
         }

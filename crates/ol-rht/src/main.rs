@@ -5342,20 +5342,10 @@ macro_rules! absorb_all {
 
 /// What became of a record's publisher ids (merge plan §3.1), for the
 /// normalize surveys: each value counted by the name it became or by the
-/// reason it became none, and — separately — the values written in
-/// Elsevier's printed PII whose registrant is not on the checked-in list,
-/// by registrant.
-///
-/// The second count is the one to watch. A non-zero entry says a
-/// publisher we do not know to be Elsevier is printing Elsevier's
-/// identifier, so either that registrant belongs in
-/// `merge::publisher::ELSEVIER` or the shape is less Elsevier's than it
-/// looks; the registrant in the report is the evidence to decide on,
-/// which is why the list is never guessed at (the user, 2026-09-19).
+/// reason it became none.
 #[derive(Debug, Default)]
 struct PublisherIds {
     outcomes: BTreeMap<&'static str, u64>,
-    off_list: BTreeMap<u32, u64>,
 }
 
 impl PublisherIds {
@@ -5365,12 +5355,6 @@ impl PublisherIds {
             Err(why) => why.reason(),
         };
         *self.outcomes.entry(outcome).or_default() += 1;
-        if merge::publisher::pii_shaped(value)
-            && let Some(registrant) = scope.registrant()
-            && !merge::publisher::is_elsevier(registrant)
-        {
-            *self.off_list.entry(registrant.get()).or_default() += 1;
-        }
     }
 
     fn report(&self) {
@@ -5378,18 +5362,12 @@ impl PublisherIds {
             return;
         }
         eprintln!("  publisher ids {:?}", self.outcomes);
-        let off: u64 = self.off_list.values().sum();
-        eprintln!(
-            "    pii shaped, registrant not on the Elsevier list: {off} {:?}",
-            self.off_list
-        );
     }
 }
 
 impl Absorb for PublisherIds {
     fn absorb(&mut self, other: Self) {
         self.outcomes.absorb(other.outcomes);
-        self.off_list.absorb(other.off_list);
     }
 }
 

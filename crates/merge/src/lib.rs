@@ -193,4 +193,10 @@ pub use work::{SourceId, Sources, WorkId};
 /// which rule 2 then reads as if a record said so. Crossref's list holds
 /// that correction alone, since PubMed's 2026 baseline predates its
 /// erratum's links to the abstracts (merge plan §13, a compromise).
+/// Amended again the same day: a publisher id's two PII spellings are one
+/// name under every registrant, the shape deciding ([`publisher`]), where
+/// a list of Elsevier's registrants used to. The survey of Crossref's
+/// whole file split the two records of one article where PubMed's
+/// punctuated PII and Crossref's bare one, under a registrant off the
+/// list, were two names.
 pub const VERSION: u32 = 16;

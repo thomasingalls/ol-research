@@ -60,7 +60,7 @@ fn encode(name: Name<'_>, out: &mut impl Extend<u8>) {
         Name::OpenAlex(w) => out.extend(w.get().to_be_bytes()),
         Name::Publisher(registrant, value) => {
             out.extend(registrant.get().to_be_bytes());
-            out.extend(publisher::canonical_bytes(registrant, value));
+            out.extend(publisher::canonical_bytes(value));
         }
     }
 }

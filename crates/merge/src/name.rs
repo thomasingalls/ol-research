@@ -31,20 +31,18 @@ pub enum Name<'a> {
     /// exactly as it was written — by the record, or by the line of the
     /// registry this was read back from — and it stays that way through
     /// [`Name::to_owned`]. The *canonical spelling* is a view of it,
-    /// computed on demand: the same text unless it is Elsevier's
-    /// punctuated printed PII, whose canonical spelling is bare
+    /// computed on demand: the same text unless it is a punctuated
+    /// printed PII, whose canonical spelling is bare
     /// ([`crate::publisher`]).
     ///
     /// Equality, hash, order and display all run over that view, so the
     /// two spellings of one article's PII are one name without either
-    /// layer being rewritten to make them so — and so that
-    /// [`publisher::ELSEVIER`] can grow. It could not while the stored
-    /// form was the canonical one: adding a registrant unspelled every
-    /// name already sealed under it and the next merge died reading the
-    /// registry (2026-09-19). A value's spelling is now a fact about the
-    /// record that wrote it, never a fact the merged layer depends on.
-    ///
-    /// [`publisher::ELSEVIER`]: crate::publisher::ELSEVIER
+    /// layer being rewritten to make them so — and so that the rule can
+    /// change. It could not while the stored form was the canonical one:
+    /// rewriting a new registrant's values unspelled every name already
+    /// sealed under it and the next merge died reading the registry
+    /// (2026-09-19). A value's spelling is now a fact about the record
+    /// that wrote it, never a fact the merged layer depends on.
     Publisher(Registrant, &'a str),
 }
 
@@ -58,8 +56,7 @@ impl PartialEq for Name<'_> {
             (Self::Pmc(a), Self::Pmc(b)) => a == b,
             (Self::OpenAlex(a), Self::OpenAlex(b)) => a == b,
             (Self::Publisher(ra, a), Self::Publisher(rb, b)) => {
-                ra == rb
-                    && publisher::canonical_bytes(*ra, a).eq(publisher::canonical_bytes(*rb, b))
+                ra == rb && publisher::canonical_bytes(a).eq(publisher::canonical_bytes(b))
             }
             _ => false,
         }
@@ -80,7 +77,7 @@ impl Hash for Name<'_> {
             Self::OpenAlex(w) => w.hash(state),
             Self::Publisher(registrant, value) => {
                 registrant.hash(state);
-                for byte in publisher::canonical_bytes(*registrant, value) {
+                for byte in publisher::canonical_bytes(value) {
                     state.write_u8(byte);
                 }
                 state.write_u8(0xff);
@@ -103,9 +100,9 @@ impl Ord for Name<'_> {
             (Self::Pmid(a), Self::Pmid(b)) => a.cmp(b),
             (Self::Pmc(a), Self::Pmc(b)) => a.cmp(b),
             (Self::OpenAlex(a), Self::OpenAlex(b)) => a.cmp(b),
-            (Self::Publisher(ra, a), Self::Publisher(rb, b)) => ra.cmp(rb).then_with(|| {
-                publisher::canonical_bytes(*ra, a).cmp(publisher::canonical_bytes(*rb, b))
-            }),
+            (Self::Publisher(ra, a), Self::Publisher(rb, b)) => ra
+                .cmp(rb)
+                .then_with(|| publisher::canonical_bytes(a).cmp(publisher::canonical_bytes(b))),
             _ => self.key().cmp(&other.key()),
         }
     }
@@ -155,15 +152,13 @@ impl<'a> Name<'a> {
     /// The other namespaces still refuse a value their own canonical
     /// text differs from — an uppercase DOI is a different string for a
     /// rule that has not moved since the model was written — but a
-    /// publisher id's canonical spelling depends on
-    /// [`publisher::ELSEVIER`], which is ours and changes. Refusing a
-    /// value that list would rewrite made every name already sealed
-    /// under a new registrant unreadable, and that is how the merge of
-    /// 2026-09-19 died. The `publisher::check` rules — shape, length,
-    /// printable ASCII, article numbers, a DOI — are facts about the
-    /// value and still hold.
-    ///
-    /// [`publisher::ELSEVIER`]: crate::publisher::ELSEVIER
+    /// publisher id's canonical spelling is a rule of ours, and it has
+    /// changed twice (2026-09-19, 2026-09-28). Refusing a value the rule
+    /// would rewrite made every name already sealed under a new
+    /// registrant unreadable, and that is how the merge of 2026-09-19
+    /// died. The `publisher::check` rules — shape, length, printable
+    /// ASCII, article numbers, a DOI — are facts about the value and
+    /// still hold.
     ///
     /// # Errors
     ///
@@ -247,12 +242,9 @@ impl<'a> Name<'a> {
 impl fmt::Display for Name<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Publisher(registrant, value) => write!(
-                f,
-                "reg{}:{}",
-                registrant.get(),
-                publisher::canonical(*registrant, value)
-            ),
+            Self::Publisher(registrant, value) => {
+                write!(f, "reg{}:{}", registrant.get(), publisher::canonical(value))
+            }
             Self::Doi(d) => write!(f, "{}:{d}", self.key()),
             Self::Pmid(p) => write!(f, "{}:{p}", self.key()),
             Self::Pmc(p) => write!(f, "{}:{p}", self.key()),
@@ -644,6 +636,7 @@ mod tests {
         let mut set = HashSet::new();
         set.insert(Name::Publisher(elsevier, "S0006-3495(25)00123-4"));
         assert!(set.contains(&Name::Publisher(elsevier, "S0006349525001234")));
+        // The registrant is still the namespace.
         assert!(!set.contains(&Name::Publisher(
             Doi::parse("10.5555/x").unwrap().registrant(),
             "S0006349525001234"
@@ -653,11 +646,12 @@ mod tests {
     /// The spellings `data/merged/registry.jsonl` already holds, taken
     /// from it on 2026-09-19: 39,896 distinct `reg*` names across 338
     /// registrant namespaces, of which 183 are under 10.1006 and 10.1074
-    /// — 99 punctuated, 84 bare — because those two are off
-    /// `publisher::ELSEVIER` and both spellings are two names there. All
-    /// of them are sealed. Every one must keep parsing, in the spelling
-    /// its line carries, whatever the list says later; that is the whole
-    /// point of the change, and `just report` reads all 39,896 of them.
+    /// — 99 punctuated, 84 bare — because those two were off the list of
+    /// Elsevier's registrants that gated the rewrite then, and both
+    /// spellings were two names there. All of them are sealed. Every one
+    /// must keep parsing, in the spelling its line carries, whatever the
+    /// rule says later; that is the whole point of storing names as
+    /// written, and `just report` reads all 39,896 of them.
     #[test]
     fn every_spelling_the_registry_already_sealed_still_parses() {
         // Under 10.1006 and 10.1074 the registry holds both spellings of
@@ -676,31 +670,32 @@ mod tests {
             for value in [punctuated, bare] {
                 let text = format!("{namespace}:{value}");
                 let name = OwnedName::parse(&text).unwrap_or_else(|e| panic!("{e}"));
-                assert_eq!(name.to_string(), text, "sealed as written");
+                assert_eq!(name.to_string(), format!("{namespace}:{bare}"), "{text}");
             }
-            // Off the list, so still two names — which is why the
-            // registry holds both. Adding the registrant makes them one
-            // and drops no line: the older spelling still reads.
-            assert_ne!(
+            // One name now the shape decides (2026-09-28), though the
+            // registry holds both: the older spelling still reads, and
+            // the next complete merge retires the younger id into the
+            // older.
+            assert_eq!(
                 OwnedName::parse(&format!("{namespace}:{punctuated}")).unwrap(),
                 OwnedName::parse(&format!("{namespace}:{bare}")).unwrap(),
             );
         }
-        // What those same values become the day their registrant joins
-        // the list: a punctuated value under a registrant that rewrites
-        // it. Before this change that was `"not canonical"` and the
-        // merge stopped reading the registry at line 5,310,863.
+        // Under Elsevier's own registrant too. Before names were stored
+        // as written, a punctuated value there was `"not canonical"`,
+        // and the merge stopped reading the registry at line 5,310,863.
         for (_, punctuated, bare) in pairs {
             let sealed = OwnedName::parse(&format!("reg1016:{punctuated}")).unwrap();
             assert_eq!(
                 sealed,
                 OwnedName::parse(&format!("reg1016:{bare}")).unwrap(),
-                "{punctuated}: one name once the list rewrites it"
+                "{punctuated}: one name"
             );
             assert_eq!(sealed.to_string(), format!("reg1016:{bare}"), "promoted");
         }
-        // And the shapes the other 337 namespaces hold, which no list
-        // touches: they are identifiers because a publisher said so.
+        // And the shapes the other 337 namespaces hold, which the rule
+        // does not touch: they are identifiers because a publisher said
+        // so.
         for text in [
             "reg1016:S8756328226000396",
             "reg1016:a93276",
@@ -756,7 +751,7 @@ mod tests {
                 "pmid:123",
                 "pmc:PMC45",
                 "openalex:W6",
-                "reg1006:S0022-2836(98)92346-4",
+                "reg1006:S0022283698923464",
                 "reg1016:S0006349525001234",
             ]
         );

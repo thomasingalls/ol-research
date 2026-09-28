@@ -24,12 +24,13 @@ pub enum Line {
     /// is the number after the last.
     ///
     /// A name here can already be mapped, and then the later line wins as
-    /// it does for [`Line::Name`]. It takes a change to
-    /// `publisher::ELSEVIER` to arrange: two spellings of one PII, minted
-    /// under two ids by two batches, are one name the day the registrant
-    /// joins the list. The fold is what heals it — the next assignment
-    /// sees one work claiming both ids and retires the younger into the
-    /// older — so a log written under an older list still reads.
+    /// it does for [`Line::Name`]. It takes a change to the publisher-id
+    /// spelling rule to arrange: two spellings of one PII, minted under
+    /// two ids by two batches, are one name the day the rule rewrites
+    /// them (2026-09-28: every registrant's). The fold is what heals it —
+    /// the next assignment sees one work claiming both ids and retires the
+    /// younger into the older — so a log written under an older rule
+    /// still reads.
     Mint {
         #[allow(missing_docs)]
         id: WorkId,
@@ -1923,7 +1924,7 @@ mod tests {
         fs::remove_dir_all(dir).unwrap();
     }
 
-    /// The registry holds names sealed under whatever `publisher::ELSEVIER`
+    /// The registry holds names sealed under whatever the spelling rule
     /// said at the time, and on 2026-09-19 the merge died reading one:
     /// `"reg1006:S0003-2697(96)90292-4" is not a name: not canonical`,
     /// line 5,310,863 of `data/merged/registry.jsonl`. This is the shape
