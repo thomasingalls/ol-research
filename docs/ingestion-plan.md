@@ -2252,6 +2252,14 @@ cross-IDs and a second edge namespace early.
   and the issue gives a print date the article lacks on 1,669,210. They
   are the issue's own dates (its month, or its year), which the citation
   fields plan's D4 keeps apart from the article's online date.
+- 2026-09-28, Crossref's `container-title` and `short-container-title`
+  kept whole in model 13 (the user). The reader keeps the first of each.
+  The second means different things by type. For 173,277 journal
+  articles (`ol-rht-survey-crossref-v4`) it is the same journal's name
+  in another language or form, in all 322 examples
+  `ol-rht-dump-crossref-v4` printed. For a book chapter it is the book
+  behind the series. So the lists are kept as written and read by type
+  in the merge's view (citation fields plan §4).
 
 ## 11. Dependencies
 

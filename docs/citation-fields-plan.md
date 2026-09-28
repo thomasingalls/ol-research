@@ -86,8 +86,8 @@ not in it yet, so its column describes what will arrive.
 |---|---|---|---|---|
 | authors, split | `given`, `family`; organisations whole; since model 10, a given name alone | `LastName`, `ForeName`, `Initials`, `Suffix`; collectives whole | no | no: one display string each |
 | authors, as printed | — | — | `raw_author_name` | no |
-| journal, full name | `container-title` | `Journal/Title`, in NLM's sentence case | the location's source name | yes, from the venue's source |
-| journal, abbreviated | read, not kept (`short-container-title`) | `ISOAbbreviation`, `MedlineTA` | no | no |
+| journal, full name | `container-title`, the first of a list; the rest read, not kept | `Journal/Title`, in NLM's sentence case | the location's source name | yes, from the venue's source |
+| journal, abbreviated | read, not kept (`short-container-title`, a list) | `ISOAbbreviation`, `MedlineTA` | no | no |
 | journal, ids | ISSN | ISSN, `ISSNLinking`, `NlmUniqueID` | source id, ISSN-L | yes, as the view's venue |
 | volume, issue | as written | as written | `biblio` | no |
 | pages | `page`, a range as written | `Pagination`: `StartPage`/`EndPage`, `MedlinePgn` (`123-9`), or both | `biblio.first_page`, `last_page` | no |
@@ -235,7 +235,7 @@ proceedings, but filling them waits: editors, edition and publisher place
 are read and not kept by the Crossref reader, and the user has no
 bandwidth for books now. `publisher` is dropped: citation styles do not
 print one for a journal article, and it would come back as an entity
-(§8). Model 13 reopens "no source reader changes" for four things only:
+(§8). Model 13 reopens "no source reader changes" for five things only:
 - the reading of pages;
 - labels, if CF0 shows they need it;
 - Crossref's `short-container-title`. The user, 2026-09-27: use it where
@@ -244,7 +244,12 @@ print one for a journal article, and it would come back as an entity
   would later own its abbreviation (§8). It is on 107,434,316 of
   119,956,318 journal articles (**M**, CF0 part 3);
 - the `journal-issue` object's own print and online dates (D4; the user,
-  2026-09-28).
+  2026-09-28);
+- Crossref's `container-title` and `short-container-title` kept whole, as
+  written, where model 12 keeps the first of each (the user,
+  2026-09-28). What a second entry means depends on the record's type
+  (§4, titles), so the lists are kept as the source gives them and read
+  in the view.
 
 **D10. The free PDF link: left out.** Its source is OpenAlex, which is
 not in the merge yet.
@@ -309,6 +314,24 @@ pub enum Within<'a> {
 today, and its name as text read at assembly. The chain does the same: a
 journal's or a book's title and a journal's abbreviation are text. That
 keeps the view small, and row size matters on the corpus.
+
+**One list, two meanings.** Crossref's `container-title` is a list, and
+what its second entry is depends on the record's type (CF0 part 3 and
+`ol-rht-dump-crossref-v4`, 2026-09-28):
+- For a journal article, every entry names the *same* journal: the name
+  in another language or script (`Математические заметки`,
+  `Matematicheskie Zametki`), the same title punctuated another way
+  (`TASK. Journal on…`, `TASK / Journal on…`, `TASK`), or an acronym
+  (`YUJOR`). All 322 examples, from 65 journals, were of these kinds.
+  None was a parent collection. They are the journal's names, which the
+  entity work would give to one journal (§8).
+- For a book chapter, the entries are two containers: the series, then
+  the book (`Methods in Molecular Biology`, then `Phenotypic Screening`).
+  Each is its own level of the chain.
+
+`short-container-title` is a list too, often of one abbreviation in two
+styles: `Med pregl` in NLM's, `MED PREGLED` in the citation indexes'
+capitals. Which one a citation prints is the export's choice.
 
 **Where each part is built:**
 - Normalization (model 13) reads the values in the source's own shape:
@@ -385,6 +408,9 @@ as light as they are now.
     D3's, and the venue's disagreement tally with it.
   - CF0 counts how often the venue's promoted source differs from the
     record D3 would choose.
+  - The container titles do not argue for nesting above the journal: a
+    journal article's second title is the same journal's other name,
+    not a parent collection (titles, above).
 - **Labels as numbers or as text.** CF0 shows leading zeros, roman
   numerals, years as volumes and ranges of issues.
 - **The level kinds.** The list above is from Crossref's forms
@@ -509,6 +535,8 @@ then revised to match as draft 3.
 - Pages are read in each source (D8), and labels if CF0 says so.
 - Crossref's `short-container-title` is kept (D9).
 - Crossref's `journal-issue` print and online dates are kept (D4).
+- Crossref's `container-title` and `short-container-title` are kept
+  whole (D9).
 - The stats report counts each reading, as DOI readings are counted.
 - Fixtures cover each shape CF0 found.
 - The `lib.rs` version 13 paragraph and ingestion plan §10 are written.
@@ -625,7 +653,10 @@ D2's rule and D8's fallback are added here once CF0 settles them.
    on CF0's count. The user, 2026-09-27: "i think it's rare but on
    occasion a journal will have a parent collection". So CF0 also looks
    for journal articles whose record names a second container: two
-   `container-title`s, or ISSNs that are not the journal's.
+   `container-title`s, or ISSNs that are not the journal's. The titles
+   are settled (§4, one list, two meanings): 173,277 journal articles
+   give a second title, and in every example it is the same journal's
+   other name. The ISSNs are still to count, in part 1's serials table.
 2. **Crossref records that give only `issued`,** whose date is of no
    stated kind (D4). CF0 counts them, and draft 3 says where their date
    goes.
@@ -696,3 +727,15 @@ D2's rule and D8's fallback are added here once CF0 settles them.
     records with a second title, a chapter's series and then its book.
   - The user: keep the `journal-issue` dates in model 13 (D4). The
     examples of the 173,277 come from `ol-rht-dump-crossref-v4`.
+- **2026-09-28, the second titles, and the whole lists kept.**
+  `ol-rht-dump-crossref-v4` printed 322 journal articles with a second
+  `container-title`: 65 journals from 18 publishers, found in the first
+  ~50 shards of each share, so a few publishers dominate. Every second or
+  third title was the same journal's name in another language or script,
+  punctuated another way, or as an acronym; none was a parent collection
+  (§4, one list, two meanings). The user agreed that model 13 keeps
+  `container-title` and `short-container-title` whole, as written (D9).
+  This keeps a chapter's book behind its series, a journal's other names
+  for the entity work, and both abbreviation styles. On the way it
+  showed `&amp;` in titles, a garbled one (`g?ologiques`) and an ISSN
+  given twice, which the text's cleaning and CF1's fixtures are to meet.
