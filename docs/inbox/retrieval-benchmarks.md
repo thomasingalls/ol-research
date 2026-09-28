@@ -326,7 +326,13 @@ waits on the corpus reaching its field (Crossref, OpenAlex, arXiv), not
 on its field.
 
 Kept, not dropped for their document type: TREC-CHEM and CLEF-IP
-(patents, which the corpus does not hold yet). The user, 2026-09-28: "i
+(patents, which the corpus does not hold yet). Details from the
+[legal and patent-search landscape](legal-and-patent-search-landscape.md)
+§8 (P there): TREC-CHEM 2009 also held about 59,000 Royal Society of
+Chemistry articles beside 1.18M patent files, but its prior-art task was
+judged only by existing patent citations; CLEF-IP is patents only (about
+1.3M EP and 400K WO documents, published before 2001, in English, French
+and German) under CC BY-NC-SA 3.0, a non-commercial licence. The user, 2026-09-28: "i
 would not exclude any kind of artifact just because of document type.
 academic literature is the wedge i know best, but technically even code
 is in scope, internal documents are in scope, dna sequences are in
