@@ -895,6 +895,10 @@ sample of dropped works supplies (§6).
 CLEF TAR and its kin are in the benchmarks note but not among the
 evaluation plan's published sets (E3); adding one would come first.
 
+Asked which one tool looks most promising for researchers, agents and
+benchmarks alike, the conversation answered with a note of its own:
+[the recall-accounted set builder](recall-accounted-set-builder.md).
+
 ## 13. The same building block as the collection idea
 
 The user's other idea of the same day, to upload a collection (a Zotero
