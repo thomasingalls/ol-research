@@ -5400,6 +5400,126 @@ impl Absorb for PageCounts {
     }
 }
 
+/// What became of volume or issue fields (model 13, plan D12): each
+/// counted as none, plain, read into levels or kept; the levels read, by
+/// the kinds they name; the kept, by shape; and every word in a plain
+/// label, to find the markers not read yet.
+#[derive(Debug, Default)]
+struct LabelCounts {
+    how: BTreeMap<&'static str, u64>,
+    /// By the kinds of the levels read, with examples, rendered.
+    read: BTreeMap<String, (u64, Vec<String>)>,
+    /// By shape, with examples.
+    kept: BTreeMap<String, (u64, Vec<String>)>,
+    /// Each run of letters in a plain label, in lower case, with the
+    /// first label it was seen in.
+    words: BTreeMap<String, (u64, String)>,
+}
+
+impl LabelCounts {
+    const EXAMPLES: usize = 3;
+    const SHOWN: usize = 40;
+
+    fn see(
+        &mut self,
+        label: Option<&model::label::Label<'_>>,
+        own: model::label::LevelKind,
+        who: impl Fn() -> String,
+    ) {
+        use model::label::Label;
+        let (key, seen) = match label {
+            None => {
+                *self.how.entry("none").or_default() += 1;
+                return;
+            }
+            Some(Label::Plain(text)) => {
+                *self.how.entry("plain").or_default() += 1;
+                for word in text.split(|c: char| !c.is_alphabetic()) {
+                    if !word.is_empty() {
+                        self.words
+                            .entry(word.to_lowercase())
+                            .or_insert_with(|| (0, format!("{} {text:?}", who())))
+                            .0 += 1;
+                    }
+                }
+                return;
+            }
+            Some(read @ Label::Read(_)) => {
+                *self.how.entry("read").or_default() += 1;
+                let kinds: Vec<&str> = read.levels(own).map(|l| l.kind.as_str()).collect();
+                (kinds.join(", "), &mut self.read)
+            }
+            Some(Label::Kept(text)) => {
+                *self.how.entry("kept").or_default() += 1;
+                let mut shape = String::new();
+                survey::signature(text, &mut shape);
+                (shape, &mut self.kept)
+            }
+        };
+        let (n, examples) = seen.entry(key).or_default();
+        *n += 1;
+        if examples.len() < Self::EXAMPLES
+            && let Some(label) = label
+        {
+            examples.push(format!("{} {:?}", who(), label.to_string()));
+        }
+    }
+
+    fn report(&self, name: &str) {
+        eprintln!("  {name} {:?}", self.how);
+        for (what, seen) in [("read", &self.read), ("kept", &self.kept)] {
+            let mut rows: Vec<_> = seen.iter().collect();
+            rows.sort_by(|a, b| b.1.0.cmp(&a.1.0).then_with(|| a.0.cmp(b.0)));
+            for (key, (n, examples)) in rows.iter().take(Self::SHOWN) {
+                eprintln!("    {what} {key:<32} {n:>10}  {}", examples.join("; "));
+            }
+            if rows.len() > Self::SHOWN {
+                let rest: u64 = rows[Self::SHOWN..].iter().map(|r| r.1.0).sum();
+                eprintln!(
+                    "    {what}, and {} more, {rest} fields",
+                    rows.len() - Self::SHOWN
+                );
+            }
+        }
+        let mut words: Vec<_> = self.words.iter().collect();
+        words.sort_by(|a, b| b.1.0.cmp(&a.1.0).then_with(|| a.0.cmp(b.0)));
+        for (word, (n, first)) in words.iter().take(Self::SHOWN) {
+            eprintln!("    word {word:<20} {n:>10}  {first}");
+        }
+        if words.len() > Self::SHOWN {
+            let rest: u64 = words[Self::SHOWN..].iter().map(|w| w.1.0).sum();
+            eprintln!(
+                "    words, and {} more, {rest} times",
+                words.len() - Self::SHOWN
+            );
+        }
+    }
+}
+
+/// A record's pages, volume and issue, as model 13 reads them.
+fn report_placement(pages: &PageCounts, volume: &LabelCounts, issue: &LabelCounts) {
+    pages.report("pages");
+    volume.report("volume");
+    issue.report("issue");
+}
+
+impl Absorb for LabelCounts {
+    fn absorb(&mut self, other: Self) {
+        self.how.absorb(other.how);
+        for (mine, theirs) in [(&mut self.read, other.read), (&mut self.kept, other.kept)] {
+            for (key, (n, examples)) in theirs {
+                let (m, e) = mine.entry(key).or_default();
+                *m += n;
+                let room = Self::EXAMPLES.saturating_sub(e.len());
+                e.extend(examples.into_iter().take(room));
+            }
+        }
+        for (word, (n, first)) in other.words {
+            self.words.entry(word).or_insert((0, first)).0 += n;
+        }
+    }
+}
+
 /// Destructures `other` exhaustively — a new field is a compile error here
 /// until it is listed — and absorbs every field.
 macro_rules! absorb_all {
@@ -5510,6 +5630,8 @@ struct PubmedStats {
     journal_issn_malformed: u64,
     /// `Pagination`, read (model 13).
     pages: PageCounts,
+    volume: LabelCounts,
+    issue: LabelCounts,
     persons: u64,
     collectives: u64,
     orcid: [u64; 3],
@@ -5659,7 +5781,7 @@ impl StatsReport for PubmedStats {
             "  journal issn {}  issn linking {}  malformed {}",
             self.journal_issn, self.journal_issn_linking, self.journal_issn_malformed
         );
-        self.pages.report("pages");
+        report_placement(&self.pages, &self.volume, &self.issue);
         eprintln!(
             "  authors persons {} collectives {}  orcid valid {} malformed {} none {}",
             self.persons, self.collectives, self.orcid[0], self.orcid[1], self.orcid[2]
@@ -5788,6 +5910,16 @@ impl<'n> Sink<'n, Pubmed> for PubmedStats {
         self.journal_issn += u64::from(c.journal.issn.is_some());
         self.pages
             .see(c.journal.pages.as_ref(), || format!("pmid:{}", c.pmid));
+        self.volume.see(
+            c.journal.volume.as_ref(),
+            model::label::LevelKind::Volume,
+            || format!("pmid:{}", c.pmid),
+        );
+        self.issue.see(
+            c.journal.issue.as_ref(),
+            model::label::LevelKind::Issue,
+            || format!("pmid:{}", c.pmid),
+        );
         self.journal_issn_linking += u64::from(c.journal.issn_linking.is_some());
         for claim in c
             .journal
@@ -5957,6 +6089,8 @@ struct CrossrefStats {
     unowned: [u64; 2],
     /// `page`, read (model 13).
     pages: PageCounts,
+    volume: LabelCounts,
+    issue: LabelCounts,
     /// Container titles a work gives, by how many, journal articles apart
     /// (model 13 keeps them all; citation fields plan §4).
     container_titles: BTreeMap<&'static str, u64>,
@@ -5990,6 +6124,14 @@ impl CrossrefStats {
     fn placement(&mut self, w: &source_crossref::normalize::Work<'_>) {
         self.pages
             .see(w.pages.as_ref(), || format!("doi:{}", w.doi));
+        self.volume
+            .see(w.volume.as_ref(), model::label::LevelKind::Volume, || {
+                format!("doi:{}", w.doi)
+            });
+        self.issue
+            .see(w.issue.as_ref(), model::label::LevelKind::Issue, || {
+                format!("doi:{}", w.doi)
+            });
         let counted =
             &COUNTED[usize::from(w.kind != Some(source_crossref::vocab::WorkType::JournalArticle))];
         *self
@@ -6209,7 +6351,7 @@ impl StatsReport for CrossrefStats {
         eprintln!("  container titles {:?}", self.container_titles);
         eprintln!("  abbreviations {:?}", self.short_container_titles);
         eprintln!("  the issue's own dates {:?}", self.issue_dates);
-        self.pages.report("pages");
+        report_placement(&self.pages, &self.volume, &self.issue);
         eprintln!("  languages {:?}", self.languages);
         eprintln!(
             "  updates {:?}  from older words {:?}",
@@ -6592,13 +6734,13 @@ impl<'n> Sink<'n, OpenAlex> for OpenAlexStats {
 
 impl Merge for PubmedStats {
     fn merge(&mut self, other: Self) {
-        absorb_all!(self, other: PubmedStats { citations, deletions, corrected, excluded, doi, elocation_doi, doi_lowercased, doi_disagree, pii, pii_extra, publisher, pmc, pmc_malformed, published, published_kept, published_kept_why, published_kept_certain, electronic, revised, completed, status, languages, publication_types, unplaced_types, title, abstracts, sections, sections_markup, sections_math, other_abstracts, journal_issn, journal_issn_linking, journal_issn_malformed, pages, persons, collectives, orcid, affiliations, affiliation_ids, investigators, mesh_headings, mesh_major, chemicals, keywords, grants, grants_with_country, data_banks, history, history_date_malformed, history_time_malformed, publication_status, relations, relation_dois, references, reference_ids, reference_loose, reference_doi_malformed, reference_pmid_malformed, reference_pmc_malformed, malformed_samples });
+        absorb_all!(self, other: PubmedStats { citations, deletions, corrected, excluded, doi, elocation_doi, doi_lowercased, doi_disagree, pii, pii_extra, publisher, pmc, pmc_malformed, published, published_kept, published_kept_why, published_kept_certain, electronic, revised, completed, status, languages, publication_types, unplaced_types, title, abstracts, sections, sections_markup, sections_math, other_abstracts, journal_issn, journal_issn_linking, journal_issn_malformed, pages, volume, issue, persons, collectives, orcid, affiliations, affiliation_ids, investigators, mesh_headings, mesh_major, chemicals, keywords, grants, grants_with_country, data_banks, history, history_date_malformed, history_time_malformed, publication_status, relations, relation_dois, references, reference_ids, reference_loose, reference_doi_malformed, reference_pmid_malformed, reference_pmc_malformed, malformed_samples });
     }
 }
 
 impl Merge for CrossrefStats {
     fn merge(&mut self, other: Self) {
-        absorb_all!(self, other: CrossrefStats { works, deletions, types, untyped, excluded, set_aside, corrected, aliases, ascii_dois, doi_lowercased, owner_differs, publisher, issued, title, alternate_titles, subtitle_empty, abstracts, persons, orgs, given_only, with_orcid, orcid_malformed, institutions, issns, isbns, languages, references, reference_doi, reference_empty, updates, update_words, relations, licenses, license_starts, dates, version_part, unowned, pages, container_titles, short_container_titles, issue_dates, malformed_samples });
+        absorb_all!(self, other: CrossrefStats { works, deletions, types, untyped, excluded, set_aside, corrected, aliases, ascii_dois, doi_lowercased, owner_differs, publisher, issued, title, alternate_titles, subtitle_empty, abstracts, persons, orgs, given_only, with_orcid, orcid_malformed, institutions, issns, isbns, languages, references, reference_doi, reference_empty, updates, update_words, relations, licenses, license_starts, dates, version_part, unowned, pages, volume, issue, container_titles, short_container_titles, issue_dates, malformed_samples });
     }
 }
 

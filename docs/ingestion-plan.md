@@ -2274,6 +2274,19 @@ cross-IDs and a second edge namespace early.
   The reports read as before: 65,710,497 allocations in the dev store's
   merge and a peak of 2.83 GiB. The peak is the one number that loosens
   (§13). The user's choice of the per-thread tallies over the padding.
+- 2026-09-29, volumes and issues read at normalization in model 13 (the
+  user; citation fields plan D12, D13). A label is text, not a number,
+  but a supplement, a part, a special issue or a series written into it
+  is read out as a level of its own: PubMed's volume `20 Suppl 2` is
+  volume 20 and supplement 2, Crossref's issue `3_suppl` is issue 3 and a
+  supplement, its volume `s2-XI` series 2 and volume XI. The markers are
+  those `ol-rht-survey-placement-v1` counted; one the grammar does not
+  place is kept with its field whole, as a page field is, and counted by
+  shape. `S` and a number as an issue (`S6`) and the series are readings,
+  counted apart. `&NA;` and `Online first`, Crossref's placeholders for a
+  volume, join PubMed's `UNKNOWN` in one list read as no value wherever
+  a placement field holds one. A reference's volume and issue stay as
+  written.
 
 ## 11. Dependencies
 

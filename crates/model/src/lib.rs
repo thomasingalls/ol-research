@@ -190,7 +190,13 @@
 /// with the shapes that survey counted: letters on pages, sub-pages,
 /// roman numerals, labelled lists, hyphenated numbers, any dash, `???`.
 /// What is not read whole is kept as written beside its first page, and
-/// counted by shape, as a `MedlineDate` is. Labels' markers come next.
+/// counted by shape, as a `MedlineDate` is. And a work's volume and issue
+/// are read ([`label`], the plan's D12): text as written, with a
+/// supplement, a part, a special issue or a series written into it read
+/// out as a level of its own (`20 Suppl 2` is volume 20, supplement 2;
+/// `s2-XI` is series 2, volume XI); a marker in a shape not read is kept
+/// as written and counted. One list of placeholders (`UNKNOWN`, `&NA;`,
+/// `Online first`) reads as no value in pages, volumes and issues alike.
 /// Output under version 12 is rebuilt, not patched.
 pub const VERSION: u32 = 13;
 
@@ -204,6 +210,7 @@ pub mod id;
 pub mod isbn;
 pub mod isni;
 pub mod issn;
+pub mod label;
 pub mod lang;
 pub mod mesh;
 pub mod orcid;

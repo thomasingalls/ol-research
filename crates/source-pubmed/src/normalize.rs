@@ -21,6 +21,7 @@ use smallvec::SmallVec;
 use std::fmt;
 
 use ingest::Sink;
+use model::label::{Label, LevelKind};
 use model::pages::{self, Pages};
 use model::{
     Claim, Date, DateError, Day, Doi, DoiError, Interned, Issn, IssnError, Lang, LangError,
@@ -361,12 +362,14 @@ pub struct Journal<'n> {
     pub pub_model: PubModel,
     /// `JournalIssue@CitedMedium`.
     pub cited_medium: CitedMedium,
-    #[allow(missing_docs)]
+    /// `JournalIssue/Volume`, read (model 13; citation fields plan D12):
+    /// as written, with a supplement, a part or a special issue written
+    /// into it read out (`20 Suppl 2`). `None` for none, or a placeholder.
     #[serde(borrow)]
-    pub volume: Option<&'n str>,
-    #[allow(missing_docs)]
+    pub volume: Option<Label<'n>>,
+    /// `JournalIssue/Issue`, read as the volume is (`2 Pt 1`, `Suppl`).
     #[serde(borrow)]
-    pub issue: Option<&'n str>,
+    pub issue: Option<Label<'n>>,
     /// `Pagination`, read (model 13; citation fields plan D8): `StartPage`
     /// to `EndPage` where given, else `MedlinePgn`, NLM's shortened end
     /// written whole. `None` for none, or a placeholder (`UNKNOWN`).
@@ -1583,6 +1586,18 @@ fn journal<'n>(ctx: &Ctx, c: &'n MedlineCitation<'_>) -> Journal<'n> {
     ctx.corrected
         .borrow_mut()
         .extend(readings.made().map(|how| ("Pagination", how)));
+    let volume = label(
+        ctx,
+        "Volume",
+        j.journal_issue.volume.as_deref(),
+        LevelKind::Volume,
+    );
+    let issue = label(
+        ctx,
+        "Issue",
+        j.journal_issue.issue.as_deref(),
+        LevelKind::Issue,
+    );
     Journal {
         title: j.title.as_deref().map(Interned::Text),
         iso_abbreviation: j.iso_abbreviation.as_deref().map(Interned::Text),
@@ -1596,10 +1611,25 @@ fn journal<'n>(ctx: &Ctx, c: &'n MedlineCitation<'_>) -> Journal<'n> {
         country: info.country.as_deref().map(Interned::Text),
         pub_model: c.article.pub_model,
         cited_medium: j.journal_issue.cited_medium,
-        volume: j.journal_issue.volume.as_deref(),
-        issue: j.journal_issue.issue.as_deref(),
+        volume,
+        issue,
         pages,
     }
+}
+
+/// A volume or an issue field, read (plan D12), what the reading supposed
+/// counted under the element's name.
+fn label<'n>(
+    ctx: &Ctx,
+    element: &'static str,
+    field: Option<&'n str>,
+    own: LevelKind,
+) -> Option<Label<'n>> {
+    let (label, readings) = Label::read(field?, own);
+    ctx.corrected
+        .borrow_mut()
+        .extend(readings.made().map(|how| (element, how)));
+    label
 }
 
 /// DTD content the file has never contained: an error on first sight.

@@ -7,6 +7,7 @@ use ingest::Sink;
 use merge::OwnedName;
 use merge::kind::Genre;
 use merge::relation::{Kind, Related, Update};
+use model::label::{Label, LevelKind};
 use model::{
     Claim, Date, Doi, IsbnError, IsniError, Lang, OrcidError, PartialDate, RorError, Table,
 };
@@ -792,6 +793,30 @@ fn a_journal_issue_may_hold_only_its_date() {
         run("journal_issue_dates_only")
             .issue_published_online
             .is_some()
+    );
+}
+
+/// 10.1002/pd.70046, line 93 of shard 70 of Crossref's sample of the
+/// file: Wiley's issue `S1`, a supplement written as `S` and a number.
+/// Model 13 reads it as supplement `1` (citation fields plan D12), and
+/// what that supposed reaches the sink: a label read after the sink is
+/// told what the record's reading changed would go uncounted.
+#[test]
+fn an_issue_that_is_s_and_a_number_is_a_supplement_and_counted() {
+    let out = collect("issue_s_number");
+    let w = &out.works[0];
+    assert_eq!(w.volume, Some(Label::Plain("46")));
+    let levels: Vec<_> = w
+        .issue
+        .as_ref()
+        .unwrap()
+        .levels(LevelKind::Issue)
+        .map(|l| (l.kind, l.label))
+        .collect();
+    assert_eq!(levels, [(LevelKind::Supplement, Some("1"))]);
+    assert_eq!(
+        out.corrected,
+        [("issue", "S and a number read as a supplement")]
     );
 }
 

@@ -9,8 +9,8 @@
 //! What the reading changed is returned beside it ([`Readings`]), to be
 //! counted as a DOI's readings are. A shape it does not read whole is kept
 //! as written, beside its first page where that is certain
-//! ([`Pages::Kept`]), as a `MedlineDate` is. A placeholder (`UNKNOWN`)
-//! reads as no pages.
+//! ([`Pages::Kept`]), as a `MedlineDate` is. A placeholder (`UNKNOWN`,
+//! `Online first`) reads as no pages.
 //!
 //! The shapes read are those the survey counted (plan D8):
 //! - a page or a range: `1033`, `117-26`, `259-264`;
@@ -129,8 +129,18 @@ impl Readings {
     }
 }
 
-/// What a source writes for pages it does not have.
-const PLACEHOLDERS: [&str; 1] = ["UNKNOWN"];
+/// What a source writes in a placement field (pages, a volume, an issue)
+/// for a value it does not have: `UNKNOWN` (14,200 PubMed page fields),
+/// `&NA;` (130,255 Crossref volumes), `Online first` (18,307), counted by
+/// `ol-rht-survey-placement-v1`. One list for every such field: a
+/// placeholder means the same wherever it is written.
+const PLACEHOLDERS: [&str; 3] = ["UNKNOWN", "&NA;", "Online first"];
+
+/// Whether a placement field, less the space around it, is a placeholder,
+/// in any case.
+pub(crate) fn is_placeholder(text: &str) -> bool {
+    PLACEHOLDERS.iter().any(|p| p.eq_ignore_ascii_case(text))
+}
 
 /// The separators of a range: a hyphen, and `???`, an en dash an encoding
 /// lost.
@@ -145,7 +155,7 @@ impl<'a> Pages<'a> {
         if text.is_empty() {
             return (None, readings);
         }
-        if PLACEHOLDERS.contains(&text) {
+        if is_placeholder(text) {
             readings.placeholder = true;
             return (None, readings);
         }
@@ -464,7 +474,7 @@ fn is_word(s: &str) -> bool {
     s.chars().all(char::is_alphabetic) && !is_roman(s)
 }
 
-fn is_roman(s: &str) -> bool {
+pub(crate) fn is_roman(s: &str) -> bool {
     !s.is_empty() && s.bytes().all(|b| b"ivxlcdmIVXLCDM".contains(&b))
 }
 
@@ -628,6 +638,8 @@ mod tests {
     fn placeholders_and_nothing() {
         assert_eq!(Pages::read("UNKNOWN").0, None);
         assert!(Pages::read("UNKNOWN").1.placeholder);
+        assert_eq!(Pages::read("Online first").0, None);
+        assert_eq!(Pages::read("unknown").0, None);
         assert_eq!(Pages::read("  ").0, None);
     }
 

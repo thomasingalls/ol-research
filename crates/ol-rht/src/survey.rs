@@ -412,6 +412,7 @@ struct PartOne {
 #[derive(Debug, Default)]
 struct PubmedCounts {
     records: u64,
+    /// The volume and the issue as model 13 reads them, rendered.
     volume: Shapes,
     issue: Shapes,
     /// The pages as model 13 reads them, rendered.
@@ -428,6 +429,7 @@ struct PubmedCounts {
 #[derive(Debug, Default)]
 struct CrossrefCounts {
     records: u64,
+    /// The volume and the issue as model 13 reads them, rendered.
     volume: Shapes,
     issue: Shapes,
     page: Shapes,
@@ -454,8 +456,10 @@ impl PartOne {
         let c = &mut self.pubmed;
         let buf = &mut self.buf;
         c.records += 1;
-        c.volume.see(w.journal.volume, &who, buf);
-        c.issue.see(w.journal.issue, &who, buf);
+        let volume = w.journal.volume.as_ref().map(ToString::to_string);
+        let issue = w.journal.issue.as_ref().map(ToString::to_string);
+        c.volume.see(volume.as_deref(), &who, buf);
+        c.issue.see(issue.as_deref(), &who, buf);
         let rendered = w.journal.pages.as_ref().map(ToString::to_string);
         c.pages.see(rendered.as_deref(), &who, buf);
         let how = match &w.journal.pages {
@@ -493,8 +497,10 @@ impl PartOne {
         let c = self.crossref.entry(w.kind).or_default();
         let buf = &mut self.buf;
         c.records += 1;
-        c.volume.see(w.volume, &who, buf);
-        c.issue.see(w.issue, &who, buf);
+        let volume = w.volume.as_ref().map(ToString::to_string);
+        let issue = w.issue.as_ref().map(ToString::to_string);
+        c.volume.see(volume.as_deref(), &who, buf);
+        c.issue.see(issue.as_deref(), &who, buf);
         let rendered = w.pages.as_ref().map(ToString::to_string);
         c.page.see(rendered.as_deref(), &who, buf);
         c.article_number.see(w.article_number, &who, buf);
@@ -810,6 +816,7 @@ fn source_name(source: Option<SourceId>) -> &'static str {
 #[derive(Debug)]
 struct Side {
     pmid: Pmid,
+    /// The volume and the issue as model 13 reads them, rendered.
     volume: Option<Box<str>>,
     issue: Option<Box<str>>,
     first: Option<Box<str>>,
@@ -827,8 +834,8 @@ impl Side {
         let written = pages.map(|p| p.to_string().into());
         Self {
             pmid: w.pmid,
-            volume: w.journal.volume.map(Into::into),
-            issue: w.journal.issue.map(Into::into),
+            volume: w.journal.volume.as_ref().map(|l| l.to_string().into()),
+            issue: w.journal.issue.as_ref().map(|l| l.to_string().into()),
             first,
             written,
             issue_date: issue_date(w),
@@ -962,10 +969,12 @@ impl Pairs {
         let who = || format!("pmid:{} doi:{}", p.pmid, w.doi);
         let c_first = w.pages.as_ref().and_then(Pages::first);
         let c_written = w.pages.as_ref().map(ToString::to_string);
+        let c_volume = w.volume.as_ref().map(ToString::to_string);
+        let c_issue = w.issue.as_ref().map(ToString::to_string);
         // In the order of [`FIELDS`].
         let values = [
-            (p.volume.as_deref(), w.volume),
-            (p.issue.as_deref(), w.issue),
+            (p.volume.as_deref(), c_volume.as_deref()),
+            (p.issue.as_deref(), c_issue.as_deref()),
             (p.first.as_deref(), c_first),
             (p.first.as_deref(), w.article_number),
             (p.first.as_deref(), c_first.or(w.article_number)),
@@ -988,8 +997,8 @@ impl Pairs {
                 p.volume,
                 p.issue,
                 p.first,
-                w.volume,
-                w.issue,
+                c_volume,
+                c_issue,
                 c_first.or(w.article_number)
             )
         });

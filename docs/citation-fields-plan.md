@@ -3,8 +3,8 @@
 **Status:** draft 3, 2026-09-29. The survey (CF0) is done, and the user
 settled draft 2's open decisions on its numbers (§3, §12). §4 is the
 design CF1 and CF2 build. Built so far: the survey command, and model
-13's Crossref reader part (the title lists and the issue's own dates,
-CF1), which stays off main until model 13 is whole. Draft 1 (2026-09-24)
+13's reading at normalization (CF1: the title lists, the issue's own
+dates, pages and labels), which stays off main until model 13 is whole. Draft 1 (2026-09-24)
 was walked through on 2026-09-27; draft 2 is superseded.
 **Inputs:**
 - The conversation of 2026-09-24 about exporting citations through a
@@ -640,7 +640,17 @@ which are recorded beside each.
   kept. Nearly all the kept were `na` (40) and `IFC` (2, inside front
   cover), words whose reading the whole files' surveys at 13 are to
   settle. Both harnesses read 0 differences.
-- Labels' markers are read (D12).
+- Labels' markers are read (D12). *Built 2026-09-29, off main*
+  (`model::label`): a volume or an issue is its text as written, or the
+  levels written into it, outermost first; a marker in a shape not read
+  keeps the field whole, counted by shape. The placeholders are one list
+  for pages, volumes and issues. On the laptop's PubMed files 191 volumes
+  and 1,131 issues read into levels and 1 was kept (`47 Suppl 1 UCTN`);
+  on the Crossref sample, 8 issues (`S1`). The stats count every word in
+  a plain label, so the whole files' surveys list the markers not read
+  yet: the laptop's files already show `PP` (157 volumes), `sup1`,
+  `Forthcoming`, `1(Special)` and `SI`, left as written until the
+  surveys count them.
 - The stats report counts each reading, as DOI readings are counted.
 - Fixtures cover each shape CF0 found, and the warts it showed: `&amp;`
   in a title, a garbled one, an ISSN given twice.
@@ -746,6 +756,9 @@ Nothing here closes a door the entity work needs:
 | `???` between digits read as a dash (D8) | A reading of text an encoding broke; 44,769 journal articles | Crossref's file written without the loss |
 | Placeholders read as no value (D8): `UNKNOWN`, `&NA;`, `Online first` | A placeholder's intent (not yet paginated, not applicable) is kept only in the count | A field that says why a value is missing, if a use for it appears |
 | Pages and labels the grammar cannot read whole (D8, D12) | Kept as written beside what is certain, not as parts; a citation prints them as written | The grammar refined as the counts show, as the date grammar was |
+| An issue that is `S` and a number read as a supplement (D12): `S6`, `s73`, `S 01` | Where a publisher means something else by it (a section, a series), the level is misnamed; counted apart, not checked | The whole files' examples, and a publisher's own word where one disagrees |
+| A volume `s` and a number, a hyphen and a roman numeral read as a series and a volume (D13): `s2-XI` | The same, for 272,309 Crossref volumes; a volume in digits (`S1-2`) is left as written, not having been counted | As above |
+| A reference's volume and issue stay as written | The cited-as evidence compares a reference's `20 Suppl 2` as text, not as volume 20 | Reading them too, when the merge's cited-as evidence compares levels |
 
 ## 10. Held for later
 
