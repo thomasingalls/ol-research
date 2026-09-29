@@ -1454,7 +1454,8 @@ state kept outside the store, and a limit per principal on calls and on
     The tokenizer is wrong for this dataset and is a project of its own,
     top to bottom (the user, 2026-09-25). Its thesis, what the current
     mapping does to scientific text, the literature and the ideas so far
-    are `docs/inbox/text-analysis.md`. Until the project lands, a query
+    are `docs/inbox/text-analysis.md`; its plan, draft 1 of 2026-09-29,
+    is `docs/tokenizer-plan.md`. Until the project lands, a query
     word is split as the index split the documents — by hand now, in
     `search::translate`, rather than through Tantivy's parser, which is
     what that note's idea 6 needs before query-time analysis can differ
