@@ -1252,6 +1252,28 @@ in your environment, never in the repo or in this conversation.
     (`10.2478/sjecr\u{f6ba}2019\u{f6ba}0006`), a zero-width space
     (`10.1128/aem.45.4.1394-\u{200b}1397.1983`), curly quotes after the
     DOI, a registrant written with a letter (`10.l007/…`).
+11. **What `model::Doi` writes and does not read back — for a model
+    version** (2026-09-29). Every code point tried (the `doi` module's
+    tests), `parse` fails to read its own output back in three places.
+    - `İ` (U+0130) lowercases to `i` and a combining dot above, which is
+      not a letter. A reference's `10.1002/İJC.22088` wrote
+      `10.1002/i\u{307}jc.22088` into the first registry with Crossref,
+      and the publish after it stopped there. It is almost certainly
+      `10.1002/ijc.22088` (the International Journal of Cancer), typed
+      where capital `I` is dotted.
+    - The encoding repair turns `Ã\u{97}` and `Ã·` into `×` and `÷`,
+      which are symbols the DOI rule refuses wherever else they are
+      written.
+    - A zero-width space dropped between `ã` and `µ`, `ª` or `º` leaves a
+      pair the repair reads again.
+
+    Readers take the stored form through `Doi::from_canonical`, which
+    accepts what `parse` writes, so none of this stops a run (merge plan
+    §10, 2026-09-29). To decide, with counts over the whole file: `İ` read
+    as `i` (its ASCII spelling, as a Turkish locale's capital `I`) or kept
+    as written; the repair limited to letters, and `×` and `÷` refused;
+    and whether a dropped character may join a repair's two halves. Each
+    changes what is normalized, so it is a model version.
 
 ## 9. Milestones
 

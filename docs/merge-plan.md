@@ -1464,6 +1464,24 @@ stays.
   works and no conflict under the new, the younger ids merged into the
   older; a second run changes nothing.
 
+- 2026-09-29, a stored DOI reads back as the model wrote it
+  (`model::Doi::from_canonical`, which `Name::parse` now uses). The first
+  merge of record with Crossref ran to the end (journal batch 7). The
+  publish after it stopped reading the registry at line 190,520,589,
+  `doi:10.1002/i\u{307}jc.22088`: a reference's `10.1002/İJC.22088`, the
+  dotted capital `İ` lowercased, as Rust's lowercasing does, to `i` and a
+  combining dot above. `Doi::parse` refuses a combining mark, so it did
+  not read back its own output — noted during the citation lookup work
+  (2026-09-27) and not fixed. Every code point tried, `parse` fails to
+  read its own output back in two more places: the encoding repair
+  writes `×` and `÷`, and a dropped zero-width space can join a repair's
+  two halves. So readers no longer re-parse. `from_canonical` checks the
+  stored text a character at a time against what `parse` can write, and
+  the tests run every code point through both. Raw text is read as
+  before, so no model version; no byte under `merged/` changes, so no
+  merge version. What `parse` should write in those three places is a
+  model question (ingestion plan §8 item 11).
+
 ## 11. Open items
 
 1. **Lineage.** The grouping id for a work's versions, with the OpenAlex

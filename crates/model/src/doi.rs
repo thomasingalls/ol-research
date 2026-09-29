@@ -310,6 +310,52 @@ impl<'a> Doi<'a> {
         })
     }
 
+    /// A DOI's canonical text read back as it is stored — in the registry,
+    /// the merged rows, every log — borrowed: `Some` when every character
+    /// of `s` is one [`Self::parse`] writes, and `None` for text `parse`
+    /// would have changed or refused.
+    ///
+    /// Not `parse` and a comparison, because `parse` does not read all of
+    /// its own output back (every code point tried, in the tests). `İ`
+    /// (U+0130) lowercases to `i` and a combining dot above, and a
+    /// combining mark is not a letter. The encoding repair makes `×` and
+    /// `÷` of `Ã\u{97}` and `Ã·`, which are symbols. And a zero-width space
+    /// dropped between `ã` and `µ`, `ª` or `º` leaves a pair the repair
+    /// reads again (a soft hyphen there is not dropped: `Ã\u{ad}` is the
+    /// repair's `í`). The first merge of record with Crossref wrote
+    /// the first of these, a reference's `10.1002/İJC.22088`, and the
+    /// publish after it stopped reading the registry there (2026-09-29). So
+    /// the stored form is checked a character at a time against what
+    /// `parse` can write: printable ASCII but capitals, a letter that is
+    /// its own lowercase, the combining dot after an `i`, and the two
+    /// symbols the repair writes. Raw text is still read by `parse`.
+    /// Whether `parse` should write any of the three is a question for a
+    /// model version.
+    #[must_use]
+    pub fn from_canonical(s: &'a str) -> Option<Self> {
+        let rest = s.strip_prefix("10.")?;
+        let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+        Registrant::from_digits(&rest[..digits]).ok()?;
+        let suffix = rest[digits..].strip_prefix('/')?;
+        if suffix.is_empty() {
+            return None;
+        }
+        let mut previous = '/';
+        for c in suffix.chars() {
+            let written = match c {
+                '\x21'..='\x7e' => !c.is_ascii_uppercase(),
+                '\u{307}' => previous == 'i',
+                '\u{d7}' | '\u{f7}' => true,
+                c => c.is_alphabetic() && c.to_lowercase().eq(std::iter::once(c)),
+            };
+            if !written {
+                return None;
+            }
+            previous = c;
+        }
+        Some(Self(Cow::Borrowed(s)))
+    }
+
     /// The canonical, lowercased DOI.
     #[must_use]
     pub fn as_str(&self) -> &str {
@@ -687,6 +733,106 @@ mod tests {
         assert_eq!(
             Doi::from_url("https://doi.org/10.1234/a b"),
             Err(Error::InvalidChar { offset: 16 + 9 })
+        );
+    }
+
+    /// The name the first merge of record with Crossref wrote and the
+    /// publish after it could not read back (2026-09-29).
+    #[test]
+    fn a_dotted_capital_i_reads_back_as_it_was_written() {
+        let written = Doi::parse("10.1002/\u{130}JC.22088").unwrap();
+        assert_eq!(written.as_str(), "10.1002/i\u{307}jc.22088");
+        assert!(
+            Doi::parse(written.as_str()).is_err(),
+            "parse refuses its own output"
+        );
+        let read = Doi::from_canonical(written.as_str()).unwrap();
+        assert_eq!(read.as_str(), written.as_str());
+        // Raw text with the combining dot is still refused, as before.
+        assert!(Doi::parse("10.1002/i\u{307}jc.22088").is_err());
+    }
+
+    /// Everything `parse` writes reads back: every code point alone, after
+    /// the encoding repair's `Ã` or `ã`, and after one of those with a
+    /// soft hyphen or a zero-width space between, which `parse` drops.
+    /// And what it would not have written does not: a capital, a stray
+    /// combining dot, a dash it reads as `-`, whitespace, a DOI badly
+    /// written.
+    #[test]
+    fn everything_parse_writes_reads_back_and_nothing_else_does() {
+        let reads_back = |text: &str| match Doi::parse(text) {
+            Ok(doi) => {
+                Doi::from_canonical(doi.as_str()).map(|d| d.as_str().to_owned())
+                    == Some(doi.as_str().to_owned())
+            }
+            Err(_) => true,
+        };
+        for c in (0..=0x10_FFFF_u32).filter_map(char::from_u32) {
+            assert!(reads_back(&format!("10.1234/a{c}b")), "{c:?}");
+            for a in ['\u{c3}', '\u{e3}'] {
+                assert!(reads_back(&format!("10.1234/{a}{c}b")), "{a:?} {c:?}");
+                for dropped in ['\u{ad}', '\u{200b}'] {
+                    assert!(
+                        reads_back(&format!("10.1234/{a}{dropped}{c}b")),
+                        "{a:?} {dropped:?} {c:?}"
+                    );
+                }
+            }
+        }
+        for bad in [
+            "10.1234/ABC",
+            "10.1234/\u{130}jc",
+            "10.1234/a\u{307}b",
+            "10.1234/\u{307}",
+            "10.1234/a\u{2010}b",
+            "10.1234/a b",
+            " 10.1234/abc",
+            "10.1234/",
+            "10.123/abc",
+            "doi:10.1234/abc",
+            "10.1234/\u{c9}",
+        ] {
+            assert!(Doi::from_canonical(bad).is_none(), "{bad:?}");
+        }
+    }
+
+    /// Where `parse` does not read its own output back, every code point
+    /// tried alone and after the `Ã`/`ã` of the encoding repair: `İ`
+    /// (U+0130), whose lowercase is `i` and a combining dot above, and the
+    /// repair's `×` and `÷`. [`Doi::from_canonical`] is why that does not
+    /// stop a reader; this is what fails the day Rust's Unicode tables, or
+    /// the repair, add another.
+    #[test]
+    fn where_parse_does_not_read_its_own_output_back() {
+        let not_read_back = |text: &str| -> bool {
+            Doi::parse(text).is_ok_and(|once| {
+                Doi::parse(once.as_str()).map(|twice| twice.as_str().to_owned())
+                    != Ok(once.as_str().to_owned())
+            })
+        };
+        let alone: Vec<char> = (0..=0x10_FFFF_u32)
+            .filter_map(char::from_u32)
+            .filter(|c| not_read_back(&format!("10.1234/a{c}b")))
+            .collect();
+        assert_eq!(alone, ['\u{130}']);
+        let paired: Vec<(char, char)> = ['\u{c3}', '\u{e3}']
+            .into_iter()
+            .flat_map(|a| {
+                (0..=0x10_FFFF_u32)
+                    .filter_map(char::from_u32)
+                    .map(move |c| (a, c))
+            })
+            .filter(|(a, c)| *c != '\u{130}' && not_read_back(&format!("10.1234/{a}{c}b")))
+            .collect();
+        assert_eq!(
+            paired,
+            [
+                ('\u{c3}', '\u{97}'),
+                ('\u{c3}', '\u{b7}'),
+                ('\u{e3}', '\u{97}'),
+                ('\u{e3}', '\u{b7}')
+            ],
+            "the repair's `×` and `÷`"
         );
     }
 }

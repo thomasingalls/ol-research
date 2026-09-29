@@ -187,9 +187,12 @@ impl<'a> Name<'a> {
         }
         let key = Key::parse(key).ok_or_else(|| err(format!("unknown namespace {key:?}")))?;
         Ok(match key {
+            // As the model writes it, which `Doi::parse` does not always
+            // read back: a lowercased `İ`, the encoding repair's `×` and
+            // `÷` (2026-09-29).
             Key::Doi => {
-                let doi = Doi::parse(value).map_err(|e| err(e.to_string()))?;
-                if doi.as_str() != value {
+                if Doi::from_canonical(value).is_none() {
+                    Doi::parse(value).map_err(|e| err(e.to_string()))?;
                     return Err(err("not canonical".to_owned()));
                 }
                 Self::Doi(value)
@@ -707,6 +710,20 @@ mod tests {
         ] {
             assert_eq!(OwnedName::parse(text).unwrap().to_string(), text);
         }
+    }
+
+    /// The registry line the publish of 2026-09-29 stopped on: a DOI with
+    /// a lowercased `İ`, which the merge wrote as the model made it.
+    #[test]
+    fn a_doi_with_a_lowercased_dotted_capital_i_reads_back() {
+        let text = "doi:10.1002/i\u{307}jc.22088";
+        let name = OwnedName::parse(text).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(name.to_string(), text);
+        assert!(
+            OwnedName::parse("doi:10.1002/\u{130}jc.22088").is_err(),
+            "not canonical"
+        );
+        assert!(OwnedName::parse("doi:10.1002/a\u{307}jc.22088").is_err());
     }
 
     #[test]
