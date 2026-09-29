@@ -1,7 +1,7 @@
 # Tokenizer plan
 
-**Status:** draft 1, 2026-09-29. Nothing built. Every decision in §4 is a
-recommendation for the user to take or change.
+**Status:** draft 1, 2026-09-29. The decisions of §4 taken as recommended
+(§9); T0 under way.
 **Inputs:** the user's thesis and ideas in
 [text analysis](inbox/text-analysis.md); the baseline every change is
 measured against, [evaluation plan](evaluation-plan.md) §13, and how many
@@ -170,6 +170,13 @@ user's (serving plan §11 item 11), and this plan is its analysis part.
     needs no model, since it asks only whether the words would meet.
     What no change of form reaches — a synonym, a concept never named —
     is counted and left to D12.
+  - *Built 2026-09-29*: `ol-rht survey analysis` (the census) and
+    `ol-rht evaluate misses <suite> <run>` (the miss analysis), each
+    change a function over terms in `crates/search/src/analysis.rs`, with
+    a property test that the census's runs under the cap are exactly the
+    terms Tantivy makes. Run on a throwaway sample store; on the box by
+    the homelab Job `ol-rht-tokenizer-t0-v1`, over epoch 7 and the
+    baseline's runs.
 - **T1. The machinery.** The analyzer as a module of `crates/search`,
   registered with Tantivy under a versioned name, each change a switch;
   the mapping's description naming it (every report prints it); a
@@ -208,6 +215,31 @@ bigrams find strings that straddle two words (D2); folding joins words a
 language keeps apart (D4); the first treatments are measured on English
 sets alone, the other scripts by census and cases (D11).
 
+Made in T0:
+
+1. **Scripts by Unicode block**, not by the Unicode Script property: a
+   block names a script for most letters, and a letter outside the
+   blocks named is counted as none. *Costs* a few letters misfiled
+   (Latin Extended-C, say). *Lifted by* ICU4X's script property once D2
+   brings the dependency.
+2. **The census reads titles and abstracts**, not authors or venues,
+   which want their own analysis (§8 item 2). *Costs* nothing measured
+   of names. *Lifted by* that item.
+3. **A query's words, in the miss analysis, are its text as the
+   analyzer splits it**, not the parser's tree: a character the parser
+   reads as syntax (a parenthesis in TREC's `(V600E)`) is split as the
+   analyzer splits it. *Costs* a word counted that the search may have
+   read otherwise. *Lifted by* taking the words from the parsed query.
+4. **Relevant is lenient** (any grade above 0), and **meeting is not
+   ranking**: a word that would meet a work is a ceiling on what the
+   change gains, not a gain. The judged non-relevant top 10 is counted
+   beside it for that reason. *Lifted by* T1's rebuilt index, measured.
+5. **One stemmer, English, for every work** in the miss analysis (D8
+   wants each work's language). The sets are English. *Lifted by* T3.
+6. **The census's examples are the first works by id**, not a sample:
+   deterministic, and biased toward early ids (PubMed's first). *Lifted
+   by* a seeded sample of examples, if the first ones mislead.
+
 ## 8. Open items
 
 1. Whether T0's miss analysis should also sort what no change of form
@@ -218,3 +250,18 @@ sets alone, the other scripts by census and cases (D11).
    abbreviations (`J Biol Chem`). After titles and abstracts.
 3. Where the switches live once T5 picks: a switch left in the code for a
    change not kept is dead weight; the plan's record of it is enough.
+4. **Mu in units.** The micro sign and mu joined to letters (`µg`,
+   `μmol`) are units far more often than the letter, and D5 as written
+   would make `µg` into `mug`. Found building T0: on the sample store,
+   7,333 such runs in 3,515 of 110,469 works. The census counts them
+   apart from the other Greek letters; D5 decides on epoch 7's numbers —
+   `micro`, the name only when alone, or nothing.
+
+## 9. Decision log
+
+- **2026-09-29.** Every recommendation of §4 taken — the user: "go with
+  your recommendations" — including the new dependency D2 names, ICU4X's
+  `icu_segmenter`, for Thai, Lao, Khmer and Burmese and as the treatment
+  that tries dictionary word breaking against bigrams for Chinese,
+  Japanese and Korean. T0 started the same day; its commands built and
+  run on a sample store the same day, the box's run prepared (§5).
