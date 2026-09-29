@@ -71,6 +71,11 @@
 //!   pages, article number, dates — and compares the two records of each
 //!   work the merged set pairs; it writes nothing (citation fields plan
 //!   §7, CF0; see [`survey`]).
+//! * `survey analysis [--store <root>] [--workers N]` counts what the
+//!   index's analyzer does to every held work's title and abstract, and
+//!   `evaluate misses <suite> <run>` whether a change of form would make a
+//!   query's words meet the relevant works a baseline run missed; both
+//!   write nothing (tokenizer plan §5, T0; see [`analysis`]).
 //!
 //! `--survey` (plan §6) keeps going past records this build cannot read
 //! and reports every distinct failure signature with counts and examples;
@@ -118,6 +123,7 @@ use source_openalex::normalize::LocationId;
 use source_pubmed::Pubmed;
 use source_pubmed::normalize::{Citation, HistoryDate, HistoryTime, Published, Reference};
 
+mod analysis;
 mod survey;
 
 /// Allocations per record are part of every report (plan §5, rule 13).
@@ -139,6 +145,7 @@ const USAGE: &str = "usage:
   ol-rht merge --batch <path>... [--store <root>] [--public-key <file>]
   ol-rht merge dump <set.zst>... [--limit N]
   ol-rht survey placement [--store <root>] [--limit N]
+  ol-rht survey analysis [--store <root>] [--workers N]
   ol-rht graph build [--store <root>] [--held]
   ol-rht graph query <#id|name> [--store <root>] [--held] [--limit N]
   ol-rht graph check [--store <root>] [--held]
@@ -156,7 +163,8 @@ const USAGE: &str = "usage:
   ol-rht evaluate load <trec-pm <topics.xml> <qrels> | relish <RELISH_v1.json.gz>> --out <suite> [--store <root>] [--held-out]
   ol-rht evaluate run <suite | queries> --out <run> [--store <root>] [--limit depth] [--workers N] [--restricted]
   ol-rht evaluate score <suite | key> <run> [--test]
-  ol-rht evaluate compare <suite | key> <base run> <new run> [--test]";
+  ol-rht evaluate compare <suite | key> <base run> <new run> [--test]
+  ol-rht evaluate misses <suite> <run> [--store <root>]";
 
 /// Who we say we are; `--mailto` adds an address inside the parenthesis.
 const USER_AGENT: &str = "ol-rht/0.1 (citation-graph ingestion";
@@ -237,6 +245,7 @@ fn main() -> ExitCode {
                 ("merge", "identity") => merge_identity(&opts),
                 ("merge", "dump") => merge_dump(&opts),
                 ("survey", "placement") => survey::placement(&opts),
+                ("survey", "analysis") => analysis::census(&opts),
                 ("graph", "build") => graph_build(&opts, held),
                 ("graph", "query") => graph_query(&opts, held),
                 ("graph", "check") => graph_check(&opts, held),
@@ -255,6 +264,7 @@ fn main() -> ExitCode {
                 ("evaluate", "run") => evaluate_run(&opts),
                 ("evaluate", "score") => evaluate_score(&opts),
                 ("evaluate", "compare") => evaluate_compare(&opts),
+                ("evaluate", "misses") => analysis::misses(&opts),
                 _ => usage(),
             }
         }
