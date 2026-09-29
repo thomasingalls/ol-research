@@ -2245,6 +2245,35 @@ cross-IDs and a second edge namespace early.
   survey's counts. Crossref's `short-container-title` is kept in the same
   model version. It waits until the merge of record at model 12 has run
   and been published.
+- 2026-09-28, Crossref's `journal-issue` dates kept in model 13 (the
+  user). The reader has read the object's own print and online dates and
+  thrown them away. Over the whole file (`ol-rht-survey-crossref-v4`),
+  the issue's online date differs from the article's on 9,409,481 records,
+  and the issue gives a print date the article lacks on 1,669,210. They
+  are the issue's own dates (its month, or its year), which the citation
+  fields plan's D4 keeps apart from the article's online date.
+- 2026-09-28, Crossref's `container-title` and `short-container-title`
+  kept whole in model 13 (the user). The reader keeps the first of each.
+  The second means different things by type. For 173,277 journal
+  articles (`ol-rht-survey-crossref-v4`) it is the same journal's name
+  in another language or form, in all 322 examples
+  `ol-rht-dump-crossref-v4` printed. For a book chapter it is the book
+  behind the series. So the lists are kept as written and read by type
+  in the merge's view (citation fields plan §4).
+- 2026-09-29, the counting allocator (rule 13, `ingest::alloc`) counts
+  per thread. Every allocation on every core updated the same four
+  counters, and on many cores the parse spent its time waiting for them.
+  Measured on the M1 Pro (10 cores), `crossref normalize --survey` over
+  the lookup files read ten times over (506,400 records, 114 allocations
+  each), five rounds: 12.3 s with one set of counters, 5.0 s with a tally
+  per thread; instructions per cycle 1.25 and 3.22. Keeping one set
+  but padding its counters onto separate cache lines gave about 9.5 s; no
+  counting at all, 4.6 s. The dev store's whole rebuild used 7.5% less
+  CPU, its search build 41% less, and the single-threaded merge about the
+  same.
+  The reports read as before: 65,710,497 allocations in the dev store's
+  merge and a peak of 2.83 GiB. The peak is the one number that loosens
+  (§13). The user's choice of the per-thread tallies over the padding.
 
 ## 11. Dependencies
 
@@ -2277,6 +2306,20 @@ Semantic Scholar's paging will use the same client.
   release listing at `https://api.semanticscholar.org/datasets/v1/release/latest`,
   [API key form](https://www.semanticscholar.org/product/api).
 - PubMed: baseline listing at `https://ftp.ncbi.nlm.nih.gov/pubmed/baseline/` — 1,334 files, highest `pubmed26n1334.xml.gz` (13 MB).
+
+## 13. What we are compromising on
+
+Kept as we go, at the user's request (2026-09-26: "so long as we're
+keeping track of what we're compromising on in documentation as we
+go"). Each line: the compromise, what it costs, what would lift it.
+
+1. **The peak heap is looked for in steps** (2026-09-29, §10). Each
+   thread's tally looks at the whole heap when its own live bytes have
+   grown by `PEAK_STEP` (1 MiB) since it last looked, not at every
+   allocation, so `peak_bytes` can read low by up to 1 MiB per thread:
+   16 MiB on the tower's 16 threads, against peaks measured in GiB. On
+   the dev store it read exactly as before. Lifted by a smaller step, at
+   the cost of more looks across every tally.
 
 ## Appendix A — speculative normalized shape (not the plan)
 

@@ -1,9 +1,11 @@
 # Citation fields plan
 
-**Status:** draft 2, 2026-09-27. Nothing built. Draft 1 (2026-09-24) was
-walked through with the user on 2026-09-27. Their calls are in §3 and
-the decision log (§12). The shape in §4 is a sketch that the survey
-(CF0) revises into draft 3 before anything else is built.
+**Status:** draft 3, 2026-09-29. The survey (CF0) is done, and the user
+settled draft 2's open decisions on its numbers (§3, §12). §4 is the
+design CF1 and CF2 build. Built so far: the survey command, and model
+13's Crossref reader part (the title lists and the issue's own dates,
+CF1), which stays off main until model 13 is whole. Draft 1 (2026-09-24)
+was walked through on 2026-09-27; draft 2 is superseded.
 **Inputs:**
 - The conversation of 2026-09-24 about exporting citations through a
   CSL processor. It found that the merge drops most of what a citation
@@ -86,8 +88,8 @@ not in it yet, so its column describes what will arrive.
 |---|---|---|---|---|
 | authors, split | `given`, `family`; organisations whole; since model 10, a given name alone | `LastName`, `ForeName`, `Initials`, `Suffix`; collectives whole | no | no: one display string each |
 | authors, as printed | — | — | `raw_author_name` | no |
-| journal, full name | `container-title` | `Journal/Title`, in NLM's sentence case | the location's source name | yes, from the venue's source |
-| journal, abbreviated | read, not kept (`short-container-title`) | `ISOAbbreviation`, `MedlineTA` | no | no |
+| journal, full name | `container-title`, the first of a list; the rest read, not kept | `Journal/Title`, in NLM's sentence case | the location's source name | yes, from the venue's source |
+| journal, abbreviated | read, not kept (`short-container-title`, a list) | `ISOAbbreviation`, `MedlineTA` | no | no |
 | journal, ids | ISSN | ISSN, `ISSNLinking`, `NlmUniqueID` | source id, ISSN-L | yes, as the view's venue |
 | volume, issue | as written | as written | `biblio` | no |
 | pages | `page`, a range as written | `Pagination`: `StartPage`/`EndPage`, `MedlinePgn` (`123-9`), or both | `biblio.first_page`, `last_page` | no |
@@ -137,33 +139,40 @@ ingestion process". What a source wrote stays in its raw file. The
 normalized record keeps the reading, and keeps the raw text only where
 the reading cannot be made whole, as dates do (D8).
 
-**D2. Promotion across records: waits on CF0.** The user's inclination
-is: where everything two records both give agrees and one gives more,
-take the more. Draft 1's alternative took the whole placement from one
-record, so that no citation is printed that no source printed. CF0 sorts
-every pair of records into four cases:
-- **same;**
-- **compatible:** everything both give agrees and one gives more, so the
-  user's rule applies;
-- **conflicting:** a value both give differs, so D3 decides and the
-  disagreement is counted;
-- **nothing to compare:** they share no value, so the rule would join
-  them unchecked.
+**D2. Take the more (the user, 2026-09-29).** Where everything two
+records both give agrees and one gives more, the placement takes the
+more: the levels are joined, and where the work sits comes from whichever
+gives it. Over the 30,795,179 works whose row holds a PubMed and a
+Crossref record (**M**, CF0 part 2), compared on volume, issue and where
+the work sits:
 
-The counts decide the rule, and whether "compatible" needs at least one
-shared value.
+| how the two compare | works | share |
+|---|---|---|
+| the same (227,957 only once notation is set aside) | 25,942,913 | 84.2% |
+| they agree and Crossref gives more | 1,962,401 | 6.4% |
+| they agree and PubMed gives more | 853,124 | 2.8% |
+| they agree and each gives what the other lacks | 33,778 | 0.1% |
+| a value both give differs (D3) | 1,541,995 | 5.0% |
+| each gives something, nothing shared: joined unchecked | 9,684 | 0.03% |
+| only one gives any, or neither | 451,284 | 1.5% |
 
-**D3. Which record is preferred: tentatively agreed; CF0 confirms.**
-Among the records that give a volume or an article number: Crossref,
-then PubMed, then OpenAlex. If none gives either, the same order over all
-of them.
-- **Crossref** is the publisher's own deposit, usually updated when an
-  issue is assigned.
-- **PubMed** is NLM's record of the issue.
-- **OpenAlex** is largely taken from the other two.
+The unchecked joins are not checked. The user: keep a record and a count,
+"as we do for other things". So the promoted chain names, level by level,
+the record each level came from, and the merge's report counts the joins,
+with examples: every join, and those with no shared value apart.
 
-Preferring a record with a volume keeps an online-first deposit from
-beating the issue it was later printed in.
+**D3. Crossref wins a conflict (the user, 2026-09-29).** Where a value
+both give differs, Crossref's stands and the difference is kept and
+counted, as every field's is. The user: Crossref's data is generally the
+cleaner for this system. OpenAlex, when merged, comes after PubMed. Most
+conflicts are the two writing one thing two ways, not disagreeing:
+PubMed's volume `20 Suppl` against Crossref's volume `20` and issue `S6`,
+PubMed's issue `Pt 2` against Crossref's `2`, PubMed's pages
+`E164; author reply E165` against Crossref's `E164`. Reading supplements,
+parts and page lists into their own places (D8, D12) is to settle those,
+and merge 17's tallies re-measure what is left. With the levels joined
+(D2), an online-first deposit that gives no volume no longer needs a rule
+of its own: PubMed's volume fills it.
 
 **D4. Dates stay apart.** The user: print and online are "two independent
 publication routes. one can exist without the other", and keeping them
@@ -174,8 +183,33 @@ apart at the data layer avoids "quite a lot of heartache".
   that is not a print date, and PubMed's `PubModel` says which media a
   journal uses. CF0 counts the dates under each model.
 - Crossref's `issued` is Crossref's own earliest of print and online, not
-  a third kind. CF0 counts the records that give only `issued`, whose kind
-  is unknown.
+  a third kind. 631,203 journal articles give only `issued` (**M**); it
+  stands as the issue's date only where nothing else gives one, and the
+  report counts how often (the user, 2026-09-29).
+- **Comparing dates, and printing one.** The user, 2026-09-29: to compare
+  two sources' dates where no mapping between them is known good, or
+  where one lacks the date, compare each source's earliest. Where a
+  mapping is known, like for like. For a print journal, Crossref's print
+  date is PubMed's issue date: they agree as far as both give on
+  13,156,414 of PubMed's 14,466,602 `Print` pairs. For PubMed's
+  `Electronic` model, Crossref mostly gives no print date (2,127,401 of
+  2,922,757 pairs, **M**). A citation prints neither the earliest nor an online date but
+  the issue's, which goes with its volume. They part for an article
+  online before its issue: Crossref's online date is a year before
+  PubMed's issue date on 1,838,622 pairs.
+- **An online date is not always a publication date.** Crossref's online
+  date is two years or more after print on 9,112,606 journal articles
+  (**M**): old volumes digitized and put online later. The display rule
+  (§10) must never show such a date as when the work appeared, and
+  `published`, the earliest, already passes over it.
+- Crossref's `journal-issue` object gives the issue's own print and
+  online dates, which model 13 keeps (the user, 2026-09-28) as the Issue
+  level's dates. Over the whole file it differs from the article's online
+  date on 9,409,481 records, and gives a print date where the article
+  gives none on 1,669,210 (**M**, CF0 part 3). Where it differs it is the
+  issue's month or year against the article's day: an article online on
+  2026-01-24 in an issue of 2026-02, or of 2026-12 where the issue is the
+  year.
 - `published`, the earliest date, stays as it is, for now as a value
   derived from the others. It keeps driving the year facet, sorting and
   the API. Date search over several dates, and the rule for which date a
@@ -205,15 +239,33 @@ does with a range is an access pattern, not what gets stored.
 - **Where the reading happens:** normalization, as model version 13, as
   dates and DOIs are read today. The daily path reads updates the same
   way.
-- **The expansion rule** is checked against evidence before it is built,
-  as the date grammar was: a notation is read from what other records
-  show, not from a handful of examples. The evidence is independent.
-  On works both sources hold, PubMed writes NLM's shortened end and
-  Crossref, from the publisher, often writes the whole range. CF0 counts
-  how often expanding one reproduces the other.
-- **Shapes that are not a plain range** (`iii-xiv`, `S12-5`,
-  `123-9; 131`) get a grammar learned from CF0's counts. Whatever that
-  grammar cannot read whole falls back the way dates do: keep what is
+- **The expansion rule is borne out** (**M**, CF0 part 2). Expanding
+  PubMed's shortened end reproduces Crossref's whole range for the same
+  work in 12,092,439 of 12,235,229 cases (98.8%). The 136,108 that differ
+  disagree on the end page itself (`129-39` against `129-140`), not on
+  the notation. 1,218 expand to before their start, and are typos
+  (`209-3` where Crossref has `290-293`): kept raw, with the fallback
+  below. PubMed gives its pages as `MedlinePgn` alone, never `StartPage`
+  or `EndPage` (0 of 39,994,988 records); 49% of its ranges are
+  shortened.
+- **The grammar** (the user, 2026-09-29: "seems wise"), learned from the
+  shapes CF0 counted:
+  - prefixes and suffixes on page numbers: `S202-7`, `A205-6`,
+    `274P-275P`, `E164`;
+  - pages with a sub-page: `163-171.e2`, `424.e1-10`, `96.1-95`;
+  - lists of ranges, some labelled: `526-7, 530`,
+    `488-94; discussion 95-6`, `387; author reply 387-8`, `43-62; quiz
+    62-3`, `519-24 contd`, `125-30, passim`;
+  - roman numerals: `III-VI`, `xii-xiii`;
+  - Crossref's article numbers written as a range of themselves:
+    `21-00323-21-00323` (200,253 journal articles);
+  - `???` between digits read as a dash, and counted: an en dash lost to
+    an encoding, as in `1067???1074` (44,769 journal articles);
+  - placeholders read as no value, and counted: `UNKNOWN` (14,200 PubMed
+    page fields), `&NA;` (130,255 Crossref volumes), `Online first`
+    (18,307 Crossref volumes).
+
+  Whatever it cannot read whole falls back the way dates do: keep what is
   certain, and the raw text beside it, counted. The user confirmed this
   on 2026-09-27 and expects the grammar to be refined later ("some churn
   on refining the parser at a later stage"), as the date grammar was
@@ -227,13 +279,21 @@ proceedings, but filling them waits: editors, edition and publisher place
 are read and not kept by the Crossref reader, and the user has no
 bandwidth for books now. `publisher` is dropped: citation styles do not
 print one for a journal article, and it would come back as an entity
-(§8). Model 13 reopens "no source reader changes" for three things only:
+(§8). Model 13 reopens "no source reader changes" for five things only:
 - the reading of pages;
 - labels, if CF0 shows they need it;
 - Crossref's `short-container-title`. The user, 2026-09-27: use it where
   there is nothing else. It becomes the journal abbreviation where PubMed
   gives none. The user tied it to the entity work: a journal's own id
-  would later own its abbreviation (§8).
+  would later own its abbreviation (§8). It is on 107,434,316 of
+  119,956,318 journal articles (**M**, CF0 part 3);
+- the `journal-issue` object's own print and online dates (D4; the user,
+  2026-09-28);
+- Crossref's `container-title` and `short-container-title` kept whole, as
+  written, where model 12 keeps the first of each (the user,
+  2026-09-28). What a second entry means depends on the record's type
+  (§4, titles), so the lists are kept as the source gives them and read
+  in the view.
 
 **D10. The free PDF link: left out.** Its source is OpenAlex, which is
 not in the merge yet.
@@ -242,26 +302,75 @@ not in the merge yet.
 for authors, publishers and institutions first. Done second, they add to
 what this plan builds rather than replacing it (§8).
 
+**D12. Labels are text, with their markers read (the user,
+2026-09-29).** A volume or an issue keeps the text it goes by, not a
+number: 98.8% of PubMed's volumes and 95.4% of its issues are plain
+digits, and 97.8% and 92.7% of Crossref's journal articles' (**M**), but
+the rest carry what a citation needs. A supplement, a part or a special
+issue written into a label is read out into a level of its own (D13):
+`20 Suppl 2` is volume `20`, supplement `2`; `2 Pt 1` is issue `2`, part
+`1`; `Supplement_1`, `3_suppl`, `S6`, `55 Spec No`. What else is written
+stays as written: combined issues (`3-4`, `28/29`), `n° 229`, `2022.1`,
+`[1977] VR`. The markers are learned from CF0's shapes, like the page
+grammar (D8), with the same fallback.
+
+**D13. The levels (the user, 2026-09-29).**
+- **A journal's:** journal, series, volume, issue, supplement, part,
+  special issue. Old journals number their volumes within a series:
+  272,309 Crossref volumes read like `s2-XI` or `S5-X` (**M**).
+- **A book's:** series, then book, then section, then chapter. The user:
+  "book chapters are often linked to individually", and "sometimes books
+  contain sections with chapters in those sections". A chapter's own
+  record stays a work, reached by its DOI as now, and a chapter is also a
+  level, for what a source deposits inside one: entries, components. A
+  section is a level only where the source names one; most books have
+  none.
+- **More will turn up.** The user: books are messy, and what else the
+  data holds is to be found and added as we go. A kind the data shows is
+  added as a kind of its own, not forced into the nearest one; the chain
+  is a list of levels, so that is one more entry, not a new shape.
+- **Proceedings:** series, then proceedings, when they are filled (D9).
+
+**D14. The journal is the chain's top level (the user, 2026-09-29).**
+Journals do not nest in this data: 99.7% of Crossref's journal articles
+(119,615,750 of 119,956,213) name at most a print and an electronic
+ISSN, 217,933 name two of one kind, and 122,530 three or more (**M**);
+none names an ISBN; a second title is the same journal's other name
+(§4). Which of the few with more ISSNs are a parent series, and which a
+journal's former ISSN, is not counted; the chain keeps every ISSN a
+record gives, on its journal level. So the venue is promoted with the chain, by
+D2 and D3, not in its own order (OpenAlex, then Crossref, then PubMed).
+That changes the venue's source on 608,481 of the 30,795,179 two-source
+works (2.0%, **M**), and it moves the venue's disagreement tally into
+the chain's.
+
 ## 4. The shape: a chain of containers
 
-A sketch for CF0 to revise. Each record describes its placement: the
-containers it sits in, outermost first, and where it sits in the innermost
-one.
+Settled on CF0's numbers in draft 3. Each record describes its placement:
+the containers it sits in, outermost first, and where it sits in the
+innermost one.
 
-- **A level** has a kind (journal, volume, issue, supplement, part,
-  series, set, book, proceedings), the number or label it goes by, the
+- **A level** has a kind (D13), the label it goes by, as text (D12), the
   ids the record gives for it (ISSN, ISBN, DOI), and its own date. An
   issue's date belongs to the issue.
-- **Where the work sits** is a page range, an article number or, when
-  books are filled, a chapter or an entry.
+- **Where the work sits** is a list of page ranges (D8), an article
+  number or, when books are filled, a chapter or an entry.
+- **The journal is the top level** (D14): the venue is the chain's first
+  level, not a field beside it.
 
 Some placements:
 - **An article:** journal (its ISSNs), then volume `45`, then issue `3`
   dated 2020-03, then pages 123–129.
-- **A supplement article:** journal, then volume `45`, then supplement
-  `2`, then pages S12–S15.
+- **A supplement article:** journal, then volume `20`, then supplement
+  `6`, then pages S12–S15.
+- **An old journal's article:** journal, then series `2`, then volume
+  `XI`, then page 382.
 - **A chapter:** book series (ISSN, number `1234`), then book (ISBN), then
   chapter 5, pages 45–67.
+- **A chapter in a section:** book, then section `II`, then chapter 7,
+  pages 201–230.
+- **An entry inside a chapter:** book series, book, chapter (its DOI),
+  then the entry's pages.
 
 ```rust
 /// Where a record says the work was published: the containers it sits
@@ -282,27 +391,54 @@ pub struct Level<'a> {
 }
 
 pub enum LevelKind {
-    Journal, Volume, Issue, Supplement, Part,
-    Series, Set, Book, Proceedings,
+    // A journal's (D13).
+    Journal, Series, Volume, Issue, Supplement, Part, SpecialIssue,
+    // A book's, and proceedings', when filled (D9); a series above
+    // either is `Series`.
+    Book, Section, Chapter, Proceedings,
 }
 
 pub enum Within<'a> {
-    /// Read at normalization (D8).
+    /// Read at normalization (D8): one range or several, each labelled
+    /// where the source labels it (`discussion`, `author reply`).
     Pages(Pages<'a>),
     /// Only where the source marks one.
     ArticleNumber(&'a str),
 }
 ```
 
+The promoted placement is the records' chains joined (D2), and each of
+its levels, and where the work sits, names the record it came from. That
+is the record the user asked for of every take-the-more: a join is
+visible in the row, and one with no shared value is marked as such.
+
 **Titles are text, not evidence.** The view keeps the venue as ids only
 today, and its name as text read at assembly. The chain does the same: a
 journal's or a book's title and a journal's abbreviation are text. That
 keeps the view small, and row size matters on the corpus.
 
+**One list, two meanings.** Crossref's `container-title` is a list, and
+what its second entry is depends on the record's type (CF0 part 3 and
+`ol-rht-dump-crossref-v4`, 2026-09-28):
+- For a journal article, every entry names the *same* journal: the name
+  in another language or script (`Математические заметки`,
+  `Matematicheskie Zametki`), the same title punctuated another way
+  (`TASK. Journal on…`, `TASK / Journal on…`, `TASK`), or an acronym
+  (`YUJOR`). All 322 examples, from 65 journals, were of these kinds.
+  None was a parent collection. They are the journal's names, which the
+  entity work would give to one journal (§8).
+- For a book chapter, the entries are two containers: the series, then
+  the book (`Methods in Molecular Biology`, then `Phenotypic Screening`).
+  Each is its own level of the chain.
+
+`short-container-title` is a list too, often of one abbreviation in two
+styles: `Med pregl` in NLM's, `MED PREGLED` in the citation indexes'
+capitals. Which one a citation prints is the export's choice.
+
 **Where each part is built:**
 - Normalization (model 13) reads the values in the source's own shape:
-  Crossref's `page` and PubMed's `Pagination` become `Pages`, and labels
-  are read if CF0 shows they need it (`45 Suppl 1`).
+  Crossref's `page` and PubMed's `Pagination` become `Pages` (D8), and a
+  label's markers are read out (`45 Suppl 1`, D12).
 - Each source's view (merge version 17) assembles the chain from those
   fields and the record's form. For example, a journal article's volume
   and issue become its Volume and Issue levels.
@@ -319,16 +455,20 @@ issue and pages were "not yet in the views"; the chain puts them there.
 collection and a few numbered parts, and BibTeX is similar. Deep nesting
 is lost there, at the edge, not in what is stored.
 
-**Promotion.** `Fields` gains `placement: Option<Field<Placement>>`,
-promoted by D3's order and D2's rule. It gives the report its present,
-from and disagreement tallies, by level and by pair of sources. The
-owned view's `fill_from` fills the placement **whole** from an older copy
-only where the speaking copy has none. Absence is not an assertion
-(merge plan §8), and the venue already fills this way.
+**Promotion.** `Fields` gains the promoted placement, joined by D2's rule,
+conflicts settled by D3, each level naming its record. `venue` goes: the
+journal is the chain's first level (D14). It gives the report its
+present, from and disagreement tallies, by level and by pair of sources,
+and the joins D2 counts: every one, and those with no shared value
+apart, with examples. The owned view's `fill_from` fills the placement
+**whole** from an older copy only where the speaking copy has none.
+Absence is not an assertion (merge plan §8), and the venue already fills
+this way.
 
 **Dates.** `View` gains `online: Option<PartialDate>`. The issue's date is
 on the chain. `published` is computed as now, from each record's
-earliest.
+earliest, and is what dates are compared by where no mapping between
+sources is known good (D4).
 
 **Text (merge crate, served row).** `merge::view::Text` changes:
 
@@ -352,9 +492,9 @@ pub struct Text {
   `Author` wherever the document, the search index and the API want it,
   so nothing that shows authors today changes shape.
 - **Each text field names the record it comes from.** Authors come from
-  the promoted `authors` field's source (D5). The venue comes from the
-  venue's, as now. `venue_short` comes from the work's PubMed record,
-  else its Crossref record.
+  the promoted `authors` field's source (D5). The venue's name comes from
+  the record the chain's journal level came from (D14). `venue_short`
+  comes from the work's PubMed record, else its Crossref record.
 - **The assembler becomes a table.** `Assembler`'s `Wanted` and `fill`
   become a table over those four fields rather than three `if`s.
 
@@ -364,21 +504,9 @@ structured authors stay on the server: the formatter runs there, and no
 client needs them yet. `Summary` is unchanged, which keeps search results
 as light as they are now.
 
-**Open, for draft 3:**
-- **The journal as a level or as the venue.**
-  - *(a)* The chain could start below the venue, which stays promoted
-    as today (OpenAlex, then Crossref, then PubMed).
-  - *(b)* The venue could be the chain's outermost level, promoted with
-    it. That is the generic answer, and it makes the ISSNs part of the
-    agreement D2 needs. But it changes the venue's promotion order to
-    D3's, and the venue's disagreement tally with it.
-  - CF0 counts how often the venue's promoted source differs from the
-    record D3 would choose.
-- **Labels as numbers or as text.** CF0 shows leading zeros, roman
-  numerals, years as volumes and ranges of issues.
-- **The level kinds.** The list above is from Crossref's forms
-  (`kind.rs`, `Form::is_container`) and its deposit schema. CF0 shows
-  which appear.
+**Settled in draft 3** (the user, 2026-09-29): the journal is the top
+level (D14), labels are text with their markers read (D12), and the
+level kinds are D13's.
 
 ## 5. The incremental merge
 
@@ -406,7 +534,8 @@ assembler's.
   keeps a PubMed relation named only by a DOI, which the whole-file
   survey at model 11 stopped for.
 - **Model version 12 → 13.** Pages are read (D8), and labels too if CF0
-  says so; Crossref's `short-container-title` is kept (D9). Draft 2 called
+  says so; Crossref's `short-container-title` (D9) and `journal-issue`
+  dates (D4) are kept. Draft 2 called
   this model 12, which the relation DOIs took first.
   - Both sources are normalized again. The v11 normalize took about 35
     minutes for both side by side on the box (**R**, ingestion plan §10).
@@ -488,27 +617,45 @@ one, its merged set. It opens no writer.
   record, in a Job the user runs. Part 3 is a survey of the raw file,
   run on the box like the model 10 and 11 surveys.
 
-*Done when:* the numbers are reported to the user, who settles D2's rule,
-D3's order, the page grammar and its fallback, labels as numbers or
-text, the level kinds, and the journal as a level or the venue. §4 is
-then revised to match as draft 3.
+*Done 2026-09-29.* Part 3 ran as `ol-rht-survey-crossref-v4` and
+`ol-rht-dump-crossref-v4` (2026-09-28). Parts 1 and 2 ran as
+`ol-rht-survey-placement-v1` over the merge of record at model 12 and
+merge 16: exit 0 in 44 minutes, 22 GB at the container's peak, its report
+at `surveys/placement/ol-rht-survey-placement-v1/report.txt` on the bulk
+claim. The user settled D2, D3, D4, D8 and D12 to D14 on its numbers,
+which are recorded beside each.
 
 **CF1 — Model 13: reading at normalization.**
-- Pages are read in each source (D8), and labels if CF0 says so.
-- Crossref's `short-container-title` is kept (D9).
+- *Built 2026-09-29, off main:* Crossref's `container-title` and
+  `short-container-title` kept whole (D9), and its `journal-issue` print
+  and online dates (D4). The sample's counts equal survey-crossref-v4's,
+  the works sets grow 0.1%, and both harnesses read 0 differences on a
+  v13 copy of their store.
+- Pages are read in each source, by D8's grammar, with its readings
+  (`???`, the placeholders) counted.
+- Labels' markers are read (D12).
 - The stats report counts each reading, as DOI readings are counted.
-- Fixtures cover each shape CF0 found.
-- The `lib.rs` version 12 paragraph and ingestion plan §10 are written.
+- Fixtures cover each shape CF0 found, and the warts it showed: `&amp;`
+  in a title, a garbled one, an ISSN given twice.
+- The `lib.rs` version 13 paragraph and ingestion plan §10 are written.
 
 *Done when:* each source's normalize survey over its whole file shows 0
 failures, or only the fallback the user chose, and the laptop's harness
-store is normalized at 12. Then the user's normalize Jobs run on the box.
+store is normalized at 13. The issue's own dates are parsed now, and a
+malformed one would stop a record, so the Crossref survey at 13 runs
+before anything is normalized of record. Then the user's normalize Jobs
+run on the box.
 
 **CF2 — Merge 17: the chain.**
 - Each source's view assembles the placement and gives the online date.
-- Promotion and its tallies land by level, and D5.
+- Promotion joins the chains (D2), Crossref winning a conflict (D3); the
+  journal is the chain's top level and `venue` goes (D14); each level
+  names its record.
+- Its tallies land by level, with the joins D2 counts, and D5.
 - `merge --survey` prints the placement table: present by source, from
-  which source, disagreements by pair, level and kind.
+  which source, disagreements by pair, level and kind, and the joins,
+  those with no shared value apart. The conflicts left once D8 and D12
+  read the notation are the re-measure D3 asks for.
 
 *Done when:*
 - both hold-out harnesses (`pubmed26n1334` and an update file, per the
@@ -587,21 +734,23 @@ Nothing here closes a door the entity work needs:
 | `published` kept as the derived earliest date (D4) | Search's year facet, sorting and the page still use one date | Date search over the separate dates, and a display rule (§10) |
 | `publisher` dropped (D9) | Nothing for journal articles; a book's citation needs it | Books filled, or publisher entities |
 | The free PDF link left out (D10) | Search results cannot point at an open copy | OpenAlex merged |
-
-D2's rule and D8's fallback are added here once CF0 settles them.
+| Two records' placements joined where they agree (D2) | A citation can carry a volume from one source and pages from the other, a combination neither printed; 9,684 of 30,795,179 joins share no value to check them by | Nothing needed so far: every level names its record, and the joins are counted, the unchecked apart |
+| Crossref wins a conflict (D3) | Where PubMed was right, its value is shown only as the other source's, on up to 5.0% of two-source works before notation is read | A third source (OpenAlex) or the entity work settling who is right, measured after model 13 |
+| `???` between digits read as a dash (D8) | A reading of text an encoding broke; 44,769 journal articles | Crossref's file written without the loss |
+| Placeholders read as no value (D8): `UNKNOWN`, `&NA;`, `Online first` | A placeholder's intent (not yet paginated, not applicable) is kept only in the count | A field that says why a value is missing, if a use for it appears |
+| Pages and labels the grammar cannot read whole (D8, D12) | Kept as written beside what is certain, not as parts; a citation prints them as written | The grammar refined as the counts show, as the date grammar was |
 
 ## 10. Held for later
 
 - **Date search and the date a page shows (D4).** Search that knows a
   work has an issue's date and an online date, and a rule for which date
-  a page shows. The user expects both.
+  a page shows. The user expects both. The rule must not show an online
+  date as when a work appeared: on 9,112,606 Crossref journal articles it
+  is two years or more after print, a digitized backfile's.
 - **Containers as works** (merge plan §11 item 25, answer C). The chain's
   shared levels become works, and each part is linked to its container.
 - **Books filled.** Editors, edition and place (the Crossref reader, a
   model version), chapters and entries, and the book levels of the chain.
-- **Crossref's issue-level dates.** The `journal-issue` object's own
-  print and online dates are read and not kept. They are worth keeping
-  only if CF0 shows the article's dates miss them.
 - **The journal abbreviation from NLM's catalogue,** which maps ISSNs to
   abbreviations for every journal NLM indexes. It is a table, not a
   source, and is not designed.
@@ -611,14 +760,16 @@ D2's rule and D8's fallback are added here once CF0 settles them.
 
 ## 11. Open items
 
-1. **The journal as a level or as the venue** (§4). Decided in draft 3,
-   on CF0's count. The user, 2026-09-27: "i think it's rare but on
-   occasion a journal will have a parent collection". So CF0 also looks
-   for journal articles whose record names a second container: two
-   `container-title`s, or ISSNs that are not the journal's.
-2. **Crossref records that give only `issued`,** whose date is of no
-   stated kind (D4). CF0 counts them, and draft 3 says where their date
-   goes.
+1. **The conflicts left after model 13** (D3). Merge 17's tallies say how
+   many of the 1,541,995 conflicts were notation that D8 and D12 now
+   read, and which remain.
+2. **The journal articles with more than two ISSNs,** 122,530, and the
+   217,933 with two of one kind (D14): which are a parent series and
+   which a journal's former ISSN. Kept on the journal level meanwhile;
+   not counted.
+
+Settled in draft 3 (2026-09-29): the journal as a level (D14), and
+Crossref records that give only `issued` (D4).
 
 ## 12. Decision log
 
@@ -670,3 +821,62 @@ D2's rule and D8's fallback are added here once CF0 settles them.
   therefore model 13, and this plan's merge is into `merged/v13.17/`. The
   entries above say 12 as it was said then. CF0 runs on the store at
   model 12 and merge 16.
+- **2026-09-28, the numbering checked, and CF0 part 3.** Model 12 did not
+  settle the SVIN erratum after all: the baseline's copy of PMID 41585761
+  has no `CommentsCorrections`, as NLM added them after the cut. Merge 16
+  amended did (ol-rht f782d84, Crossref's list of deposits whose aliases
+  are what they correct), with no version bump. So the merge of record is
+  at model 12 and merge 16, after `ol-rht-merge-survey-v10`. Main and
+  every worktree are at or below model 12, merge 16 and serve 8, so this
+  plan's 13, 17 and 9 stand. The other session left them for this plan
+  on purpose.
+  - CF0 part 3 (`ol-rht-survey-crossref-v4`, the whole file, exit 0 in
+    every share) found, among 119,956,318 journal articles: a second
+    `container-title` on 173,277, `short-container-title` on 107,434,316,
+    and the `journal-issue` dates as in D4. It also found 5,064,105 other
+    records with a second title, a chapter's series and then its book.
+  - The user: keep the `journal-issue` dates in model 13 (D4). The
+    examples of the 173,277 come from `ol-rht-dump-crossref-v4`.
+- **2026-09-28, the second titles, and the whole lists kept.**
+  `ol-rht-dump-crossref-v4` printed 322 journal articles with a second
+  `container-title`: 65 journals from 18 publishers, found in the first
+  ~50 shards of each share, so a few publishers dominate. Every second or
+  third title was the same journal's name in another language or script,
+  punctuated another way, or as an acronym; none was a parent collection
+  (§4, one list, two meanings). The user agreed that model 13 keeps
+  `container-title` and `short-container-title` whole, as written (D9).
+  This keeps a chapter's book behind its series, a journal's other names
+  for the entity work, and both abbreviation styles. On the way it
+  showed `&amp;` in titles, a garbled one (`g?ologiques`) and an ISSN
+  given twice, which the text's cleaning and CF1's fixtures are to meet.
+- **2026-09-29, draft 3: CF0 done, the open decisions settled.** The
+  placement survey ran over the merge of record at model 12 and merge 16
+  (30,795,179 two-source works; §7), and the user made these calls on
+  its numbers:
+  - **D2**, take the more. Don't check the 9,684 joins with no shared
+    value; keep a record and a count "as we do for other things". Every
+    level of the joined chain names its record.
+  - **D3**, Crossref wins a conflict: "the data is generally cleaner for
+    our current system to deal with".
+  - **D8**, the grammar as listed, and `???` between digits read as a
+    dash. Expanding NLM's shortened ends reproduced Crossref's range in
+    98.8% of cases.
+  - **D12**, labels are text, with supplement, part and special-issue
+    markers read into their own levels.
+  - **D13**, the levels. The user: "series, then book, then book chapter.
+    book chapters are often linked to individually". A chapter is a
+    work and a level both. Then: "sometimes books contain sections with
+    chapters in those sections… anything else we'll need to discover and
+    modify as we go". So a section sits between book and chapter where a
+    source names one, and a new kind the data shows is added as its own.
+  - **D14**, the journal is the chain's top level; the venue's source
+    moves on 2.0% of two-source works.
+  - **D4**, the issue's date for a citation, and `issued` alone as the
+    fallback. The user, on comparing dates: "i'd take the earliest of the
+    available dates from a given source to do a comparison if we don't
+    have a known good mapping between the two sources, or if data is
+    missing". That is `published`'s rule, and it stays for comparing and
+    for when a work appeared. A citation prints the issue's date instead,
+    and the two part only for an article online before its issue.
+  - Also measured: Crossref's online date two years or more after print
+    on 9,112,606 journal articles, digitized backfiles (§10).
