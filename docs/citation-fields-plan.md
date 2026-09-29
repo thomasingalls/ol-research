@@ -651,6 +651,16 @@ which are recorded beside each.
   yet: the laptop's files already show `PP` (157 volumes), `sup1`,
   `Forthcoming`, `1(Special)` and `SI`, left as written until the
   surveys count them.
+- *Surveyed 2026-09-29* on the box at model 13 (ol-rht 7214319): no
+  record of the whole Crossref file or the PubMed baseline failed. Pages
+  kept: 760,013 of Crossref's (0.56%), 45,899 of PubMed's (0.12%).
+  Labels read into levels: 270,699 Crossref volumes and 2,467,606 issues,
+  401,958 PubMed volumes and 621,148 issues. The grammar's second pass
+  answers what they listed (§12, 2026-09-29): placeholders, words saying
+  the work awaits its issue (`Label::Pending`), more markers, the level's
+  own name, sections, named pages (`Pages::Named`), an item's number on
+  its page, `+`, page counts, J-STAGE's issue before its pages, and a
+  supplement before NLM's pages (`level_in_pages`).
 - The stats report counts each reading, as DOI readings are counted.
 - Fixtures cover each shape CF0 found, and the warts it showed: `&amp;`
   in a title, a garbled one, an ISSN given twice.
@@ -754,11 +764,19 @@ Nothing here closes a door the entity work needs:
 | Two records' placements joined where they agree (D2) | A citation can carry a volume from one source and pages from the other, a combination neither printed; 9,684 of 30,795,179 joins share no value to check them by | Nothing needed so far: every level names its record, and the joins are counted, the unchecked apart |
 | Crossref wins a conflict (D3) | Where PubMed was right, its value is shown only as the other source's, on up to 5.0% of two-source works before notation is read | A third source (OpenAlex) or the entity work settling who is right, measured after model 13 |
 | `???` between digits read as a dash (D8) | A reading of text an encoding broke; 44,769 journal articles | Crossref's file written without the loss |
-| Placeholders read as no value (D8): `UNKNOWN`, `&NA;`, `Online first` | A placeholder's intent (not yet paginated, not applicable) is kept only in the count | A field that says why a value is missing, if a use for it appears |
+| Placeholders read as no value (D8): `UNKNOWN`, `&NA;`, `None`, `n/a`, `na`, `null` | A placeholder's intent (not applicable, not known) is kept only in the count | A field that says why a value is missing, if a use for it appears |
+| Words saying the work awaits its issue kept as a statement, not a label: `ahead-of-print`, IEEE's `PP` (and its issue `99`), `Online first`, `Forthcoming` | Often stale (NLM's IEEE records of 2011 still say `PP`); in a page field they read as no pages, counted | The merge letting another source's volume stand where one record only waits; nothing to lift at normalization |
+| A page count read as no pages (`26 pp.`, 7,622 Crossref fields) | The work's length is not kept | A field for it, if a use appears (a book's citation prints one) |
+| `1098+` read as its first page, `+` its note | The last page is not known | Nothing: the source does not say it |
+| An item's number read before a whole last page: `36.1-37`, the first item on page 36 to page 37 (BMJ's journals, 104,858 Crossref fields) | NLM writes Current Protocols' sub-pages the same way, shortened (`1.1-11` is 1.1 to 1.11), which reads as pages 1 to 11; those with the end before the page (`13.1-11`) are kept | The whole files' examples, by source |
+| The record's issue before its pages dropped only where it is the record's own (`2_263-2_285` in issue `2`, J-STAGE) | A field whose issue differs, or a record with none, is kept as written | Nothing needed: the check is the record's own issue |
+| Named pages kept as named (`IFC`, `Cover`, `Toc`, 155,031 Crossref fields) | A named page has no number to sort or compare by | Nothing: it is where the work sits (the user) |
 | Pages and labels the grammar cannot read whole (D8, D12) | Kept as written beside what is certain, not as parts; a citation prints them as written | The grammar refined as the counts show, as the date grammar was |
 | An issue that is `S` and a number read as a supplement (D12): `S6`, `s73`, `S 01` | Where a publisher means something else by it (a section, a series), the level is misnamed; counted apart, not checked | The whole files' examples, and a publisher's own word where one disagrees |
 | A volume `s` and a number, a hyphen and a roman numeral read as a series and a volume (D13): `s2-XI` | The same, for 272,309 Crossref volumes; a volume in digits (`S1-2`) is left as written, not having been counted | As above |
 | A reference's volume and issue stay as written | The cited-as evidence compares a reference's `20 Suppl 2` as text, not as volume 20 | Reading them too, when the merge's cited-as evidence compares levels |
+| A number sign names the field's own level: `n° 93` in a volume is volume 93 (411,000 Crossref volumes, Cairn's), though it counts issues (the user: "keep as volume") | The volume of such a journal is periodical-shaped; a chain compared with another source's volume and issue may disagree on which is which | The entity work's journals, which know how each journal numbers |
+| A section is named, before its marker or after it, or lettered before the field's number (`Laryngol Sect`, `Sect B 1`); anything else with a section is kept | A statute's `Section 38-1322` and a section with another marker stay text | The whole files' examples |
 
 ## 10. Held for later
 
@@ -900,3 +918,24 @@ Crossref records that give only `issued` (D4).
     and the two part only for an article online before its issue.
   - Also measured: Crossref's online date two years or more after print
     on 9,112,606 journal articles, digitized backfiles (§10).
+- **2026-09-29, the grammar's second pass.** Model 13's first surveys of
+  the whole files (`ol-rht-survey-crossref-v5`, `ol-rht-survey-baseline-v9`)
+  failed no record, and counted what the grammar did not read yet. The
+  user's calls:
+  - More placeholders, `None`, `n/a`, `null`; but "ahead-of-print is of a
+    different kind, and PP is worth investigating too". PP is IEEE's
+    early-access volume, with issue `99`: every one of 157 on the laptop
+    an IEEE journal's article ahead of print, and records of 2011 and
+    2014 still so. Both are kept as words saying the work awaits its
+    issue, with `Online first` and `Forthcoming`, the same kind.
+  - More markers, and a section as a journal's level: agreed.
+  - The level's own name read as a marker, and `n°` in a volume "keep as
+    volume": "volumes can have periodic releases too, even if that makes
+    them periodical-shaped".
+  - Named pages: "named pages are a burden for search engines, but we
+    can't very well just exclude them, so we have to be sure to capture
+    this information". A supplement before the pages is a level of its
+    own. `36.1-37` is an item on page 36 (the DOI names page 36 of issue
+    7354), not issue 36. `1098+`: "can we just keep the start page?" A
+    page count: "i'd be fine dropping it if it's not useful". J-STAGE's
+    issue before its pages: "we can parse that out".

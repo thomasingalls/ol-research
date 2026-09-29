@@ -10,7 +10,11 @@
 //! counted as a DOI's readings are. A shape it does not read whole is kept
 //! as written, beside its first page where that is certain
 //! ([`Pages::Kept`]), as a `MedlineDate` is. A placeholder (`UNKNOWN`,
-//! `Online first`) reads as no pages.
+//! `None`, `n/a`) reads as no pages, and so do words saying the work awaits
+//! its issue (`Online first`) and a page count (`26 pp.`). A page the
+//! source names rather than numbers (`IFC`, an inside front cover) is
+//! kept as a named page ([`Pages::Named`]): it has no number to compare,
+//! but it is where the work sits (the user, 2026-09-29).
 //!
 //! The shapes read are those the survey counted (plan D8):
 //! - a page or a range: `1033`, `117-26`, `259-264`;
@@ -23,13 +27,25 @@
 //! - an article number written as a range of itself: `21-00323-21-00323`;
 //! - a range of hyphenated numbers: `A-1-A-5`, `S4-19-S4-20`;
 //! - `???` between two pages, an en dash an encoding lost:
-//!   `1067???1074`.
+//!   `1067???1074`;
+//! - an item's number on its first page (`36.1-37`, the first item on page
+//!   36 to page 37; `266_1-266`), and a page and those after it (`1098+`,
+//!   read as its first, the `+` its note);
+//! - the record's issue written before its pages (`2_263-2_285` in issue
+//!   `2`), which [`Pages::read_in`] drops, and a supplement written before
+//!   them (`suppl 4:176-80`), which [`Pages::read_placed`] reads out as a
+//!   level.
+//!
+//! These last came from the whole files' surveys at model 13
+//! (`ol-rht-survey-crossref-v5`, `ol-rht-survey-baseline-v9`, 2026-09-29).
 
 use std::borrow::Cow;
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
+
+use crate::label::{Label, Level};
 
 /// A page field, read.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -47,6 +63,9 @@ pub enum Pages<'a> {
         /// Why it was not read whole.
         error: Error,
     },
+    /// A page the source names, not numbers, as written: Elsevier's `IFC`,
+    /// `OBC` (inside front cover, outside back cover), `Cover`, `Toc`.
+    Named(&'a str),
 }
 
 /// One range of pages, or one page.
@@ -112,6 +131,18 @@ pub struct Readings {
     pub dash: bool,
     /// A placeholder was read as no pages.
     pub placeholder: bool,
+    /// Words saying the work awaits its issue were read as no pages.
+    pub pending: bool,
+    /// A page count was read as no pages: `26 pp.`.
+    pub page_count: bool,
+    /// An item's number on its first page was read: `36.1-37`.
+    pub item: bool,
+    /// A page and those after it were read as the first: `1098+`.
+    pub and_following: bool,
+    /// The record's own issue, written before the pages, was dropped.
+    pub issue_prefix: bool,
+    /// A supplement written before the pages was read as a level.
+    pub supplement: bool,
 }
 
 impl Readings {
@@ -123,6 +154,24 @@ impl Readings {
             (self.encoding, "??? between pages read as a dash"),
             (self.dash, "a dash read as a hyphen"),
             (self.placeholder, "a placeholder read as no pages"),
+            (
+                self.pending,
+                "words saying the work awaits its issue read as no pages",
+            ),
+            (self.page_count, "a page count read as no pages"),
+            (self.item, "an item's number on its first page read"),
+            (
+                self.and_following,
+                "a page and those after it read as its first",
+            ),
+            (
+                self.issue_prefix,
+                "the record's issue before its pages dropped",
+            ),
+            (
+                self.supplement,
+                "a supplement before the pages read as a level",
+            ),
         ]
         .into_iter()
         .filter_map(|(made, what)| made.then_some(what))
@@ -130,11 +179,15 @@ impl Readings {
 }
 
 /// What a source writes in a placement field (pages, a volume, an issue)
-/// for a value it does not have: `UNKNOWN` (14,200 PubMed page fields),
-/// `&NA;` (130,255 Crossref volumes), `Online first` (18,307), counted by
-/// `ol-rht-survey-placement-v1`. One list for every such field: a
-/// placeholder means the same wherever it is written.
-const PLACEHOLDERS: [&str; 3] = ["UNKNOWN", "&NA;", "Online first"];
+/// for a value it does not have: `UNKNOWN` (14,200 PubMed page fields) and
+/// `&NA;` (130,255 Crossref volumes), counted by
+/// `ol-rht-survey-placement-v1`; `None` (96,735 Crossref page fields,
+/// `None-None`), `n/a` and `na`, `null` (50,332 Crossref volumes, 11,926
+/// issues), by the surveys at model 13. One list for every such field: a
+/// placeholder means the same wherever it is written. `Online first` was
+/// here until the user set words saying the work awaits its issue apart
+/// (`label::is_pending`, 2026-09-29).
+const PLACEHOLDERS: [&str; 6] = ["UNKNOWN", "&NA;", "None", "n/a", "na", "null"];
 
 /// Whether a placement field, less the space around it, is a placeholder,
 /// in any case.
@@ -147,7 +200,9 @@ pub(crate) fn is_placeholder(text: &str) -> bool {
 const LOST_DASH: &str = "???";
 
 impl<'a> Pages<'a> {
-    /// Reads a page field. `None` for nothing but space, or a placeholder.
+    /// Reads a page field. `None` for nothing but space, a placeholder
+    /// (`None-None` too), words saying the work awaits its issue, or a page
+    /// count.
     #[must_use]
     pub fn read(field: &'a str) -> (Option<Self>, Readings) {
         let mut readings = Readings::default();
@@ -155,12 +210,25 @@ impl<'a> Pages<'a> {
         if text.is_empty() {
             return (None, readings);
         }
-        if is_placeholder(text) {
+        if is_placeholder(text)
+            || (pieces(text).nth(1).is_some() && pieces(text).all(|p| is_placeholder(p.trim())))
+        {
             readings.placeholder = true;
+            return (None, readings);
+        }
+        if crate::label::is_pending(text) {
+            readings.pending = true;
+            return (None, readings);
+        }
+        if is_page_count(text) {
+            readings.page_count = true;
             return (None, readings);
         }
         match read_items(text, &mut readings) {
             Ok(ranges) => (Some(Self::Read(ranges)), readings),
+            Err(_) if !text.bytes().any(|b| b.is_ascii_digit()) => {
+                (Some(Self::Named(text)), Readings::default())
+            }
             Err(error) => (
                 Some(Self::Kept {
                     first: certain_first(text),
@@ -170,6 +238,59 @@ impl<'a> Pages<'a> {
                 Readings::default(),
             ),
         }
+    }
+
+    /// Reads a page field beside the record's issue: where the field
+    /// writes that issue before its pages, joined by `_`, as some of
+    /// J-STAGE's journals do, it is dropped (`2_263-2_285` in issue `2` is
+    /// pages 263 to 285). Only the record's own issue is dropped; the same
+    /// `_` elsewhere is an item's number (`266_1-266`).
+    #[must_use]
+    pub fn read_in(field: &'a str, issue: Option<&str>) -> (Option<Self>, Readings) {
+        let text = field.trim();
+        if let Some(issue) = issue
+            && let Some((first, last)) = issue_prefixed(text, issue.trim())
+        {
+            let mut readings = Readings {
+                issue_prefix: true,
+                ..Readings::default()
+            };
+            let range = match last {
+                None if is_page(first) => Ok(Range::one(first)),
+                None => Err(Error::Shape),
+                Some(last) => range(first, last, &mut readings),
+            };
+            return match range {
+                Ok(range) => (Some(Self::Read(SmallVec::from_elem(range, 1))), readings),
+                Err(error) => (
+                    Some(Self::Kept {
+                        first: is_page(first).then_some(first),
+                        raw: field,
+                        error,
+                    }),
+                    Readings::default(),
+                ),
+            };
+        }
+        Self::read(field)
+    }
+
+    /// Reads a page field beside the record's issue ([`Pages::read_in`]),
+    /// a supplement written before its pages read out as a level of its
+    /// own: NLM's `suppl 4:176-80` is supplement `4`, then pages 176 to
+    /// 180.
+    #[must_use]
+    pub fn read_placed(
+        field: &'a str,
+        issue: Option<&str>,
+    ) -> (Option<Level<'a>>, Option<Self>, Readings) {
+        let (level, text) = match Label::before_pages(field) {
+            Some((level, pages)) => (Some(level), pages),
+            None => (None, field),
+        };
+        let (pages, mut readings) = Self::read_in(text, issue);
+        readings.supplement = level.is_some();
+        (level, pages, readings)
     }
 
     /// From a first page and a last, given apart, as PubMed's `StartPage`
@@ -200,12 +321,14 @@ impl<'a> Pages<'a> {
         }
     }
 
-    /// The first page, where there is one certain.
+    /// The first page, where there is one certain; a named page has no
+    /// number.
     #[must_use]
     pub fn first(&self) -> Option<&'a str> {
         match self {
             Self::Read(ranges) => ranges.first().map(|r| r.first),
             Self::Kept { first, .. } => *first,
+            Self::Named(_) => None,
         }
     }
 }
@@ -243,7 +366,7 @@ impl fmt::Display for Pages<'_> {
                 }
                 Ok(())
             }
-            Self::Kept { raw, .. } => f.write_str(raw),
+            Self::Kept { raw, .. } | Self::Named(raw) => f.write_str(raw),
         }
     }
 }
@@ -293,7 +416,9 @@ fn read_item<'a>(item: &'a str, readings: &mut Readings) -> Result<Item<'a>, Err
     }
     let mut range = read_range(words[at], readings)?;
     range.label = span(item, before);
-    range.note = span(item, after);
+    if let Some(note) = span(item, after) {
+        range.note = Some(note);
+    }
     Ok(Item::Pages(range))
 }
 
@@ -308,6 +433,17 @@ fn span<'a>(item: &'a str, words: &[&'a str]) -> Option<&'a str> {
 
 /// One page or one range, written without spaces.
 fn read_range<'a>(text: &'a str, readings: &mut Readings) -> Result<Range<'a>, Error> {
+    if let Some(range) = item_range(text) {
+        readings.item = range.is_ok();
+        return range;
+    }
+    if let Some(page) = and_following(text) {
+        readings.and_following = true;
+        return Ok(Range {
+            note: Some(&text[page.len()..]),
+            ..Range::one(page)
+        });
+    }
     let separators = separators(text);
     match separators.len() {
         0 => Ok(Range::one(text)),
@@ -402,6 +538,73 @@ fn note_separator(separator: &str, readings: &mut Readings) {
     }
 }
 
+/// An item's number on its first page, and a whole last page: `36.1-37`
+/// is the first item on page 36, to page 37. The BMJ's journals number
+/// the letters that share a page so (`143.1-146`, and `143.2-143` for the
+/// second on page 143, `10.1136/gut.51.2.143-a`), 104,858 Crossref page
+/// fields; some of J-STAGE's write it with `_` (`266_1-266`). A last page
+/// before the first is not read: `96.1-95`, and NLM's shortened sub-page
+/// (`13.1-11`, Current Protocols' 13.1 to 13.11), which this would misread.
+fn item_range(text: &str) -> Option<Result<Range<'_>, Error>> {
+    let (first, last) = text.split_once('-')?;
+    let (page, item) = first.split_once(['.', '_'])?;
+    if !(is_number(page) && is_number(item) && is_number(last)) {
+        return None;
+    }
+    Some(if by_value(last, page).is_ge() {
+        Ok(Range {
+            last: Some(Cow::Borrowed(last)),
+            ..Range::one(first)
+        })
+    } else {
+        Err(Error::Backwards)
+    })
+}
+
+/// A page and those after it: `1098+`, the page.
+fn and_following(text: &str) -> Option<&str> {
+    text.strip_suffix('+').filter(|page| is_page(page))
+}
+
+/// A page count, not a place: `26 pp.`.
+fn is_page_count(text: &str) -> bool {
+    let mut words = text.split_whitespace();
+    matches!(
+        (words.next(), words.next(), words.next()),
+        (Some(n), Some(unit), None)
+            if is_number(n) && ["pp", "pp.", "p", "p."].iter().any(|u| u.eq_ignore_ascii_case(unit))
+    )
+}
+
+/// The record's issue written before a field's pages, joined by `_`: the
+/// first page and the last, less it. `None` unless the field is so
+/// written and the issue is the record's own.
+fn issue_prefixed<'a>(text: &'a str, issue: &str) -> Option<(&'a str, Option<&'a str>)> {
+    let strip = |s: &'a str| {
+        s.split_once('_')
+            .filter(|(before, page)| {
+                !page.is_empty() && is_number(before) && by_value(before, issue).is_eq()
+            })
+            .map(|(_, page)| page)
+    };
+    match text.split_once('-') {
+        None => Some((strip(text)?, None)),
+        Some((first, last)) => Some((strip(first)?, Some(strip(last).unwrap_or(last)))),
+    }
+}
+
+/// Digits and nothing else.
+fn is_number(s: &str) -> bool {
+    !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// Two numbers' order by value, leading zeros aside; a text that is not
+/// a number is compared as written.
+fn by_value(a: &str, b: &str) -> std::cmp::Ordering {
+    let (a, b) = (a.trim_start_matches('0'), b.trim_start_matches('0'));
+    a.len().cmp(&b.len()).then_with(|| a.cmp(b))
+}
+
 /// A range's dash: `-`, or any other Unicode dash or the minus sign, as a
 /// DOI's are read (`708–718`).
 fn is_dash(c: char) -> bool {
@@ -454,6 +657,8 @@ fn is_page(s: &str) -> bool {
 /// `???`.
 fn is_pages(s: &str) -> bool {
     is_page(s)
+        || item_range(s).is_some()
+        || and_following(s).is_some()
         || (pieces(s)
             .all(|p| p.is_empty() || p.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'.'))
             && s.bytes().any(|b| b.is_ascii_digit()))
@@ -638,9 +843,105 @@ mod tests {
     fn placeholders_and_nothing() {
         assert_eq!(Pages::read("UNKNOWN").0, None);
         assert!(Pages::read("UNKNOWN").1.placeholder);
-        assert_eq!(Pages::read("Online first").0, None);
         assert_eq!(Pages::read("unknown").0, None);
         assert_eq!(Pages::read("  ").0, None);
+        for none in ["None", "none", "n/a", "na", "null", "None-None", "n/a-n/a"] {
+            let (pages, readings) = Pages::read(none);
+            assert_eq!(pages, None, "{none}");
+            assert!(readings.placeholder, "{none}");
+        }
+        // Words saying the work awaits its issue, apart.
+        let (pages, readings) = Pages::read("Online first");
+        assert_eq!(pages, None);
+        assert!(readings.pending && !readings.placeholder);
+        // A page count is not a place.
+        for count in ["26 pp.", "8 pp", "12 p."] {
+            let (pages, readings) = Pages::read(count);
+            assert_eq!(pages, None, "{count}");
+            assert!(readings.page_count, "{count}");
+        }
+    }
+
+    #[test]
+    fn named_pages() {
+        for name in [
+            "IFC",
+            "OBC",
+            "Cover",
+            "Toc",
+            "inside front cover",
+            "see text",
+        ] {
+            assert_eq!(Pages::read(name).0, Some(Pages::Named(name)), "{name}");
+        }
+        assert_eq!(Pages::read("IFC").0.and_then(|p| p.first()), None);
+        // A roman page is numbered.
+        assert_eq!(read("xii"), ["xii"]);
+    }
+
+    #[test]
+    fn an_items_number_on_its_page() {
+        assert_eq!(read("36.1-37"), ["36.1-37"]);
+        assert!(Pages::read("36.1-37").1.item);
+        assert_eq!(read("143.2-143"), ["143.2-143"]);
+        assert_eq!(read("1074.1-1076"), ["1074.1-1076"]);
+        assert_eq!(read("266_1-266"), ["266_1-266"]);
+        // Sub-pages written whole are not items.
+        assert_eq!(read("2.29-2.32"), ["2.29-2.32"]);
+        assert!(!Pages::read("2.29-2.32").1.item);
+    }
+
+    #[test]
+    fn a_page_and_those_after_it() {
+        assert_eq!(read("1098+"), ["1098 +"]);
+        assert!(Pages::read("1098+").1.and_following);
+        assert_eq!(Pages::read("1098+").0.and_then(|p| p.first()), Some("1098"));
+    }
+
+    #[test]
+    fn the_records_issue_before_its_pages() {
+        let read_in = |s, issue| Pages::read_in(s, issue).0.map(|p| p.to_string());
+        assert_eq!(
+            read_in("2_263-2_285", Some("2")).as_deref(),
+            Some("263-285")
+        );
+        assert_eq!(read_in("4_2-11", Some("4")).as_deref(), Some("2-11"));
+        assert_eq!(read_in("4_2-11", Some("04")).as_deref(), Some("2-11"));
+        assert_eq!(read_in("1_36", Some("1")).as_deref(), Some("36"));
+        assert!(Pages::read_in("4_2-11", Some("4")).1.issue_prefix);
+        // Not the record's issue: not dropped.
+        assert!(matches!(
+            Pages::read_in("2_263-2_285", Some("3")).0,
+            Some(Pages::Kept { .. })
+        ));
+        assert!(matches!(
+            Pages::read_in("2_263-2_285", None).0,
+            Some(Pages::Kept { .. })
+        ));
+        // An item's number, where the issue is not the page's stem.
+        assert_eq!(
+            read_in("266_1-266", Some("2")).as_deref(),
+            Some("266_1-266")
+        );
+    }
+
+    #[test]
+    fn a_supplement_before_the_pages() {
+        use crate::label::LevelKind;
+        let (level, pages, readings) = Pages::read_placed("suppl 4:176-80", None);
+        let level = level.unwrap();
+        assert_eq!(
+            (level.kind, level.label),
+            (LevelKind::Supplement, Some("4"))
+        );
+        assert_eq!(pages.map(|p| p.to_string()).as_deref(), Some("176-180"));
+        assert!(readings.supplement && readings.shortened);
+        let (level, pages, _) = Pages::read_placed("Suppl 2:1092+", None);
+        assert_eq!(level.map(|l| l.label), Some(Some("2")));
+        assert_eq!(pages.map(|p| p.to_string()).as_deref(), Some("1092 +"));
+        let (level, pages, readings) = Pages::read_placed("117-26", None);
+        assert!(level.is_none() && !readings.supplement);
+        assert_eq!(pages.map(|p| p.to_string()).as_deref(), Some("117-126"));
     }
 
     #[test]
@@ -648,10 +949,12 @@ mod tests {
         assert_eq!(kept("269-38"), (Some("269"), Error::ExpandsBefore));
         assert_eq!(kept("2109-020"), (Some("2109"), Error::ExpandsBefore));
         assert_eq!(kept("293-204"), (Some("293"), Error::Backwards));
-        assert_eq!(kept("96.1-95"), (Some("96.1"), Error::Shape));
+        assert_eq!(kept("96.1-95"), (Some("96.1"), Error::Backwards));
+        // NLM's shortened sub-page, which the item reading would misread.
+        assert_eq!(kept("13.1-11"), (Some("13.1"), Error::Backwards));
         assert_eq!(kept("949-a-950"), (Some("949"), Error::Shape));
         assert_eq!(kept("12-5,"), (Some("12"), Error::Shape));
-        assert_eq!(kept("see text"), (None, Error::Shape));
+        assert_eq!(kept("192-IBC"), (Some("192"), Error::Shape));
         // A kept field keeps no reading.
         assert_eq!(Pages::read("269-38").1, Readings::default());
     }

@@ -15,7 +15,7 @@ use smallvec::SmallVec;
 use std::fmt;
 
 use ingest::Sink;
-use model::label::{Label, LevelKind};
+use model::label::{self, Label, Level, LevelKind};
 use model::pages::{self, Pages};
 use model::{
     Claim, Date, DateError, DateTime, Day, Doi, DoiError, Interned, Isbn, IsbnError, Isni,
@@ -138,11 +138,13 @@ pub struct Work<'n> {
     pub isbns: Few<TypedIsbn<'n>, 2>,
     /// `volume`, read (model 13; citation fields plan D12): as written,
     /// with a series, a supplement, a part or a special issue written into
-    /// it read out (`s2-XI`, `20 Suppl 2`). `None` for none, or a
-    /// placeholder (`&NA;`, `Online first`).
+    /// it read out (`s2-XI`, `20 Suppl 2`), or words saying the work
+    /// awaits its issue (`Online first`). `None` for none, or a
+    /// placeholder (`&NA;`, `null`).
     #[serde(borrow)]
     pub volume: Option<Label<'n>>,
-    /// `issue`, read as the volume is (`Supplement_1`, `3_suppl`, `S6`).
+    /// `issue`, read as the volume is (`Supplement_1`, `3_suppl`, `S6`),
+    /// beside it.
     #[serde(borrow)]
     pub issue: Option<Label<'n>>,
     /// `page`, read (model 13; citation fields plan D8): a shortened end
@@ -150,6 +152,10 @@ pub struct Work<'n> {
     /// as one, `???` between pages read as a dash.
     #[serde(borrow)]
     pub pages: Option<Pages<'n>>,
+    /// A supplement `page` writes before its pages (`suppl 4:176-80`), as
+    /// NLM does (model 13).
+    #[serde(borrow)]
+    pub level_in_pages: Option<Level<'n>>,
     #[allow(missing_docs)]
     #[serde(borrow)]
     pub article_number: Option<&'n str>,
@@ -1042,13 +1048,12 @@ fn first<'n>(list: Option<&'n [Text<'_>]>) -> Option<&'n str> {
 
 /// A volume or an issue field, read (plan D12), what the reading supposed
 /// counted under the field's name.
-fn label<'n>(
+fn counted<'n>(
     ctx: &Ctx,
     field: &'static str,
-    value: Option<&'n str>,
-    own: LevelKind,
+    read: Option<(Option<Label<'n>>, label::Readings)>,
 ) -> Option<Label<'n>> {
-    let (label, readings) = Label::read(value?, own);
+    let (label, readings) = read?;
     ctx.corrected
         .borrow_mut()
         .extend(readings.made().map(|how| (field, how)));
@@ -1129,15 +1134,29 @@ pub fn normalize<'n, K: Sink<'n, Crossref>>(w: &'n Native<'_>, emit: &mut K) -> 
     }
     let published_print = ctx.partial("published-print", w.published_print.as_ref())?;
     let published_online = ctx.partial("published-online", w.published_online.as_ref())?;
-    let (pages, readings) = w
+    let (level_in_pages, pages, readings) = w
         .page
         .as_deref()
-        .map_or((None, pages::Readings::default()), Pages::read);
+        .map_or((None, None, pages::Readings::default()), |page| {
+            Pages::read_placed(page, w.issue.as_deref())
+        });
     ctx.corrected
         .borrow_mut()
         .extend(readings.made().map(|how| ("page", how)));
-    let volume = label(&ctx, "volume", w.volume.as_deref(), LevelKind::Volume);
-    let issue = label(&ctx, "issue", w.issue.as_deref(), LevelKind::Issue);
+    let volume = counted(
+        &ctx,
+        "volume",
+        w.volume
+            .as_deref()
+            .map(|v| Label::read(v, LevelKind::Volume)),
+    );
+    let issue = counted(
+        &ctx,
+        "issue",
+        w.issue
+            .as_deref()
+            .map(|i| Label::read_issue(i, volume.as_ref())),
+    );
     let (issue_published_print, issue_published_online) = match &w.journal_issue {
         None => (None, None),
         Some(issue) => (
@@ -1354,6 +1373,7 @@ pub fn normalize<'n, K: Sink<'n, Crossref>>(w: &'n Native<'_>, emit: &mut K) -> 
         volume,
         issue,
         pages,
+        level_in_pages,
         article_number: w.article_number.as_deref(),
         part_number: w.part_number.as_deref(),
         version: w.version.as_ref().map(|v| &*v.version),

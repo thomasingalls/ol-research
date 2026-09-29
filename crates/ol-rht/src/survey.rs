@@ -466,6 +466,7 @@ impl PartOne {
             None => "none",
             Some(Pages::Read(_)) => "read",
             Some(Pages::Kept { .. }) => "kept as written",
+            Some(Pages::Named(_)) => "named",
         };
         *c.pagination.entry(how).or_default() += 1;
         if let Some(pages) = &rendered {

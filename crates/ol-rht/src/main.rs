@@ -5340,6 +5340,8 @@ struct PageCounts {
     how: BTreeMap<&'static str, u64>,
     kept: BTreeMap<String, u64>,
     examples: BTreeMap<String, Vec<String>>,
+    /// Named pages (`IFC`), in lower case.
+    named: Names,
 }
 
 impl PageCounts {
@@ -5360,6 +5362,11 @@ impl PageCounts {
                 if examples.len() < Self::EXAMPLES {
                     examples.push(format!("{} {raw:?}", who()));
                 }
+            }
+            Some(Pages::Named(name)) => {
+                *self.how.entry("named").or_default() += 1;
+                self.named
+                    .see(name.to_lowercase(), || format!("{} {name:?}", who()));
             }
         }
     }
@@ -5382,6 +5389,7 @@ impl PageCounts {
                 kept.len() - Self::SHOWN
             );
         }
+        self.named.report("named", Self::SHOWN);
     }
 }
 
@@ -5389,6 +5397,7 @@ impl Absorb for PageCounts {
     fn absorb(&mut self, other: Self) {
         self.how.absorb(other.how);
         self.kept.absorb(other.kept);
+        self.named.absorb(other.named);
         for (shape, examples) in other.examples {
             let mine = self.examples.entry(shape).or_default();
             for e in examples {
@@ -5411,9 +5420,42 @@ struct LabelCounts {
     read: BTreeMap<String, (u64, Vec<String>)>,
     /// By shape, with examples.
     kept: BTreeMap<String, (u64, Vec<String>)>,
-    /// Each run of letters in a plain label, in lower case, with the
-    /// first label it was seen in.
-    words: BTreeMap<String, (u64, String)>,
+    /// Each run of letters in a plain label, in lower case.
+    words: Names,
+    /// The words of labels saying the work awaits its issue, as written.
+    pending: Names,
+}
+
+/// Names counted (words, named pages, pending labels), each with the
+/// first place it was seen.
+#[derive(Debug, Default)]
+struct Names(BTreeMap<String, (u64, String)>);
+
+impl Names {
+    fn see(&mut self, name: String, first: impl FnOnce() -> String) {
+        self.0.entry(name).or_insert_with(|| (0, first())).0 += 1;
+    }
+
+    /// The commonest `shown`, then how many more and how often.
+    fn report(&self, what: &str, shown: usize) {
+        let mut names: Vec<_> = self.0.iter().collect();
+        names.sort_by(|a, b| b.1.0.cmp(&a.1.0).then_with(|| a.0.cmp(b.0)));
+        for (name, (n, first)) in names.iter().take(shown) {
+            eprintln!("    {what} {name:<20} {n:>10}  {first}");
+        }
+        if names.len() > shown {
+            let rest: u64 = names[shown..].iter().map(|w| w.1.0).sum();
+            eprintln!("    {what}, and {} more, {rest} times", names.len() - shown);
+        }
+    }
+}
+
+impl Absorb for Names {
+    fn absorb(&mut self, other: Self) {
+        for (name, (n, first)) in other.0 {
+            self.0.entry(name).or_insert((0, first)).0 += n;
+        }
+    }
 }
 
 impl LabelCounts {
@@ -5437,11 +5479,15 @@ impl LabelCounts {
                 for word in text.split(|c: char| !c.is_alphabetic()) {
                     if !word.is_empty() {
                         self.words
-                            .entry(word.to_lowercase())
-                            .or_insert_with(|| (0, format!("{} {text:?}", who())))
-                            .0 += 1;
+                            .see(word.to_lowercase(), || format!("{} {text:?}", who()));
                     }
                 }
+                return;
+            }
+            Some(Label::Pending(text)) => {
+                *self.how.entry("pending").or_default() += 1;
+                self.pending
+                    .see((*text).to_owned(), || format!("{} {text:?}", who()));
                 return;
             }
             Some(read @ Label::Read(_)) => {
@@ -5481,18 +5527,8 @@ impl LabelCounts {
                 );
             }
         }
-        let mut words: Vec<_> = self.words.iter().collect();
-        words.sort_by(|a, b| b.1.0.cmp(&a.1.0).then_with(|| a.0.cmp(b.0)));
-        for (word, (n, first)) in words.iter().take(Self::SHOWN) {
-            eprintln!("    word {word:<20} {n:>10}  {first}");
-        }
-        if words.len() > Self::SHOWN {
-            let rest: u64 = words[Self::SHOWN..].iter().map(|w| w.1.0).sum();
-            eprintln!(
-                "    words, and {} more, {rest} times",
-                words.len() - Self::SHOWN
-            );
-        }
+        self.pending.report("pending", Self::SHOWN);
+        self.words.report("word", Self::SHOWN);
     }
 }
 
@@ -5514,9 +5550,8 @@ impl Absorb for LabelCounts {
                 e.extend(examples.into_iter().take(room));
             }
         }
-        for (word, (n, first)) in other.words {
-            self.words.entry(word).or_insert((0, first)).0 += n;
-        }
+        self.words.absorb(other.words);
+        self.pending.absorb(other.pending);
     }
 }
 

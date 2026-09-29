@@ -21,7 +21,7 @@ use smallvec::SmallVec;
 use std::fmt;
 
 use ingest::Sink;
-use model::label::{Label, LevelKind};
+use model::label::{self, Label, Level, LevelKind};
 use model::pages::{self, Pages};
 use model::{
     Claim, Date, DateError, Day, Doi, DoiError, Interned, Issn, IssnError, Lang, LangError,
@@ -364,10 +364,13 @@ pub struct Journal<'n> {
     pub cited_medium: CitedMedium,
     /// `JournalIssue/Volume`, read (model 13; citation fields plan D12):
     /// as written, with a supplement, a part or a special issue written
-    /// into it read out (`20 Suppl 2`). `None` for none, or a placeholder.
+    /// into it read out (`20 Suppl 2`), or words saying the work awaits
+    /// its issue (`ahead-of-print`, IEEE's `PP`). `None` for none, or a
+    /// placeholder.
     #[serde(borrow)]
     pub volume: Option<Label<'n>>,
-    /// `JournalIssue/Issue`, read as the volume is (`2 Pt 1`, `Suppl`).
+    /// `JournalIssue/Issue`, read as the volume is (`2 Pt 1`, `Suppl`),
+    /// beside it: IEEE's `99` beside `PP` awaits its issue too.
     #[serde(borrow)]
     pub issue: Option<Label<'n>>,
     /// `Pagination`, read (model 13; citation fields plan D8): `StartPage`
@@ -375,6 +378,10 @@ pub struct Journal<'n> {
     /// written whole. `None` for none, or a placeholder (`UNKNOWN`).
     #[serde(borrow)]
     pub pages: Option<Pages<'n>>,
+    /// A supplement `MedlinePgn` writes before its pages: `4` of
+    /// `suppl 4:176-80` (model 13).
+    #[serde(borrow)]
+    pub level_in_pages: Option<Level<'n>>,
 }
 
 /// An ISSN with its type.
@@ -1574,29 +1581,34 @@ fn journal<'n>(ctx: &Ctx, c: &'n MedlineCitation<'_>) -> Journal<'n> {
         kind: i.issn_type,
         issn: Claim::from_parse(&i.value, Issn::parse(&i.value)),
     });
-    let (pages, readings) = match c.article.pagination.as_ref() {
-        None => (None, pages::Readings::default()),
+    let issue_text = j.journal_issue.issue.as_deref();
+    let (level_in_pages, pages, readings) = match c.article.pagination.as_ref() {
+        None => (None, None, pages::Readings::default()),
         Some(NativePagination::Pages {
             start_page,
             end_page,
             ..
-        }) => Pages::from_parts(start_page, end_page.as_deref()),
-        Some(NativePagination::MedlinePgn(p)) => Pages::read(p),
+        }) => {
+            let (pages, readings) = Pages::from_parts(start_page, end_page.as_deref());
+            (None, pages, readings)
+        }
+        Some(NativePagination::MedlinePgn(p)) => Pages::read_placed(p, issue_text),
     };
     ctx.corrected
         .borrow_mut()
         .extend(readings.made().map(|how| ("Pagination", how)));
-    let volume = label(
+    let volume = counted(
         ctx,
         "Volume",
-        j.journal_issue.volume.as_deref(),
-        LevelKind::Volume,
+        j.journal_issue
+            .volume
+            .as_deref()
+            .map(|v| Label::read(v, LevelKind::Volume)),
     );
-    let issue = label(
+    let issue = counted(
         ctx,
         "Issue",
-        j.journal_issue.issue.as_deref(),
-        LevelKind::Issue,
+        issue_text.map(|i| Label::read_issue(i, volume.as_ref())),
     );
     Journal {
         title: j.title.as_deref().map(Interned::Text),
@@ -1614,18 +1626,18 @@ fn journal<'n>(ctx: &Ctx, c: &'n MedlineCitation<'_>) -> Journal<'n> {
         volume,
         issue,
         pages,
+        level_in_pages,
     }
 }
 
 /// A volume or an issue field, read (plan D12), what the reading supposed
 /// counted under the element's name.
-fn label<'n>(
+fn counted<'n>(
     ctx: &Ctx,
     element: &'static str,
-    field: Option<&'n str>,
-    own: LevelKind,
+    read: Option<(Option<Label<'n>>, label::Readings)>,
 ) -> Option<Label<'n>> {
-    let (label, readings) = Label::read(field?, own);
+    let (label, readings) = read?;
     ctx.corrected
         .borrow_mut()
         .extend(readings.made().map(|how| (element, how)));

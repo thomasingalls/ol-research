@@ -194,9 +194,16 @@
 /// are read ([`label`], the plan's D12): text as written, with a
 /// supplement, a part, a special issue or a series written into it read
 /// out as a level of its own (`20 Suppl 2` is volume 20, supplement 2;
-/// `s2-XI` is series 2, volume XI); a marker in a shape not read is kept
-/// as written and counted. One list of placeholders (`UNKNOWN`, `&NA;`,
-/// `Online first`) reads as no value in pages, volumes and issues alike.
+/// `s2-XI` is series 2, volume XI; `Vol. 19, N° 1-2` is volume 19, issue
+/// 1-2; `Laryngol Sect` is a section); a marker in a shape not read is
+/// kept as written and counted. One list of placeholders (`UNKNOWN`,
+/// `&NA;`, `None`, `n/a`, `null`) reads as no value in pages, volumes and
+/// issues alike; words saying the work awaits its issue (`ahead-of-print`,
+/// IEEE's `PP`, `Online first`) are kept as that, not as a label. A page
+/// the source names (`IFC`) is kept as named; a supplement written before
+/// NLM's pages (`suppl 4:176-80`) is a level of its own. The second pass
+/// of both grammars answers the whole files' surveys at 13
+/// (`ol-rht-survey-crossref-v5`, `ol-rht-survey-baseline-v9`).
 /// Output under version 12 is rebuilt, not patched.
 pub const VERSION: u32 = 13;
 

@@ -2287,6 +2287,20 @@ cross-IDs and a second edge namespace early.
   volume, join PubMed's `UNKNOWN` in one list read as no value wherever
   a placement field holds one. A reference's volume and issue stay as
   written.
+- 2026-09-29, the second pass of model 13's page and label grammars (the
+  user, on `ol-rht-survey-crossref-v5` and `ol-rht-survey-baseline-v9`,
+  which failed no record). `None`, `n/a` and `null` join the
+  placeholders. Words saying the work awaits its issue are a kind of
+  their own, kept as written: `ahead-of-print`; IEEE's `PP`, and its
+  issue `99` beside it, often stale; and `Online first` and
+  `Forthcoming`, which move out of the placeholders. A level's own name
+  is a marker (`Vol. 47`, `n° 93`; a number sign names the field's own
+  level, or the issue after a volume), and so are `sup`, `sp`, `spe`,
+  `si`, `Especial`, `Numéro spécial` and a journal's section. A page the
+  source names (`IFC`) is kept as named; `36.1-37` is an item on page 36
+  to page 37; `1098+` keeps its first page; a page count is no pages;
+  J-STAGE's issue before its pages is dropped where it is the record's
+  own; and a supplement before NLM's pages is read out as a level.
 
 ## 11. Dependencies
 
