@@ -187,7 +187,9 @@ user's (serving plan §11 item 11), and this plan is its analysis part.
   against (a) — the measurement decides between them.*
 - **D3. The length cap.** Raise it to what the longest real terms need,
   as the census finds them (T0), with the engine's own limit the only
-  ceiling. *Recommended.*
+  ceiling. *Recommended.* **Taken, after T0**: no cap on titles or
+  abstracts, the engine's own limit the only ceiling — the cap counted
+  bytes and dropped ordinary Russian and Greek words (§3.1).
 - **D4. Compatibility forms and accents.** Unicode normalization (NFKC:
   full-width to plain, ligatures apart, superscripts to digits) and
   folding of diacritics (`é` to `e`), in the index and the query alike.
@@ -199,7 +201,10 @@ user's (serving plan §11 item 11), and this plan is its analysis part.
   letters or digits (`TNF-α`, `δ13C`, `β-lactamase`) also yields its name
   (`alpha`, `delta`, `beta`); a run of Greek text — a Greek-language
   title — stays Greek, since spelling out its letters would destroy it.
-  *Recommended.*
+  *Recommended.* **Mu in units, taken after T0**: mu or the micro sign
+  joined to letters or digits (`µg`, `μM`, 1.2 million works) also
+  yields its `u` form (`ug`, `um`), as units are typed without the Greek
+  letter; mu alone yields `mu` like any other letter.
 - **D6. Hyphens and joins.** A word split at a hyphen or between letters
   and digits yields its parts and the joined whole (`IL-6` gives `il`,
   `6` and `il6`; `TNF-α` gives `tnfα` beside the rest), positioned so a
@@ -214,7 +219,14 @@ user's (serving plan §11 item 11), and this plan is its analysis part.
   cannot outrank an exact match (idea 4), and by each work's language —
   an English stemmer for English, Snowball's for the languages it has —
   which the merged record already carries. *Recommended: after D2–D6, as
-  its own treatment.*
+  its own treatment.* **Changed after T0**: English stemming joins T2's
+  screen as one more switch, since the miss analysis gives it the
+  largest ceiling on the English sets (§3.2); the other languages'
+  stemmers stay T3. And the merged record's language cannot choose the
+  texts — a third of works have none, and some have the wrong one
+  (§3.1) — so D13 identifies them. Which English stemmer, what it leaves
+  alone, and how collisions are counted before a rebuild: a survey under
+  way (2026-09-29), then candidates screened as levels of this factor.
 - **D9. No stop list.** IDF already discounts `the`; a list turns
   `vitamin A` into `vitamin` (text analysis §3). *Recommended.*
 - **D10. The reviewed variant table** (ideas 2 and 3): spelling variants
@@ -233,6 +245,22 @@ user's (serving plan §11 item 11), and this plan is its analysis part.
   `myocardial infarction`, `MI`: they depend on context and belong to the
   query, not the index (idea 6) — a query-time change, cheap to test
   (evaluation plan §14.1), its own plan after this one.
+- **D13. Which language a text is in** (added after T0). Identified per
+  text — a title and an abstract apart, since a work can have an English
+  title and an abstract in another language — when the lexical index is
+  built, not in the model or the merge: it is analysis, and it changes
+  the search version alone. Each text gets a language and a confidence;
+  below a floor it gets no stemmed form and searches as it does today, so
+  a wrong or unsure call costs only the stemmed field. The detector:
+  lingua-rs, provisionally, pending a survey of what exists (2026-09-29:
+  the Rust crates, the fastText-derived models and whatever has overtaken
+  them), judged on accuracy on short academic titles, the languages
+  covered, the licence of code and model, speed and memory on the box, and
+  pure Rust against a C++ build dependency. Its key, independent of any
+  detector and of the records' tags: PubMed's titles, which NLM
+  translates into English, beside their original-language titles
+  (`VernacularTitle`, kept in the normalized layer), tagged by NLM's
+  indexers; and a hand-checked sample of Crossref's titles by script.
 
 ## 5. Order
 
@@ -263,17 +291,19 @@ user's (serving plan §11 item 11), and this plan is its analysis part.
   the mapping's description naming it (every report prints it); a
   lexical index built beside the epoch's and never published; `evaluate
   run` pointed at it; the screening index and sampled suites of
-  evaluation plan §14 (its E6). Tests: generated text for the analyzer's
-  own properties (any text: normalization done twice changes nothing,
-  the query side and the index side agree, no term past the cap, text
-  with letters never yields no terms), and real titles in each script as
-  fixed cases.
-- **T2. The first treatment: D2 to D6**, each a switch, screened by a
-  fractional factorial design on the screening index against a sample of
-  RELISH's working half (§14.4), the survivors rebuilt over the corpus and
-  ablated, confirmed on the whole working halves; D11's checks for the
-  scripts no set measures.
-- **T3. Stemming as a second field (D8)**, the same way.
+  evaluation plan §14 (its E6); the language detector (D13), measured
+  against its key before it chooses anything, and the English stemmed
+  field (D8). Tests: generated text for the analyzer's own properties
+  (any text: normalization done twice changes nothing, the query side and
+  the index side agree, text with letters never yields no terms), and
+  real titles in each script as fixed cases.
+- **T2. The first treatment: D2 to D6 and English stemming (D8)**, each
+  a switch, screened by a fractional factorial design on the screening
+  index against a sample of RELISH's working half (§14.4), the survivors
+  rebuilt over the corpus and ablated, confirmed on the whole working
+  halves; D11's checks for the scripts no set measures.
+- **T3. Stemming for the other languages (D8)**, by D13's languages, the
+  same way.
 - **T4. The variant table (D10)**, if T0 and T3 leave it enough to reach.
 - **T5. Publish.** What is kept becomes the mapping: a new search version,
   a new epoch; the test halves and the held-out sets read at that
@@ -337,8 +367,7 @@ Made in T0:
 4. **Mu in units.** The micro sign and mu joined to letters (`µg`,
    `μmol`) are units far more often than the letter, and D5 as written
    would make `µg` into `mug`. Found building T0; over epoch 7, 2,491,175
-   such runs in 1,215,954 works (§3.1). The choices: `u` beside it (`ug`,
-   `um`, as units are typed without the letter), `micro`, or nothing.
+   such runs in 1,215,954 works (§3.1). Settled: the `u` form (D5).
 5. **Found by T0, outside this plan.** 8,907,022 works (4.7%) have no
    title or abstract with a letter or digit, findable by authors and
    venue alone. And 57,414 works are tagged Ndonga (`ndo`), with text
@@ -356,3 +385,12 @@ Made in T0:
   that tries dictionary word breaking against bigrams for Chinese,
   Japanese and Korean. T0 started the same day; its commands built and
   run on a sample store the same day, the box's run prepared (§5).
+- **2026-09-29, after T0** (§3.1, §3.2). The user: "ok to drop length
+  limit on titles", then "yes drop the limit on abstracts too" — D3, no
+  cap. D5's `u` form for mu in units: "yes". D8: "ok to add stemming for
+  english", into T2's screen; the user asked what exactly English
+  stemming will be, and how English is told — D13 added, lingua-rs
+  provisionally "pending the outcome of a survey of what's out there
+  today, particularly in rust, but also what exactly fastText
+  derivatives are up to these days/if their crown has been taken by
+  another method". Both surveys (detectors, English stemming) under way.
