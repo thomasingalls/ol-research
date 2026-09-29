@@ -251,6 +251,18 @@ it and failed silently — the patch brings its own tests, so `go test` passes
 on unpatched source too. The runbook now derives its paths and greps the
 source before building.
 
+**Build settings** (2026-09-29). The Linux x86-64 build targets
+`x86-64-v3` (`.cargo/config.toml`), so the compiler may use AVX2, BMI2,
+FMA and POPCNT throughout, where Rust's default target is the 2003
+baseline. The tower's AMD Ryzen 7 PRO 5755G (8 cores, 16 threads) has
+all of them, read with `talosctl read /proc/cpuinfo`; every machine that
+runs the image must (§12). Thin link-time optimisation was measured and
+not taken: on the M1 Pro, with and without it, the dev store's rebuild
+and a ten-core parse came within two percent of each other, while it
+added build time and 2–4 MB of binary. The same measurements found a
+larger cost than any build setting, the allocation counters every core
+shared (ingestion plan §10, 2026-09-29).
+
 The web UI is a separate build and waits for the exposure plan (§7).
 
 ## 3. The store on the box
@@ -584,6 +596,13 @@ image.
 - 2026-09-23, D1 done (§2). Measured on the way: the build fits the
   namespace's limits with room, and the Jammy build image compiles the
   workspace's C dependencies.
+- 2026-09-29, build settings (§2). The user took `x86-64-v3` for the
+  image once the tower's CPU was read — it had to come first, since Flux
+  rolls every `main` image onto the server — and the per-thread counting
+  (ingestion plan §10). Thin LTO was measured and dropped. Profile-guided
+  optimisation is left out for now (the user): a profile fits only the
+  compiler, target and profile it was recorded with, so it would be
+  trained in the pipeline, on the tower, at every build.
 
 ## 10. Open items
 
@@ -624,3 +643,22 @@ Not goals for now; recorded so they are not lost.
   is construction, not scanning: what is absent cannot be exploited, and
   Trivy only reports what is already there. The first deployment keeps
   the Jammy base for its shell.
+
+## 12. What we are compromising on
+
+Kept as we go, at the user's request (2026-09-26: "so long as we're
+keeping track of what we're compromising on in documentation as we
+go"). Each line: the compromise, what it costs, what would lift it.
+
+1. **The image needs an x86-64-v3 CPU** (2026-09-29, §2). A machine
+   without AVX2, BMI2 and FMA cannot start either binary: an illegal
+   instruction before `main`. A spare swapped in for the tower must have
+   them; ask one with `/lib64/ld-linux-x86-64.so.2 --help | grep
+   x86-64-v3` in a Jammy container. On the tower itself a wrong image
+   would stall the rollout rather than stop the server
+   (`maxUnavailable: 0` and the readiness probe). Lifted by building for
+   the baseline again, one line of `.cargo/config.toml`.
+2. **Build settings measured on the laptop, not the box** (§2): an M1
+   Pro under macOS, neither x86-64 nor glibc, and `x86-64-v3` not
+   measured at all. Lifted by a pair of Jobs on the tower, one image
+   against the other, on the same input.
