@@ -14,6 +14,7 @@
 //! is one function that exercises the pipeline and says so, and every
 //! report prints what it did.
 
+pub mod analysis;
 pub mod error;
 pub mod index;
 pub mod report;
