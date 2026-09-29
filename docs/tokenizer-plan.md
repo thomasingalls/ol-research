@@ -83,6 +83,87 @@ So whole languages — Chinese, Japanese, Thai — are close to unsearchable
 today. How many works that is in epoch 7 is the first thing to count
 (§5, T0), not a figure guessed here.
 
+### 3.1 Over epoch 7 (T0's census, 2026-09-29)
+
+`survey analysis` over epoch 7: 192,227,584 rows, 188,718,279 held works
+with text, their titles and abstracts (Job `ol-rht-tokenizer-t0-v1`;
+report under `evaluation/tokenizer/t0/` on the bulk claim).
+
+**I1, by the title's script** — the language a record gives does not
+say (125,036 works tagged English have titles that yield no terms, most
+of them in Han), so the script does:
+
+| title's script | works | title yields no terms | no title or abstract term at all |
+|---|---|---|---|
+| Han | 367,592 | 183,632 (50.0%) | 141,719 (38.6%) |
+| Katakana | 16,748 | 4,551 (27.2%) | 4,429 |
+| Hiragana | 5,964 | 1,516 (25.4%) | 1,392 |
+| Thai | 71,972 | 4,289 (6.0%) | 1,351 |
+| Latin | 177,547,855 | 1,057 | 947 |
+| Cyrillic | 855,709 | 212 | 81 |
+
+In all, 195,280 titles yield no terms (0.109% of titled works) and
+149,935 works have no term from title or abstract. And where a run of
+those scripts is under the cap it is indexed whole, a clause as one term,
+findable only by the whole clause:
+
+| script | runs | one term each | dropped by the cap | mean characters |
+|---|---|---|---|---|
+| Han | 1,718,223 | 1,045,525 | 672,698 | 11.9 |
+| Thai | 10,071,750 | 8,109,615 | 1,962,135 | 8.5 |
+| Katakana | 42,722 | 30,251 | 12,471 | 11.4 |
+| Hiragana | 39,135 | 25,308 | 13,827 | 12.3 |
+| Lao | 35,058 | 30,069 | 4,989 | 7.0 |
+| Myanmar | 12,092 | 11,712 | 380 | 4.9 |
+| Khmer | 1,312 | 1,260 | 52 | 4.7 |
+
+**I5 and D3, the cap.** It counts bytes, so it bites scripts of two bytes
+a letter at 20 letters: 151,879 Cyrillic runs dropped, in 74,656 of the
+855,709 Cyrillic-titled works (8.7%), and 13,409 Greek runs (4,953 of
+88,153 Greek-titled works, 5.6%). Of Latin, 1,011,351 runs: at 40 to 63
+bytes real systematic names (`trifluoromethoxycarbonylcyanidephenylhydrazone`),
+at 64 to 127 protein sequences, past that nucleotide sequences, runs of
+accession numbers, hashes, base64, and tables whose spaces were lost.
+
+**I3, how often the spellings occur** (runs, and works with one):
+accented Latin letters 145,482,966 in 14,231,706 works (7.5%);
+compatibility forms (`α₄`, `I²`, `¹H`) 753,062 in 314,708; a Greek letter
+alone 6,962,575 in 2,707,908; other Greek letters joined to letters or
+digits 4,742,227 in 1,592,785; **mu or the micro sign joined (`μg`,
+`μM`) 2,491,175 in 1,215,954** (§8 item 4); Greek words 15,661,327 in
+157,123; pairs joined by a hyphen 347,795,692 in 78,360,362 (41.5%);
+letters beside digits or another script 114,122,440 in 26,708,520
+(14.2%). **I4**: short all-capital words 342,600,727 in 58,483,244 works
+(31.0%).
+
+### 3.2 What it cost the first measurement (T0's miss analysis)
+
+`evaluate misses` over the working sets and the baseline's runs (the
+restricted runs here; the open ones agree within a point). A pair is a
+query and a relevant work the run missed; *gaining* means the work's text
+would hold at least one more of the query's words under the change — a
+ceiling, not a gain (§7 item 4).
+
+| change | TREC PM 2019, missed pairs gaining | RELISH, missed pairs gaining | judged not relevant in the top 10, gaining (TREC / RELISH) |
+|---|---|---|---|
+| English stem (D8) | 12.0% | 51.4% | 2.9% / 27.6% |
+| joins (D6) | 6.6% | 2.5% | 0% / 1.3% |
+| Greek names (D5) | 0% | 0.4% | 0% / 0% |
+| folding (D4) | 0% | 0.1% | 0% / 0% |
+| cap lifted (D3) | 0% | 0% | 0% / 0% |
+| all of them | 17.3% | 52.9% | 2.9% / 28.6% |
+
+Over 2,790 TREC pairs and 34,288 RELISH pairs. Stemming is the one large
+lever on English, and it gains in the relevant works missed four times
+(TREC) and twice (RELISH) as often as in the wrong works found. Folding,
+Greek names and the cap barely touch English biomedical queries; their
+case is §3.1's. What no change of form reaches — 83% of TREC's missed
+pairs, 47% of RELISH's — is, for TREC, mutation codes the relevant works
+do not write (`D770N`, `G12V`), other names (`cholangiocarcinoma`),
+`burden` (the works' `TMB`) and `tumor` beside `tumour` (D10, D12); for
+RELISH, the title's own filler (`from`, `analysis`, `novel`), the title
+as query (evaluation plan §12).
+
 ## 4. Decisions
 
 Recommendations; the user's to take or change. The indexing policy is the
@@ -203,9 +284,12 @@ user's (serving plan §11 item 11), and this plan is its analysis part.
 Measured so far: a search pass over the evaluation suites, 4 to 29 seconds
 for a TREC year and about an hour for RELISH's two runs (evaluation plan
 §13.5); epoch 7's whole publish, 4 hours 29 minutes, of which the lexical
-index is a part. Not yet measured, and measured in T1: the lexical index
-built alone over epoch 7, its size on the serving claim, and a treatment
-index's size beside it.
+index is a part. T0 on the box: the census 667 seconds over epoch 7's
+192 million rows (a reader and four threads, 438 MiB at its peak, the
+artifact mapped); the miss analysis 4 seconds a TREC run, 49 a RELISH
+run. Not yet measured, and measured in T1: the lexical index built alone
+over epoch 7, its size on the serving claim, and a treatment index's size
+beside it.
 
 ## 7. What it compromises
 
@@ -252,10 +336,17 @@ Made in T0:
    change not kept is dead weight; the plan's record of it is enough.
 4. **Mu in units.** The micro sign and mu joined to letters (`µg`,
    `μmol`) are units far more often than the letter, and D5 as written
-   would make `µg` into `mug`. Found building T0: on the sample store,
-   7,333 such runs in 3,515 of 110,469 works. The census counts them
-   apart from the other Greek letters; D5 decides on epoch 7's numbers —
-   `micro`, the name only when alone, or nothing.
+   would make `µg` into `mug`. Found building T0; over epoch 7, 2,491,175
+   such runs in 1,215,954 works (§3.1). The choices: `u` beside it (`ug`,
+   `um`, as units are typed without the letter), `micro`, or nothing.
+5. **Found by T0, outside this plan.** 8,907,022 works (4.7%) have no
+   title or abstract with a letter or digit, findable by authors and
+   venue alone. And 57,414 works are tagged Ndonga (`ndo`), with text
+   that reads as English; `ng` is Ndonga's two-letter code and also
+   Nigeria's country code, so a country read as a language is likely,
+   not yet checked against the records. Kanuri (`kr`, Korea's country
+   code) and Zhuang (`za`, South Africa's) are tagged on a few works too.
+   Both are the model's and the merge's to look at.
 
 ## 9. Decision log
 
