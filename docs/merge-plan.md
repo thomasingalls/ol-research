@@ -1482,6 +1482,16 @@ stays.
   merge version. What `parse` should write in those three places is a
   model question (ingestion plan §8 item 11).
 
+- 2026-09-29, the report counts the names a complete run drops. The
+  merge dropped the names its registry mapped and no work had any more
+  (`Registry::drop_unseen`) after assigning ids, and counted them apart
+  from the assignment, so the journal said 14,330 and the report's
+  registry line said 0 on the first merge of record with Crossref. They
+  are the assignment's `dropped` now, as `Registry::assign` already
+  counted them, and the report, the journal and the survey say one
+  number (on the laptop: a store merged again without Crossref's sets
+  reports and journals 255,221 alike).
+
 ## 11. Open items
 
 1. **Lineage.** The grouping id for a work's versions, with the OpenAlex

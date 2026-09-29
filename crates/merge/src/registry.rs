@@ -280,7 +280,8 @@ pub struct Assignment {
     pub split: u64,
     /// Names attached to an existing id.
     pub attached: u64,
-    #[allow(missing_docs)]
+    /// Names the registry mapped that no work of a complete run has any
+    /// more, dropped from it at the end ([`Registry::drop_unseen`]).
     pub dropped: u64,
     /// The first merges, for the report (merge plan §11 item 27): the id
     /// retired, the id it went into, and the work given that id, by its

@@ -1373,7 +1373,6 @@ struct Assigned {
     stub_works: merge::identity::StubWorks,
     /// The first merges and splits, written out for the report.
     changes: Vec<String>,
-    dropped: u64,
     /// `None` on a partial run.
     pending: Option<merge::registry::Pending>,
     totals: Totals,
@@ -1454,7 +1453,7 @@ fn merge_assign(
     let at = ingest::time::now();
     let mut stager = merge_stager(what, path, complete)?;
     let mut computed = 0u64;
-    let (assignment, dropped) = {
+    let (mut assignment, dropped) = {
         let mut emit = |line: merge::registry::Line| -> io::Result<()> {
             computed += 1;
             stager.as_mut().map_or(Ok(()), |s| s.push(&line))
@@ -1481,6 +1480,9 @@ fn merge_assign(
     };
     debug_assert_eq!(works.len(), order.len() + stub_works.len());
     drop(works);
+    // Counted with the assignment's own, as `Registry::assign` counts them,
+    // so that the report, the journal and the batch say one number.
+    assignment.dropped += dropped;
     let changes = merge_changes(res, &order, &stub_works, &assignment);
     let pending = merge_staged(what, path, stager, computed)?;
     let (held_ids, stub_ids) = assignment.ids.split_at(order.len());
@@ -1500,7 +1502,6 @@ fn merge_assign(
         assignment,
         stub_works,
         changes,
-        dropped,
         pending,
         totals,
     })
@@ -1804,7 +1805,6 @@ fn merge_all(opts: &Options, public_key: Option<&Path>) -> ExitCode {
         assignment,
         stub_works,
         changes: _,
-        dropped,
         pending,
         totals,
     } = assigned;
@@ -1812,7 +1812,7 @@ fn merge_all(opts: &Options, public_key: Option<&Path>) -> ExitCode {
         minted: assignment.minted,
         merged: assignment.merged,
         split: assignment.split,
-        dropped,
+        dropped: assignment.dropped,
     };
     eprintln!(
         "{what}: identity and registry done in {:.1} s; {}",
