@@ -103,7 +103,7 @@ impl Readings {
 
 /// Every Unicode dash (general category Pd) but `-` itself, and the minus
 /// sign: each read as `-` in a suffix.
-const DASHES: [char; 25] = [
+pub(crate) const DASHES: [char; 25] = [
     '\u{058A}', '\u{05BE}', '\u{1400}', '\u{1806}', '\u{2010}', '\u{2011}', '\u{2012}', '\u{2013}',
     '\u{2014}', '\u{2015}', '\u{2E17}', '\u{2E1A}', '\u{2E3A}', '\u{2E3B}', '\u{2E40}', '\u{2E5D}',
     '\u{301C}', '\u{3030}', '\u{30A0}', '\u{FE31}', '\u{FE32}', '\u{FE58}', '\u{FE63}', '\u{FF0D}',

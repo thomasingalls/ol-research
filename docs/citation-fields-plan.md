@@ -632,7 +632,14 @@ which are recorded beside each.
   the works sets grow 0.1%, and both harnesses read 0 differences on a
   v13 copy of their store.
 - Pages are read in each source, by D8's grammar, with its readings
-  (`???`, the placeholders) counted.
+  (`???`, the placeholders) counted. *Built 2026-09-29, off main*
+  (`model::pages`): any Unicode dash between pages reads as a range dash
+  too, counted, as a DOI's dashes are (the general fix for PMID
+  30934041's `708–718`). On the laptop's PubMed files 86,756 page fields
+  read and 46 were kept, and on the Crossref sample 4,531 read and 2
+  kept. Nearly all the kept were `na` (40) and `IFC` (2, inside front
+  cover), words whose reading the whole files' surveys at 13 are to
+  settle. Both harnesses read 0 differences.
 - Labels' markers are read (D12).
 - The stats report counts each reading, as DOI readings are counted.
 - Fixtures cover each shape CF0 found, and the warts it showed: `&amp;`

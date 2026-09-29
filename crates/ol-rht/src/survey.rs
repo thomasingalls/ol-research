@@ -30,12 +30,13 @@ use merge::view::bound;
 use merge::{Contributor, Name, SourceId};
 use model::Pmid;
 use model::date::{Bound, Year};
+use model::pages::Pages;
 use source_crossref::Crossref;
 use source_crossref::normalize::Work as CrossrefWork;
 use source_crossref::vocab::{SerialKind, WorkType};
 use source_pubmed::Pubmed;
 use source_pubmed::attr::PubModel;
-use source_pubmed::normalize::{Citation, Pagination, Published};
+use source_pubmed::normalize::{Citation, Published};
 
 use super::{Options, Sets};
 
@@ -169,7 +170,7 @@ fn each<S: Contributor>(
 /// A value's shape: each run of digits `9`, of letters `a`, of spaces one
 /// space, anything else as itself. `123-9` is `9-9`, `S12-S15` `a9-a9`,
 /// `iii-xiv` `a-a`.
-fn signature(value: &str, out: &mut String) {
+pub(crate) fn signature(value: &str, out: &mut String) {
     out.clear();
     let mut last = None;
     let mut len = 0;
@@ -339,15 +340,6 @@ fn range(s: &str) -> Range {
     }
 }
 
-/// What comes before the first hyphen: the first page the disagreement
-/// rule and the matching stage use (draft 1, D8).
-fn first_page(pages: &str) -> &str {
-    pages
-        .split_once('-')
-        .map_or(pages, |(first, _)| first)
-        .trim()
-}
-
 // --- dates -------------------------------------------------------------------
 
 /// A PubMed record's online date, at the day it gives.
@@ -422,16 +414,12 @@ struct PubmedCounts {
     records: u64,
     volume: Shapes,
     issue: Shapes,
-    start: Shapes,
-    end: Shapes,
-    medline: Shapes,
-    /// Which parts of `Pagination` a record gives.
+    /// The pages as model 13 reads them, rendered.
+    pages: Shapes,
+    /// Read, kept as written, or none.
     pagination: BTreeMap<&'static str, u64>,
-    /// `StartPage-EndPage` and `MedlinePgn`, by kind.
+    /// The rendered pages, by kind.
     ranges: BTreeMap<(&'static str, Range), Seen>,
-    /// A record giving all three: whether `MedlinePgn`, expanded, is the
-    /// other two. NLM's two spellings of one range.
-    medline_agrees: BTreeMap<&'static str, Seen>,
     /// By `PubModel`: the issue's date read or kept, and the online date
     /// against it.
     dates: BTreeMap<(&'static str, &'static str), u64>,
@@ -468,57 +456,19 @@ impl PartOne {
         c.records += 1;
         c.volume.see(w.journal.volume, &who, buf);
         c.issue.see(w.journal.issue, &who, buf);
-        let (start, end, medline) = match &w.journal.pagination {
-            None => (None, None, None),
-            Some(Pagination::Pages {
-                start,
-                end,
-                medline,
-            }) => (Some(*start), *end, *medline),
-            Some(Pagination::Medline(m)) => (None, None, Some(*m)),
+        let rendered = w.journal.pages.as_ref().map(ToString::to_string);
+        c.pages.see(rendered.as_deref(), &who, buf);
+        let how = match &w.journal.pages {
+            None => "none",
+            Some(Pages::Read(_)) => "read",
+            Some(Pages::Kept { .. }) => "kept as written",
         };
-        c.start.see(start, &who, buf);
-        c.end.see(end, &who, buf);
-        c.medline.see(medline, &who, buf);
-        let parts = match (start.is_some(), end.is_some(), medline.is_some()) {
-            (false, false, false) => "no Pagination (an ELocationID alone)",
-            (true, false, false) => "StartPage",
-            (true, true, false) => "StartPage, EndPage",
-            (true, false, true) => "StartPage, MedlinePgn",
-            (true, true, true) => "StartPage, EndPage, MedlinePgn",
-            (false, _, true) => "MedlinePgn",
-            (false, true, false) => "EndPage alone",
-        };
-        *c.pagination.entry(parts).or_default() += 1;
-        if let (Some(s), Some(e)) = (start, end) {
-            let written = format!("{s}-{e}");
+        *c.pagination.entry(how).or_default() += 1;
+        if let Some(pages) = &rendered {
             c.ranges
-                .entry(("StartPage-EndPage", range(&written)))
+                .entry(("pages", range(pages)))
                 .or_default()
-                .see(|| format!("{} {written:?}", who()));
-        }
-        if let Some(m) = medline {
-            c.ranges
-                .entry(("MedlinePgn", range(m)))
-                .or_default()
-                .see(|| format!("{} {m:?}", who()));
-        }
-        if let (Some(s), Some(e), Some(m)) = (start, end, medline) {
-            let verdict = match digit_range(m) {
-                None => "MedlinePgn is not a digit range",
-                Some((a, b)) => {
-                    let whole = expanded(a, b).unwrap_or_else(|| b.to_owned());
-                    if a == s.trim() && whole == e.trim() {
-                        "MedlinePgn, expanded, is StartPage-EndPage"
-                    } else {
-                        "MedlinePgn, expanded, differs"
-                    }
-                }
-            };
-            c.medline_agrees
-                .entry(verdict)
-                .or_default()
-                .see(|| format!("{} {s}-{e} against {m:?}", who()));
+                .see(|| format!("{} {pages:?}", who()));
         }
         let model = w.journal.pub_model.token();
         let kept = match w.dates.published {
@@ -545,16 +495,17 @@ impl PartOne {
         c.records += 1;
         c.volume.see(w.volume, &who, buf);
         c.issue.see(w.issue, &who, buf);
-        c.page.see(w.page, &who, buf);
+        let rendered = w.pages.as_ref().map(ToString::to_string);
+        c.page.see(rendered.as_deref(), &who, buf);
         c.article_number.see(w.article_number, &who, buf);
         c.part_number.see(w.part_number, &who, buf);
-        if let Some(page) = w.page {
+        if let Some(page) = &rendered {
             c.ranges
                 .entry(range(page))
                 .or_default()
                 .see(|| format!("{} {page:?}", who()));
         }
-        c.page_and_number += u64::from(w.page.is_some() && w.article_number.is_some());
+        c.page_and_number += u64::from(w.pages.is_some() && w.article_number.is_some());
         let print = w
             .issns
             .iter()
@@ -595,10 +546,8 @@ impl PartOne {
         writeln!(out, "PubMed: {} records", p.records)?;
         p.volume.report(out, "Volume")?;
         p.issue.report(out, "Issue")?;
-        p.start.report(out, "StartPage")?;
-        p.end.report(out, "EndPage")?;
-        p.medline.report(out, "MedlinePgn")?;
-        writeln!(out, "    Pagination, by which parts are given:")?;
+        p.pages.report(out, "pages, as read")?;
+        writeln!(out, "    Pagination: read, kept as written, or none:")?;
         for (parts, n) in &p.pagination {
             writeln!(out, "      {parts:<40} {n:>12}")?;
         }
@@ -608,15 +557,6 @@ impl PartOne {
                 out,
                 "      {field:<18} {:<42} {:>12}  {}",
                 kind.name(),
-                seen.count,
-                seen.examples.join("; ")
-            )?;
-        }
-        writeln!(out, "    StartPage, EndPage and MedlinePgn all given:")?;
-        for (verdict, seen) in &p.medline_agrees {
-            writeln!(
-                out,
-                "      {verdict:<44} {:>12}  {}",
                 seen.count,
                 seen.examples.join("; ")
             )?;
@@ -873,8 +813,7 @@ struct Side {
     volume: Option<Box<str>>,
     issue: Option<Box<str>>,
     first: Option<Box<str>>,
-    /// The range as PubMed writes it: `MedlinePgn`, else
-    /// `StartPage-EndPage`.
+    /// The pages as model 13 reads them, rendered.
     written: Option<Box<str>>,
     issue_date: Bound,
     online: Option<Bound>,
@@ -883,20 +822,9 @@ struct Side {
 
 impl Side {
     fn of(w: &Citation<'_>) -> Self {
-        let (first, written) = match &w.journal.pagination {
-            None => (None, None),
-            Some(Pagination::Pages {
-                start,
-                end,
-                medline,
-            }) => (
-                Some((*start).into()),
-                medline
-                    .map(Into::into)
-                    .or_else(|| end.map(|e| format!("{start}-{e}").into())),
-            ),
-            Some(Pagination::Medline(m)) => (Some(first_page(m).into()), Some((*m).into())),
-        };
+        let pages = w.journal.pages.as_ref();
+        let first = pages.and_then(Pages::first).map(Into::into);
+        let written = pages.map(|p| p.to_string().into());
         Self {
             pmid: w.pmid,
             volume: w.journal.volume.map(Into::into),
@@ -1032,7 +960,8 @@ impl Pairs {
     fn compare(&mut self, p: &Side, w: &CrossrefWork<'_>, venue: Option<SourceId>) {
         *self.by_type.entry(w.kind).or_default() += 1;
         let who = || format!("pmid:{} doi:{}", p.pmid, w.doi);
-        let c_first = w.page.map(first_page);
+        let c_first = w.pages.as_ref().and_then(Pages::first);
+        let c_written = w.pages.as_ref().map(ToString::to_string);
         // In the order of [`FIELDS`].
         let values = [
             (p.volume.as_deref(), w.volume),
@@ -1064,11 +993,11 @@ impl Pairs {
                 c_first.or(w.article_number)
             )
         });
-        let verdict = expansion(p.written.as_deref(), w.page);
+        let verdict = expansion(p.written.as_deref(), c_written.as_deref());
         self.expansion
             .entry(verdict)
             .or_default()
-            .see(|| format!("{} {:?} / {:?}", who(), p.written, w.page));
+            .see(|| format!("{} {:?} / {:?}", who(), p.written, c_written));
         let print = w.published_print.as_ref().map(bound);
         let c_online = w.published_online.as_ref().map(bound);
         let date = |ours: Option<&Bound>, theirs: Option<&Bound>| match (ours, theirs) {
@@ -1251,8 +1180,6 @@ mod tests {
         assert_eq!(expanded("123", "9").as_deref(), Some("129"));
         assert_eq!(expanded("1299", "301").as_deref(), Some("1301"));
         assert_eq!(expanded("123", "129"), None);
-        assert_eq!(first_page("123-9"), "123");
-        assert_eq!(first_page("e0123456"), "e0123456");
     }
 
     #[test]

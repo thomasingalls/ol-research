@@ -15,6 +15,7 @@ use smallvec::SmallVec;
 use std::fmt;
 
 use ingest::Sink;
+use model::pages::{self, Pages};
 use model::{
     Claim, Date, DateError, DateTime, Day, Doi, DoiError, Interned, Isbn, IsbnError, Isni,
     IsniError, Issn, IssnError, Lang, LangError, Month, Orcid, OrcidError, ParseError, PartialDate,
@@ -140,9 +141,11 @@ pub struct Work<'n> {
     #[allow(missing_docs)]
     #[serde(borrow)]
     pub issue: Option<&'n str>,
-    #[allow(missing_docs)]
+    /// `page`, read (model 13; citation fields plan D8): a shortened end
+    /// written whole, an article number written as a range of itself read
+    /// as one, `???` between pages read as a dash.
     #[serde(borrow)]
-    pub page: Option<&'n str>,
+    pub pages: Option<Pages<'n>>,
     #[allow(missing_docs)]
     #[serde(borrow)]
     pub article_number: Option<&'n str>,
@@ -1107,6 +1110,13 @@ pub fn normalize<'n, K: Sink<'n, Crossref>>(w: &'n Native<'_>, emit: &mut K) -> 
     }
     let published_print = ctx.partial("published-print", w.published_print.as_ref())?;
     let published_online = ctx.partial("published-online", w.published_online.as_ref())?;
+    let (pages, readings) = w
+        .page
+        .as_deref()
+        .map_or((None, pages::Readings::default()), Pages::read);
+    ctx.corrected
+        .borrow_mut()
+        .extend(readings.made().map(|how| ("page", how)));
     let (issue_published_print, issue_published_online) = match &w.journal_issue {
         None => (None, None),
         Some(issue) => (
@@ -1322,7 +1332,7 @@ pub fn normalize<'n, K: Sink<'n, Crossref>>(w: &'n Native<'_>, emit: &mut K) -> 
         isbns: book_serials,
         volume: w.volume.as_deref(),
         issue: w.issue.as_deref(),
-        page: w.page.as_deref(),
+        pages,
         article_number: w.article_number.as_deref(),
         part_number: w.part_number.as_deref(),
         version: w.version.as_ref().map(|v| &*v.version),

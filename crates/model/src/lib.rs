@@ -183,9 +183,15 @@
 /// abbreviation; the issue's online date differs from the work's on
 /// 9,409,481, and its print date stands where the work gives none on
 /// 1,669,210 (`ol-rht-survey-crossref-v4`, `ol-rht-dump-crossref-v4`).
-/// Page ranges read at normalization come next, in the same version,
-/// once the plan's survey has shown their shapes. Output under version 12
-/// is rebuilt, not patched.
+/// And a work's pages are read ([`pages`], the plan's D8): PubMed's
+/// `Pagination` and Crossref's `page` become ranges, NLM's shortened end
+/// written whole (`123-9` is 123 to 129, as Crossref writes the same
+/// works' ranges in 98.8% of 12,235,229 cases, `ol-rht-survey-placement-v1`),
+/// with the shapes that survey counted: letters on pages, sub-pages,
+/// roman numerals, labelled lists, hyphenated numbers, any dash, `???`.
+/// What is not read whole is kept as written beside its first page, and
+/// counted by shape, as a `MedlineDate` is. Labels' markers come next.
+/// Output under version 12 is rebuilt, not patched.
 pub const VERSION: u32 = 13;
 
 pub mod claim;
@@ -201,6 +207,7 @@ pub mod issn;
 pub mod lang;
 pub mod mesh;
 pub mod orcid;
+pub mod pages;
 pub mod ror;
 pub mod symbol;
 

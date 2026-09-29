@@ -5331,6 +5331,75 @@ impl Absorb for Vec<String> {
     }
 }
 
+/// Page fields as model 13 reads them (citation fields plan D8): how many
+/// were read, gave none, or were kept as written and why; and the kept by
+/// shape, each with a few examples, the list the grammar is taught from
+/// next, as the kept `MedlineDate`s are.
+#[derive(Debug, Default)]
+struct PageCounts {
+    how: BTreeMap<&'static str, u64>,
+    kept: BTreeMap<String, u64>,
+    examples: BTreeMap<String, Vec<String>>,
+}
+
+impl PageCounts {
+    const EXAMPLES: usize = 3;
+    const SHOWN: usize = 40;
+
+    fn see(&mut self, pages: Option<&model::pages::Pages<'_>>, who: impl FnOnce() -> String) {
+        use model::pages::Pages;
+        match pages {
+            None => *self.how.entry("none").or_default() += 1,
+            Some(Pages::Read(_)) => *self.how.entry("read").or_default() += 1,
+            Some(Pages::Kept { raw, error, .. }) => {
+                *self.how.entry(error.as_str()).or_default() += 1;
+                let mut shape = String::new();
+                survey::signature(raw, &mut shape);
+                *self.kept.entry(shape.clone()).or_default() += 1;
+                let examples = self.examples.entry(shape).or_default();
+                if examples.len() < Self::EXAMPLES {
+                    examples.push(format!("{} {raw:?}", who()));
+                }
+            }
+        }
+    }
+
+    fn report(&self, name: &str) {
+        eprintln!("  {name} {:?}", self.how);
+        let mut kept: Vec<(&String, &u64)> = self.kept.iter().collect();
+        kept.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
+        for (shape, n) in kept.iter().take(Self::SHOWN) {
+            let examples = self
+                .examples
+                .get(*shape)
+                .map_or(String::new(), |e| e.join("; "));
+            eprintln!("    kept {shape:<20} {n:>10}  {examples}");
+        }
+        if kept.len() > Self::SHOWN {
+            let rest: u64 = kept[Self::SHOWN..].iter().map(|k| *k.1).sum();
+            eprintln!(
+                "    kept, and {} more shapes, {rest} fields",
+                kept.len() - Self::SHOWN
+            );
+        }
+    }
+}
+
+impl Absorb for PageCounts {
+    fn absorb(&mut self, other: Self) {
+        self.how.absorb(other.how);
+        self.kept.absorb(other.kept);
+        for (shape, examples) in other.examples {
+            let mine = self.examples.entry(shape).or_default();
+            for e in examples {
+                if mine.len() < Self::EXAMPLES {
+                    mine.push(e);
+                }
+            }
+        }
+    }
+}
+
 /// Destructures `other` exhaustively — a new field is a compile error here
 /// until it is listed — and absorbs every field.
 macro_rules! absorb_all {
@@ -5439,6 +5508,8 @@ struct PubmedStats {
     journal_issn: u64,
     journal_issn_linking: u64,
     journal_issn_malformed: u64,
+    /// `Pagination`, read (model 13).
+    pages: PageCounts,
     persons: u64,
     collectives: u64,
     orcid: [u64; 3],
@@ -5588,6 +5659,7 @@ impl StatsReport for PubmedStats {
             "  journal issn {}  issn linking {}  malformed {}",
             self.journal_issn, self.journal_issn_linking, self.journal_issn_malformed
         );
+        self.pages.report("pages");
         eprintln!(
             "  authors persons {} collectives {}  orcid valid {} malformed {} none {}",
             self.persons, self.collectives, self.orcid[0], self.orcid[1], self.orcid[2]
@@ -5714,6 +5786,8 @@ impl<'n> Sink<'n, Pubmed> for PubmedStats {
         }
         self.other_abstracts += c.other_abstracts.len() as u64;
         self.journal_issn += u64::from(c.journal.issn.is_some());
+        self.pages
+            .see(c.journal.pages.as_ref(), || format!("pmid:{}", c.pmid));
         self.journal_issn_linking += u64::from(c.journal.issn_linking.is_some());
         for claim in c
             .journal
@@ -5881,6 +5955,8 @@ struct CrossrefStats {
     version_part: [u64; 2],
     /// Works with no `member`, and with no `publisher`.
     unowned: [u64; 2],
+    /// `page`, read (model 13).
+    pages: PageCounts,
     /// Container titles a work gives, by how many, journal articles apart
     /// (model 13 keeps them all; citation fields plan §4).
     container_titles: BTreeMap<&'static str, u64>,
@@ -5908,10 +5984,12 @@ const COUNTED: [[&str; 4]; 2] = [
 ];
 
 impl CrossrefStats {
-    /// Where the work says it was published: its container titles and
-    /// abbreviations by how many, and the issue's own dates against the
-    /// work's (citation fields plan §4, model 13).
+    /// Where the work says it was published: its pages as read, its
+    /// container titles and abbreviations by how many, and the issue's own
+    /// dates against the work's (citation fields plan §4, model 13).
     fn placement(&mut self, w: &source_crossref::normalize::Work<'_>) {
+        self.pages
+            .see(w.pages.as_ref(), || format!("doi:{}", w.doi));
         let counted =
             &COUNTED[usize::from(w.kind != Some(source_crossref::vocab::WorkType::JournalArticle))];
         *self
@@ -6131,6 +6209,7 @@ impl StatsReport for CrossrefStats {
         eprintln!("  container titles {:?}", self.container_titles);
         eprintln!("  abbreviations {:?}", self.short_container_titles);
         eprintln!("  the issue's own dates {:?}", self.issue_dates);
+        self.pages.report("pages");
         eprintln!("  languages {:?}", self.languages);
         eprintln!(
             "  updates {:?}  from older words {:?}",
@@ -6513,13 +6592,13 @@ impl<'n> Sink<'n, OpenAlex> for OpenAlexStats {
 
 impl Merge for PubmedStats {
     fn merge(&mut self, other: Self) {
-        absorb_all!(self, other: PubmedStats { citations, deletions, corrected, excluded, doi, elocation_doi, doi_lowercased, doi_disagree, pii, pii_extra, publisher, pmc, pmc_malformed, published, published_kept, published_kept_why, published_kept_certain, electronic, revised, completed, status, languages, publication_types, unplaced_types, title, abstracts, sections, sections_markup, sections_math, other_abstracts, journal_issn, journal_issn_linking, journal_issn_malformed, persons, collectives, orcid, affiliations, affiliation_ids, investigators, mesh_headings, mesh_major, chemicals, keywords, grants, grants_with_country, data_banks, history, history_date_malformed, history_time_malformed, publication_status, relations, relation_dois, references, reference_ids, reference_loose, reference_doi_malformed, reference_pmid_malformed, reference_pmc_malformed, malformed_samples });
+        absorb_all!(self, other: PubmedStats { citations, deletions, corrected, excluded, doi, elocation_doi, doi_lowercased, doi_disagree, pii, pii_extra, publisher, pmc, pmc_malformed, published, published_kept, published_kept_why, published_kept_certain, electronic, revised, completed, status, languages, publication_types, unplaced_types, title, abstracts, sections, sections_markup, sections_math, other_abstracts, journal_issn, journal_issn_linking, journal_issn_malformed, pages, persons, collectives, orcid, affiliations, affiliation_ids, investigators, mesh_headings, mesh_major, chemicals, keywords, grants, grants_with_country, data_banks, history, history_date_malformed, history_time_malformed, publication_status, relations, relation_dois, references, reference_ids, reference_loose, reference_doi_malformed, reference_pmid_malformed, reference_pmc_malformed, malformed_samples });
     }
 }
 
 impl Merge for CrossrefStats {
     fn merge(&mut self, other: Self) {
-        absorb_all!(self, other: CrossrefStats { works, deletions, types, untyped, excluded, set_aside, corrected, aliases, ascii_dois, doi_lowercased, owner_differs, publisher, issued, title, alternate_titles, subtitle_empty, abstracts, persons, orgs, given_only, with_orcid, orcid_malformed, institutions, issns, isbns, languages, references, reference_doi, reference_empty, updates, update_words, relations, licenses, license_starts, dates, version_part, unowned, container_titles, short_container_titles, issue_dates, malformed_samples });
+        absorb_all!(self, other: CrossrefStats { works, deletions, types, untyped, excluded, set_aside, corrected, aliases, ascii_dois, doi_lowercased, owner_differs, publisher, issued, title, alternate_titles, subtitle_empty, abstracts, persons, orgs, given_only, with_orcid, orcid_malformed, institutions, issns, isbns, languages, references, reference_doi, reference_empty, updates, update_words, relations, licenses, license_starts, dates, version_part, unowned, pages, container_titles, short_container_titles, issue_dates, malformed_samples });
     }
 }
 

@@ -21,6 +21,7 @@ use smallvec::SmallVec;
 use std::fmt;
 
 use ingest::Sink;
+use model::pages::{self, Pages};
 use model::{
     Claim, Date, DateError, Day, Doi, DoiError, Interned, Issn, IssnError, Lang, LangError,
     MedlineDateError, MeshUi, MeshUiError, Month, Orcid, OrcidError, ParseError, PartialDate,
@@ -366,9 +367,11 @@ pub struct Journal<'n> {
     #[allow(missing_docs)]
     #[serde(borrow)]
     pub issue: Option<&'n str>,
-    #[allow(missing_docs)]
+    /// `Pagination`, read (model 13; citation fields plan D8): `StartPage`
+    /// to `EndPage` where given, else `MedlinePgn`, NLM's shortened end
+    /// written whole. `None` for none, or a placeholder (`UNKNOWN`).
     #[serde(borrow)]
-    pub pagination: Option<Pagination<'n>>,
+    pub pages: Option<Pages<'n>>,
 }
 
 /// An ISSN with its type.
@@ -379,24 +382,6 @@ pub struct TypedIssn<'n> {
     #[allow(missing_docs)]
     #[serde(borrow)]
     pub issn: IssnClaim<'n>,
-}
-
-/// `Pagination`, as text: `1-8`, `e2025072830`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Pagination<'n> {
-    /// `StartPage`, `EndPage?`, `MedlinePgn?`.
-    Pages {
-        #[allow(missing_docs)]
-        start: &'n str,
-        #[allow(missing_docs)]
-        #[serde(borrow)]
-        end: Option<&'n str>,
-        #[allow(missing_docs)]
-        #[serde(borrow)]
-        medline: Option<&'n str>,
-    },
-    /// `MedlinePgn` alone.
-    Medline(&'n str),
 }
 
 /// `Abstract`: labelled sections plus a copyright line.
@@ -1579,25 +1564,25 @@ fn dates<'n>(ctx: &Ctx, c: &'n MedlineCitation<'_>) -> Result<Dates<'n>, Error> 
     })
 }
 
-fn journal<'n>(c: &'n MedlineCitation<'_>) -> Journal<'n> {
+fn journal<'n>(ctx: &Ctx, c: &'n MedlineCitation<'_>) -> Journal<'n> {
     let j = &c.article.journal;
     let info = &c.medline_journal_info;
     let issn = j.issn.as_ref().map(|i| TypedIssn {
         kind: i.issn_type,
         issn: Claim::from_parse(&i.value, Issn::parse(&i.value)),
     });
-    let pagination = c.article.pagination.as_ref().map(|p| match p {
-        NativePagination::Pages {
+    let (pages, readings) = match c.article.pagination.as_ref() {
+        None => (None, pages::Readings::default()),
+        Some(NativePagination::Pages {
             start_page,
             end_page,
-            medline_pgn,
-        } => Pagination::Pages {
-            start: start_page,
-            end: end_page.as_deref(),
-            medline: medline_pgn.as_deref(),
-        },
-        NativePagination::MedlinePgn(p) => Pagination::Medline(p),
-    });
+            ..
+        }) => Pages::from_parts(start_page, end_page.as_deref()),
+        Some(NativePagination::MedlinePgn(p)) => Pages::read(p),
+    };
+    ctx.corrected
+        .borrow_mut()
+        .extend(readings.made().map(|how| ("Pagination", how)));
     Journal {
         title: j.title.as_deref().map(Interned::Text),
         iso_abbreviation: j.iso_abbreviation.as_deref().map(Interned::Text),
@@ -1613,7 +1598,7 @@ fn journal<'n>(c: &'n MedlineCitation<'_>) -> Journal<'n> {
         cited_medium: j.journal_issue.cited_medium,
         volume: j.journal_issue.volume.as_deref(),
         issue: j.journal_issue.issue.as_deref(),
-        pagination,
+        pages,
     }
 }
 
@@ -1683,7 +1668,7 @@ pub fn normalize<'n, K: Sink<'n, Pubmed>>(
 
     let ids = identifiers(&ctx, article, pmid)?;
     let dates = dates(&ctx, c)?;
-    let journal = journal(c);
+    let journal = journal(&ctx, c);
 
     let r#abstract = c.article.r#abstract.as_ref().map(|a| Abstract {
         sections: Ctx::sections(&a.texts),
