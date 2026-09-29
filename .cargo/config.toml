@@ -4,6 +4,3 @@
 c = "check --workspace --all-targets"
 l = "clippy --workspace --all-targets"
 t = "test --workspace"
-
-[build]
-rustc-wrapper = "sccache"
