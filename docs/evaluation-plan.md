@@ -2,7 +2,7 @@
 
 **Status:** draft 1, 2026-09-26. E1 built, its arithmetic matching
 `trec_eval` 10.0; E2 scrapped the same day (§9); E3, the published sets,
-under way: loaders and suites built, not yet run on the box.
+first measured 2026-09-29 on epoch 7 (§13).
 **Inputs:** the conversation of 2026-09-26 that put measurement ahead of
 every search improvement; [serving plan](serving-plan.md) §11 items 11,
 36 and 37 (what search leaves open); [text analysis](inbox/text-analysis.md)
@@ -19,8 +19,9 @@ potential search improvements, i want a very reliable way to measure
 can say what works (serving plan §11 item 37's first step assumed one);
 a measurement has to. Every search change after this one — the tokenizer
 (item 11), the query language's second pass (item 36), ranking, recency —
-is judged by it, and the first thing it measures is the search as it is,
-over the corpus's epoch 6 (39,984,110 held works, all of PubMed).
+is judged by it, and the first thing it measures is the search as it is:
+planned over epoch 6 (39,984,110 held works, all of PubMed), first
+measured over epoch 7, PubMed and Crossref, on 2026-09-29 (§13).
 
 "Very reliable" means seven things, each a section below:
 
@@ -438,8 +439,10 @@ Commands:
   comparisons of a suite. Not built: slices, and the run's summary JSON
   for the homelab's proposed table. The smallest difference a set can
   detect is read, for now, as the half-width of each interval in its
-  first report. Next: an image with them, and Jobs to load, run and
-  score on the box.
+  first report. First run 2026-09-29: the homelab's
+  `job-evaluate-baseline-v1` on epoch 7, the three suites loaded, run
+  open and restricted, and scored; the baseline is §13. Next: the other
+  sets, and the first treatment measured against it.
   The plan as written before: TREC Precision Medicine and RELISH
   first, then TREC-COVID, TREC Genomics 2004–05 and TREC Clinical
   Decision Support; the user downloads them; each gets a loader into a
@@ -545,6 +548,15 @@ Commands:
   scope in principle); "academic literature is the wedge i know best",
   and for the short term the product is a tool for academics and
   researchers.
+
+- **2026-09-29, the first measurement.** Epoch 7 landed (the first with
+  Crossref; model 12, merge 16, serve 8), and `job-evaluate-baseline-v1`
+  on the image serving it loaded TREC Precision Medicine 2019 and 2020
+  and RELISH, ran each open and restricted to 2018, and scored them:
+  §13 is the baseline every change is compared against. Precision
+  Medicine 2020 was read once, as milestone zero, and is sealed again.
+  RELISH resolves differences near one point, the TREC years near eight
+  (§13.4).
 
 ## 10. Open items
 
@@ -788,3 +800,131 @@ sizes from a pilot — went with it.
     an improvement fitted to precision oncology's topics would pass both.
     RELISH's test half and the other sets are the guard against that
     (§10, item 9).
+20. **The title reaches half of RELISH's relevant candidates** —
+    measured 2026-09-29: recall@1000 0.44 over the whole corpus, 0.49 up
+    to 2018 (§13.4). What items 15 and 17 cost, now a number. Lifted by
+    running RELISH again with the seed's abstract as the query, its own
+    row, once any-word matching allows it.
+21. **A run searches both halves.** RELISH's runs rank the test half's
+    seeds too, and those rankings sit in the run files on the claim; only
+    the reports keep to the working half. The guard is that nobody reads
+    them per query. Lifted by a run that takes one half.
+22. **The year cutoff is read from each result's record** — up to 2,000
+    rows a query in a restricted run. It cost TREC's restricted runs four
+    to six times the open ones' time, RELISH's 15% more (§13.5), where the
+    search itself dominates. Lifted by the year held in the index.
+
+## 13. Measurements
+
+### 13.1 The baseline, 2026-09-29
+
+The search as it was on 2026-09-29: epoch 7, the first with Crossref
+(model 12, merge 16, serve 8), searched by `main-b7afccd`, the image
+serving it, through the homelab's `job-evaluate-baseline-v1`: the query
+parser and translation of the search box, any word matching, depth 1,000.
+Runs and full reports are on the bulk claim under
+`evaluation/runs/<set>/v1/epoch-7/ol-rht-evaluate-baseline-v1/`; the
+suites under `evaluation/suites/<set>/v1/`. Every figure is a mean with
+its 95% interval (§4.1); *lenient* counts any positive grade relevant,
+*strict* the top grade only (§3.3).
+
+The three columns are the three scorings of §3.2: **up to 2018** is the
+comparable one — the corpus cut to the year the judges saw; **unjudged
+removed** is the condensed list of that run; **everything** is the open
+run over the whole corpus, a lower bound.
+
+### 13.2 What the corpus holds of each key
+
+| set | judged works | held (searchable) | stubs | missing | judged twice as one work |
+|---|---|---|---|---|---|
+| TREC Precision Medicine 2019 | 18,316 | 18,302 | 0 | 14 | 1 |
+| TREC Precision Medicine 2020 | 17,366 | 17,358 | 0 | 8 | 8 |
+| RELISH | 191,580 | 191,533 | 0 | 47 | 17 |
+
+RELISH keeps 3,193 of its 3,194 seeds (28430671 is not in the corpus),
+halved 1,597 working and 1,596 test. Coverage is not what limits any
+figure below.
+
+### 13.3 The figures
+
+**TREC Precision Medicine 2019** — the working set, whole: 40 topics
+lenient, 38 strict.
+
+| lenient | up to 2018 | unjudged removed | everything |
+|---|---|---|---|
+| P@10 | 0.413 (0.330–0.495) | 0.535 (0.433–0.638) | 0.238 (0.183–0.293) |
+| share of the first 10 judged | 0.755 | 1.000 | 0.480 |
+| recall@1000 | 0.518 (0.441–0.592) | 0.518 | 0.455 (0.380–0.529) |
+| R-precision | 0.205 (0.164–0.246) | 0.332 | 0.156 |
+| nDCG@10 | 0.389 (0.315–0.465) | 0.489 (0.401–0.577) | 0.230 |
+| reciprocal rank | 0.613 (0.502–0.723) | 0.705 | 0.427 |
+
+Strict, up to 2018: P@10 0.297 (0.224–0.376), recall@1000 0.647
+(0.560–0.731), nDCG@10 0.386; unjudged removed, P@10 0.361.
+
+**TREC Precision Medicine 2020** — held out whole; milestone zero, read
+once: 31 topics lenient, 28 strict (under the floor: no intervals).
+
+| lenient | up to 2018 | unjudged removed | everything |
+|---|---|---|---|
+| P@10 | 0.252 (0.161–0.355) | 0.358 (0.239–0.487) | 0.135 (0.084–0.194) |
+| share of the first 10 judged | 0.761 | 1.000 | 0.432 |
+| recall@1000 | 0.462 (0.404–0.524) | 0.462 | 0.416 (0.360–0.476) |
+| nDCG@10 | 0.240 (0.151–0.342) | 0.326 (0.215–0.446) | 0.132 |
+| reciprocal rank | 0.435 (0.302–0.576) | 0.485 | 0.298 |
+
+**RELISH** — the working half: 1,597 seeds lenient, 1,559 strict.
+
+| lenient | up to 2018 | unjudged removed | everything |
+|---|---|---|---|
+| P@10 | 0.250 (0.240–0.261) | 0.757 (0.744–0.771) | 0.172 (0.165–0.181) |
+| share of the first 10 judged | 0.294 | 0.962 | 0.201 |
+| recall@1000 | 0.492 (0.481–0.504) | 0.492 | 0.436 (0.424–0.448) |
+| R-precision | 0.153 (0.147–0.159) | 0.451 (0.441–0.462) | — |
+| nDCG@10 | 0.242 (0.232–0.252) | 0.656 (0.643–0.668) | 0.169 |
+| reciprocal rank | 0.518 (0.499–0.538) | 0.906 (0.895–0.917) | 0.403 |
+
+Strict, up to 2018: P@10 0.170 (0.161–0.179), recall@1000 0.547
+(0.533–0.561), nDCG@10 0.244; unjudged removed, P@10 0.465, nDCG@10
+0.661. RELISH judged only 60 candidates a seed, so its open and restricted
+precision mostly measures what nobody judged; the condensed column is
+the one to read, and the 0.96 judged share of its first 10 says it is
+nearly complete there.
+
+### 13.4 What the figures say
+
+- **Resolution.** The half-width of an interval is the smallest
+  difference a single run can show (E3): about **±0.08** on P@10 and
+  nDCG@10 for TREC 2019's 40 topics, about **±0.01** for RELISH's 1,597.
+  A paired comparison is tighter than both. So RELISH's working half is
+  the instrument fine enough to judge a change of a point or two, and the
+  TREC years are the coarse, human-judged check beside it (§10, item 8
+  is not needed yet).
+- **Pooling.** Cutting the corpus to 2018 lifts the judged share of the
+  first 10 from 0.48 to 0.76 on TREC 2019 and from 0.43 to 0.76 on 2020:
+  half of what the whole corpus returns first is newer than the judges'
+  corpus or from Crossref, and counts as not relevant in the open run.
+  The unjudged-removed figures are nearly the same between the two runs,
+  as they should be: the judged works are old, and cutting the new ones
+  does not reorder them.
+- **The title as RELISH's query** finds about half of its relevant
+  candidates in the first 1,000 (recall@1000 0.44 open, 0.49 up to 2018):
+  RELISH's candidates were pooled from methods that read whole papers,
+  and the query here is the seed's title alone (§12, items 15 and 20).
+- **No published figure is placed beside these.** None was found for
+  TREC Precision Medicine 2019 (benchmarks note §2.4); RELISH's own BM25
+  (MRR 0.859 over its 60 candidates) ranked the candidates themselves, a
+  different task from searching the corpus.
+
+### 13.5 What the run cost
+
+| step | open run | restricted run | memory at its peak |
+|---|---|---|---|
+| load (three suites) | 15 s in all | | |
+| TREC 2019, 40 queries | 7.8 s (slowest 3.2 s) | 28.6 s | 1,017 MiB |
+| TREC 2020, 40 queries | 4.2 s | 23.9 s | 449 MiB |
+| RELISH, 3,193 queries | 3,294 s (slowest 15.0 s) | 3,780 s (slowest 11.6 s) | 20,690 MiB |
+
+Six search threads; the Job took 120 minutes, RELISH nearly all of it. In
+the restricted RELISH run 939 of 3,193 queries ended short of 1,000
+works published by 2018 in their first 2,000 (§12, item 18).
