@@ -2080,6 +2080,42 @@ state kept outside the store, and a limit per principal on calls and on
       client's.
     - *The engine* stays Tantivy for now (item 4).
 
+38. **A warm cache for search — recorded, not to be built yet** (the
+    user, 2026-09-29, who had something shaped like the first idea in
+    mind). What makes search cold (M, 2026-09-29, epoch 7):
+    - **Not a restart.** The server maps its index files, so the pages it
+      has read are the node's — the page cache over ZFS's ARC — and not
+      the process's. A pod started on a new image answered "crispr
+      screen" (432,412 hits) in 198 ms ninety seconds after it started,
+      holding 38 MiB.
+    - **A new epoch.** Its files have never been read. The first two
+      searches of epoch 7 took 10 s (timed out, "Test") and 3.0 s
+      (`"must match"`, 1.55 million hits).
+    - **The box's other work.** Those two ran while `epoch check` read
+      every merged set. A merge, a publish or a survey streams hundreds
+      of gigabytes through the same caches and pushes the index out.
+    - **A reboot**, which empties the ARC.
+
+    The ideas, in the order proposed:
+    1. *Warm a new epoch before it is served.* The server opens an epoch
+       and swaps it in, the old one answering until then (§5), and a pod
+       reports ready only once it has an epoch, the rollout keeping the
+       old pod until then (`maxUnavailable: 0`). Between opening and
+       swapping, or before reporting ready, read the lexical index's term
+       dictionaries and fast fields and replay the latest queries of the
+       query log.
+    2. *Keep the batch Jobs from evicting it.* ZFS `primarycache=metadata`
+       on the bulk dataset, so one-pass reads of the normalized and
+       merged sets do not fill the ARC, the serving dataset keeping
+       `all`. A homelab storage change; whether ZFS LocalPV sets it is to
+       check.
+    3. *A cache that survives a reboot.* An NVMe partition as the pool's
+       L2ARC, which OpenZFS keeps across reboots, cold reads coming from
+       NVMe rather than the SATA SSDs. A pool change.
+    4. *See it.* Every line of the query log carries its time in
+       milliseconds; p50 and p95 over time would show when and why
+       search goes cold.
+
 ## 12. Sources consulted
 
 The serving-shape and feeds conversations of 2026-09-15 and the notes
