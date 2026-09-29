@@ -436,7 +436,9 @@ pub fn text_of(work: &Work<'_>, table: &Table) -> Result<Text, Unmapped> {
             AuthorName::Org(name) | AuthorName::Given(name) => name.to_owned(),
         })
         .collect();
-    let venue = match &work.container_title {
+    // The first title, as model 12 kept it: which of the rest names what
+    // is the chain's to read, by type (citation fields plan §4).
+    let venue = match work.container_titles.first() {
         Some(title) => Some(text(title, table, "container_title")?.to_owned()),
         None => None,
     };

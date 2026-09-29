@@ -227,14 +227,14 @@ fn a_comment_is_kept_and_print_is_set_aside() {
     let out = collect("update_to_comment_and_print");
     assert_eq!(
         out.set_aside,
-        [
-            ("update-to", "print"),
-            ("updated-by", "print"),
-            ("short-container-title", "journal-article"),
-            ("journal-issue.published-print", "the work's own"),
-        ]
+        [("update-to", "print"), ("updated-by", "print")]
     );
     let w = &out.works[0];
+    // Kept from model 13: the abbreviation, and the issue's print date,
+    // here the work's own.
+    assert!(!w.short_container_titles.is_empty());
+    assert!(w.issue_published_print.is_some());
+    assert_eq!(w.issue_published_print, w.published_print);
     assert_eq!(w.updates_to.len(), 1);
     assert!(w.updated_by.is_empty());
     assert_eq!(view::genre(w), Some(Genre::Comment));
@@ -615,15 +615,11 @@ fn an_empty_affiliation_is_set_aside() {
 #[test]
 fn retraction_watch_68818_is_set_aside_beside_the_retraction() {
     let out = collect("update_retraction_watch_68818");
-    assert_eq!(
-        out.set_aside,
-        [
-            ("update-to", "68818"),
-            ("short-container-title", "journal-article"),
-            ("journal-issue.published-online", "the work's own"),
-        ]
-    );
+    assert_eq!(out.set_aside, [("update-to", "68818")]);
     let w = &out.works[0];
+    // Kept from model 13: the issue's online date, here the work's own.
+    assert!(w.issue_published_online.is_some());
+    assert_eq!(w.issue_published_online, w.published_online);
     assert_eq!(
         w.updates_to.iter().map(|u| u.kind).collect::<Vec<_>>(),
         [UpdateType::Retraction]
@@ -791,7 +787,12 @@ fn a_journal_issue_may_hold_only_its_date() {
     let native = native("journal_issue_dates_only");
     let issue = native.journal_issue.as_ref().unwrap();
     assert!(issue.issue.is_none() && issue.published_online.is_some());
-    run("journal_issue_dates_only");
+    // Model 13 keeps the issue's date.
+    assert!(
+        run("journal_issue_dates_only")
+            .issue_published_online
+            .is_some()
+    );
 }
 
 /// 10.2307/3430260, shard 31462 line 3323: a JSTOR article with no
@@ -846,17 +847,17 @@ fn a_twelve_digit_isbn_is_a_claim() {
 }
 
 /// The same chapter, 10.1214/lnms/1196285108, names its series and then
-/// its book in `container-title`. The record keeps the first, the
-/// series; the second is set aside and counted, for the citation fields
-/// survey (plan §7, CF0 part 3).
+/// its book in `container-title`. Model 12 kept the series alone; model
+/// 13 keeps both, in the record's order (citation fields plan §4).
 #[test]
-fn a_second_container_title_is_counted() {
-    let out = collect("isbn_twelve_digits");
-    assert!(
-        out.set_aside
-            .contains(&("container-title, a second title", "other types")),
-        "{:?}",
-        out.set_aside
+fn a_chapter_keeps_its_series_and_its_book() {
+    let w = run("isbn_twelve_digits");
+    assert_eq!(
+        texts(&w.container_titles),
+        [
+            "Institute of Mathematical Statistics Lecture Notes - Monograph Series",
+            "Multivariate Statistics",
+        ]
     );
 }
 

@@ -109,9 +109,25 @@ pub struct Work<'n> {
     pub subtitle: Option<&'n str>,
     /// A JATS (usually) XML fragment.
     pub r#abstract: Option<&'n str>,
-    /// `container-title[0]`.
+    /// `container-title`, every entry as written (model 13; model 12 kept
+    /// the first). What a second entry is depends on the type: for a
+    /// journal article, the same journal under another name (another
+    /// language or script, other punctuation, an acronym: all 322 examples
+    /// of `ol-rht-dump-crossref-v4`); for a book chapter, the book behind
+    /// its series (citation fields plan §4).
     #[serde(borrow)]
-    pub container_title: Option<Interned<'n>>,
+    pub container_titles: Few<Interned<'n>, 1>,
+    /// `short-container-title`, every entry as written: the journal's
+    /// abbreviation, often in more than one style (`Med pregl`,
+    /// `MED PREGLED`). Model 13.
+    #[serde(borrow)]
+    pub short_container_titles: Few<Interned<'n>, 1>,
+    /// `journal-issue.published-print`: the issue's own print date, which
+    /// the work's `published-print` need not be. Model 13.
+    pub issue_published_print: Option<PartialDate>,
+    /// `journal-issue.published-online`: the issue's own online date, its
+    /// month or its year where the work's is a day. Model 13.
+    pub issue_published_online: Option<PartialDate>,
     /// From `issn-type`, checked against `ISSN`.
     #[serde(borrow)]
     pub issns: Few<TypedIssn<'n>, 2>,
@@ -1017,56 +1033,12 @@ fn first<'n>(list: Option<&'n [Text<'_>]>) -> Option<&'n str> {
     list.and_then(|l| l.first()).map(|t| &**t)
 }
 
-/// What the reader reads of where a work was published and does not keep,
-/// set aside so a survey counts it (citation fields plan §7, CF0 part 3)
-/// while nothing a set holds changes:
-/// - a second `container-title`, the record keeping only the first;
-/// - `short-container-title`, the journal's abbreviation;
-/// - the `journal-issue` object's own dates, against the work's.
-///
-/// Journal articles are told apart from the rest, since a second title
-/// is expected of a book chapter (its series) and not of an article.
-fn placement_set_aside(ctx: &Ctx, w: &Native<'_>) {
-    let of = if w.r#type == Some(WorkType::JournalArticle) {
-        "journal-article"
-    } else {
-        "other types"
-    };
-    let mut aside = ctx.set_aside.borrow_mut();
-    if w.container_title.as_deref().is_some_and(|t| t.len() > 1) {
-        aside.push(("container-title, a second title", of));
-    }
-    if w.short_container_title
-        .as_deref()
-        .is_some_and(|t| !t.is_empty())
-    {
-        aside.push(("short-container-title", of));
-    }
-    if let Some(issue) = &w.journal_issue {
-        for (field, of_issue, of_work) in [
-            (
-                "journal-issue.published-print",
-                issue.published_print,
-                w.published_print,
-            ),
-            (
-                "journal-issue.published-online",
-                issue.published_online,
-                w.published_online,
-            ),
-        ] {
-            if let Some(date) = of_issue {
-                aside.push((
-                    field,
-                    match of_work {
-                        None => "the work gives none",
-                        Some(own) if own == date => "the work's own",
-                        Some(_) => "differs from the work's",
-                    },
-                ));
-            }
-        }
-    }
+/// Every entry of a list of strings, as written.
+fn all<'n>(list: Option<&'n [Text<'_>]>) -> Few<Interned<'n>, 1> {
+    list.into_iter()
+        .flatten()
+        .map(|t| Interned::Text(t))
+        .collect()
 }
 
 /// Normalizes one work, emitting it and then its references.
@@ -1135,6 +1107,19 @@ pub fn normalize<'n, K: Sink<'n, Crossref>>(w: &'n Native<'_>, emit: &mut K) -> 
     }
     let published_print = ctx.partial("published-print", w.published_print.as_ref())?;
     let published_online = ctx.partial("published-online", w.published_online.as_ref())?;
+    let (issue_published_print, issue_published_online) = match &w.journal_issue {
+        None => (None, None),
+        Some(issue) => (
+            ctx.partial(
+                "journal-issue.published-print",
+                issue.published_print.as_ref(),
+            )?,
+            ctx.partial(
+                "journal-issue.published-online",
+                issue.published_online.as_ref(),
+            )?,
+        ),
+    };
     let status = match &w.status {
         None => None,
         Some(st) => Some(PostedStatus {
@@ -1303,7 +1288,6 @@ pub fn normalize<'n, K: Sink<'n, Crossref>>(w: &'n Native<'_>, emit: &mut K) -> 
         .flatten()
         .map(|a| Claim::from_parse(a, ctx.doi("aliases", a)))
         .collect();
-    placement_set_aside(&ctx, w);
     for (field, value) in ctx.set_aside.take() {
         emit.set_aside(&doi, field, value);
     }
@@ -1330,7 +1314,10 @@ pub fn normalize<'n, K: Sink<'n, Crossref>>(w: &'n Native<'_>, emit: &mut K) -> 
             .collect(),
         subtitle: first(w.subtitle.as_deref()),
         r#abstract: w.r#abstract.as_deref(),
-        container_title: first(w.container_title.as_deref()).map(Interned::Text),
+        container_titles: all(w.container_title.as_deref()),
+        short_container_titles: all(w.short_container_title.as_deref()),
+        issue_published_print,
+        issue_published_online,
         issns: journal_serials,
         isbns: book_serials,
         volume: w.volume.as_deref(),

@@ -5881,7 +5881,77 @@ struct CrossrefStats {
     version_part: [u64; 2],
     /// Works with no `member`, and with no `publisher`.
     unowned: [u64; 2],
+    /// Container titles a work gives, by how many, journal articles apart
+    /// (model 13 keeps them all; citation fields plan §4).
+    container_titles: BTreeMap<&'static str, u64>,
+    /// Abbreviations (`short-container-title`) a work gives, likewise.
+    short_container_titles: BTreeMap<&'static str, u64>,
+    /// The issue's own print and online dates against the work's.
+    issue_dates: BTreeMap<&'static str, u64>,
     malformed_samples: Vec<String>,
+}
+
+/// How many entries a list holds, journal articles first, then the rest.
+const COUNTED: [[&str; 4]; 2] = [
+    [
+        "journal articles: none",
+        "journal articles: one",
+        "journal articles: two",
+        "journal articles: three or more",
+    ],
+    [
+        "other types: none",
+        "other types: one",
+        "other types: two",
+        "other types: three or more",
+    ],
+];
+
+impl CrossrefStats {
+    /// Where the work says it was published: its container titles and
+    /// abbreviations by how many, and the issue's own dates against the
+    /// work's (citation fields plan §4, model 13).
+    fn placement(&mut self, w: &source_crossref::normalize::Work<'_>) {
+        let counted =
+            &COUNTED[usize::from(w.kind != Some(source_crossref::vocab::WorkType::JournalArticle))];
+        *self
+            .container_titles
+            .entry(counted[w.container_titles.len().min(3)])
+            .or_default() += 1;
+        *self
+            .short_container_titles
+            .entry(counted[w.short_container_titles.len().min(3)])
+            .or_default() += 1;
+        for (labels, issue, own) in [
+            (
+                [
+                    "print: the work's own",
+                    "print: differs from the work's",
+                    "print: the work gives none",
+                ],
+                w.issue_published_print,
+                w.published_print,
+            ),
+            (
+                [
+                    "online: the work's own",
+                    "online: differs from the work's",
+                    "online: the work gives none",
+                ],
+                w.issue_published_online,
+                w.published_online,
+            ),
+        ] {
+            if let Some(issue) = issue {
+                let label = match own {
+                    Some(own) if own == issue => labels[0],
+                    Some(_) => labels[1],
+                    None => labels[2],
+                };
+                *self.issue_dates.entry(label).or_default() += 1;
+            }
+        }
+    }
 }
 
 impl<'n> Sink<'n, Crossref> for CrossrefStats {
@@ -5935,6 +6005,7 @@ impl<'n> Sink<'n, Crossref> for CrossrefStats {
             self.institutions[1].see(i, &mut self.malformed_samples);
         }
         self.issns += w.issns.len() as u64;
+        self.placement(w);
         for t in &w.isbns {
             match &t.isbn {
                 Claim::Valid(_) => self.isbns[0] += 1,
@@ -6057,6 +6128,9 @@ impl StatsReport for CrossrefStats {
             "  issns {}  isbns {} malformed {}",
             self.issns, self.isbns[0], self.isbns[1]
         );
+        eprintln!("  container titles {:?}", self.container_titles);
+        eprintln!("  abbreviations {:?}", self.short_container_titles);
+        eprintln!("  the issue's own dates {:?}", self.issue_dates);
         eprintln!("  languages {:?}", self.languages);
         eprintln!(
             "  updates {:?}  from older words {:?}",
@@ -6445,7 +6519,7 @@ impl Merge for PubmedStats {
 
 impl Merge for CrossrefStats {
     fn merge(&mut self, other: Self) {
-        absorb_all!(self, other: CrossrefStats { works, deletions, types, untyped, excluded, set_aside, corrected, aliases, ascii_dois, doi_lowercased, owner_differs, publisher, issued, title, alternate_titles, subtitle_empty, abstracts, persons, orgs, given_only, with_orcid, orcid_malformed, institutions, issns, isbns, languages, references, reference_doi, reference_empty, updates, update_words, relations, licenses, license_starts, dates, version_part, unowned, malformed_samples });
+        absorb_all!(self, other: CrossrefStats { works, deletions, types, untyped, excluded, set_aside, corrected, aliases, ascii_dois, doi_lowercased, owner_differs, publisher, issued, title, alternate_titles, subtitle_empty, abstracts, persons, orgs, given_only, with_orcid, orcid_malformed, institutions, issns, isbns, languages, references, reference_doi, reference_empty, updates, update_words, relations, licenses, license_starts, dates, version_part, unowned, container_titles, short_container_titles, issue_dates, malformed_samples });
     }
 }
 

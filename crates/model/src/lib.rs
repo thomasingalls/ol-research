@@ -171,7 +171,22 @@
 /// item 28) could not see what PubMed said: the survey of the whole file
 /// at version 11 stopped on it alone. Output under version 11 is rebuilt,
 /// not patched.
-pub const VERSION: u32 = 12;
+///
+/// Version 13 (in progress, the citation fields plan's CF1): Crossref's
+/// `container-title` and `short-container-title` are kept whole, as
+/// written, where version 12 kept the first title and no abbreviation,
+/// and the `journal-issue` object's own print and online dates are kept
+/// beside the work's (the user, 2026-09-28). Over the whole March 2026
+/// file 173,277 journal articles give a second title, the same journal's
+/// other name in every example, and 5,064,105 other records, a chapter's
+/// book behind its series; 107,434,316 journal articles give an
+/// abbreviation; the issue's online date differs from the work's on
+/// 9,409,481, and its print date stands where the work gives none on
+/// 1,669,210 (`ol-rht-survey-crossref-v4`, `ol-rht-dump-crossref-v4`).
+/// Page ranges read at normalization come next, in the same version,
+/// once the plan's survey has shown their shapes. Output under version 12
+/// is rebuilt, not patched.
+pub const VERSION: u32 = 13;
 
 pub mod claim;
 pub mod code;
