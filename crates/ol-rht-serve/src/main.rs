@@ -33,6 +33,12 @@ use serve::Serving;
 use tonic::transport::Server;
 use tonic::transport::server::TcpIncoming;
 
+/// mimalloc, as under the batch binary, where it was measured; the server
+/// was not (deployment plan §2, §12). Not the counting allocator: nothing
+/// here reports allocations.
+#[global_allocator]
+static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 /// The health service's name for the query service: what a readiness
 /// probe asks about. The server as a whole, `""`, is serving while the
 /// process is, which is what a liveness probe asks.

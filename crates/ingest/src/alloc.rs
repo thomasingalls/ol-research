@@ -5,6 +5,10 @@
 //! reads the counters before and after a run. When it is not installed the
 //! counters stay at zero and the report says nothing about allocations.
 //!
+//! Under the counting is mimalloc, not the system's allocator (deployment
+//! plan §2): the counts are of the program's requests, so they do not
+//! change with it, and the dev store's rebuild ran 7-8% faster on it.
+//!
 //! Each thread counts in a tally of its own, alone on its cache line, and a
 //! reading adds the tallies up: one set of counters that every allocation
 //! on every core wrote made a parse on ten cores about 2.5 times slower
@@ -12,9 +16,11 @@
 //! exact; the peak is looked for as the tallies grow, so it can read low by
 //! up to [`PEAK_STEP`] per thread (§13).
 
-use std::alloc::{GlobalAlloc, Layout, System};
+use std::alloc::{GlobalAlloc, Layout};
 use std::cell::Cell;
 use std::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};
+
+use mimalloc::MiMalloc;
 
 /// How many tallies the threads share out. A thread keeps to one, handed
 /// out in turn, so up to this many threads count without writing a line
@@ -76,7 +82,7 @@ fn signed(bytes: usize) -> i64 {
     bytes as i64
 }
 
-/// The system allocator, counting every allocation and reallocation.
+/// mimalloc, counting every allocation and reallocation.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Counting;
 
@@ -143,7 +149,7 @@ fn shrink(tally: &Tally, bytes: usize) {
     }
 }
 
-// SAFETY: every call is forwarded to `System` unchanged; the counters are
+// SAFETY: every call is forwarded to `MiMalloc` unchanged; the counters are
 // atomics touched only with relaxed loads and stores, and the thread-local
 // that picks a tally neither allocates nor has a destructor.
 unsafe impl GlobalAlloc for Counting {
@@ -152,7 +158,7 @@ unsafe impl GlobalAlloc for Counting {
         count(tally, layout.size());
         grow(tally, layout.size());
         // SAFETY: the caller upholds `GlobalAlloc::alloc`'s contract.
-        unsafe { System.alloc(layout) }
+        unsafe { MiMalloc.alloc(layout) }
     }
 
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
@@ -160,13 +166,13 @@ unsafe impl GlobalAlloc for Counting {
         count(tally, layout.size());
         grow(tally, layout.size());
         // SAFETY: as above.
-        unsafe { System.alloc_zeroed(layout) }
+        unsafe { MiMalloc.alloc_zeroed(layout) }
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         shrink(mine(), layout.size());
-        // SAFETY: `ptr` came from `System` through this allocator.
-        unsafe { System.dealloc(ptr, layout) }
+        // SAFETY: `ptr` came from `MiMalloc` through this allocator.
+        unsafe { MiMalloc.dealloc(ptr, layout) }
     }
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
@@ -174,9 +180,9 @@ unsafe impl GlobalAlloc for Counting {
         // bytes move by the difference, and only if the move succeeded.
         let tally = mine();
         count(tally, new_size);
-        // SAFETY: `ptr` came from `System` through this allocator, and the
+        // SAFETY: `ptr` came from `MiMalloc` through this allocator, and the
         // caller upholds `GlobalAlloc::realloc`'s contract.
-        let moved = unsafe { System.realloc(ptr, layout, new_size) };
+        let moved = unsafe { MiMalloc.realloc(ptr, layout, new_size) };
         if !moved.is_null() {
             grow(tally, new_size);
             shrink(tally, layout.size());
