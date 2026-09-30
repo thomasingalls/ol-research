@@ -8,9 +8,11 @@
 //! An answer is a language as ISO 639-3 writes it — the detector's own
 //! code, an individual language where it names one (GlotLID's `cmn`), so
 //! the score folds macrolanguages — or `-` where the detector names none;
-//! its confidence, from 0 to 1; and the microseconds it took. Beside the
-//! answers, `<out>.about`: the detector, its model's digest, its load
-//! time, its throughput and its memory.
+//! its confidence, from 0 to 1; and the microseconds it took. A title's
+//! work's abstract, when the key holds one beside it, is answered too, in
+//! two more columns. Beside the answers, `<out>.about`: the detector, its
+//! model's digest, its load time, its throughput (every text it answered,
+//! the abstracts beside titles included) and its memory.
 
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
@@ -161,8 +163,16 @@ fn build(args: &Args) -> Result<Box<dyn Detect>, String> {
     })
 }
 
-/// The key's rows: each text's id and the text, in the key's order.
-fn read_key(path: &Path) -> Result<Vec<(String, String)>, String> {
+/// One text of the key: its id, the text, and — for a title — its work's
+/// abstract, empty otherwise.
+struct Row {
+    id: String,
+    text: String,
+    context: String,
+}
+
+/// The key's rows, in the key's order.
+fn read_key(path: &Path) -> Result<Vec<Row>, String> {
     let file = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let mut rows = Vec::new();
     for (n, line) in io::BufReader::new(file).lines().enumerate() {
@@ -173,30 +183,31 @@ fn read_key(path: &Path) -> Result<Vec<(String, String)>, String> {
             }
             continue;
         }
-        let columns: Vec<&str> = line.splitn(8, '\t').collect();
-        let [id, _, _, _, _, _, _, text] = columns.as_slice() else {
+        let columns: Vec<&str> = line.split('\t').collect();
+        let [id, _, _, _, _, _, _, text, context] = columns.as_slice() else {
             return Err(format!(
-                "{}: line {}: not eight columns",
+                "{}: line {}: not nine columns (a key drawn before the context column)",
                 path.display(),
                 n + 1
             ));
         };
-        rows.push(((*id).to_owned(), (*text).to_owned()));
+        rows.push(Row {
+            id: (*id).to_owned(),
+            text: (*text).to_owned(),
+            context: (*context).to_owned(),
+        });
     }
     Ok(rows)
 }
 
 /// A text's answer: its language, the detector's confidence, the
-/// microseconds it took.
-type Answer = (String, f64, u64);
+/// microseconds the text took, and the answer for its abstract when it has
+/// one beside it.
+type Answer = (String, f64, u64, Option<(String, f64)>);
 
 /// Every text on `workers` threads, each taking the next as it finishes
 /// one; the answers in the key's order.
-fn detect_all(
-    detector: &dyn Detect,
-    rows: &[(String, String)],
-    workers: usize,
-) -> Result<Vec<Answer>, String> {
+fn detect_all(detector: &dyn Detect, rows: &[Row], workers: usize) -> Result<Vec<Answer>, String> {
     let next = AtomicUsize::new(0);
     let mut answered: Vec<(usize, Result<Answer, String>)> = std::thread::scope(|scope| {
         let threads: Vec<_> = (0..workers)
@@ -205,18 +216,22 @@ fn detect_all(
                     let mut mine = Vec::new();
                     loop {
                         let i = next.fetch_add(1, Ordering::Relaxed);
-                        let Some((id, text)) = rows.get(i) else {
+                        let Some(row) = rows.get(i) else {
                             break mine;
                         };
-                        let started = Instant::now();
-                        let answer = detector
-                            .detect(text)
-                            .map(|(label, confidence)| {
-                                let micros = u64::try_from(started.elapsed().as_micros())
-                                    .unwrap_or(u64::MAX);
-                                (label, confidence, micros)
-                            })
-                            .map_err(|e| format!("{id}: {e}"));
+                        let answer = (|| {
+                            let started = Instant::now();
+                            let (label, confidence) = detector.detect(&row.text)?;
+                            let micros =
+                                u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
+                            let context = if row.context.is_empty() {
+                                None
+                            } else {
+                                Some(detector.detect(&row.context)?)
+                            };
+                            Ok((label, confidence, micros, context))
+                        })()
+                        .map_err(|e: String| format!("{}: {e}", row.id));
                         mine.push((i, answer));
                     }
                 })
@@ -268,9 +283,20 @@ fn run(args: &Args) -> Result<String, String> {
     let partial = PathBuf::from(format!("{}.partial", args.out.display()));
     let written = (|| -> io::Result<()> {
         let mut file = io::BufWriter::new(std::fs::File::create(&partial)?);
-        writeln!(file, "id\tlabel\tconfidence\tmicros")?;
-        for ((id, _), (label, confidence, micros)) in rows.iter().zip(&answers) {
-            writeln!(file, "{id}\t{label}\t{confidence:.6}\t{micros}")?;
+        writeln!(
+            file,
+            "id\tlabel\tconfidence\tmicros\tcontext_label\tcontext_confidence"
+        )?;
+        for (row, (label, confidence, micros, context)) in rows.iter().zip(&answers) {
+            let (context_label, context_confidence) = match context {
+                Some((l, c)) => (l.as_str(), format!("{c:.6}")),
+                None => ("", String::new()),
+            };
+            writeln!(
+                file,
+                "{}\t{label}\t{confidence:.6}\t{micros}\t{context_label}\t{context_confidence}",
+                row.id
+            )?;
         }
         file.into_inner()
             .map_err(io::IntoInnerError::into_error)?
@@ -287,9 +313,12 @@ fn run(args: &Args) -> Result<String, String> {
         }
         None => serde_json::Value::Null,
     };
+    // Every text detected, the abstracts beside titles included.
+    let abstracts = answers.iter().filter(|a| a.3.is_some()).count();
+    let detections = rows.len() + abstracts;
     let per_second = |d: Duration| {
         #[allow(clippy::cast_precision_loss)]
-        let n = rows.len() as f64;
+        let n = detections as f64;
         n / d.as_secs_f64().max(f64::MIN_POSITIVE)
     };
     let about = serde_json::json!({
@@ -298,6 +327,7 @@ fn run(args: &Args) -> Result<String, String> {
         "key": args.key.display().to_string(),
         "key_blake3": digest(&args.key)?,
         "texts": rows.len(),
+        "abstracts_beside_titles": abstracts,
         "workers": args.workers,
         "load_seconds": loaded.as_secs_f64(),
         "detect_seconds": elapsed.as_secs_f64(),
@@ -309,7 +339,7 @@ fn run(args: &Args) -> Result<String, String> {
     text.push('\n');
     std::fs::write(&about_path, text).map_err(|e| format!("{}: {e}", about_path.display()))?;
     Ok(format!(
-        "ol-rht-language detect: {} texts by {} on {} threads in {:.1} s ({:.0} a second), loaded in {:.1} s; answers: {}\n",
+        "ol-rht-language detect: {} texts and {abstracts} abstracts beside titles by {} on {} threads in {:.1} s ({:.0} a second), loaded in {:.1} s; answers: {}\n",
         rows.len(),
         args.which.name(),
         args.workers,
