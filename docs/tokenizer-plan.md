@@ -213,6 +213,67 @@ mostly English, so it says little (§7 item 9). The full report is on the
 bulk claim under `evaluation/language/ol-rht-language-d13-v2/`, with the
 hand-check sheet of Crossref's titles.
 
+### 3.4 The rules D13 weighed (2026-09-30)
+
+`ol-rht-language-d13-v3`, on key-v2: the same texts, each title with its
+own work's abstract (43,044 abstracts answered beside titles), and
+Crossref's titles drawn apart by whether they have one (19,808). GlotLID
+answered 195,451 texts in 12.4 s on 8 threads.
+
+**Weighted to how often each length occurs**, GlotLID's top answer calls
+0.953 of English titles and 0.999 of English abstracts English (lingua:
+0.801 and 1.000). §3.3's 0.866 counted a title of 20 characters or fewer
+as much as one of 100; most titles are longer.
+
+**GlotLID's misses on English titles, read** (the score's sample): the
+short ones are words any language may be written in — `Discussion.`,
+`Erratum.`, `BOTULISM.`, `Scabies.` — and the long ones plainly English
+technical titles called Danish, Dutch, Slovak or Slovenian at low
+confidence, 0.15 to 0.31: `Identification and validation of reference
+genes for RT-qPCR analysis in fetal rat pancreas.` (Danish, 0.19),
+`Toxicological safety assessment of iomeprol, a new X-ray contrast agent.`
+(Slovak, 0.21), titles thick with chemical and species names. Among the
+texts in other languages called English, several labels are wrong (§7
+item 12): `In Process Citation.` tagged Greek, `Guidelines on AIDS and
+first aid in the workplace.` tagged Hindi, an English sentence tagged
+Catalan.
+
+**English unless GlotLID names another language at a confidence t**:
+
+| t | English titles (weighted) | English abstracts (weighted) | other languages' texts called English |
+|---|---|---|---|
+| — (top answer) | 0.866 (0.953) | 0.904 (0.999) | 0.015 |
+| 0.5 | 0.947 (0.990) | 0.950 (1.000) | 0.155 |
+| 0.7 | 0.975 (0.996) | 0.968 (1.000) | 0.250 |
+| 0.9 | 0.991 (0.999) | 0.989 (1.000) | 0.366 |
+
+The low-confidence misses above are what the rule takes back. The texts
+in other languages it calls English are mostly the short, the
+language-neutral and the mislabelled of the key's 96,378 original-language
+titles; for English stemming each costs a stemmed copy in a secondary
+field. lingua at 0.5: 0.895 (0.897) of English titles, and 0.277 of the
+rest.
+
+**A title borrowing its abstract's language** (the abstract's answer at
+0.5 or above), over the 34,362 labelled titles with an abstract beside
+them — 4,678 English, 29,684 in other languages, most of those beside an
+English abstract:
+
+| rule | English titles English | other titles English | other titles right |
+|---|---|---|---|
+| the title alone | 0.930 | 0.008 | 0.817 |
+| title of 20 characters or fewer | 0.948 | 0.096 | 0.760 |
+| title's answer below 0.5 | 0.978 | 0.127 | 0.798 |
+| 50 characters or fewer | 0.965 | 0.304 | 0.587 |
+| 50 or fewer, or below 0.5 | 0.992 | 0.382 | 0.578 |
+
+Borrowing gains English titles less than the default does, and pulls
+titles in another language to English where the abstract beside them is
+English — which, in the index, is a Crossref title in its own language
+over an English abstract; how often that happens is what the hand-check
+sheet (on the claim, with each title's abstract and every answer) would
+tell.
+
 ## 4. Decisions
 
 Recommendations; the user's to take or change. The indexing policy is the
