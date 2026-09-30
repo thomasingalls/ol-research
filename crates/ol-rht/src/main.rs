@@ -124,6 +124,8 @@ use source_pubmed::Pubmed;
 use source_pubmed::normalize::{Citation, HistoryDate, HistoryTime, Published, Reference};
 
 mod analysis;
+mod language;
+mod macrolanguages;
 mod survey;
 
 /// Allocations per record are part of every report (plan §5, rule 13).
@@ -164,7 +166,9 @@ const USAGE: &str = "usage:
   ol-rht evaluate run <suite | queries> --out <run> [--store <root>] [--limit depth] [--workers N] [--restricted]
   ol-rht evaluate score <suite | key> <run> [--test]
   ol-rht evaluate compare <suite | key> <base run> <new run> [--test]
-  ol-rht evaluate misses <suite> <run> [--store <root>]";
+  ol-rht evaluate misses <suite> <run> [--store <root>]
+  ol-rht evaluate language-key --out <dir> [--store <root>] [--limit N]
+  ol-rht evaluate language-score <key dir> <answers>... [--out <hand-check.tsv>]";
 
 /// Who we say we are; `--mailto` adds an address inside the parenthesis.
 const USER_AGENT: &str = "ol-rht/0.1 (citation-graph ingestion";
@@ -265,6 +269,8 @@ fn main() -> ExitCode {
                 ("evaluate", "score") => evaluate_score(&opts),
                 ("evaluate", "compare") => evaluate_compare(&opts),
                 ("evaluate", "misses") => analysis::misses(&opts),
+                ("evaluate", "language-key") => language::key(&opts),
+                ("evaluate", "language-score") => language::score(&opts),
                 _ => usage(),
             }
         }
