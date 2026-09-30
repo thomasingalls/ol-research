@@ -594,3 +594,42 @@ async fn a_server_with_no_epoch_waits_and_then_answers() {
         .into_inner();
     assert_eq!(info.answered.unwrap().epoch, 2);
 }
+
+/// A citation over gRPC is the answer JSON gives (citation lookup plan,
+/// CL1): the works its identifiers name, each with the names that led
+/// there, and a citation's worth of text and no more.
+#[tokio::test]
+async fn a_citation_is_looked_up_by_what_it_names() {
+    let service = Arc::new(Service::new(Fake::new(1), Terms::stub()));
+    let mut client = start(service).await;
+    let answer = client
+        .lookup_citation(pb::LookupCitationRequest {
+            text: "Lovelace A. A titled work. doi:10.1000/one. PMID: 2".into(),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(
+        answer
+            .matches
+            .iter()
+            .map(|m| (m.public_id.clone(), m.named_by.clone()))
+            .collect::<Vec<_>>(),
+        [
+            (public_text(1), vec!["doi:10.1000/one".to_owned()]),
+            (public_text(2), vec!["pmid:2".to_owned()]),
+        ]
+    );
+    assert_eq!(answer.could_not, "");
+    // Found by its words too, and checked.
+    assert!(answer.matches[0].by_text);
+    assert!(answer.matches[0].verdict.as_ref().is_some_and(|v| v.passes));
+
+    let over = client
+        .lookup_citation(pb::LookupCitationRequest {
+            text: "x".repeat(ol_rht_serve::service::CITATION_MAX_BYTES + 1),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(over.code(), Code::InvalidArgument, "{over:?}");
+}

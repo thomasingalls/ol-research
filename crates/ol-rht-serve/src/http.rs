@@ -5,7 +5,7 @@
 //! calls and answers with the same message, serialized as JSON instead
 //! of protobuf, so the two transports cannot drift apart.
 //!
-//! Nine routes under `/v1`, one per call the protocol has. The two
+//! Ten routes under `/v1`, one per call the protocol has. The two
 //! streaming calls answer one page a request instead, resumed by the
 //! cursor the page carries — `epoch:offset`, the cursor the stream
 //! sends, refused the same way from another epoch (§10, item 20, on what
@@ -83,6 +83,7 @@ macro_rules! routes {
 routes! {
     "/v1/epoch" => epoch(EpochParams) -> pb::EpochInfo,
     "/v1/resolve" => resolve(ResolveParams) -> pb::ResolveResponse,
+    "/v1/citation" => citation(CitationParams) -> pb::LookupCitationResponse,
     "/v1/work" => work(WorkParams) -> pb::GetWorkResponse,
     "/v1/references" => references(ListParams) -> pb::WorkPage,
     "/v1/citers" => citers(ListParams) -> pb::WorkPage,
@@ -171,17 +172,40 @@ async fn epoch<A: Answers>(
 #[derive(Debug, Deserialize)]
 #[cfg_attr(test, derive(::ts_rs::TS), ts(export_to = "serving.ts"))]
 pub(crate) struct ResolveParams {
-    /// A name — `doi:10.1000/x`, `pmid:12345678` — or a public id.
+    /// A name — `doi:10.1000/x`, `pmid:12345678` — or a public id; or an
+    /// identifier with no namespace, or a link to one, which is read every
+    /// way it can be (2026-09-28).
     text: String,
 }
 
-/// `GET /v1/resolve?text=` — which work a name or public id is.
+/// `GET /v1/resolve?text=` — which work a name or public id is, or, for
+/// text that is no name as it stands, every name it can be read as that
+/// names something.
 async fn resolve<A: Answers>(
     State(service): State<Arc<Service<A>>>,
     Params(params): Params<ResolveParams>,
 ) -> Result<Json<pb::ResolveResponse>, Refusal> {
     let a = service.current()?;
     Ok(Json(service::resolved(&*a, service.terms(), &params.text)?))
+}
+
+/// What `/v1/citation` takes.
+#[derive(Debug, Deserialize)]
+#[cfg_attr(test, derive(::ts_rs::TS), ts(export_to = "serving.ts"))]
+pub(crate) struct CitationParams {
+    /// One citation, as text — a line from a reference list — at most
+    /// 4 KiB.
+    text: String,
+}
+
+/// `GET /v1/citation?text=` — which works a citation may be, and why
+/// (docs/citation-lookup-plan.md).
+async fn citation<A: Answers>(
+    State(service): State<Arc<Service<A>>>,
+    Params(params): Params<CitationParams>,
+) -> Result<Json<pb::LookupCitationResponse>, Refusal> {
+    let a = service.current()?;
+    Ok(Json(service::looked_up(&service, a, &params.text).await?))
 }
 
 /// What `/v1/work` takes.

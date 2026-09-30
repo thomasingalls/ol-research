@@ -43,6 +43,15 @@ impl Fields {
     pub fn searched(&self) -> Vec<Field> {
         vec![self.title, self.abstract_text, self.authors, self.venue]
     }
+
+    /// The text fields a citation's words are searched in: what a
+    /// citation names a work by — its title, its authors, its journal —
+    /// and not its abstract, which no citation carries and which shares
+    /// words with everything (citation lookup plan, D3).
+    #[must_use]
+    pub fn cited(&self) -> Vec<Field> {
+        vec![self.title, self.authors, self.venue]
+    }
 }
 
 /// The provisional mapping.

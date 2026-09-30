@@ -75,6 +75,9 @@ pub trait Answers: Send + Sync + 'static {
     fn rows(&self, ids: &[WorkId]) -> Result<HashMap<WorkId, Row>, serve::Error>;
     /// A work's public id.
     fn public_of(&self, id: WorkId) -> Option<String>;
+    /// The publisher namespaces names are held in (`reg1016`, …): where a
+    /// publisher's id typed with no namespace is looked for.
+    fn publisher_namespaces(&self) -> &[String];
     /// `n` arcs of a list from `offset`, and the list's length.
     fn page(&self, id: WorkId, direction: Direction, offset: u64, n: usize) -> Page;
     /// Works matching a query, as the query parser read it, stopped at
@@ -90,6 +93,19 @@ pub trait Answers: Send + Sync + 'static {
         facets: usize,
         until: Instant,
     ) -> Result<Hits, serve::Error>;
+    /// The top `limit` candidates for a citation's words, as the query
+    /// parser read them, searched in the fields a citation names a work by
+    /// (citation lookup plan, D3), stopped at `until`.
+    ///
+    /// # Errors
+    ///
+    /// The engine, or `search::Error::Deadline` past `until`.
+    fn candidates(
+        &self,
+        asked: &query_parser::Query,
+        limit: usize,
+        until: Instant,
+    ) -> Result<Vec<search::Hit>, serve::Error>;
     /// One hop out from a seed set along `walk`, scored and ranked;
     /// `about` is the work the question is about, left out of its own
     /// answer.
@@ -141,6 +157,10 @@ impl Answers for Serving {
         Self::public_of(self, id)
     }
 
+    fn publisher_namespaces(&self) -> &[String] {
+        Self::publisher_namespaces(self)
+    }
+
     fn page(&self, id: WorkId, direction: Direction, offset: u64, n: usize) -> Page {
         let list = |direction: Direction| match direction {
             Direction::References => self.references(id),
@@ -168,6 +188,15 @@ impl Answers for Serving {
         until: Instant,
     ) -> Result<Hits, serve::Error> {
         self.search_facets(asked, limit, facets, Some(until))
+    }
+
+    fn candidates(
+        &self,
+        asked: &query_parser::Query,
+        limit: usize,
+        until: Instant,
+    ) -> Result<Vec<search::Hit>, serve::Error> {
+        Self::candidates(self, asked, limit, Some(until))
     }
 
     fn expand(

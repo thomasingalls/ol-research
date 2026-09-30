@@ -9,6 +9,8 @@ landing such a string on a known work. Context for the ~1.15 M
 references in the corpus that carry citation text and no usable
 identifier. Companion to the [retrieval frontier](retrieval-frontier.md)
 and [retrieval benchmarks](retrieval-benchmarks.md).
+**Used:** 2026-09-27, by the [citation lookup plan](../citation-lookup-plan.md)
+— rungs 1, 4, 5 and 7 of §4, one citation at a time, nothing in ingestion.
 
 Every figure is marked by how it was checked:
 

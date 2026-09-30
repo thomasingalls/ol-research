@@ -800,6 +800,25 @@ async fn the_generated_typescript_describes_these_bodies() {
         ("ResolveResponse", "/v1/resolve?text=doi:10.1000/one"),
         ("ResolveResponse", "/v1/resolve?text=doi:10.1000/shared"),
         ("ResolveResponse", "/v1/resolve?text=pmid:9"),
+        // No namespace: every name the text can be read as.
+        ("ResolveResponse", "/v1/resolve?text=77"),
+        // A citation naming two works, one held and one a stub; and one
+        // naming nothing, which is the reason's half.
+        (
+            "LookupCitationResponse",
+            "/v1/citation?text=doi:10.1000/one.%20PMID:%202",
+        ),
+        ("LookupCitationResponse", "/v1/citation?text=PMID:%20404"),
+        // Found by its words, beside a work a PMID names: the check, and
+        // the two differing; and a near miss.
+        (
+            "LookupCitationResponse",
+            "/v1/citation?text=Lovelace%20A.%20A%20titled%20work.%20PMID:%202",
+        ),
+        (
+            "LookupCitationResponse",
+            "/v1/citation?text=Babbage%20C.%20An%20untitled%20essay.",
+        ),
         ("GetWorkResponse", "/v1/work?work=pmid:1"),
         (
             "WorkPage",
@@ -880,7 +899,7 @@ async fn the_generated_typescript_names_parameters_the_routes_take() {
     };
 
     let routes = ts.routes();
-    assert_eq!(routes.len(), 9, "the map is every route");
+    assert_eq!(routes.len(), 10, "the map is every route");
     for (path, params, _) in routes {
         let written = ts.types[params]
             .iter()
@@ -1223,6 +1242,384 @@ async fn a_slow_search_holds_no_request_thread() {
         (429, Some("resource_exhausted"))
     );
     let (status, body) = first.join().unwrap();
+    assert_eq!(
+        (status, body["code"].as_str()),
+        (504, Some("deadline_exceeded"))
+    );
+}
+
+/// A citation looked up over JSON, as its status and body.
+fn lookup(agent: &ureq::Agent, base: &str, text: &str) -> (u16, Value) {
+    let mut response = agent
+        .get(format!("{base}/v1/citation"))
+        .query("text", text)
+        .call()
+        .unwrap();
+    let status = response.status().as_u16();
+    let body = response.body_mut().read_to_string().unwrap();
+    (status, serde_json::from_str(&body).unwrap())
+}
+
+/// A citation is looked up by what it names (citation lookup plan, CL1):
+/// each identifier written in it, as written and as read, with what it
+/// names; and the works they lead to, each with the names that led there
+/// — two works when the citation disagrees with itself, listed both, and
+/// none with the reason when nothing leads anywhere.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(clippy::too_many_lines)]
+async fn a_citation_is_looked_up_by_what_it_names() {
+    let base = start(Arc::new(Service::new(Fake::new(1), Terms::stub()))).await;
+    let agent = agent();
+
+    // A DOI in capitals ending the citation's last sentence: read without
+    // the full stop, which is what the names table holds.
+    let (status, body) = lookup(
+        &agent,
+        &base,
+        "Lovelace A. A titled work. J Tests. 2026. doi:10.1000/ONE.",
+    );
+    assert_eq!(status, 200);
+    assert_eq!(
+        keys(&body),
+        [
+            "answered",
+            "could_not",
+            "differ",
+            "identifiers",
+            "matches",
+            "near_misses",
+            "only_names"
+        ]
+    );
+    assert_eq!(body["only_names"], false, "the citation has words");
+    let doi = &body["identifiers"][0];
+    assert_eq!(doi["written"], "10.1000/ONE");
+    assert_eq!(doi["name"], "doi:10.1000/one");
+    assert_eq!(doi["resolved"], "one");
+    assert_eq!(doi["public_ids"], serde_json::json!([public_text(1)]));
+    assert_eq!(body["matches"].as_array().unwrap().len(), 1);
+    assert_eq!(body["matches"][0]["public_id"], public_text(1));
+    assert_eq!(
+        body["matches"][0]["named_by"],
+        serde_json::json!(["doi:10.1000/one"])
+    );
+    assert_eq!(body["matches"][0]["summary"]["title"], "A titled work");
+    assert_eq!(body["could_not"], "");
+
+    // Two identifiers naming one work: one match, named by both.
+    let (_, both) = lookup(&agent, &base, "doi:10.1000/one. PMID: 1");
+    assert_eq!(both["identifiers"].as_array().unwrap().len(), 2);
+    assert_eq!(both["matches"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        both["matches"][0]["named_by"],
+        serde_json::json!(["doi:10.1000/one", "pmid:1"])
+    );
+
+    // Two naming different works: both listed, each with its name — the
+    // citation disagrees with itself, and that is the answer.
+    let (_, differ) = lookup(&agent, &base, "doi:10.1000/one. PMID: 2");
+    let matches = differ["matches"].as_array().unwrap();
+    assert_eq!(
+        matches
+            .iter()
+            .map(|m| (m["public_id"].clone(), m["named_by"].clone()))
+            .collect::<Vec<_>>(),
+        [
+            (
+                public_text(1).into(),
+                serde_json::json!(["doi:10.1000/one"])
+            ),
+            (public_text(2).into(), serde_json::json!(["pmid:2"])),
+        ]
+    );
+    assert_eq!(
+        matches[1]["summary"]["stub"], true,
+        "a stub is an answer too"
+    );
+
+    // A shared name and a split id lead to every work they lead to.
+    let (_, shared) = lookup(&agent, &base, "doi:10.1000/shared");
+    assert_eq!(shared["identifiers"][0]["resolved"], "shared");
+    let (_, split) = lookup(&agent, &base, "PMID: 9");
+    assert_eq!(split["identifiers"][0]["resolved"], "split");
+    for body in [&shared, &split] {
+        assert_eq!(
+            body["matches"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|m| m["public_id"].clone())
+                .collect::<Vec<_>>(),
+            [public_text(2), public_text(3)]
+        );
+    }
+
+    // A name nothing answers to is reported, and no work is listed.
+    let (_, unknown) = lookup(&agent, &base, "Some citation. PMID: 404");
+    assert_eq!(unknown["identifiers"][0]["written"], "PMID: 404");
+    assert_eq!(unknown["identifiers"][0]["resolved"], "none");
+    assert_eq!(
+        unknown["identifiers"][0]["public_ids"],
+        serde_json::json!([])
+    );
+    assert_eq!(unknown["matches"], serde_json::json!([]));
+    assert_eq!(unknown["could_not"], "nothing-came-up");
+
+    // Nothing to go on: no identifier, and no word to search.
+    let (_, blank) = lookup(&agent, &base, "   ");
+    assert_eq!(blank["could_not"], "nothing-to-go-on");
+
+    // Refused: no text, empty text, and more than a citation's worth.
+    for url in [
+        format!("{base}/v1/citation"),
+        format!("{base}/v1/citation?text="),
+    ] {
+        assert_eq!(refused(&agent, &url), (400, "invalid_argument".into()));
+    }
+    let at_cap = "x".repeat(ol_rht_serve::service::CITATION_MAX_BYTES);
+    assert_eq!(lookup(&agent, &base, &at_cap).0, 200);
+    let (status, over) = lookup(&agent, &base, &format!("{at_cap}x"));
+    assert_eq!((status, &over["code"]), (400, &"invalid_argument".into()));
+}
+
+/// A citation's words are searched, and every work they turn up is checked
+/// against it (citation lookup plan, CL3): a work that passes is listed, one
+/// that fails is a near miss with what failed, and a work an identifier
+/// names is listed whatever the check says, with the check beside it. When
+/// the identifier names one work and the words pass another, the answer
+/// says they differ. The fake's search turns up work 1 — titled "A titled
+/// work", by Ada Lovelace, with no date — for any word with `titled` in it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(clippy::too_many_lines)]
+async fn a_citation_s_words_turn_up_works_and_each_is_checked() {
+    let base = start(Arc::new(Service::new(Fake::new(1), Terms::stub()))).await;
+    let agent = agent();
+
+    // Found by its words alone, and passing on the two fields it has.
+    let (_, words) = lookup(&agent, &base, "Lovelace A. A titled work. J Tests. 2026.");
+    assert_eq!(words["identifiers"], serde_json::json!([]));
+    assert_eq!(words["could_not"], "");
+    assert_eq!(words["differ"], false);
+    let one = &words["matches"][0];
+    assert_eq!(one["public_id"], public_text(1));
+    assert_eq!(one["named_by"], serde_json::json!([]));
+    assert_eq!(one["by_text"], true);
+    let verdict = &one["verdict"];
+    assert_eq!(
+        (
+            &verdict["title"],
+            &verdict["first_author"],
+            &verdict["year"],
+            &verdict["passes"]
+        ),
+        (
+            &"agrees".into(),
+            &"agrees".into(),
+            &"work-does-not-say".into(),
+            &true.into()
+        )
+    );
+    // The row has no year, so the citation's 2026 is nothing's.
+    assert_eq!(verdict["unaccounted"], serde_json::json!(["2026"]));
+
+    assert_eq!(verdict["rule"], "every-field");
+
+    // A title typed alone passes on the title, and says so.
+    let (_, alone) = lookup(&agent, &base, "A titled work.");
+    assert_eq!(alone["matches"][0]["public_id"], public_text(1));
+    assert_eq!(alone["matches"][0]["verdict"]["rule"], "title-alone");
+    assert_eq!(
+        alone["matches"][0]["verdict"]["first_author"],
+        "not-in-citation"
+    );
+
+    // Turned up and failing: a near miss, with what failed.
+    let (_, near) = lookup(&agent, &base, "Babbage C. An untitled essay.");
+    assert_eq!(near["matches"], serde_json::json!([]));
+    assert_eq!(near["could_not"], "nothing-agreed");
+    let missed = &near["near_misses"][0];
+    assert_eq!(missed["public_id"], public_text(1));
+    assert_eq!(missed["verdict"]["title"], "not-in-citation");
+    assert_eq!(missed["verdict"]["first_author"], "not-in-citation");
+    assert_eq!(missed["verdict"]["passes"], false);
+
+    // An identifier and the words on the same work: one match, found both
+    // ways, and nothing differs.
+    let (_, same) = lookup(&agent, &base, "Lovelace A. A titled work. doi:10.1000/one");
+    assert_eq!(same["matches"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        same["matches"][0]["named_by"],
+        serde_json::json!(["doi:10.1000/one"])
+    );
+    assert_eq!(same["matches"][0]["by_text"], true);
+    assert_eq!(same["differ"], false);
+
+    // An identifier naming one work and the words passing another: both
+    // listed, the passing one first, and the answer says they differ.
+    let (_, differ) = lookup(&agent, &base, "Lovelace A. A titled work. PMID: 2");
+    assert_eq!(
+        differ["matches"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| (m["public_id"].clone(), m["named_by"].clone()))
+            .collect::<Vec<_>>(),
+        [
+            (public_text(1).into(), serde_json::json!([])),
+            (public_text(2).into(), serde_json::json!(["pmid:2"])),
+        ]
+    );
+    assert_eq!(differ["differ"], true);
+
+    // A DOI the words do not bear out: still listed, since the citation
+    // names it, with the check saying what the words do not.
+    let (_, named) = lookup(
+        &agent,
+        &base,
+        "Babbage C. An untitled essay. doi:10.1000/one",
+    );
+    let listed = &named["matches"][0];
+    assert_eq!(listed["named_by"], serde_json::json!(["doi:10.1000/one"]));
+    assert_eq!(listed["verdict"]["title"], "not-in-citation");
+    assert_eq!(listed["verdict"]["passes"], false);
+    assert_eq!(named["near_misses"], serde_json::json!([]));
+    assert_eq!(named["could_not"], "");
+}
+
+/// Find by ID takes what a person has, with no namespace (2026-09-28): a
+/// name as it stands answers as it always has, and anything else is read
+/// every way it can be — the identifiers in it, or the whole of it as one
+/// token in every namespace — and every name that names something is
+/// listed with what it names. The fake holds `pmid:77` for work 1 and
+/// `pmc:PMC77` for work 3, and `reg1016:S0000000000000001` for work 1.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(clippy::too_many_lines)]
+async fn find_by_id_needs_no_namespace() {
+    let base = start(Arc::new(Service::new(Fake::new(1), Terms::stub()))).await;
+    let agent = agent();
+    let found = |text: &str| {
+        let mut response = agent
+            .get(format!("{base}/v1/resolve"))
+            .query("text", text)
+            .call()
+            .unwrap();
+        let status = response.status().as_u16();
+        let body: Value =
+            serde_json::from_str(&response.body_mut().read_to_string().unwrap()).unwrap();
+        (status, body)
+    };
+    let names = |body: &Value| {
+        body["outcome"]["found"]["names"]
+            .as_array()
+            .unwrap_or_else(|| panic!("no list: {body}"))
+            .iter()
+            .map(|n| (n["name"].clone(), n["public_ids"].clone()))
+            .collect::<Vec<_>>()
+    };
+
+    // A number that is a PMID of one work and a PMC id of another: both.
+    let (status, body) = found("77");
+    assert_eq!(status, 200);
+    assert_eq!(
+        names(&body),
+        [
+            ("pmid:77".into(), serde_json::json!([public_text(1)])),
+            ("pmc:PMC77".into(), serde_json::json!([public_text(3)])),
+        ]
+    );
+    // A publisher's own id, in whichever publisher's namespace holds it.
+    let (_, body) = found("S0000000000000001");
+    assert_eq!(
+        names(&body),
+        [(
+            "reg1016:S0000000000000001".into(),
+            serde_json::json!([public_text(1)])
+        )]
+    );
+    // A DOI as a link and in capitals, a labelled PMID, and a public id
+    // without its `ol:`, each read as the name it is.
+    for (typed, name) in [
+        ("https://doi.org/10.1000/ONE", "doi:10.1000/one"),
+        ("PMID: 1", "pmid:1"),
+        (
+            public_text(1).trim_start_matches("ol:"),
+            public_text(1).as_str(),
+        ),
+    ] {
+        let (status, body) = found(typed);
+        assert_eq!(status, 200, "{typed}: {body}");
+        assert_eq!(
+            names(&body),
+            [(name.into(), serde_json::json!([public_text(1)]))],
+            "{typed}"
+        );
+    }
+    // A name as it stands still answers as one.
+    let (_, body) = found("pmid:77");
+    assert_eq!(body["outcome"]["public_id"], public_text(1));
+
+    // A token nothing holds, in any namespace; and words with no
+    // identifier among them.
+    let (status, body) = found("40975433");
+    assert_eq!((status, &body["code"]), (404, &"not_found".into()));
+    let (status, body) = found("not a name");
+    assert_eq!((status, &body["code"]), (400, &"invalid_argument".into()));
+}
+
+/// A citation that is one token is read as Find by ID reads it, with no
+/// namespace needed; a bare number inside a longer citation is not tried,
+/// its volume of 193 being PMID 193, another paper.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_citation_of_one_token_needs_no_namespace() {
+    let base = start(Arc::new(Service::new(Fake::new(1), Terms::stub()))).await;
+    let agent = agent();
+    let (_, number) = lookup(&agent, &base, "77");
+    assert_eq!(
+        number["identifiers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["name"].clone())
+            .collect::<Vec<_>>(),
+        ["pmid:77", "pmc:PMC77"]
+    );
+    assert_eq!(number["matches"].as_array().unwrap().len(), 2);
+    let (_, publisher) = lookup(&agent, &base, "S0000000000000001");
+    assert_eq!(
+        publisher["matches"][0]["named_by"],
+        serde_json::json!(["reg1016:S0000000000000001"])
+    );
+    let (_, inside) = lookup(&agent, &base, "Babbage C. An essay. 1951;77:12.");
+    assert_eq!(inside["identifiers"], serde_json::json!([]));
+    assert_eq!(inside["only_names"], false);
+
+    // Identifiers and nothing more — bare, as a link, labelled, or several
+    // — say so, and are not searched as words: there are none.
+    for text in [
+        "77",
+        "https://doi.org/10.1000/ONE",
+        "doi:10.1000/one. PMID: 1",
+        "PubMed PMID: 1",
+    ] {
+        let (_, body) = lookup(&agent, &base, text);
+        assert_eq!(body["only_names"], true, "{text}");
+        assert_eq!(body["near_misses"], serde_json::json!([]), "{text}");
+    }
+    let (_, with_words) = lookup(&agent, &base, "A titled work. doi:10.1000/one");
+    assert_eq!(with_words["only_names"], false);
+    assert_eq!(with_words["matches"][0]["by_text"], true);
+}
+
+/// A lookup searches, so it keeps to the search's time limit (plan, D7):
+/// one past it is refused `deadline_exceeded`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_slow_lookup_is_refused_at_the_time_limit() {
+    use std::time::Duration;
+
+    let service =
+        Service::new(Fake::new(1), Terms::stub()).searching(1, Duration::from_millis(300));
+    let base = start(Arc::new(service)).await;
+    let (status, body) = lookup(&agent(), &base, "Lovelace A. A slow work.");
     assert_eq!(
         (status, body["code"].as_str()),
         (504, Some("deadline_exceeded"))

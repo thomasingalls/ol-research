@@ -20,6 +20,7 @@ graph = { path = "crates/graph" }
 serve = { path = "crates/serve" }
 search = { path = "crates/search" }
 query-parser = { path = "crates/query-parser" }
+citation-match = { path = "crates/citation-match" }
 evaluation = { path = "crates/evaluation" }
 source-crossref = { path = "crates/source-crossref" }
 source-openalex = { path = "crates/source-openalex" }
@@ -88,6 +89,18 @@ ts-rs = "12"
 # shrunk to the smallest that fails (the user, 2026-09-25: the strong
 # preference, here and in general). Dev-dependency only.
 proptest = "1"
+# Unicode's own normalization and case folding, from ICU4X — the Unicode
+# Consortium's Rust ICU, the same project as ICU4C and ICU4J — so that a
+# citation and a title are compared as Unicode says two strings are the
+# same text, not as a hand-made table says (citation lookup plan, D11;
+# the user, 2026-09-27). The two component crates the `icu` meta-crate
+# re-exports as `icu::normalizer` and `icu::casemap`, taken alone so the
+# calendars, collation and segmentation it also carries are not built;
+# and `icu::properties`, for what Unicode says a letter, a mark and a
+# digit are, which the other two already depend on.
+icu_normalizer = "2"
+icu_casemap = "2"
+icu_properties = "2"
 # The allocator under both binaries (deployment plan §2): the dev store's
 # rebuild ran 7-8% faster on it than on the system's (2026-09-29). Built
 # from its C source, with the compiler zstd needs anyway.

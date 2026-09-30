@@ -11,6 +11,9 @@
 pub mod answers;
 pub mod convert;
 pub mod http;
+/// A citation looked up: what it names, what its words turn up, each work
+/// checked against it.
+mod lookup;
 /// The query string a route reads its parameters from, as the struct
 /// the route declares: one list of names instead of three.
 mod query;

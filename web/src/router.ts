@@ -5,6 +5,8 @@ import { browseRoute } from "@/routes/browse"
 import { searchRoute } from "@/routes/search"
 import { workRoute } from "@/routes/work-detail"
 import { resolveRoute } from "@/routes/resolve"
+import { citationRoute } from "@/routes/citation"
+import { findRoute } from "@/routes/find"
 
 /**
  * Code-based routes, not file-based. Three screens do not need a codegen step
@@ -18,7 +20,10 @@ import { resolveRoute } from "@/routes/resolve"
  */
 const routeTree = rootRoute.addChildren([
   browseRoute.addChildren([searchRoute, workRoute]),
+  findRoute,
+  // Find by ID's and Find by citation's old addresses, sent on to /find.
   resolveRoute,
+  citationRoute,
 ])
 
 /**
