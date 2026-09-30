@@ -164,6 +164,55 @@ do not write (`D770N`, `G12V`), other names (`cholangiocarcinoma`),
 RELISH, the title's own filler (`from`, `analysis`, `novel`), the title
 as query (evaluation plan §12).
 
+### 3.3 Which language a text is in (D13's measurement, 2026-09-30)
+
+The Jobs `ol-rht-language-d13-v1` (the key, lingua) and `-v2` (all three
+detectors on one build, main-fc21636): 143,557 texts drawn from 40.0
+million PubMed and 179.5 million Crossref records, 132,599 of them
+labelled by NLM (18,161 English), the rest Crossref titles by script.
+Each detector's top answer, any confidence; shares with 95% intervals over
+texts:
+
+| | GlotLID v3 | lingua 1.8 | lingua, low accuracy | both English |
+|---|---|---|---|---|
+| English titles called English | 0.866 (0.859–0.872) | 0.718 (0.709–0.727) | 0.564 | 0.682 |
+| English abstracts called English | 0.904 (0.898–0.911) | 0.909 (0.902–0.915) | 0.765 | 0.865 |
+| other languages' texts called English | 0.015 (0.015–0.016) | 0.008 (0.008–0.009) | 0.010 | 0.006 |
+| texts a second, 8 threads | 12,167 | 3,385 | 2,593 | — |
+| memory; load | 3.4 GB; 2.8 s | 320 MB; built in | 330 MB; built in | — |
+
+- **lingua takes scientific English for Latin**: its commonest wrong
+  answer on English texts is `lat`, 2,269 of 18,143; GlotLID's is `nld`,
+  333.
+- **lingua names Latin for scripts it lacks**: of Crossref's titles,
+  GlotLID calls Lao 190 of 191 and Burmese 68 of 70, and Khmer 30 of 66
+  (36 undetermined); lingua calls most of them `lat`, since it must pick
+  one of its 75 languages.
+- **GlotLID answers where there is no language**: titles without a
+  letter get a language (`pol`, `eng`), where lingua gives none; and it
+  says undetermined for 112 of 4,333 Chinese titles (lingua: 0).
+- **By language**, GlotLID is ahead on most of Europe's — Spanish,
+  French, Italian, Portuguese, Hungarian, Dutch (0.879 against 0.800),
+  Danish (0.807 against 0.666), Swedish, Slovenian — and lingua on German,
+  Turkish, Serbo-Croatian, Icelandic and Chinese (0.999 against 0.940).
+  Titles NLM romanized (Russian, Bulgarian, Ukrainian, Greek in Latin
+  letters) are 0 for all (§7 item 7); texts in their own script (Korean,
+  Cyrillic Russian, Arabic, Japanese kana) near 1 for all.
+- **Short text is where all fail**: English titles of 20 characters or
+  fewer, 0.666 (GlotLID) and 0.548 (lingua); from 51 characters, GlotLID
+  0.93–0.97.
+- **Confidence** tracks being right for GlotLID (0.22 right below 0.5,
+  0.98 at 0.99 and above), less for lingua (0.95 at the top), little for
+  lingua's low mode. A floor mostly costs English: GlotLID at 0.5 calls
+  0.792 of English titles English, and 0.011 of the rest.
+- **Both agreeing** halves the texts wrongly called English (0.015 to
+  0.006) and costs 18 points of English titles.
+
+PubMed-weighted precision is 0.9995–0.9999 for every detector: PubMed is
+mostly English, so it says little (§7 item 9). The full report is on the
+bulk claim under `evaluation/language/ol-rht-language-d13-v2/`, with the
+hand-check sheet of Crossref's titles.
+
 ## 4. Decisions
 
 Recommendations; the user's to take or change. The indexing policy is the
