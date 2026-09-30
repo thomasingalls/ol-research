@@ -28,7 +28,7 @@ use smallvec::SmallVec;
 use crate::arena::{Arena, NameIx};
 use crate::contributor::Contributor;
 use crate::copies::{self, Copies, Fate};
-use crate::name::{Assertion, Field, Name, OwnedName};
+use crate::name::{ALIASES, Assertion, Field, Name, OwnedName};
 use crate::sets;
 use crate::title::{self, Agreement, OwnedTitles};
 use crate::view::Unmapped;
@@ -126,6 +126,14 @@ pub enum Error {
         #[allow(missing_docs)]
         name: String,
     },
+    /// A record's newest copy the copies read did not see by its set and
+    /// place ([`copies::Error::Unread`]).
+    Unread {
+        #[allow(missing_docs)]
+        set: Box<str>,
+        /// From one.
+        ordinal: u64,
+    },
 }
 
 impl fmt::Display for Error {
@@ -171,6 +179,10 @@ impl fmt::Display for Error {
                 "{}: record {ordinal} asserts {name}, which the run's dictionary lacks",
                 path.display()
             ),
+            Self::Unread { set, ordinal } => write!(
+                f,
+                "{set}: record {ordinal} speaks, and the copies read did not see it there"
+            ),
         }
     }
 }
@@ -180,6 +192,7 @@ impl From<copies::Error> for Error {
         match e {
             copies::Error::Io { path, source } => Self::Io { path, source },
             copies::Error::NoNativeName { path, ordinal } => Self::NoNativeName { path, ordinal },
+            copies::Error::Unread { set, ordinal } => Self::Unread { set, ordinal },
         }
     }
 }
@@ -246,6 +259,18 @@ pub struct Stats {
     pub star_assertions: u64,
     /// The largest, written out, for the report.
     pub star_examples: Vec<String>,
+    /// Aliases refused as names their own work corrects ([`Reason::Corrected`]).
+    pub corrected: u64,
+    /// The records giving the most of them, written out, for the report.
+    pub corrected_examples: Vec<String>,
+    /// The records whose aliases their source's list says are what they
+    /// correct ([`crate::Contributor::corrects_its_aliases`]), each
+    /// written out: every one a judgment by hand, for the report.
+    pub listed_corrections: Vec<String>,
+    /// Aliases refused as a container's ([`Reason::Container`]).
+    pub container_aliases: u64,
+    /// The records giving the most of them, written out, for the report.
+    pub container_examples: Vec<String>,
 }
 
 /// The identity pass, accumulating over every set of every source.
@@ -267,9 +292,19 @@ pub struct Identity {
     stubs: Arena,
     stub_parent: Vec<NameIx>,
     pending: Vec<(SourceId, OwnedName)>,
-    /// Publisher-id claims, held back from the union until every record
-    /// is in: see [`Identity::settle`].
+    /// Publisher-id and alias claims, held back from the union until
+    /// every record is in: see [`Identity::settle`].
     deferred: Vec<(RecordIx, NameIx, Field)>,
+    /// A container's aliases, which `settle` refuses.
+    container_claims: Vec<(RecordIx, NameIx, Field)>,
+    /// What each record says it corrects, retracts or updates, as names
+    /// of the run ([`crate::relation::Kind::corrects`]), and a listed
+    /// record's aliases ([`Contributor::corrects_its_aliases`]), for
+    /// `settle`.
+    corrects: Vec<(RecordIx, NameIx)>,
+    /// The same given to [`Identity::push_with`] by name, found at
+    /// `settle`, when every record is in.
+    corrects_named: Vec<(RecordIx, OwnedName)>,
     /// The claims `settle` and `cut_stars` rejected, each on the
     /// record that made it.
     collisions: Vec<(RecordIx, Refusal)>,
@@ -442,8 +477,8 @@ impl Identity {
                 .enumerate()
             {
                 let work = work.map_err(io)?;
-                match self.record::<S>(&work, set_ix, set, i as u64 + 1, copies) {
-                    Kept::Record => {}
+                let rix = match self.record::<S>(&work, set_ix, set, i as u64 + 1, copies) {
+                    Kept::Record(rix) => rix,
                     Kept::Joined | Kept::Silent => continue,
                     Kept::NoNative => {
                         return Err(Error::NoNativeName {
@@ -458,9 +493,27 @@ impl Identity {
                             name: name.to_string(),
                         });
                     }
+                };
+                if S::corrects_its_aliases(&work) {
+                    S::names(&work, &mut |a| {
+                        if a.field == ALIASES
+                            && let Some(ix) = self.arena.find(a.name)
+                        {
+                            self.corrects.push((rix, ix));
+                        }
+                    });
+                    self.listed(rix);
                 }
                 let related = S::relations(&work, table, &mut |r| {
                     if let Some(target) = r.target {
+                        // A name the record says it corrects is one no
+                        // alias of its work may be (§11 item 28); one no
+                        // record asserts is no alias of anything.
+                        if r.kind.corrects()
+                            && let Some(ix) = self.arena.find(target.as_name())
+                        {
+                            self.corrects.push((rix, ix));
+                        }
                         self.pending.push((S::SOURCE, target));
                     }
                 });
@@ -495,12 +548,29 @@ impl Identity {
     /// # Errors
     ///
     /// No native name among the assertions.
-    #[allow(clippy::cast_possible_truncation)] // fewer than 2^32 records in a run
     pub fn push(
         &mut self,
         source: SourceId,
         assertions: &[Assertion<'_>],
         titles: title::Titles<'_>,
+    ) -> Result<RecordIx, Error> {
+        self.push_with(source, assertions, titles, &Facts::default())
+    }
+
+    /// [`Identity::push`] with what the set phases learn from a record
+    /// beside its names: whether it is a container's, and what it says it
+    /// corrects ([`Facts`]).
+    ///
+    /// # Errors
+    ///
+    /// No native name among the assertions.
+    #[allow(clippy::cast_possible_truncation)] // fewer than 2^32 records in a run
+    pub fn push_with(
+        &mut self,
+        source: SourceId,
+        assertions: &[Assertion<'_>],
+        titles: title::Titles<'_>,
+        facts: &Facts<'_>,
     ) -> Result<RecordIx, Error> {
         let before = self.records.len();
         let set = self.set_index(Path::new("<memory>")).unwrap_or_else(|| {
@@ -510,8 +580,9 @@ impl Identity {
             (self.sets.len() - 1) as u32
         });
         let mut asserts: SmallVec<[Assert; 5]> = SmallVec::new();
-        // As in `record`: a publisher id waits for `settle`.
+        // As in `record`: a publisher id or an alias waits for `settle`.
         let mut claims: SmallVec<[Assert; 2]> = SmallVec::new();
+        let mut container_aliases: SmallVec<[Assert; 1]> = SmallVec::new();
         let mut native = None;
         for a in assertions {
             let Some(ix) = self.arena.intern(a.name) else {
@@ -533,13 +604,14 @@ impl Identity {
                 field: Field::of(a.field),
                 native: a.native,
             };
-            if a.name.key() == Key::Publisher {
-                if !claims.iter().any(|x| x.name == ix) {
-                    claims.push(assert);
-                }
-            } else if !asserts.iter().any(|x| x.name == ix) {
-                asserts.push(assert);
-            }
+            classify(
+                a,
+                assert,
+                facts.container,
+                &mut asserts,
+                &mut claims,
+                &mut container_aliases,
+            );
         }
         let Some(native) = native else {
             return Err(Error::NoNativeName {
@@ -547,31 +619,56 @@ impl Identity {
                 ordinal: before as u64 + 1,
             });
         };
-        if let Some(rix) = self.native_record(native) {
+        held_back(&asserts, &mut claims, &mut container_aliases);
+        let rix = if let Some(rix) = self.native_record(native) {
             *self.stats.repeated.entry(source).or_default() += 1;
-            self.defer(rix, &claims);
-            return Ok(rix);
+            rix
+        } else {
+            for a in &asserts {
+                self.union(native, a.name);
+                *self
+                    .stats
+                    .asserted
+                    .entry((source, a.field.name()))
+                    .or_default() += 1;
+            }
+            let rix = before as RecordIx;
+            self.set_native(native, rix);
+            self.records.push(Record {
+                source,
+                native,
+                asserts,
+            });
+            self.set_of.push(set);
+            self.titles.insert(rix, OwnedTitles::of(titles));
+            *self.stats.records.entry(source).or_default() += 1;
+            rix
+        };
+        self.defer(rix, &claims, &container_aliases);
+        for name in facts.corrects {
+            self.corrects_named.push((rix, name.to_owned()));
         }
-        for a in &asserts {
-            self.union(native, a.name);
-            *self
-                .stats
-                .asserted
-                .entry((source, a.field.name()))
-                .or_default() += 1;
+        if facts.corrects_its_aliases {
+            let alias = Field::of(ALIASES);
+            for a in claims.iter().filter(|a| a.field == alias) {
+                self.corrects.push((rix, a.name));
+            }
+            self.listed(rix);
         }
-        let rix = before as RecordIx;
-        self.set_native(native, rix);
-        self.records.push(Record {
-            source,
-            native,
-            asserts,
-        });
-        self.set_of.push(set);
-        self.titles.insert(rix, OwnedTitles::of(titles));
-        self.defer(rix, &claims);
-        *self.stats.records.entry(source).or_default() += 1;
         Ok(rix)
+    }
+
+    /// A record whose source's list says its aliases are what it
+    /// corrects ([`Contributor::corrects_its_aliases`]), written out for
+    /// the report once however many of its copies speak.
+    fn listed(&mut self, rix: RecordIx) {
+        let native = self
+            .arena
+            .get(self.records[rix as usize].native)
+            .to_string();
+        if !self.stats.listed_corrections.contains(&native) {
+            self.stats.listed_corrections.push(native);
+        }
     }
 
     /// Interns one copy's names and joins them, unless a deletion
@@ -608,11 +705,14 @@ impl Identity {
             }
         };
         let mut asserts: SmallVec<[Assert; 5]> = SmallVec::new();
-        // Publisher ids are held back from the union until every record
-        // is in. Whether one identifies an article at all is a fact about
-        // the whole run and not about this record (§3.3, 2026-09-19), and
-        // a union cannot be undone once made.
+        // Publisher ids and aliases are held back from the union until
+        // every record is in. Whether one identifies this record's article
+        // is a fact about the whole run and not about this record (§3.3,
+        // 2026-09-19; §11 item 28, 2026-09-27), and a union cannot be
+        // undone once made. A container's aliases are no names of it.
         let mut claims: SmallVec<[Assert; 2]> = SmallVec::new();
+        let mut container_aliases: SmallVec<[Assert; 1]> = SmallVec::new();
+        let container = S::container(work);
         let mut native = None;
         for a in &assertions {
             let Some(ix) = self.arena.intern(a.name) else {
@@ -630,17 +730,19 @@ impl Identity {
                 field: Field::of(a.field),
                 native: a.native,
             };
-            if a.name.key() == Key::Publisher {
-                if !claims.iter().any(|x| x.name == ix) {
-                    claims.push(assert);
-                }
-            } else if !asserts.iter().any(|x| x.name == ix) {
-                asserts.push(assert);
-            }
+            classify(
+                a,
+                assert,
+                container,
+                &mut asserts,
+                &mut claims,
+                &mut container_aliases,
+            );
         }
         let Some(native) = native else {
             return Kept::NoNative;
         };
+        held_back(&asserts, &mut claims, &mut container_aliases);
         if let Some(rix) = self.native_record(native) {
             *self.stats.repeated.entry(S::SOURCE).or_default() += 1;
             let known = &self.records[rix as usize].asserts;
@@ -659,11 +761,11 @@ impl Identity {
                     .or_default() += 1;
                 *self.stats.joined.entry(S::SOURCE).or_default() += 1;
             }
-            self.defer(rix, &claims);
+            self.defer(rix, &claims, &container_aliases);
             // The title pass reads the set the speaking copy is in.
             if speaks {
                 self.set_of[rix as usize] = set_ix;
-                return Kept::Record;
+                return Kept::Record(rix);
             }
             return Kept::Joined;
         }
@@ -683,17 +785,25 @@ impl Identity {
             asserts,
         });
         self.set_of.push(set_ix);
-        self.defer(rix, &claims);
+        self.defer(rix, &claims, &container_aliases);
         *self.stats.records.entry(S::SOURCE).or_default() += 1;
-        if speaks { Kept::Record } else { Kept::Joined }
+        if speaks {
+            Kept::Record(rix)
+        } else {
+            Kept::Joined
+        }
     }
 
-    /// Keeps a record's publisher-id claims for [`Identity::settle`]. The
-    /// same claim from two copies of one record is one claim, which
-    /// `settle` sees when it groups them, so nothing is counted here.
-    fn defer(&mut self, rix: RecordIx, claims: &[Assert]) {
+    /// Keeps a record's publisher-id and alias claims, and a container's
+    /// aliases, for [`Identity::settle`]. The same claim from two copies
+    /// of one record is one claim, which `settle` sees when it groups
+    /// them, so nothing is counted here.
+    fn defer(&mut self, rix: RecordIx, claims: &[Assert], container_aliases: &[Assert]) {
         for a in claims {
             self.deferred.push((rix, a.name, a.field));
+        }
+        for a in container_aliases {
+            self.container_claims.push((rix, a.name, a.field));
         }
     }
 
@@ -751,11 +861,25 @@ impl Identity {
     /// use it is for. The price is a source's duplicate records of one
     /// article (§3.3): their shared publisher id is refused too, which
     /// costs a name and never a merge.
+    ///
+    /// Crossref's aliases are claims too (merge plan §11 item 28, the
+    /// user's rules of 2026-09-27), settled here by three rules. The one
+    /// above, but only for an alias no record holds as its own DOI: one a
+    /// record holds names that record, and its claimants join it as they
+    /// always did. An alias a record of the claimant's own group — the
+    /// records the joins before any claim put together — says it
+    /// corrects, retracts or updates is refused on that claim
+    /// ([`Reason::Corrected`]): a notice is not the work it notices. And a
+    /// container's aliases are refused on its record
+    /// ([`Reason::Container`]). A name those two take off every record
+    /// that gave it is in no component.
     fn settle(&mut self) {
         if self.settled {
             return;
         }
         self.settled = true;
+        let alias = Field::of(ALIASES);
+        let corrected = self.corrections();
         let deferred = std::mem::take(&mut self.deferred);
         // In the order each name was first claimed, which is the order the
         // sets were read in, so that the order records gain names — and so
@@ -774,8 +898,54 @@ impl Identity {
             }
         }
         drop(first);
+        // Each alias claimant's group as the joins before any claim left
+        // it: the claims accepted below join groups, and a group's
+        // corrections are what its records said before that.
+        let mut group: HashMap<RecordIx, NameIx> = HashMap::new();
+        if !corrected.is_empty() {
+            for (_, by) in &claims {
+                for &(rix, field) in by {
+                    if field == alias && !group.contains_key(&rix) {
+                        let native = self.records[rix as usize].native;
+                        group.insert(rix, self.find(native));
+                    }
+                }
+            }
+        }
+        // Names a claim-by-claim refusal took off a record, which may then
+        // be in no record at all.
+        let mut taken: Vec<NameIx> = Vec::new();
+        let mut corrected_by: HashMap<RecordIx, u64> = HashMap::new();
         for (ix, mut by) in claims {
             by.sort_unstable_by_key(|(rix, _)| *rix);
+            if !corrected.is_empty() {
+                let mut kept: Claimants = SmallVec::new();
+                for (rix, field) in by {
+                    if field == alias
+                        && group
+                            .get(&rix)
+                            .is_some_and(|&root| corrected.contains(&(root, ix)))
+                    {
+                        let source = self.records[rix as usize].source;
+                        *self
+                            .stats
+                            .asserted
+                            .entry((source, field.name()))
+                            .or_default() += 1;
+                        self.collisions
+                            .push((rix, (ix, Reason::Corrected, None, field)));
+                        self.stats.corrected += 1;
+                        *corrected_by.entry(rix).or_default() += 1;
+                        taken.push(ix);
+                    } else {
+                        kept.push((rix, field));
+                    }
+                }
+                by = kept;
+                if by.is_empty() {
+                    continue;
+                }
+            }
             let mut per_source = [0u32; SourceId::ALL.len()];
             for &(rix, field) in &by {
                 let source = self.records[rix as usize].source;
@@ -786,35 +956,11 @@ impl Identity {
                     .entry((source, field.name()))
                     .or_default() += 1;
             }
-            if per_source.iter().any(|&n| n > 1) {
-                self.refused.insert(ix);
-                self.stats.collided += 1;
-                self.stats.collided_assertions += by.len() as u64;
-                let per: Vec<String> = SourceId::ALL
-                    .iter()
-                    .zip(per_source)
-                    .filter(|(_, n)| *n > 0)
-                    .map(|(s, n)| format!("{s} {n}"))
-                    .collect();
-                self.refusals.push((
-                    by.len(),
-                    format!(
-                        "{} on {} records ({})",
-                        self.arena.get(ix),
-                        by.len(),
-                        per.join(", ")
-                    ),
-                ));
-                // The worst are the ones worth printing, and holding
-                // every refusal of a corpus is not worth the bytes.
-                if self.refusals.len() > EXAMPLES * 4 {
-                    self.refusals.sort_by_key(|(n, _)| Reverse(*n));
-                    self.refusals.truncate(EXAMPLES);
-                }
-                for &(rix, field) in &by {
-                    self.collisions
-                        .push((rix, (ix, Reason::NotAnArticleId, None, field)));
-                }
+            // An alias some record holds as its own names that record, and
+            // its claimants join it as before; a publisher id is no
+            // record's own.
+            if per_source.iter().any(|&n| n > 1) && self.native_record(ix).is_none() {
+                self.refuse_collided(ix, &by, per_source);
                 continue;
             }
             for (rix, field) in by {
@@ -830,6 +976,125 @@ impl Identity {
         self.refusals.sort_by_key(|(n, _)| Reverse(*n));
         self.refusals.truncate(EXAMPLES);
         self.stats.collided_examples = self.refusals.iter().map(|(_, e)| e.clone()).collect();
+        let container_by = self.refuse_container_aliases(&mut taken);
+        self.stats.corrected_examples = self.largest(corrected_by);
+        self.stats.container_examples = self.largest(container_by);
+        self.refuse_unheld(taken);
+    }
+
+    /// What each group of records says it corrects, retracts or updates,
+    /// as (group, name): a group is the records the joins so far have put
+    /// together by their own names, before any claim joins them further
+    /// (§11 item 28).
+    fn corrections(&mut self) -> HashSet<(NameIx, NameIx)> {
+        let named = std::mem::take(&mut self.corrects_named);
+        for (rix, name) in named {
+            if let Some(ix) = self.arena.find(name.as_name()) {
+                self.corrects.push((rix, ix));
+            }
+        }
+        let mut corrected: HashSet<(NameIx, NameIx)> = HashSet::new();
+        for (rix, ix) in std::mem::take(&mut self.corrects) {
+            let native = self.records[rix as usize].native;
+            corrected.insert((self.find(native), ix));
+        }
+        corrected
+    }
+
+    /// A claim one source made for more than one of its records, refused
+    /// on each as no article's id, and counted with an example.
+    fn refuse_collided(
+        &mut self,
+        ix: NameIx,
+        by: &Claimants,
+        per_source: [u32; SourceId::ALL.len()],
+    ) {
+        self.refused.insert(ix);
+        self.stats.collided += 1;
+        self.stats.collided_assertions += by.len() as u64;
+        let per: Vec<String> = SourceId::ALL
+            .iter()
+            .zip(per_source)
+            .filter(|(_, n)| *n > 0)
+            .map(|(s, n)| format!("{s} {n}"))
+            .collect();
+        self.refusals.push((
+            by.len(),
+            format!(
+                "{} on {} records ({})",
+                self.arena.get(ix),
+                by.len(),
+                per.join(", ")
+            ),
+        ));
+        // The worst are the ones worth printing, and holding every
+        // refusal of a corpus is not worth the bytes.
+        if self.refusals.len() > EXAMPLES * 4 {
+            self.refusals.sort_by_key(|(n, _)| Reverse(*n));
+            self.refusals.truncate(EXAMPLES);
+        }
+        for &(rix, field) in by {
+            self.collisions
+                .push((rix, (ix, Reason::NotAnArticleId, None, field)));
+        }
+    }
+
+    /// A container's aliases, each once however many copies gave it,
+    /// refused on its record ([`Reason::Container`]); how many each record
+    /// gave.
+    fn refuse_container_aliases(&mut self, taken: &mut Vec<NameIx>) -> HashMap<RecordIx, u64> {
+        let mut claims = std::mem::take(&mut self.container_claims);
+        claims.sort_unstable_by_key(|&(rix, ix, _)| (rix, ix));
+        claims.dedup_by_key(|&mut (rix, ix, _)| (rix, ix));
+        let mut by: HashMap<RecordIx, u64> = HashMap::new();
+        for (rix, ix, field) in claims {
+            let source = self.records[rix as usize].source;
+            *self
+                .stats
+                .asserted
+                .entry((source, field.name()))
+                .or_default() += 1;
+            self.collisions
+                .push((rix, (ix, Reason::Container, None, field)));
+            self.stats.container_aliases += 1;
+            *by.entry(rix).or_default() += 1;
+            taken.push(ix);
+        }
+        by
+    }
+
+    /// A name a claim-by-claim refusal took off every record that gave it
+    /// is in no component, as a refused publisher id is, and a stub's
+    /// where cited.
+    fn refuse_unheld(&mut self, taken: Vec<NameIx>) {
+        if taken.is_empty() {
+            return;
+        }
+        let mut held = vec![0u64; self.arena.len().div_ceil(64)];
+        for r in &self.records {
+            for a in &r.asserts {
+                held[a.name as usize / 64] |= 1 << (a.name % 64);
+            }
+        }
+        for ix in taken {
+            if held[ix as usize / 64] & (1 << (ix % 64)) == 0 {
+                self.refused.insert(ix);
+            }
+        }
+    }
+
+    /// The records refusing the most, written out for the report: each
+    /// record's native name and how many of its claims were refused.
+    fn largest(&self, by: HashMap<RecordIx, u64>) -> Vec<String> {
+        let mut by: Vec<(RecordIx, u64)> = by.into_iter().collect();
+        by.sort_unstable_by_key(|&(rix, n)| (Reverse(n), rix));
+        by.truncate(EXAMPLES);
+        by.into_iter()
+            .map(|(rix, n)| {
+                let r = &self.records[rix as usize];
+                format!("{}={}: {n}", r.source, self.arena.get(r.native))
+            })
+            .collect()
     }
 
     /// Finds the conflict components (merge plan §3.2): more than one name
@@ -1320,7 +1585,7 @@ impl Identity {
             stub_parent: self.stub_parent,
             records: self.records,
             natives: self.natives,
-            works,
+            works: Works::from(works),
             stats: self.stats,
             components,
         })
@@ -1565,10 +1830,19 @@ impl Identity {
                 })
                 .collect();
             if dois.len() > 1 {
-                if dois.iter().any(|a| {
-                    dois.iter()
-                        .any(|b| a != b && a.replace("//", "/") == b.replace("//", "/"))
-                }) {
+                // One DOI spelled twice: APA's legacy `//`, or a letter
+                // beyond ASCII and its ASCII twin (`mentál`, `mental`).
+                let spelled = |d: &str| {
+                    let d = d.replace("//", "/");
+                    model::Doi::parse(&d)
+                        .ok()
+                        .and_then(|doi| doi.ascii_spelling())
+                        .map_or(d.clone(), |ascii| ascii.as_str().to_owned())
+                };
+                if dois
+                    .iter()
+                    .any(|a| dois.iter().any(|b| a != b && spelled(a) == spelled(b)))
+                {
                     labels.spelling = true;
                 } else {
                     labels.two_dois = true;
@@ -1588,7 +1862,10 @@ impl Identity {
     }
 
     /// The precedence of §3.4: one promoted name per namespace, the rest
-    /// aliases; shared names stay shared.
+    /// aliases; shared names stay shared. Among DOIs of one rank, one
+    /// with letters beyond ASCII is shown before its ASCII twin (the
+    /// user, 2026-09-26: "the accented one should be displayed when
+    /// available"), and then the lower spelling.
     fn promote(&self, work: &mut Work) {
         for key in Key::ALL {
             let candidates: SmallVec<[usize; 4]> = work
@@ -1614,7 +1891,9 @@ impl Identity {
                     // publisher, through whichever record carries it.
                     Key::Pmc | Key::OpenAlex | Key::Publisher => 0,
                 };
-                (rank, self.arena.get(n.name).clone())
+                let name = self.arena.get(n.name).clone();
+                let ascii = matches!(&*name, OwnedName::Doi(d) if d.is_ascii());
+                (rank, ascii, name)
             }) else {
                 continue;
             };
@@ -1681,7 +1960,7 @@ impl Identity {
 /// What became of one record read from a set.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Kept {
-    Record,
+    Record(RecordIx),
     /// A copy a newer one speaks over, whose names joined the record's
     /// (merge plan §8): its relations are not the record's — the
     /// speaking copy alone gives those.
@@ -1695,6 +1974,59 @@ enum Kept {
 
 /// A rejected name, why, and the record that holds it, if one does.
 type Refusal = (NameIx, Reason, Option<RecordIx>, Field);
+
+/// What [`Identity::push_with`] is told of a record beside its names,
+/// which the set phases read from the record itself: whether it is a
+/// container's ([`crate::Contributor::container`]), the names it says
+/// it corrects, retracts or updates ([`crate::relation::Kind::corrects`]),
+/// and whether its source's list says its aliases are what it corrects
+/// ([`crate::Contributor::corrects_its_aliases`]).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Facts<'a> {
+    #[allow(missing_docs)]
+    pub container: bool,
+    #[allow(missing_docs)]
+    pub corrects: &'a [Name<'a>],
+    #[allow(missing_docs)]
+    pub corrects_its_aliases: bool,
+}
+
+/// Sorts one of a record's assertions: a publisher id or an alias is a
+/// claim, held back until every record is in (§3.3; §11 item 28); a
+/// container's alias is kept apart, to be refused; anything else joins at
+/// once. Each name once.
+fn classify(
+    a: &Assertion<'_>,
+    assert: Assert,
+    container: bool,
+    asserts: &mut SmallVec<[Assert; 5]>,
+    claims: &mut SmallVec<[Assert; 2]>,
+    container_aliases: &mut SmallVec<[Assert; 1]>,
+) {
+    let alias = !a.native && a.field == ALIASES;
+    if alias && container {
+        if !container_aliases.iter().any(|x| x.name == assert.name) {
+            container_aliases.push(assert);
+        }
+    } else if alias || a.name.key() == Key::Publisher {
+        if !claims.iter().any(|x| x.name == assert.name) {
+            claims.push(assert);
+        }
+    } else if !asserts.iter().any(|x| x.name == assert.name) {
+        asserts.push(assert);
+    }
+}
+
+/// A claim a record also asserts outright — its DOI given again among its
+/// aliases — is that assertion and not a claim.
+fn held_back(
+    asserts: &[Assert],
+    claims: &mut SmallVec<[Assert; 2]>,
+    container_aliases: &mut SmallVec<[Assert; 1]>,
+) {
+    claims.retain(|c| !asserts.iter().any(|a| a.name == c.name));
+    container_aliases.retain(|c| !asserts.iter().any(|a| a.name == c.name));
+}
 
 /// The records claiming one publisher id, each once, with the field.
 type Claimants = SmallVec<[(RecordIx, Field); 2]>;
@@ -1845,7 +2177,22 @@ pub enum Reason {
     /// volume's, a journal's title in the slot — or a name every record of
     /// a star beyond the rules carries under a title of its own (§3.3,
     /// 2026-09-24) — a container's DOI on its parts, or a DOI cut short.
+    /// An alias one source gives several of its records, and none holds as
+    /// its own, is refused so too (§11 item 28, 2026-09-27): a volume's DOI
+    /// every article of the volume gives as an alias names none of them.
     NotAnArticleId,
+    /// An alias that a record of the claimant's own work says it corrects,
+    /// retracts or updates ([`crate::relation::Kind::corrects`]): a notice
+    /// is not the work it notices (§11 item 28, the user's rule of
+    /// 2026-09-27) — a correction whose deposit gives the 102 abstracts it
+    /// corrects as its aliases.
+    Corrected,
+    /// An alias a container's record gives — a journal's, a volume's, an
+    /// issue's, a series' ([`crate::Form::is_container`]): a container is
+    /// not the articles in it (§11 item 28, the user's rule of 2026-09-27)
+    /// — a journal's record giving 655 of its articles' old DOIs as its
+    /// aliases.
+    Container,
 }
 
 impl fmt::Display for Reason {
@@ -1853,6 +2200,8 @@ impl fmt::Display for Reason {
         f.write_str(match self {
             Self::WrongLink => "wrong link",
             Self::NotAnArticleId => "not an article's id",
+            Self::Corrected => "a name its own work corrects",
+            Self::Container => "a container's alias",
         })
     }
 }
@@ -1873,9 +2222,57 @@ pub struct Work {
 }
 
 impl Work {
+    /// The work borrowed, as [`Works`] gives one.
+    #[must_use]
+    pub fn borrowed(&self) -> WorkRef<'_> {
+        WorkRef {
+            records: &self.records,
+            names: &self.names,
+            rejected: &self.rejected,
+            duplicates: self.duplicates,
+            uncorroborated: self.uncorroborated,
+        }
+    }
+
     /// The sources holding a record of the work.
     #[must_use]
     pub fn sources(&self, records: &[Record]) -> Sources {
+        self.borrowed().sources(records)
+    }
+
+    /// The promoted name of one namespace.
+    #[must_use]
+    pub fn promoted<'a>(&self, key: Key, arena: &'a Arena) -> Option<Cow<'a, OwnedName>> {
+        self.borrowed().promoted(key, arena)
+    }
+
+    /// The names the registry keys the work by ([`WorkRef::registry_names`]).
+    #[must_use]
+    pub fn registry_names(&self, arena: &Arena) -> Vec<OwnedName> {
+        self.borrowed().registry_names(arena)
+    }
+}
+
+/// A work as [`Works`] keeps it, borrowed: what a [`Work`] holds, its
+/// lists as slices.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WorkRef<'a> {
+    #[allow(missing_docs)]
+    pub records: &'a [RecordIx],
+    #[allow(missing_docs)]
+    pub names: &'a [WorkName],
+    #[allow(missing_docs)]
+    pub rejected: &'a [Rejection],
+    /// Sources with more than one record in this work.
+    pub duplicates: Sources,
+    /// Some record had no title to test, and was joined untested.
+    pub uncorroborated: bool,
+}
+
+impl WorkRef<'_> {
+    /// The sources holding a record of the work.
+    #[must_use]
+    pub fn sources(self, records: &[Record]) -> Sources {
         self.records
             .iter()
             .map(|&rix| records[rix as usize].source)
@@ -1884,7 +2281,7 @@ impl Work {
 
     /// The promoted name of one namespace.
     #[must_use]
-    pub fn promoted<'a>(&self, key: Key, arena: &'a Arena) -> Option<Cow<'a, OwnedName>> {
+    pub fn promoted(self, key: Key, arena: &Arena) -> Option<Cow<'_, OwnedName>> {
         self.names
             .iter()
             .find(|n| n.standing == Standing::Promoted && arena.key(n.name) == key)
@@ -1895,7 +2292,7 @@ impl Work {
     /// is not shared, promoted ones first in namespace order, then the
     /// aliases sorted — a deterministic key for a deterministic order.
     #[must_use]
-    pub fn registry_names(&self, arena: &Arena) -> Vec<OwnedName> {
+    pub fn registry_names(self, arena: &Arena) -> Vec<OwnedName> {
         let mut out: Vec<OwnedName> = Key::ALL
             .iter()
             .filter_map(|&k| self.promoted(k, arena).map(Cow::into_owned))
@@ -1908,6 +2305,126 @@ impl Work {
             .collect();
         aliases.sort();
         out.extend(aliases);
+        out
+    }
+}
+
+/// Every work of a resolution, in flat arrays by offset where a [`Work`]
+/// keeps three small lists inline: about 33 bytes a work against 104
+/// (the merge's memory, 2026-09-26; step 2d's "works themselves as flat
+/// arrays"). Made once the pass has resolved, and read, never changed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Works {
+    records: Vec<RecordIx>,
+    names: Vec<WorkName>,
+    rejected: Vec<Rejection>,
+    /// Where each work's records, names and rejections start, and past
+    /// the last work, where they end.
+    starts: Vec<[u32; 3]>,
+    flags: Vec<(Sources, bool)>,
+}
+
+impl Default for Works {
+    fn default() -> Self {
+        Self {
+            records: Vec::new(),
+            names: Vec::new(),
+            rejected: Vec::new(),
+            starts: vec![[0; 3]],
+            flags: Vec::new(),
+        }
+    }
+}
+
+impl Works {
+    /// How many works.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.flags.len()
+    }
+
+    /// No works.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.flags.is_empty()
+    }
+
+    /// Work `w`.
+    ///
+    /// # Panics
+    ///
+    /// Past the last work, as an index would.
+    #[must_use]
+    pub fn get(&self, w: usize) -> WorkRef<'_> {
+        let ([r0, n0, j0], [r1, n1, j1]) = (self.starts[w], self.starts[w + 1]);
+        let (duplicates, uncorroborated) = self.flags[w];
+        WorkRef {
+            records: &self.records[r0 as usize..r1 as usize],
+            names: &self.names[n0 as usize..n1 as usize],
+            rejected: &self.rejected[j0 as usize..j1 as usize],
+            duplicates,
+            uncorroborated,
+        }
+    }
+
+    /// Every work, in order.
+    #[must_use = "an iterator does nothing unless consumed"]
+    pub fn iter(&self) -> impl ExactSizeIterator<Item = WorkRef<'_>> + Clone {
+        (0..self.len()).map(|w| self.get(w))
+    }
+
+    /// Bytes held, by the lists' capacities.
+    #[must_use]
+    pub fn bytes(&self) -> usize {
+        use std::mem::size_of;
+        self.records.capacity() * size_of::<RecordIx>()
+            + self.names.capacity() * size_of::<WorkName>()
+            + self.rejected.capacity() * size_of::<Rejection>()
+            + self.starts.capacity() * size_of::<[u32; 3]>()
+            + self.flags.capacity() * size_of::<(Sources, bool)>()
+    }
+
+    /// Adds `work` after the last.
+    #[allow(clippy::cast_possible_truncation)] // fewer than 2^32 of each in a run
+    pub fn push(&mut self, work: &Work) {
+        self.records.extend_from_slice(&work.records);
+        self.names.extend_from_slice(&work.names);
+        self.rejected.extend_from_slice(&work.rejected);
+        self.starts.push([
+            self.records.len() as u32,
+            self.names.len() as u32,
+            self.rejected.len() as u32,
+        ]);
+        self.flags.push((work.duplicates, work.uncorroborated));
+    }
+}
+
+impl From<Vec<Work>> for Works {
+    /// The works flat, each list made the length it will be, where
+    /// growing by doubling would leave up to half of it spare.
+    fn from(works: Vec<Work>) -> Self {
+        let sum = |len: fn(&Work) -> usize| works.iter().map(len).sum::<usize>();
+        let mut out = Self {
+            records: Vec::with_capacity(sum(|w| w.records.len())),
+            names: Vec::with_capacity(sum(|w| w.names.len())),
+            rejected: Vec::with_capacity(sum(|w| w.rejected.len())),
+            starts: Vec::with_capacity(works.len() + 1),
+            flags: Vec::with_capacity(works.len()),
+        };
+        out.starts.push([0; 3]);
+        for work in &works {
+            out.push(work);
+        }
+        out
+    }
+}
+
+impl FromIterator<Work> for Works {
+    fn from_iter<I: IntoIterator<Item = Work>>(works: I) -> Self {
+        let mut out = Self::default();
+        for work in works {
+            out.push(&work);
+        }
         out
     }
 }
@@ -1994,7 +2511,7 @@ pub struct Resolution {
     /// [`Resolution::record_of`].
     natives: Vec<RecordIx>,
     #[allow(missing_docs)]
-    pub works: Vec<Work>,
+    pub works: Works,
     #[allow(missing_docs)]
     pub stats: Stats,
     #[allow(missing_docs)]
@@ -2058,7 +2575,7 @@ impl Resolution {
             return (order.iter().map(|(w, _)| *w as u32).collect(), out);
         }
         let mut by_work = Flat::new();
-        for work in &self.works {
+        for work in self.works.iter() {
             let promoted = Key::ALL.iter().filter_map(|&key| {
                 work.names
                     .iter()
@@ -2075,7 +2592,9 @@ impl Resolution {
             by_work.push(promoted.chain(aliases));
         }
         let natives = |w: usize| -> SmallVec<[NameIx; 3]> {
-            let mut n: SmallVec<[NameIx; 3]> = self.works[w]
+            let mut n: SmallVec<[NameIx; 3]> = self
+                .works
+                .get(w)
                 .records
                 .iter()
                 .map(|&rix| self.records[rix as usize].native)
@@ -2121,7 +2640,9 @@ impl Resolution {
             .map(|(i, w)| (i, w.registry_names(&self.arena)))
             .collect();
         let natives = |w: usize| -> Vec<Cow<'_, OwnedName>> {
-            let mut n: Vec<Cow<'_, OwnedName>> = self.works[w]
+            let mut n: Vec<Cow<'_, OwnedName>> = self
+                .works
+                .get(w)
                 .records
                 .iter()
                 .map(|&rix| self.arena.get(self.records[rix as usize].native))
@@ -2135,25 +2656,198 @@ impl Resolution {
 
     /// The stubs (merge plan §4), each the names one or more references
     /// gave one uncited work, sorted within and between, so the registry
-    /// sees them in one order every run.
+    /// sees them in one order every run: [`Resolution::stub_groups`] with
+    /// its names read out.
+    #[must_use]
+    pub fn stub_works(&self) -> Vec<Vec<OwnedName>> {
+        let groups = self.stub_groups();
+        groups
+            .iter()
+            .map(|names| {
+                names
+                    .iter()
+                    .map(|&ix| self.stubs.get(ix).into_owned())
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// The stubs as [`Resolution::stub_works`] gives them, each a list of
+    /// its names' numbers in [`Resolution::stubs`] rather than the names:
+    /// eight bytes a stub where the names were 138 on the laptop's store
+    /// (the merge's memory, 2026-09-26). A stub's names are in name order
+    /// and the stubs are in the order of their names; two stubs share no
+    /// name, so that is the order of their first names.
     #[must_use]
     #[allow(clippy::cast_possible_truncation)] // fewer than 2^32 names in a run
-    pub fn stub_works(&self) -> Vec<Vec<OwnedName>> {
+    pub fn stub_groups(&self) -> StubWorks {
+        let n = self.stubs.len();
+        // The names in name order: their numbers, under a dictionary.
+        let order: Vec<NameIx> = if self.stubs.dictionary().is_some() {
+            (0..n as NameIx).collect()
+        } else {
+            let mut order: Vec<NameIx> = (0..n as NameIx).collect();
+            order.sort_by(|&a, &b| self.stubs.get(a).cmp(&self.stubs.get(b)));
+            order
+        };
         let mut parent = self.stub_parent.clone();
-        let mut by_root: HashMap<NameIx, Vec<OwnedName>> = HashMap::new();
-        for ix in 0..self.stubs.len() as NameIx {
-            let root = stub_find(&mut parent, ix);
-            by_root
-                .entry(root)
-                .or_default()
-                .push(self.stubs.get(ix).into_owned());
+        // Each stub is numbered by its first name in name order, which is
+        // where it sorts; then its names fall into place in that order.
+        let mut stub_of_root = vec![u32::MAX; n];
+        let mut starts: Vec<u32> = Vec::new();
+        for &ix in &order {
+            let root = stub_find(&mut parent, ix) as usize;
+            if stub_of_root[root] == u32::MAX {
+                stub_of_root[root] = starts.len() as u32;
+                starts.push(0);
+            }
+            starts[stub_of_root[root] as usize] += 1;
         }
-        let mut works: Vec<Vec<OwnedName>> = by_root.into_values().collect();
-        for names in &mut works {
-            names.sort();
+        let mut at = 0u32;
+        for start in &mut starts {
+            let count = *start;
+            *start = at;
+            at += count;
         }
-        works.sort();
-        works
+        let mut fill = starts.clone();
+        starts.push(at);
+        let mut names = vec![0; n];
+        for &ix in &order {
+            let stub = stub_of_root[stub_find(&mut parent, ix) as usize] as usize;
+            names[fill[stub] as usize] = ix;
+            fill[stub] += 1;
+        }
+        StubWorks { starts, names }
+    }
+
+    /// What the resolution holds, part by part, in bytes by the lists'
+    /// capacities: what a full merge carries into pass 2, printed so that a
+    /// run on the corpus says where its heap is (the merge's memory,
+    /// 2026-09-26). A name's text outside a dictionary and a record's
+    /// assertions past its five inline are not counted.
+    #[must_use]
+    pub fn held(&self) -> Held {
+        use std::mem::size_of;
+        let arena = |arena: &Arena| {
+            arena.dictionary().map_or_else(
+                || arena.len() * size_of::<OwnedName>(),
+                crate::dictionary::Dictionary::bytes,
+            )
+        };
+        Held {
+            names: arena(&self.arena) + self.natives.capacity() * size_of::<RecordIx>(),
+            stubs: arena(&self.stubs) + self.stub_parent.capacity() * size_of::<NameIx>(),
+            records: self.records.capacity() * size_of::<Record>(),
+            works: self.works.bytes(),
+        }
+    }
+
+    /// Numbers the stubs' names in name order, as a dictionary numbers the
+    /// arena's under a full merge, and keeps them in one: about 13 bytes a
+    /// name where the hashed arena kept 109 (the merge's memory,
+    /// 2026-09-26). The stubs are found while references are read, so the
+    /// arena is hashed until then; this runs once the pass has resolved,
+    /// before anything has numbered a stub name but the arena itself. The
+    /// stubs, their names and their order are what they were.
+    ///
+    /// # Errors
+    ///
+    /// I/O in `sorter`, or a dictionary that disagrees with the arena.
+    pub fn sort_stubs(&mut self, mut sorter: crate::dictionary::Sorter) -> io::Result<()> {
+        if self.stubs.dictionary().is_some() {
+            return Ok(());
+        }
+        for name in self.stubs.iter() {
+            sorter.push(name.as_name())?;
+        }
+        let numbered = Arena::sorted(sorter.finish()?);
+        if numbered.len() != self.stubs.len() {
+            return Err(io::Error::other(format!(
+                "{} stub names sorted into {}",
+                self.stubs.len(),
+                numbered.len()
+            )));
+        }
+        let rank = self
+            .stubs
+            .iter()
+            .map(|name| {
+                numbered.find(name.as_name()).ok_or_else(|| {
+                    io::Error::other(format!("stub name {} is not in its dictionary", *name))
+                })
+            })
+            .collect::<io::Result<Vec<NameIx>>>()?;
+        let mut parent = vec![0; rank.len()];
+        for (old, &up) in self.stub_parent.iter().enumerate() {
+            parent[rank[old] as usize] = rank[up as usize];
+        }
+        self.stub_parent = parent;
+        self.stubs = numbered;
+        Ok(())
+    }
+}
+
+/// What a [`Resolution`] holds, in bytes ([`Resolution::held`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Held {
+    /// The names, and which record each is native to.
+    pub names: usize,
+    /// The stubs' names and their grouping.
+    pub stubs: usize,
+    #[allow(missing_docs)]
+    pub records: usize,
+    #[allow(missing_docs)]
+    pub works: usize,
+}
+
+impl fmt::Display for Held {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        #[allow(clippy::cast_precision_loss)] // a report
+        let gib = |bytes: usize| bytes as f64 / f64::from(1u32 << 30);
+        write!(
+            f,
+            "names {:.2} GiB, stub names {:.2} GiB, records {:.2} GiB, works {:.2} GiB",
+            gib(self.names),
+            gib(self.stubs),
+            gib(self.records),
+            gib(self.works)
+        )
+    }
+}
+
+/// The stubs by number ([`Resolution::stub_groups`]): each stub's names
+/// as numbers in [`Resolution::stubs`], one list after another.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StubWorks {
+    /// Where each stub's names start in `names`, and past the last, the
+    /// end.
+    starts: Vec<u32>,
+    names: Vec<NameIx>,
+}
+
+impl StubWorks {
+    /// How many stubs.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.starts.len().saturating_sub(1)
+    }
+
+    /// No stubs.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Stub `s`'s names, in name order.
+    #[must_use]
+    pub fn names(&self, s: usize) -> &[NameIx] {
+        &self.names[self.starts[s] as usize..self.starts[s + 1] as usize]
+    }
+
+    /// Every stub's names, in the stubs' order.
+    #[must_use = "an iterator does nothing unless consumed"]
+    pub fn iter(&self) -> impl ExactSizeIterator<Item = &[NameIx]> {
+        (0..self.len()).map(|s| self.names(s))
     }
 }
 
@@ -2348,7 +3042,8 @@ mod tests {
         let res = id.resolve(false).unwrap();
         assert_eq!(res.works.len(), 1);
         assert_eq!(
-            res.works[0]
+            res.works
+                .get(0)
                 .promoted(ingest::Key::Doi, &res.arena)
                 .unwrap()
                 .to_string(),
@@ -2389,7 +3084,7 @@ mod tests {
         assert_eq!(id.conflicts(), 1);
         let res = id.resolve(false).unwrap();
         assert_eq!(res.works.len(), 1);
-        let work = &res.works[0];
+        let work = &res.works.get(0);
         assert_eq!(work.duplicates, [SourceId::OpenAlex].into_iter().collect());
         assert_eq!(
             work.promoted(ingest::Key::OpenAlex, &res.arena)
@@ -2474,6 +3169,54 @@ mod tests {
             "PubMed's spelling outranks OpenAlex's when Crossref holds neither"
         );
         assert_eq!(shapes(&res), [("doi spellings".to_owned(), 1)]);
+    }
+
+    /// Akadémiai Kiadó registered `mentál` and `mental` for one article
+    /// (Crossref's March 2026 file): the accented record gives its DOI's
+    /// ASCII spelling as a name, the two are one work, and the accented
+    /// DOI is shown.
+    #[test]
+    fn an_accented_doi_and_its_ascii_twin_are_one_work_the_accented_shown() {
+        let mut id = Identity::new();
+        let titles = Titles {
+            title: Some("A koherencia mint a lelki és testi egészség alapvető tényezője"),
+            vernacular: None,
+        };
+        let accented = [
+            Assertion {
+                name: Name::Doi("10.1556/ment\u{e1}l.5.2004.1.1"),
+                field: "doi",
+                native: true,
+            },
+            Assertion {
+                name: Name::Doi("10.1556/mental.5.2004.1.1"),
+                field: "doi_ascii",
+                native: false,
+            },
+        ];
+        id.push(SourceId::Crossref, &accented, titles).unwrap();
+        crossref(
+            &mut id,
+            "10.1556/mental.5.2004.1.1",
+            "A koherencia mint a lelki és testi egészség alapvető tényezője",
+        );
+        id.mark();
+        let res = id.resolve(false).unwrap();
+        assert_eq!(
+            works(&res),
+            [vec![
+                "doi:10.1556/mental.5.2004.1.1=alias",
+                "doi:10.1556/ment\u{e1}l.5.2004.1.1=promoted",
+            ]]
+        );
+        assert_eq!(
+            res.works.get(0).duplicates,
+            [SourceId::Crossref].into_iter().collect()
+        );
+        assert_eq!(
+            shapes(&res),
+            [("duplicate records (crossref) + doi spellings".to_owned(), 1)]
+        );
     }
 
     #[test]
@@ -2623,7 +3366,7 @@ mod tests {
         assert_eq!(res.stats.collided, 1);
         assert_eq!(res.stats.collided_assertions, 2);
         assert_eq!(res.components.rejected, 2);
-        for work in &res.works {
+        for work in res.works.iter() {
             let r = &work.rejected[0];
             assert_eq!(r.why, Reason::NotAnArticleId);
             assert_eq!(r.holder, None, "no record holds what names no article");
@@ -2738,7 +3481,7 @@ mod tests {
             ]
         );
         assert_eq!(shapes(&res), [("shared name".to_owned(), 1)]);
-        for work in &res.works {
+        for work in res.works.iter() {
             assert!(
                 work.promoted(ingest::Key::Doi, &res.arena).is_none(),
                 "a shared name is never promoted"
@@ -2763,7 +3506,7 @@ mod tests {
         id.mark();
         let res = id.resolve(false).unwrap();
         assert_eq!(res.works.len(), 1);
-        assert!(res.works[0].uncorroborated);
+        assert!(res.works.get(0).uncorroborated);
         assert_eq!(res.components.uncorroborated, 1);
         assert_eq!(
             shapes(&res),
@@ -2923,7 +3666,7 @@ mod tests {
         let standings: Vec<Standing> = res
             .works
             .iter()
-            .flat_map(|w| &w.names)
+            .flat_map(|w| w.names)
             .filter(|n| res.arena.get(n.name).to_string() == format!("doi:{DOI}"))
             .map(|n| n.standing)
             .collect();
@@ -3097,6 +3840,475 @@ mod tests {
         ka.sort();
         kb.sort();
         assert_eq!(ka, kb);
+    }
+
+    /// A record with its names as (name, field, native), through
+    /// [`Identity::push_with`].
+    fn record_with(
+        id: &mut Identity,
+        source: SourceId,
+        names: &[(&str, &'static str, bool)],
+        title: &str,
+        facts: &super::Facts<'_>,
+    ) -> u32 {
+        let owned: Vec<OwnedName> = names
+            .iter()
+            .map(|(n, _, _)| OwnedName::parse(n).unwrap())
+            .collect();
+        let assertions: Vec<Assertion<'_>> = owned
+            .iter()
+            .zip(names)
+            .map(|(name, (_, field, native))| Assertion {
+                name: name.as_name(),
+                field,
+                native: *native,
+            })
+            .collect();
+        id.push_with(
+            source,
+            &assertions,
+            Titles {
+                title: Some(title),
+                vernacular: None,
+            },
+            facts,
+        )
+        .unwrap()
+    }
+
+    /// The names of the work holding record `rix`, as text, sorted.
+    fn names_of(res: &Resolution, rix: u32) -> Vec<String> {
+        let work = res.works.iter().find(|w| w.records.contains(&rix)).unwrap();
+        let mut names: Vec<String> = work
+            .names
+            .iter()
+            .map(|n| res.arena.get(n.name).to_string())
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// Rule 1 of merge plan §11 item 28 (the user, 2026-09-27): articles of
+    /// J Altern Complement Med 2004, volume 10, each giving the volume's
+    /// DOI, cut short, as an alias, and each with its PubMed record. The
+    /// alias names none of them; each article stays its own work.
+    #[test]
+    fn an_alias_several_records_of_a_source_give_names_none_of_them() {
+        let mut id = Identity::new();
+        let none = super::Facts::default();
+        let mut crossref = Vec::new();
+        for (page, pmid) in [(911, 15673982u32), (913, 15673983), (959, 15673984)] {
+            let doi = format!("doi:10.1089/acm.2004.10.{page}");
+            crossref.push(record_with(
+                &mut id,
+                SourceId::Crossref,
+                &[
+                    (doi.as_str(), "doi", true),
+                    ("doi:10.1089/acm.2004.10", crate::ALIASES, false),
+                ],
+                &format!("Article {page}"),
+                &none,
+            ));
+            record_with(
+                &mut id,
+                SourceId::Pubmed,
+                &[
+                    (&format!("pmid:{pmid}"), "pmid", true),
+                    (doi.as_str(), "ids.doi", false),
+                ],
+                &format!("Article {page}"),
+                &none,
+            );
+        }
+        id.mark();
+        assert_eq!(
+            id.cite(SourceId::Pubmed, &[Name::Doi("10.1089/acm.2004.10")]),
+            "stub",
+            "the volume's DOI names no work; cited, it is a stub"
+        );
+        let res = id.resolve(false).unwrap();
+        assert_eq!(
+            res.works.len(),
+            3,
+            "three articles, each with its PubMed record"
+        );
+        for (&rix, page) in crossref.iter().zip([911, 913, 959]) {
+            let names = names_of(&res, rix);
+            assert!(names.contains(&format!("doi:10.1089/acm.2004.10.{page}")));
+            assert!(!names.contains(&"doi:10.1089/acm.2004.10".to_owned()));
+        }
+        assert_eq!((res.stats.collided, res.stats.collided_assertions), (1, 3));
+        assert!(
+            res.works
+                .iter()
+                .flat_map(|w| w.rejected)
+                .all(|r| r.why == Reason::NotAnArticleId)
+        );
+    }
+
+    /// An alias a record holds as its own DOI is that record's: its
+    /// claimants join it as before, however many give it.
+    #[test]
+    fn an_alias_a_record_holds_as_its_own_joins_its_claimants_to_it() {
+        let mut id = Identity::new();
+        let none = super::Facts::default();
+        let owner = record_with(
+            &mut id,
+            SourceId::Crossref,
+            &[("doi:10.1234/b", "doi", true)],
+            "One paper",
+            &none,
+        );
+        for doi in ["doi:10.1234/a", "doi:10.1234/c"] {
+            record_with(
+                &mut id,
+                SourceId::Crossref,
+                &[(doi, "doi", true), ("doi:10.1234/b", crate::ALIASES, false)],
+                "One paper",
+                &none,
+            );
+        }
+        id.mark();
+        let res = id.resolve(true).unwrap();
+        assert_eq!(res.stats.collided, 0);
+        assert_eq!(
+            names_of(&res, owner),
+            ["doi:10.1234/a", "doi:10.1234/b", "doi:10.1234/c"]
+        );
+    }
+
+    /// Rule 2 (§11 item 28): a correction whose deposit gives the abstracts
+    /// it corrects as its aliases — `10.1161/svin.122.000762`, whose
+    /// Crossref record updates one of them and whose PubMed record is an
+    /// erratum for all of them. The corrected names are not the
+    /// correction's; an alias it does not correct still is.
+    #[test]
+    fn an_alias_its_own_work_corrects_is_not_its_name() {
+        let mut id = Identity::new();
+        let abstracts = [
+            "10.1161/svin.01.suppl_1.000048",
+            "10.1161/svin.01.suppl_1.000065",
+            "10.1161/svin.01.suppl_1.000195",
+        ];
+        let doi = |s: &str| format!("doi:{s}");
+        let mut names: Vec<(String, &'static str, bool)> =
+            vec![(doi("10.1161/svin.122.000762"), "doi", true)];
+        names.extend(abstracts.iter().map(|a| (doi(a), crate::ALIASES, false)));
+        names.push((doi("10.1161/svin.122.000999"), crate::ALIASES, false));
+        let borrowed: Vec<(&str, &'static str, bool)> =
+            names.iter().map(|(n, f, v)| (n.as_str(), *f, *v)).collect();
+        let crossref = record_with(
+            &mut id,
+            SourceId::Crossref,
+            &borrowed,
+            "Correction to: Stroke: Vascular and Interventional Neurology Volume 1, No. S1",
+            &super::Facts {
+                corrects: &[Name::Doi(abstracts[0])],
+                ..super::Facts::default()
+            },
+        );
+        let corrected: Vec<Name<'_>> = abstracts.iter().map(|a| Name::Doi(a)).collect();
+        record_with(
+            &mut id,
+            SourceId::Pubmed,
+            &[
+                ("pmid:41585761", "pmid", true),
+                ("doi:10.1161/svin.122.000762", "ids.doi", false),
+            ],
+            "Correction to: Stroke: Vascular and Interventional Neurology Volume 1, No. S1.",
+            &super::Facts {
+                corrects: &corrected,
+                ..super::Facts::default()
+            },
+        );
+        id.mark();
+        assert_eq!(
+            id.cite(SourceId::Crossref, &[Name::Doi(abstracts[1])]),
+            "stub"
+        );
+        let res = id.resolve(false).unwrap();
+        assert_eq!(res.works.len(), 1);
+        assert_eq!(
+            names_of(&res, crossref),
+            [
+                "doi:10.1161/svin.122.000762",
+                "doi:10.1161/svin.122.000999",
+                "pmid:41585761"
+            ]
+        );
+        assert_eq!(res.stats.corrected, 3);
+        let work = res.works.get(0);
+        assert_eq!(work.rejected.len(), 3);
+        assert!(work.rejected.iter().all(|r| r.why == Reason::Corrected));
+    }
+
+    /// Rule 2 on a source's list (§11 item 28): the same correction as
+    /// the 2026 baseline has its PubMed record, before NLM linked the
+    /// erratum to what it corrects, so nothing says what it corrects —
+    /// and its aliases name the abstracts' own records, which they would
+    /// join into one work. Its deposit is on Crossref's list, so its
+    /// aliases are what it corrects: each abstract stays a work of its
+    /// own, and the correction one with its PubMed record.
+    #[test]
+    fn a_listed_records_aliases_are_what_it_corrects() {
+        let mut id = Identity::new();
+        let abstracts = [
+            "10.1161/svin.01.suppl_1.000048",
+            "10.1161/svin.01.suppl_1.000065",
+            "10.1161/svin.01.suppl_1.000195",
+        ];
+        let doi = |s: &str| format!("doi:{s}");
+        for (k, a) in abstracts.iter().enumerate() {
+            let own = doi(a);
+            record_with(
+                &mut id,
+                SourceId::Crossref,
+                &[(own.as_str(), "doi", true)],
+                &format!("Abstract {k}"),
+                &super::Facts::default(),
+            );
+        }
+        let mut names: Vec<(String, &'static str, bool)> =
+            vec![(doi("10.1161/svin.122.000762"), "doi", true)];
+        names.extend(abstracts.iter().map(|a| (doi(a), crate::ALIASES, false)));
+        let borrowed: Vec<(&str, &'static str, bool)> =
+            names.iter().map(|(n, f, v)| (n.as_str(), *f, *v)).collect();
+        let crossref = record_with(
+            &mut id,
+            SourceId::Crossref,
+            &borrowed,
+            "Correction to: Stroke: Vascular and Interventional Neurology Volume 1, No. S1",
+            &super::Facts {
+                corrects_its_aliases: true,
+                ..super::Facts::default()
+            },
+        );
+        record_with(
+            &mut id,
+            SourceId::Pubmed,
+            &[
+                ("pmid:41585761", "pmid", true),
+                ("doi:10.1161/svin.122.000762", "ids.doi", false),
+            ],
+            "Correction to: Stroke: Vascular and Interventional Neurology Volume 1, No. S1.",
+            &super::Facts::default(),
+        );
+        id.mark();
+        let res = id.resolve(false).unwrap();
+        assert_eq!(res.works.len(), 4);
+        assert_eq!(
+            names_of(&res, crossref),
+            ["doi:10.1161/svin.122.000762", "pmid:41585761"]
+        );
+        assert_eq!(res.stats.corrected, 3);
+        assert_eq!(
+            res.stats.listed_corrections,
+            ["doi:10.1161/svin.122.000762"]
+        );
+        let rejected: Vec<_> = res.works.iter().flat_map(|w| w.rejected.iter()).collect();
+        assert_eq!(rejected.len(), 3);
+        assert!(rejected.iter().all(|r| r.why == Reason::Corrected));
+    }
+
+    /// Rule 3 (§11 item 28): the journal-level record of Photochemical &
+    /// Photobiological Sciences, `10.1007/43630.1474-9092`, giving its
+    /// articles' old RSC DOIs as its aliases. They are not the journal's
+    /// names; one an article's record holds stays that article's, and the
+    /// rest name no work.
+    #[test]
+    fn a_containers_aliases_are_not_its_names() {
+        let mut id = Identity::new();
+        let journal = record_with(
+            &mut id,
+            SourceId::Crossref,
+            &[
+                ("doi:10.1007/43630.1474-9092", "doi", true),
+                ("doi:10.1039/b418513g", crate::ALIASES, false),
+                ("doi:10.1039/b506542a", crate::ALIASES, false),
+            ],
+            "Photochemical & Photobiological Sciences",
+            &super::Facts {
+                container: true,
+                ..super::Facts::default()
+            },
+        );
+        let article = record_with(
+            &mut id,
+            SourceId::Pubmed,
+            &[
+                ("pmid:16333427", "pmid", true),
+                ("doi:10.1039/b506542a", "ids.doi", false),
+            ],
+            "An article in it",
+            &super::Facts::default(),
+        );
+        id.mark();
+        assert_eq!(
+            id.cite(SourceId::Crossref, &[Name::Doi("10.1039/b418513g")]),
+            "stub"
+        );
+        let res = id.resolve(false).unwrap();
+        assert_eq!(res.works.len(), 2);
+        assert_eq!(names_of(&res, journal), ["doi:10.1007/43630.1474-9092"]);
+        assert_eq!(
+            names_of(&res, article),
+            ["doi:10.1039/b506542a", "pmid:16333427"]
+        );
+        assert_eq!(res.stats.container_aliases, 2);
+        let rejected: Vec<_> = res.works.iter().flat_map(|w| w.rejected).collect();
+        assert_eq!(rejected.len(), 2);
+        assert!(
+            rejected
+                .iter()
+                .all(|r| r.why == Reason::Container && r.record == journal)
+        );
+    }
+
+    /// Works kept flat give back what was put in, list by list: works with
+    /// nothing in a list, several in each, and none at all (the merge's
+    /// memory, 2026-09-26).
+    #[test]
+    fn works_kept_flat_are_the_works_given() {
+        use super::{Rejection, Work, WorkName, Works};
+        use crate::name::Field;
+        let named = |name, standing| WorkName {
+            name,
+            standing,
+            by: Sources::NONE,
+            native: false,
+        };
+        let given = vec![
+            Work::default(),
+            Work {
+                records: [7, 3, 9, 12].into_iter().collect(),
+                names: (0..6).map(|n| named(n, Standing::Alias)).collect(),
+                rejected: (0..2)
+                    .map(|n| Rejection {
+                        name: 40 + n,
+                        record: 3,
+                        field: Field::of("ids.pii"),
+                        holder: n.checked_sub(1),
+                        why: Reason::NotAnArticleId,
+                    })
+                    .collect(),
+                duplicates: Sources::NONE,
+                uncorroborated: true,
+            },
+            Work {
+                records: [1].into_iter().collect(),
+                names: [named(11, Standing::Promoted)].into_iter().collect(),
+                ..Work::default()
+            },
+        ];
+        let flat = Works::from(given.clone());
+        assert_eq!(flat.len(), given.len());
+        assert!(flat.iter().eq(given.iter().map(Work::borrowed)));
+        assert_eq!(flat, given.iter().cloned().collect::<Works>());
+        assert!(Works::default().is_empty());
+        assert_eq!(Works::default().iter().count(), 0);
+    }
+
+    /// The stubs' names numbered in name order in a dictionary
+    /// ([`Resolution::sort_stubs`]) are the same stubs, in the same order,
+    /// each name found where the run's index finds it, as the hashed
+    /// arena's: the full merge renumbers them once the pass has resolved,
+    /// before anything but the arena has used their numbers (the merge's
+    /// memory, 2026-09-26).
+    #[test]
+    fn stubs_numbered_in_name_order_are_the_same_stubs() {
+        use crate::dictionary::Sorter;
+        use crate::registry::NameIndex;
+        let registrant = model::Registrant::parse("10.30476").unwrap();
+        let refused = OwnedName::Publisher(registrant, "JAMP-14-1".into());
+        let build = || {
+            let mut id = Identity::new();
+            pubmed(&mut id, 1, Some("10.1/held"), None, "Held");
+            // A publisher id two records claim is refused: the arena has
+            // it, and a reference that cites it makes it a stub's.
+            for p in [6u32, 8] {
+                let title = format!("Paper {p}");
+                id.push(
+                    SourceId::Pubmed,
+                    &[
+                        Assertion {
+                            name: Name::Pmid(pmid(p)),
+                            field: "pmid",
+                            native: true,
+                        },
+                        Assertion {
+                            name: refused.as_name(),
+                            field: "ids.pii",
+                            native: false,
+                        },
+                    ],
+                    Titles {
+                        title: Some(&title),
+                        vernacular: None,
+                    },
+                )
+                .unwrap();
+            }
+            id.mark();
+            // Cited out of name order, across namespaces, some together.
+            let pmc = |n| Name::Pmc(PmcId::new(n).unwrap());
+            id.cite(
+                SourceId::Pubmed,
+                &[Name::Doi("10.1/zz"), Name::Pmid(pmid(90))],
+            );
+            id.cite(SourceId::Pubmed, &[Name::Doi("10.1/aa")]);
+            id.cite(SourceId::Crossref, &[pmc(5), Name::Doi("10.1/mm")]);
+            id.cite(
+                SourceId::Crossref,
+                &[Name::Doi("10.1/mm"), Name::Doi("10.1/bb")],
+            );
+            id.cite(SourceId::Pubmed, &[Name::Pmid(pmid(3))]);
+            id.cite(SourceId::Pubmed, &[refused.as_name()]);
+            id.cite(
+                SourceId::Pubmed,
+                &[Name::Doi("10.1/held"), Name::Doi("10.1/beside")],
+            );
+            id.resolve(true).unwrap()
+        };
+        let plain = build();
+        let mut sorted = build();
+        let dir = std::env::temp_dir().join(format!("ol-rht-stubs-test-{}", std::process::id()));
+        sorted.sort_stubs(Sorter::create(&dir).unwrap()).unwrap();
+        assert!(plain.stubs.dictionary().is_none());
+        assert!(sorted.stubs.dictionary().is_some());
+        let works = plain.stub_works();
+        assert_eq!(
+            works
+                .iter()
+                .map(|names| names.iter().map(ToString::to_string).collect::<Vec<_>>())
+                .collect::<Vec<_>>(),
+            [
+                vec!["doi:10.1/aa"],
+                vec!["doi:10.1/bb", "doi:10.1/mm", "pmc:PMC5"],
+                vec!["doi:10.1/zz", "pmid:90"],
+                vec!["pmid:3"],
+                vec!["reg30476:JAMP-14-1"],
+            ]
+        );
+        assert_eq!(sorted.stub_works(), works);
+        assert_eq!(sorted.stub_groups().len(), works.len());
+        for (numbers, names) in sorted.stub_groups().iter().zip(&works) {
+            let read: Vec<OwnedName> = numbers
+                .iter()
+                .map(|&ix| sorted.stubs.get(ix).into_owned())
+                .collect();
+            assert_eq!(&read, names);
+        }
+        for name in works.iter().flatten() {
+            let (p, s) = (plain.index(name).unwrap(), sorted.index(name).unwrap());
+            assert_eq!(&plain.name(p), name);
+            assert_eq!(&sorted.name(s), name);
+        }
+        assert!(
+            (sorted.index(&refused).unwrap() as usize) < sorted.arena.len(),
+            "a stub's name the arena also has is the arena's"
+        );
+        sorted.sort_stubs(Sorter::create(&dir).unwrap()).unwrap();
+        assert_eq!(sorted.stub_works(), works, "numbered once is numbered");
     }
 
     /// The merge's memory, step 2a (2026-09-24): numbering the names in

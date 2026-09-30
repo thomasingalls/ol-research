@@ -134,16 +134,50 @@
 /// or the resource absent, a journal issue may hold only its date,
 /// a record may name no member and no publisher (a DOI moved to an owner
 /// Crossref's index does not attach), an ISNI, an ISBN and an author's
-/// ORCID are claims, and a language may be a three-letter code; nothing
+/// ORCID are claims, and a language may be a three-letter code. DOIs, in
+/// every source: a letter beyond ASCII is the DOI of record, lowercased;
+/// every Unicode dash is read as `-`, whitespace at an end dropped, and a
+/// letter written as its UTF-8 bytes read as Latin-1 repaired — each
+/// reading counted ([`doi::Readings`]); a Crossref record keeps its
+/// `aliases`, other DOIs the registry holds for the work, and its DOI's
+/// ASCII spelling ([`Doi::ascii_spelling`]), a name of the work too, so a
+/// publisher's ASCII twin of an accented DOI is the same work. After the
+/// third survey of the whole file: a language is any of ISO 639-3's
+/// individual languages as well as ISO 639-2's codes ([`Lang`], whose
+/// table's order is its stored form), an author may be a given name
+/// alone, and an affiliation with anything in it is kept. Nothing
 /// was ever normalized under the version 10 builds before
 /// those (only surveyed), so they are version 10 too. Output under version
 /// 9 is rebuilt, not patched.
-pub const VERSION: u32 = 10;
+///
+/// Version 11 (2026-09-26): a soft hyphen, U+00AD, and a zero-width space,
+/// U+200B, in a DOI are dropped, each counted as a reading
+/// ([`doi::Readings`]) — the user's calls on the first normalize of
+/// Crossref's whole file under version 10, whose reports printed
+/// reference DOIs with a soft hyphen inside a word
+/// (`10.11646/zoo\u{ad}taxa.4966.5.3`) and after the slash (JAMA's
+/// `10.1001/\u{ad}jamasurg.2022.7640`), and a zero-width space in a page
+/// range (`10.1128/aem.45.4.1394-\u{200b}1397.1983`). Version 10's sets
+/// were surveyed on the box but never merged of record; the user took
+/// version 11 in before the first merge of record with Crossref
+/// (2026-09-27), and its sets are rebuilt, not patched.
+///
+/// Version 12 (2026-09-27): a PubMed `CommentsCorrections` entry that
+/// gives no PMID keeps its `RefSource` as the other record's DOI where
+/// the `RefSource` reads whole as one, each reading counted as any DOI's.
+/// The erratum PMID 41585761 names the 102 supplement abstracts it
+/// corrects so, none of them in PubMed, and without the DOIs the merge's
+/// rule that a work's aliases are not what it corrects (merge plan §11
+/// item 28) could not see what PubMed said: the survey of the whole file
+/// at version 11 stopped on it alone. Output under version 11 is rebuilt,
+/// not patched.
+pub const VERSION: u32 = 12;
 
 pub mod claim;
 pub mod code;
 pub mod date;
 pub mod doi;
+mod doi_ascii;
 mod human;
 pub mod id;
 pub mod isbn;

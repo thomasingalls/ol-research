@@ -139,7 +139,7 @@ rules, each with the measurement behind it:
   are one name and every string form — the registry's lines, a merged
   row, `merge dump`, the names transducer's keys, the serving layer's
   rows — carries the bare one. Rendering rather than storing it is what
-  lets `publisher::ELSEVIER` change (see below), and also what keeps
+  lets the rule change (see below), and also what keeps
   those files deterministic: either spelling may be read first and what
   is written out does not depend on which. Both spellings occur for one
   article on 8,350 DOIs, and the split is by source, not by publisher:
@@ -148,18 +148,20 @@ rules, each with the measurement behind it:
   one article. Every one agrees once rewritten; no normalised id is owned
   by more than one article, no raw id is, and no rewritten value collides
   with an unrelated one.
-- **The rewrite is gated on the publisher, not on the shape** (the user,
-  2026-09-19, against a measurement that argued for shape): anything that
-  went through Elsevier's machinery matches Elsevier's rules, but a value
-  that merely looks like a PII is not thereby Elsevier's, and another
-  publisher's identifier must not be mangled. `publisher::ELSEVIER` is
-  the checked-in list of registrants, and the normalize surveys count the
-  PII-shaped values whose registrant is off it, by registrant: that count
-  is how the list grows, on evidence rather than on a guess. Adding a
-  registrant costs a full merge — two spellings that were two names
-  become one, which moves works together and retires ids — but nothing
-  more: a name sealed under the old list reads back in the spelling its
-  line carries.
+- **The rewrite is decided by the shape, under every registrant** (the
+  user, 2026-09-28). A value in the printed PII's punctuated spelling is
+  the PII its bare spelling is: the two differ only by punctuation at
+  fixed places, and the PII is one format whoever prints it. From
+  2026-09-19 it was gated on a checked-in list of Elsevier's registrants
+  (10.1016 and 10.1053), grown on a survey's evidence, so that another
+  publisher's lookalike would not be rewritten. The survey of Crossref's
+  whole file showed that gate splitting the two records of one article.
+  Journals Elsevier produces under an earlier prefix (10.1002, 10.1378,
+  10.1093) carry PubMed's punctuated PII beside Crossref's bare one, and
+  off the list the two were two names (§10, 2026-09-28). The change costs
+  a full merge — two spellings that were two names become one, which
+  moves works together and retires ids — but nothing more: a name sealed
+  under the old rule reads back in the spelling its line carries.
 - **A value that is just the DOI again is not a publisher id**, tested
   *after* the rewrite against the DOI and its suffix with the printed
   PII's punctuation dropped and the case folded. Order matters: 786 rows
@@ -258,7 +260,7 @@ The shapes, from the census, each with its rule:
 | **enrichment** — a record adds a name no other record of the component has                                       | 53 of the 61 OpenAlex-versus-PubMed DOI differences: PubMed has no DOI and OpenAlex supplies one                                            | not a conflict; accepted                                                                                                                                                                        |
 | **duplicate records** — several records of one source in one component, titles agreeing                          | 52 OpenAlex pairs (a `W44…` and a `W71…` for one DOI), two of them with a second PMID; 6 PubMed groups sharing one DOI, two of them five letters to the editor each | one work with several records of that source, flagged; the record with the lowest native id is promoted for that source's fields                                                                |
 | **two DOIs, one work** — two DOIs bridged by a PMID, titles agreeing                                             | 3: two journals that changed publisher (`10.1097` to `10.1016`, `10.1258` to `10.1177`), a re-registration with a page range                 | both accepted; the DOI a Crossref record holds is promoted, else the PubMed record's (§3.4)                                                                                                     |
-| **two spellings of one DOI**                                                                                     | 2, APA's legacy `10.1037//`                                                                                                                | both accepted, both matchable; promoted per §3.4; not a change to the `Doi` type                                                                                                                |
+| **two spellings of one DOI**                                                                                     | 2, APA's legacy `10.1037//`                                                                                                                | both accepted, both matchable; promoted per §3.4; not a change to the `Doi` type. Crossref's `aliases` (model 10) are names of this kind, asserted by the record beside its own DOI; so is an accented DOI's ASCII spelling (`doi_ascii`), which joins a publisher's ASCII twin  |
 | **two PMIDs, one DOI** — OpenAlex's PMID is not the PMID of the PubMed record with that DOI, titles agreeing     | 10                                                                                                                                         | both accepted; the held PubMed record's PMID promoted, the other an alias — PubMed holds two records for the article, an early and a final one, and OpenAlex linked the other                    |
 | **wrong link** — a foreign id names a record whose title disagrees                                               | 8: six OpenAlex records whose W number is a PMID and whose DOI is that PMID's article's while the title is another paper's (`W39406291`, `W31695178`, `W20395417`, …); one OpenAlex PMID on the wrong record; one translation (§11) | the assertion is rejected with the reason; the component splits into the works the remaining assertions support                                                                                 |
 | **shared name** — after splitting, one name is accepted into two works                                           | 4: a bogus DOI, `10.12739/10.12739`, on ten OpenAlex works; a DOI on two different articles, twice; a Chinese journal's DOI on two works with different PMIDs | both works keep the name, neither promotes it; an edge through it is ambiguous (§6)                                                                                                             |
@@ -316,7 +318,7 @@ registry of a namespace outranks everyone.
 |-----------------------------------------------------|-----------------------------------------------------------|------------------------------------------------------------------------------------------------|
 | which PMID is promoted                              | the held PubMed record's, then OpenAlex's                 | NLM mints PMIDs                                                                                |
 | which DOI is promoted                               | Crossref's record's, then PubMed's `ids.doi`, then OpenAlex's | Crossref mirrors the DOI registry; PubMed's is deposited by the publisher; OpenAlex's is derived |
-| which spelling of a DOI                             | the one Crossref holds, then PubMed's                     | as above; on the two APA cases Crossref was not looked up, so PubMed's stands                  |
+| which spelling of a DOI                             | the one Crossref holds, then PubMed's; among one rank's, one with letters beyond ASCII before its ASCII twin | as above; on the two APA cases Crossref was not looked up, so PubMed's stands. A publisher's accented DOI is the one of record, and shown when there is one (the user, 2026-09-26) |
 | which record of one source, among duplicates        | the lowest native id                                      | deterministic, and the older record has been cited longer                                      |
 | which publisher id is promoted                      | the lower registrant, then the lower value                 | nobody ranks them and no source mints them; deterministic is all the rule can be (2026-09-19)  |
 
@@ -1371,6 +1373,124 @@ stays.
   And a relation keeps its cited-as row whatever it names, a stub
   included: a relation leaves no citer on a stub, and without the row a
   batch that moves the name could not find who relates to it.
+- 2026-09-26, no version: Crossref's `cites` is the relation kind
+  `cites`, PubMed's word already (the user's go-ahead). The merge survey
+  over the PubMed baseline and an eighth of Crossref's March 2026 file,
+  both at model 10 (homelab `ol-rht-merge-survey-v6`, ol-rht 7d2ef1b),
+  ran to the end in 96 minutes and found one thing that would stop a
+  merge of record: `relations.kind: "cites" is not in the table`, 16
+  records (165 in the whole file, by the normalize's counts). Every
+  other of the 71 relation types the whole file writes maps, a test now
+  says so; `comment` (2) and `correspondence` (1) still stop a run where
+  the work itself asserts them, since which way they point is not said.
+  No merge version: a record carrying `cites` stopped every merge before
+  this, so no merged set under 15 reads differently. The same survey
+  measured what the whole file would cost in memory ([the merge's
+  memory](inbox/merge-memory.md)), which it does not yet fit, and found
+  the first identity changes under ids of record (§11 item 27).
+- 2026-09-27, merge version 16: Crossref's aliases and the three rules
+  of §11 item 28 (the user's, on the three components the survey of the
+  whole March 2026 file could not resolve). An alias is held back from
+  the identity pass's joins until every record is in, as a publisher id
+  is (`identity::settle`). Rule 1: an alias several records of one source
+  give, and none holds as its own DOI, names none of them — refused as
+  no article's id, the publisher-id rule's verdict; an alias a record
+  holds as its own joins its claimants to it, as before. Rule 2: an
+  alias that a record of the claimant's own group says it corrects,
+  retracts or updates (`relation::Kind::corrects`: Crossref's
+  `update-to`, PubMed's erratum, retraction, expression of concern,
+  update and republication for) is refused on that claim
+  (`Reason::Corrected`); a group is the records the joins put together by
+  their own names before any claim joins them further. Rule 3: a
+  container's aliases (`Form::is_container`: a journal, volume, issue,
+  series or set; `Contributor::container`) are refused on its record
+  (`Reason::Container`). A name rules 2 and 3 take off every record that
+  gave it is in no work, a stub's where cited. The report counts each,
+  with the records giving the most. Tests give each of the three shapes
+  as the file has them, the Crossref crate's own records among its
+  fixtures as the REST API gave them. On the laptop's store the merged
+  sets and registry are byte for byte merge 15's; both harnesses pass (0
+  differences in 1,833,847 ids and in 1,836,438). A batch decides rules 1
+  and 3 as the full merge does — rule 1 over the refused names the rows
+  keep (merge version 14), rule 3 from a record's form — and rule 2 from
+  its own records' relations and, for a row's record, the names the full
+  merge refused it as corrected, since rows keep no relations. Where
+  that is not enough — two existing works joined into one where a record
+  gives aliases, or a batch record giving an alias its row did not — the
+  batch stops for a full merge.
+- 2026-09-28, merge version 16 amended: a source may list deposits whose
+  aliases are what they correct (`Contributor::corrects_its_aliases`),
+  and rule 2 takes a listed record's aliases as names it corrects, as
+  though a relation said so. Crossref's list
+  (`source_crossref::listed_corrections`) is keyed like its exclusions,
+  by DOI and `deposited` stamp, so a later deposit is judged on its own.
+  It holds one deposit, the correction of §11 item 28, which nothing in
+  PubMed's 2026 baseline settles. The report names each listed record.
+  A batch reads the answer from its record (`Incoming::corrects_its_aliases`),
+  and a row keeps the verdicts. The version was amended rather than
+  bumped because nothing was merged of record under 16, only surveyed
+  (v9), and the numbers after it belong to the citation fields plan
+  (model 13, merge 17, serve 9). On the laptop (M), a test gives the
+  shape. A scratch store holds the deposit, the baseline's copy of PMID
+  41585761 (its links taken out, as the baseline has it) and a record
+  citing three of the abstracts. With the deposit moved off the list,
+  that store is v9's stop ("a component of 2 records and 105 names is
+  beyond the rules"). With it listed, the survey exits 0: 102 aliases
+  are refused as corrected, and each cited abstract is a stub of its own.
+  Both harnesses pass (0 differences in 1,835,414 ids and in 1,833,848).
+  A compromise (§13).
+
+- 2026-09-28, merge version 16 amended again: a publisher id's two PII
+  spellings are one name under every registrant, the shape deciding
+  (`publisher::rewrites`). The checked-in list of Elsevier's registrants
+  (10.1016, 10.1053) and the normalize surveys' off-list counter are
+  gone; the user reversed the call of 2026-09-19 on the survey of
+  Crossref's whole file (`ol-rht-merge-survey-v10`). That survey split
+  ids of record where PubMed's punctuated PII and Crossref's bare one,
+  under a registrant off the list, were two names. The two records of
+  one article then disagreed on an identifier, and the title test decided
+  against them: J Pharm Sci under 10.1002, Chest under 10.1378, BJA under
+  10.1093 (§11 item 29 has the examples). Nothing is rewritten where it
+  is stored; a punctuated value under any registrant now renders bare. A
+  registry that sealed both spellings under two ids heals on the next
+  complete run, which retires the younger into the older
+  (`registry::Line::Mint`). The merge of record follows at once, without
+  a survey of this change (§13). On the laptop (M): both harnesses pass
+  (0 differences in 1,835,414 ids and in 1,833,848). A registry sealed by
+  the old rule over the sample's baseline reads, and merges Crossref's
+  sample in, under the new one. And v10's first two examples (PMIDs 5589
+  and 7437, rebuilt from that day's lookups beside their Crossref
+  records) are four works and two wrong links under the old rule, and two
+  works and no conflict under the new, the younger ids merged into the
+  older; a second run changes nothing.
+
+- 2026-09-29, a stored DOI reads back as the model wrote it
+  (`model::Doi::from_canonical`, which `Name::parse` now uses). The first
+  merge of record with Crossref ran to the end (journal batch 7). The
+  publish after it stopped reading the registry at line 190,520,589,
+  `doi:10.1002/i\u{307}jc.22088`: a reference's `10.1002/İJC.22088`, the
+  dotted capital `İ` lowercased, as Rust's lowercasing does, to `i` and a
+  combining dot above. `Doi::parse` refuses a combining mark, so it did
+  not read back its own output — noted during the citation lookup work
+  (2026-09-27) and not fixed. Every code point tried, `parse` fails to
+  read its own output back in two more places: the encoding repair
+  writes `×` and `÷`, and a dropped zero-width space can join a repair's
+  two halves. So readers no longer re-parse. `from_canonical` checks the
+  stored text a character at a time against what `parse` can write, and
+  the tests run every code point through both. Raw text is read as
+  before, so no model version; no byte under `merged/` changes, so no
+  merge version. What `parse` should write in those three places is a
+  model question (ingestion plan §8 item 11).
+
+- 2026-09-29, the report counts the names a complete run drops. The
+  merge dropped the names its registry mapped and no work had any more
+  (`Registry::drop_unseen`) after assigning ids, and counted them apart
+  from the assignment, so the journal said 14,330 and the report's
+  registry line said 0 on the first merge of record with Crossref. They
+  are the assignment's `dropped` now, as `Registry::assign` already
+  counted them, and the report, the journal and the survey say one
+  number (on the laptop: a store merged again without Crossref's sets
+  reports and journals 255,221 alike).
 
 ## 11. Open items
 
@@ -1854,7 +1974,9 @@ stays.
       page range say the rest ("Proceedings of the Physiological
       Society", a journal article over pp. 33–82). The parts' volume,
       issue and pages are in the normalized records but not yet in the
-      views, and C would add them.
+      views. The [citation fields plan](citation-fields-plan.md) puts
+      them there first (draft 2, 2026-09-27) as each record's chain of
+      containers, outermost first, which C can read shared levels from.
     - **The container is already a work.** The stub a citing reference
       lands on under B has a registry id, and C keeps it: the stub
       becomes the container, and nothing moves in the registry. Where a
@@ -1909,6 +2031,70 @@ stays.
     the normalized layer as a `Claim::Malformed`, so keeping it — an
     unresolved row that carries the name as written — needs no
     re-normalizing; it is a merged-layout change. Not built.
+27. ~~**Which ids a new source merges and splits — before the first merge
+    of record with Crossref.**~~ Built 2026-09-27: the identity report
+    prints the first eight merges and the first eight splits after the
+    registry's line — the id retired, where it went, and the work there,
+    its records then its names (`registry::Assignment::merge_examples`,
+    `split_examples`; written out in `merge_assign`). The merge survey over the PubMed baseline
+    and an eighth of Crossref's March 2026 file (2026-09-26, homelab
+    `ol-rht-merge-survey-v6`) is the first run to change identity under
+    ids of record: 521 works merged and 1,563 split in the registry's
+    terms, 264,306 names attached, none dropped (M), where the corpus
+    merges of the PubMed baseline alone had none. The report counts them and names
+    none. It should print examples of each, as it does for conflict
+    components: the ids, the names that moved and the records behind
+    them, so the user can see what Crossref's evidence changes before a
+    merge of record writes it (the user: "hey fun, system is working.
+    looking forward to that report when we get there"). Not built. Over
+    the whole file (2026-09-27, `ol-rht-merge-survey-v8`; M): 150,262,057
+    minted, 41,973,023 reused, 3,787 merged, 13,312 split, 2,066,673
+    names attached, none dropped.
+28. ~~**Crossref aliases that point outside their work — before a merge
+    of record.**~~ Built 2026-09-27 as merge version 16 (§10). A Crossref record's `aliases` are other DOIs the
+    registry holds for the work, and the merge makes each a name of it
+    (model 10, the user: "we should not drop this, this is important
+    info"). The survey of the whole file (2026-09-27,
+    `ol-rht-merge-survey-v8`) stopped on three components the rules
+    could not resolve, and each is aliases that name other works (M,
+    looked up at Crossref's API and NCBI the same day, four requests):
+    - 36 article records of J Altern Complement Med 2004, volume 10,
+      each with `aliases: ["10.1089/acm.2004.10"]`, the volume's DOI cut
+      short: the one alias ties the articles and their 30 PubMed twins
+      into one component of 66 records (PubMed's own copies carry the
+      right DOIs, `10.1089/acm.2004.10.911`);
+    - `10.1161/svin.122.000762`, "Correction to: Stroke: Vascular and
+      Interventional Neurology Volume 1, No. S1", a journal-article
+      whose aliases are 102 of that supplement's abstract DOIs, with its
+      PubMed twin;
+    - `10.1007/43630.1474-9092`, the journal-level record (`type:
+      journal`) of Photochemical & Photobiological Sciences since it
+      moved from the RSC to Springer, whose aliases are 655 of the RSC's
+      article DOIs (649 in the March 2026 file).
+    The first is the shape an existing rule already refuses for
+    publisher ids — a value one source claims for more than one of its
+    records is no article's id (§3.1) — not yet applied to an alias. The
+    other two are one work claiming a hundred and more DOIs, which the
+    rules' size limit (64 names) stops though no two records disagree;
+    as names, a citation to an RSC article or an abstract would land on
+    the journal or the correction. The user's calls: the 36 articles are
+    36 works ("that venue's doi should not eliminate the existence of 36
+    articles"); the correction was looked at, and is one erratum PubMed
+    records as `ErratumFor` 102 abstracts, which the deposit gave as
+    aliases instead of updates, so that doi.org sends each abstract to the
+    notice; and the journal's aliases are not a move's old and new DOIs of
+    one article — doi.org sends `10.1039/b418513g` to the journal's DOI,
+    and no new article DOI exists — so they are not the journal's. The
+    survey at merge 16 (`ol-rht-merge-survey-v9`) settled the first and
+    third, and stopped on the correction alone: PubMed names the 102
+    abstracts it corrects by a DOI in `RefSource` and no PMID, which the
+    model did not keep; model 12 does (ingestion plan §10). But the
+    baseline's copy of the notice (`pubmed26n1333`) predates those links
+    and gives none, so model 12 alone does not settle it: PubMed's current
+    copy does, and comes with the update files. The user's call
+    (2026-09-27): a list for now, the update files when freshness brings
+    them in. Built 2026-09-28 as merge version 16 amended (§10), a
+    compromise (§13).
 21. ~~**The public id.**~~ Built 2026-09-16 (serving plan SP3):
     `merge::public` mints one for every id lacking it when `merge` is
     given `--public-key <file>` — a keyed BLAKE3 hash of the id, `ol:`
@@ -1916,7 +2102,81 @@ stays.
     `merge::journal` writes the batch line every complete run appends.
     The log fills on the first run with the key.
 
+29. **A second shared id before a title.** In a conflict component the
+    title test decides which link to cut (§3.3), so a title can outvote
+    an identifier. The survey of 2026-09-28 (`ol-rht-merge-survey-v10`)
+    refused PubMed's DOI as a wrong link where the titles differ only by
+    MEDLINE's `Editorial:` or `Letter:` prefix, a lecture's name, `alpha`
+    for `α`, or Crossref's shortened title (PMIDs 5589, 7437, 8282, 37324,
+    56184, 49380, looked up that day, one request each to NCBI and
+    Crossref). 17,029 components carry a wrong-link verdict (M). Every
+    such example shared a PII that the spelling rule then split in two,
+    which the rule of 2026-09-28 joins (§10). The user's principle,
+    2026-09-28: ids take precedence over titles, especially while titles
+    are compared without fuzzy matching, which waits for the reverse
+    citation lookup and its lessons. The proposal: inside a conflict, a
+    second id the two records share vouches for the link before any
+    title is compared, and titles decide only where no id does — a
+    PubMed record of 1965 giving the DOI of a 1976 article (PMID
+    14288003), two PubMed records giving one DOI. To measure first:
+    wrong-link verdicts counted by whether the two records share another
+    id. Not built; until then, a compromise (§13).
+30. **An alias that names two articles one source keeps apart.** AMA's
+    Crossref records give its journals' old DOIs as aliases, and some give
+    the old DOIs of two different articles, which the merge then makes
+    one work. `10.1001/archderm.1965.01600160013003` aliases
+    `archderm.92.4.357` (PMID 5319703, pp. 357–61, "Erythropoietic
+    protoporphyria. II. Histological and histochemical studies…") and
+    `archderm.92.4.477` (PMID 5835345, pp. 477–8, "Erythropoietic
+    protoporphyria."); "Scleromyxedema", Arch Dermatol 99(1) pp. 51–6 and
+    128–9, is another. JAMA Dermatology answers PubMed's link-out for the
+    second with a 404 (the user, 2026-09-28): the publisher holds one item
+    and sends both DOIs to it, where PubMed indexes two articles. The
+    titles agree, so they cannot tell; the first pages can, 357 against
+    477, and the citation fields plan brings them (model 13). Up to 790
+    components have the shape (`duplicate records (pubmed) + two dois +
+    two pmids`), which also holds true duplicates. The options: an alias
+    landing on two or more articles another source keeps apart names
+    none of them, or the pages decide. Not built; the merge of record
+    accepts the joins (§13).
+
 ## 12. Sources consulted
 
 The ingestion plan's §12; the census script and the dumps it read, in the
 session's scratch space, superseded by the merge's own report at MM2.
+
+## 13. Compromises
+
+What the merge trades away on purpose, each with its cost and what would
+lift it (the user's condition, 2026-09-26; the evaluation plan's §12 is
+the first such ledger). Started 2026-09-28; earlier trade-offs are in §10
+and §11, where they were made.
+
+- **A deposit judged by hand** (2026-09-28; §11 item 28; merge version 16
+  amended). The aliases of Crossref's `10.1161/svin.122.000762`, deposited
+  2024-05-13, are taken as the 102 abstracts it corrects because a list
+  says so (`source_crossref::listed_corrections`), not because a record
+  does. *Cost:* the merge acts on a judgment the data does not carry, and
+  the list is kept by hand; a later deposit of the DOI is not on it, and
+  stops a run again if it still gives the aliases. *Lifts it:* PubMed's
+  update files (freshness). Their copy of PMID 41585761 is the erratum
+  for all 102, which rule 2 reads through model 12. Then the entry goes,
+  and the list with it.
+- **Titles decide a conflict** (2026-09-28; §11 item 29). Where two
+  records' ids disagree, the title test cuts the link, so a title
+  written differently can outvote an id the records share. *Cost:* a
+  record loses a name its ids support, and its id of record splits.
+  *Lifts it:* item 29, a second shared id before any title.
+- **AMA's grouped aliases accepted** (2026-09-28; §11 item 30). The first
+  merge of record joins two PubMed articles where one AMA record's
+  aliases name both. *Cost:* up to 790 components' works joined, some
+  wrongly, and each wrong join undone later retires an id. *Lifts it:*
+  the pages (citation fields, model 13), or item 30's alias rule.
+- **The merge of record unrehearsed on its last change** (2026-09-28).
+  The PII spelling rule landed after the last survey (v10), and the user
+  took the merge of record straight after it: the survey ran clean, and
+  product work waits on the merge. *Cost:* a shape the rules do not
+  cover stops the run hours in, before it writes anything of record, and
+  the joins the rule makes are measured by the merge's own report rather
+  than beforehand. *Lifts it:* that report, which prints what a survey's
+  does.

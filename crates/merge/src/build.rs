@@ -24,7 +24,7 @@ use smallvec::SmallVec;
 use crate::arena::NameIx;
 use crate::contributor::Contributor;
 use crate::copies::{self, Copies, Fate};
-use crate::identity::{Reason, RecordIx, Resolution, Standing, Work as Identified};
+use crate::identity::{Reason, RecordIx, Resolution, Standing, StubWorks, WorkRef as Identified};
 use crate::kind::{Form, Genre};
 use crate::layout;
 use crate::name::{Name, OwnedName};
@@ -210,8 +210,12 @@ type RawEdge = (WorkId, WorkId, SourceId, u64);
 /// set always does.
 #[must_use]
 pub fn fingerprint(names: &[Name<'_>], citation: &Citation<'_>, table: Option<&Table>) -> u64 {
+    // The owned citation, whose container is text: the borrowed one's is
+    // an interned value, which postcard can write only inside a file
+    // being written, and a Crossref reference has one (2026-09-26: the
+    // first Crossref merge since this fingerprint stopped on it).
     let citation = OwnedCitation::of(citation, table);
-    let bytes = postcard::to_allocvec(&(names, citation.borrow())).expect("a reference serializes");
+    let bytes = postcard::to_allocvec(&(names, &citation)).expect("a reference serializes");
     let hash = blake3::hash(&bytes);
     let mut bits = [0u8; 8];
     bits.copy_from_slice(&hash.as_bytes()[..8]);
@@ -932,7 +936,7 @@ fn names_table(res: &Resolution, ids: &Ids) -> Result<Vec<Packed>, Error> {
                 )));
             }
         }
-        for n in &work.names {
+        for n in work.names {
             let slot = &mut name_work[n.name as usize];
             *slot = Packed::of(match (n.standing, slot.get()) {
                 (Standing::Shared, Slot::Free | Slot::Shared) => Slot::Shared,
@@ -959,7 +963,7 @@ fn names_table(res: &Resolution, ids: &Ids) -> Result<Vec<Packed>, Error> {
 fn records_table(res: &Resolution) -> Result<Vec<usize>, Error> {
     let mut record_work = vec![usize::MAX; res.records.len()];
     for (w, work) in res.works.iter().enumerate() {
-        for &rix in &work.records {
+        for &rix in work.records {
             if record_work[rix as usize] != usize::MAX {
                 return Err(Error::Invariant(format!(
                     "{}={} is in two works",
@@ -985,10 +989,13 @@ fn records_table(res: &Resolution) -> Result<Vec<usize>, Error> {
 pub struct Builder {
     res: Resolution,
     ids: Ids,
-    stub_works: Vec<Vec<OwnedName>>,
+    stub_works: StubWorks,
     name_work: Vec<Packed>,
     stub_name_work: Vec<Option<WorkId>>,
     record_work: Vec<usize>,
+    /// Every record's view by index, in a pass that holds them: made
+    /// whole on the first view kept ([`hold_views`](Self::hold_views)),
+    /// and never under a spill.
     views: Vec<Option<Owned>>,
     edges: Vec<RawEdge>,
     relations: Vec<Relation>,
@@ -1025,7 +1032,17 @@ impl Builder {
     ///
     /// An invariant broken.
     pub fn new(res: Resolution, ids: Ids) -> Result<Self, Error> {
-        let stub_works = res.stub_works();
+        let stub_works = res.stub_groups();
+        Self::with_stubs(res, ids, stub_works)
+    }
+
+    /// [`Builder::new`] with the stubs the registry was given, by number
+    /// ([`Resolution::stub_groups`]), which are not worked out twice.
+    ///
+    /// # Errors
+    ///
+    /// An invariant broken, or stubs that are not the resolution's.
+    pub fn with_stubs(res: Resolution, ids: Ids, stub_works: StubWorks) -> Result<Self, Error> {
         if ids.held.len() != res.works.len() || ids.stubs.len() != stub_works.len() {
             return Err(Error::Invariant(format!(
                 "{} ids for {} works, {} for {} stubs",
@@ -1045,17 +1062,18 @@ impl Builder {
         let record_work = records_table(&res)?;
         let mut stub_name_work = vec![None; res.stubs.len()];
         for (s, names) in stub_works.iter().enumerate() {
-            for name in names {
-                let ix = res.stubs.find(name.as_name()).ok_or_else(|| {
-                    Error::Invariant(format!("stub name {name} is not in the stubs"))
+            for &ix in names {
+                let slot = stub_name_work.get_mut(ix as usize).ok_or_else(|| {
+                    Error::Invariant(format!("stub name {ix} is not in the stubs"))
                 })?;
-                stub_name_work[ix as usize] = Some(ids.stubs[s]);
+                if slot.replace(ids.stubs[s]).is_some() {
+                    return Err(Error::Invariant(format!("stub name {ix} is in two stubs")));
+                }
             }
         }
         if stub_name_work.iter().any(Option::is_none) {
             return Err(Error::Invariant("a stub name is in no stub".to_owned()));
         }
-        let views = vec![None; res.records.len()];
         Ok(Self {
             res,
             ids,
@@ -1063,7 +1081,7 @@ impl Builder {
             name_work,
             stub_name_work,
             record_work,
-            views,
+            views: Vec::new(),
             edges: Vec::new(),
             relations: Vec::new(),
             cited_as: Vec::new(),
@@ -1168,6 +1186,7 @@ impl Builder {
             self.keep(from, Row::View(rix, owned));
             return;
         }
+        self.hold_views();
         let slot = &mut self.views[rix as usize];
         *slot = Some(match slot.take() {
             None => {
@@ -1338,8 +1357,20 @@ impl Builder {
         let Some((rix, _)) = self.record_of(native) else {
             return false;
         };
+        self.hold_views();
         self.views[rix as usize] = Some(Owned::of(view));
         true
+    }
+
+    /// Makes the list of views a pass that holds them keeps, a slot a
+    /// record, before its first view. A pass that spills keeps none, and
+    /// the list — 200 bytes a record, every one written — was made for it
+    /// all the same until 2026-09-26: 11.6 GiB of the peak on the PubMed
+    /// baseline and an eighth of Crossref (the merge's memory).
+    fn hold_views(&mut self) {
+        if self.views.is_empty() {
+            self.views = vec![None; self.res.records.len()];
+        }
     }
 
     /// Notes that a reference of `from`'s record of `source` gave a stub
@@ -1820,7 +1851,7 @@ impl<S: std::hash::BuildHasher> Views for HashMap<RecordIx, Owned, S> {
 struct Whole<'p> {
     res: &'p Resolution,
     ids: &'p Ids,
-    stub_works: &'p [Vec<OwnedName>],
+    stub_works: &'p StubWorks,
     /// Per id: its records' sources, [`Sources::NONE`] for a stub, `None`
     /// where no work is. What an edge or a relation asks of the work at
     /// its other end, which may be in any range: two bytes an id.
@@ -1829,11 +1860,7 @@ struct Whole<'p> {
 }
 
 impl<'p> Whole<'p> {
-    fn new(
-        res: &'p Resolution,
-        ids: &'p Ids,
-        stub_works: &'p [Vec<OwnedName>],
-    ) -> Result<Self, Error> {
+    fn new(res: &'p Resolution, ids: &'p Ids, stub_works: &'p StubWorks) -> Result<Self, Error> {
         let max = ids
             .held
             .iter()
@@ -1946,27 +1973,29 @@ fn finish_range<V: Views + ?Sized>(
     for w in held_works {
         works.push(held(
             res,
-            &res.works[w],
+            &res.works.get(w),
             whole.ids.held[w],
             views,
             &mut counted.tallies,
         ));
     }
     for s in stubs {
-        let names = &whole.stub_works[s];
-        let citers: Vec<Vec<Citer>> = names
+        // A stub's names are read out for its own row alone (the merge's
+        // memory, 2026-09-26): the pass holds them as numbers.
+        let numbers = whole.stub_works.names(s);
+        let names: Vec<OwnedName> = numbers
             .iter()
-            .map(|name| {
-                let mut list = res
-                    .stubs
-                    .find(name.as_name())
-                    .and_then(|ix| stub_citers.remove(&ix))
-                    .unwrap_or_default();
+            .map(|&ix| res.stubs.get(ix).into_owned())
+            .collect();
+        let citers: Vec<Vec<Citer>> = numbers
+            .iter()
+            .map(|ix| {
+                let mut list = stub_citers.remove(ix).unwrap_or_default();
                 join_citers(&mut list);
                 list
             })
             .collect();
-        works.push(stub(names, &citers, whole.ids.stubs[s]));
+        works.push(stub(&names, &citers, whole.ids.stubs[s]));
     }
     works.sort_by_key(|w| w.id);
     // Edges: one per pair, the sources joined. A reference a record's
@@ -2560,6 +2589,42 @@ fn venue_disjoint(a: &Venue<'_>, b: &Venue<'_>) -> bool {
 #[cfg(test)]
 #[allow(clippy::unreadable_literal)] // real ids, as the sample spells them
 mod tests {
+    /// A Crossref reference names its journal, an interned value, and is
+    /// fingerprinted outside any file being written; a PubMed one has no
+    /// journal, and prints as it did before the fingerprint took the owned
+    /// citation.
+    #[test]
+    fn a_reference_with_a_journal_is_fingerprinted() {
+        use model::symbol::Interned;
+        let names = [Name::Doi("10.1016/j.x.2025.01.001")];
+        let journal = Citation {
+            container: Some(Interned::Text("Nature")),
+            year: Some("2025"),
+            ..Citation::default()
+        };
+        let a = super::fingerprint(&names, &journal, None);
+        assert_eq!(a, super::fingerprint(&names, &journal, None));
+        let other = Citation {
+            container: Some(Interned::Text("Science")),
+            ..journal
+        };
+        assert_ne!(a, super::fingerprint(&names, &other, None));
+        let plain = Citation {
+            text: Some("Smith J. 2025."),
+            ..Citation::default()
+        };
+        let owned = super::OwnedCitation::of(&plain, None);
+        assert_eq!(
+            super::fingerprint(&names, &plain, None),
+            {
+                let bytes = postcard::to_allocvec(&(&names[..], owned.borrow())).unwrap();
+                let hash = blake3::hash(&bytes);
+                u64::from_le_bytes(hash.as_bytes()[..8].try_into().unwrap())
+            },
+            "a reference with no journal prints as before"
+        );
+    }
+
     use model::date::Bound;
     use model::{Day, Issn, Lang, Month, OpenAlexId, Pmid, Year};
 
@@ -2680,6 +2745,21 @@ mod tests {
         let beta = ids.held[res.works.iter().position(|w| w.records.len() == 1).unwrap()];
         let stub = ids.stubs[0];
         (Builder::new(res, ids).unwrap(), [alpha, beta, stub])
+    }
+
+    /// The list of views is made by the first view a pass holds, not by
+    /// `new`: a pass that spills never holds one, and the list cost it 200
+    /// bytes a record all the same (the merge's memory, 2026-09-26).
+    #[test]
+    fn only_a_pass_that_holds_views_makes_their_list() {
+        let (mut b, _) = scenario();
+        assert!(b.views.is_empty());
+        assert!(b.view(Name::Pmid(pmid(1)), &View::default()));
+        assert_eq!(b.views.len(), b.res.records.len());
+        assert_eq!(b.views.iter().flatten().count(), 1);
+        assert!(b.view(Name::Doi("10.1000/b"), &View::default()));
+        assert_eq!(b.views.len(), b.res.records.len(), "made once");
+        assert_eq!(b.views.iter().flatten().count(), 2);
     }
 
     #[test]

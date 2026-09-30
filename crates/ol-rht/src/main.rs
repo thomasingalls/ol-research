@@ -66,6 +66,16 @@
 //!   merge.
 //! * `merge dump <set.zst>... [--limit N]` prints a merged set as JSON
 //!   lines, for eyes.
+//! * `survey placement [--store <root>] [--limit N]` counts what PubMed
+//!   and Crossref say about where a work was published — volume, issue,
+//!   pages, article number, dates — and compares the two records of each
+//!   work the merged set pairs; it writes nothing (citation fields plan
+//!   §7, CF0; see [`survey`]).
+//! * `survey analysis [--store <root>] [--workers N]` counts what the
+//!   index's analyzer does to every held work's title and abstract, and
+//!   `evaluate misses <suite> <run>` whether a change of form would make a
+//!   query's words meet the relevant works a baseline run missed; both
+//!   write nothing (tokenizer plan §5, T0; see [`analysis`]).
 //!
 //! `--survey` (plan §6) keeps going past records this build cannot read
 //! and reports every distinct failure signature with counts and examples;
@@ -113,6 +123,9 @@ use source_openalex::normalize::LocationId;
 use source_pubmed::Pubmed;
 use source_pubmed::normalize::{Citation, HistoryDate, HistoryTime, Published, Reference};
 
+mod analysis;
+mod survey;
+
 /// Allocations per record are part of every report (plan §5, rule 13).
 #[global_allocator]
 static ALLOC: ingest::alloc::Counting = ingest::alloc::Counting;
@@ -131,6 +144,8 @@ const USAGE: &str = "usage:
   ol-rht merge [--store <root>] [--limit N] [--survey] [--public-key <file>]
   ol-rht merge --batch <path>... [--store <root>] [--public-key <file>]
   ol-rht merge dump <set.zst>... [--limit N]
+  ol-rht survey placement [--store <root>] [--limit N]
+  ol-rht survey analysis [--store <root>] [--workers N]
   ol-rht graph build [--store <root>] [--held]
   ol-rht graph query <#id|name> [--store <root>] [--held] [--limit N]
   ol-rht graph check [--store <root>] [--held]
@@ -148,7 +163,8 @@ const USAGE: &str = "usage:
   ol-rht evaluate load <trec-pm <topics.xml> <qrels> | relish <RELISH_v1.json.gz>> --out <suite> [--store <root>] [--held-out]
   ol-rht evaluate run <suite | queries> --out <run> [--store <root>] [--limit depth] [--workers N] [--restricted]
   ol-rht evaluate score <suite | key> <run> [--test]
-  ol-rht evaluate compare <suite | key> <base run> <new run> [--test]";
+  ol-rht evaluate compare <suite | key> <base run> <new run> [--test]
+  ol-rht evaluate misses <suite> <run> [--store <root>]";
 
 /// Who we say we are; `--mailto` adds an address inside the parenthesis.
 const USER_AGENT: &str = "ol-rht/0.1 (citation-graph ingestion";
@@ -228,6 +244,8 @@ fn main() -> ExitCode {
                 ("openalex", "ingest") => ingest::<OpenAlex, OpenAlexStats>(&opts),
                 ("merge", "identity") => merge_identity(&opts),
                 ("merge", "dump") => merge_dump(&opts),
+                ("survey", "placement") => survey::placement(&opts),
+                ("survey", "analysis") => analysis::census(&opts),
                 ("graph", "build") => graph_build(&opts, held),
                 ("graph", "query") => graph_query(&opts, held),
                 ("graph", "check") => graph_check(&opts, held),
@@ -246,6 +264,7 @@ fn main() -> ExitCode {
                 ("evaluate", "run") => evaluate_run(&opts),
                 ("evaluate", "score") => evaluate_score(&opts),
                 ("evaluate", "compare") => evaluate_compare(&opts),
+                ("evaluate", "misses") => analysis::misses(&opts),
                 _ => usage(),
             }
         }
@@ -1272,8 +1291,11 @@ fn merge_pass1(
         let pushed = sorter.pushed();
         let sorting = std::time::Instant::now();
         let dictionary = sorter.finish().map_err(io)?;
+        // Every copy seen: each one's fate kept by its set and place, and
+        // the copies by name let go (the merge's memory, 2026-09-26).
+        copies.settle()?;
         eprintln!(
-            "{what}: copies read in {:.1} s; {} distinct names of {pushed} read, a dictionary of {} MiB (the FST {} MiB) in {:.1} s; {}",
+            "{what}: copies read in {:.1} s; {} distinct names of {pushed} read, a dictionary of {} MiB (the FST {} MiB) and the copies settled in {:.1} s; {}",
             read.as_secs_f64(),
             dictionary.len(),
             dictionary.bytes() >> 20,
@@ -1331,7 +1353,7 @@ fn merge_pass1(
         eprintln!("{what}: {e}");
         ExitCode::FAILURE
     })?;
-    let res = identity.resolve(opts.survey).map_err(|e| {
+    let mut res = identity.resolve(opts.survey).map_err(|e| {
         eprintln!("{what}: {e}");
         ExitCode::FAILURE
     })?;
@@ -1340,6 +1362,7 @@ fn merge_pass1(
         started.elapsed().as_secs_f64(),
         heap()
     );
+    merge_sort_stubs(what, &mut res)?;
     Ok(Pass1 {
         res,
         pubmed,
@@ -1357,8 +1380,9 @@ struct Assigned {
     ids: merge::Ids,
     /// The counts; its `lines` are empty, having been staged as made.
     assignment: merge::registry::Assignment,
-    stub_works: Vec<Vec<OwnedName>>,
-    dropped: u64,
+    stub_works: merge::identity::StubWorks,
+    /// The first merges and splits, written out for the report.
+    changes: Vec<String>,
     /// `None` on a partial run.
     pending: Option<merge::registry::Pending>,
     totals: Totals,
@@ -1372,6 +1396,30 @@ struct Assigned {
 struct Totals {
     minted: u32,
     lines: u64,
+}
+
+/// The stub names, found while the references were read, numbered in
+/// name order and kept in a dictionary as the arena's are (the merge's
+/// memory, 2026-09-26): its runs under the system's temporary directory,
+/// as the arena's are.
+fn merge_sort_stubs(what: &str, res: &mut Resolution) -> Result<(), ExitCode> {
+    let sorting = std::time::Instant::now();
+    let stubs = std::env::temp_dir().join(format!("ol-rht-stubs-{}", std::process::id()));
+    merge::dictionary::Sorter::create(&stubs)
+        .and_then(|sorter| res.sort_stubs(sorter))
+        .map_err(|e| {
+            eprintln!("{what}: {}: {e}", stubs.display());
+            ExitCode::FAILURE
+        })?;
+    eprintln!(
+        "{what}: {} stub names in a dictionary of {} MiB in {:.1} s; the resolution holds {}; {}",
+        res.stubs.len(),
+        res.stubs.dictionary().map_or(0, |d| d.bytes() >> 20),
+        sorting.elapsed().as_secs_f64(),
+        res.held(),
+        heap()
+    );
+    Ok(())
 }
 
 /// Gives every work its id through the registry (merge plan §4): held
@@ -1402,18 +1450,20 @@ fn merge_assign(
     };
     let mut ranked = merge::registry::Ranked::read(path, res).map_err(fail)?;
     let (order, mut works) = res.registry_works();
-    let stub_works = res.stub_works();
-    for names in &stub_works {
-        works.push(
-            names
-                .iter()
-                .map(|n| res.index(n).expect("a stub's name is the run's")),
-        );
+    // By number, a stub's names read out one at a time for their numbers
+    // in the run's index, which is the arena's for a name it also holds
+    // (the merge's memory, 2026-09-26).
+    let stub_works = res.stub_groups();
+    for names in stub_works.iter() {
+        works.push(names.iter().map(|&ix| {
+            res.index(&res.stubs.get(ix))
+                .expect("a stub's name is the run's")
+        }));
     }
     let at = ingest::time::now();
     let mut stager = merge_stager(what, path, complete)?;
     let mut computed = 0u64;
-    let (assignment, dropped) = {
+    let (mut assignment, dropped) = {
         let mut emit = |line: merge::registry::Line| -> io::Result<()> {
             computed += 1;
             stager.as_mut().map_or(Ok(()), |s| s.push(&line))
@@ -1440,6 +1490,10 @@ fn merge_assign(
     };
     debug_assert_eq!(works.len(), order.len() + stub_works.len());
     drop(works);
+    // Counted with the assignment's own, as `Registry::assign` counts them,
+    // so that the report, the journal and the batch say one number.
+    assignment.dropped += dropped;
+    let changes = merge_changes(res, &order, &stub_works, &assignment);
     let pending = merge_staged(what, path, stager, computed)?;
     let (held_ids, stub_ids) = assignment.ids.split_at(order.len());
     let mut ids = merge::Ids {
@@ -1457,10 +1511,65 @@ fn merge_assign(
         ids,
         assignment,
         stub_works,
-        dropped,
+        changes,
         pending,
         totals,
     })
+}
+
+/// The first merges and splits an assignment made, written out for the
+/// report (merge plan §11 item 27): each id retired, where it went, and
+/// the work there — its records, then its names — so that what a new
+/// source changes under ids of record can be seen before a merge of
+/// record writes it. `order` is the held works in the order they were
+/// assigned; the stubs follow.
+fn merge_changes(
+    res: &Resolution,
+    order: &[u32],
+    stubs: &merge::identity::StubWorks,
+    assignment: &merge::registry::Assignment,
+) -> Vec<String> {
+    let describe = |w: usize| -> String {
+        if let Some(&held) = order.get(w) {
+            let work = res.works.get(held as usize);
+            let records: Vec<String> = work
+                .records
+                .iter()
+                .map(|&rix| {
+                    let r = &res.records[rix as usize];
+                    format!("{}={}", r.source, res.arena.get(r.native))
+                })
+                .collect();
+            let names: Vec<String> = work
+                .names
+                .iter()
+                .map(|n| res.arena.get(n.name).to_string())
+                .collect();
+            format!("{{{} | {}}}", records.join(" "), names.join(" "))
+        } else {
+            let names: Vec<String> = stubs
+                .names(w - order.len())
+                .iter()
+                .map(|&ix| res.stubs.get(ix).to_string())
+                .collect();
+            format!("{{a stub | {}}}", names.join(" "))
+        }
+    };
+    let mut changes: Vec<String> = assignment
+        .merge_examples
+        .iter()
+        .map(|&(id, into, w)| format!("merged {id} into {into}: {}", describe(w)))
+        .collect();
+    for (id, parts) in &assignment.split_examples {
+        let ids: Vec<String> = parts.iter().map(|(part, _)| part.to_string()).collect();
+        let works: Vec<String> = parts.iter().map(|&(_, w)| describe(w)).collect();
+        changes.push(format!(
+            "split {id} into {}: {}",
+            ids.join(", "),
+            works.join(" || ")
+        ));
+    }
+    changes
 }
 
 /// Bytes of the registry the last journal line already told readers
@@ -1617,6 +1726,7 @@ fn merge_identity(opts: &Options) -> ExitCode {
         &pass.res,
         &assigned.stub_works,
         Some(&assigned.assignment),
+        &assigned.changes,
     ) {
         eprintln!("{what}: {e}");
         return ExitCode::FAILURE;
@@ -1694,6 +1804,7 @@ fn merge_all(opts: &Options, public_key: Option<&Path>) -> ExitCode {
         &res,
         &assigned.stub_works,
         Some(&assigned.assignment),
+        &assigned.changes,
     ) {
         eprintln!("{what}: {e}");
         return ExitCode::FAILURE;
@@ -1703,23 +1814,22 @@ fn merge_all(opts: &Options, public_key: Option<&Path>) -> ExitCode {
         ids,
         assignment,
         stub_works,
-        dropped,
+        changes: _,
         pending,
         totals,
     } = assigned;
-    drop(stub_works);
     let counts = Counts {
         minted: assignment.minted,
         merged: assignment.merged,
         split: assignment.split,
-        dropped,
+        dropped: assignment.dropped,
     };
     eprintln!(
         "{what}: identity and registry done in {:.1} s; {}",
         started.elapsed().as_secs_f64(),
         heap()
     );
-    let mut builder = match Builder::new(res, ids) {
+    let mut builder = match Builder::with_stubs(res, ids, stub_works) {
         Ok(builder) => builder,
         Err(e) => {
             eprintln!("{what}: {e}");
@@ -2044,6 +2154,7 @@ fn copy_of<S: Contributor>(
             view,
             text,
             relations,
+            corrects_its_aliases: S::corrects_its_aliases(work),
             references: Vec::new(),
         },
     ))
@@ -2350,6 +2461,7 @@ fn batch_add<S: Contributor>(
                     view,
                     text,
                     relations,
+                    corrects_its_aliases: S::corrects_its_aliases(&work),
                     references: Vec::new(),
                 };
                 // Two copies of one record in the set: the newer speaks,
@@ -5240,20 +5352,10 @@ macro_rules! absorb_all {
 
 /// What became of a record's publisher ids (merge plan §3.1), for the
 /// normalize surveys: each value counted by the name it became or by the
-/// reason it became none, and — separately — the values written in
-/// Elsevier's printed PII whose registrant is not on the checked-in list,
-/// by registrant.
-///
-/// The second count is the one to watch. A non-zero entry says a
-/// publisher we do not know to be Elsevier is printing Elsevier's
-/// identifier, so either that registrant belongs in
-/// `merge::publisher::ELSEVIER` or the shape is less Elsevier's than it
-/// looks; the registrant in the report is the evidence to decide on,
-/// which is why the list is never guessed at (the user, 2026-09-19).
+/// reason it became none.
 #[derive(Debug, Default)]
 struct PublisherIds {
     outcomes: BTreeMap<&'static str, u64>,
-    off_list: BTreeMap<u32, u64>,
 }
 
 impl PublisherIds {
@@ -5263,12 +5365,6 @@ impl PublisherIds {
             Err(why) => why.reason(),
         };
         *self.outcomes.entry(outcome).or_default() += 1;
-        if merge::publisher::pii_shaped(value)
-            && let Some(registrant) = scope.registrant()
-            && !merge::publisher::is_elsevier(registrant)
-        {
-            *self.off_list.entry(registrant.get()).or_default() += 1;
-        }
     }
 
     fn report(&self) {
@@ -5276,18 +5372,12 @@ impl PublisherIds {
             return;
         }
         eprintln!("  publisher ids {:?}", self.outcomes);
-        let off: u64 = self.off_list.values().sum();
-        eprintln!(
-            "    pii shaped, registrant not on the Elsevier list: {off} {:?}",
-            self.off_list
-        );
     }
 }
 
 impl Absorb for PublisherIds {
     fn absorb(&mut self, other: Self) {
         self.outcomes.absorb(other.outcomes);
-        self.off_list.absorb(other.off_list);
     }
 }
 
@@ -5313,6 +5403,8 @@ fn sample(samples: &mut Vec<String>, raw: &str, error: &impl Display) {
 struct PubmedStats {
     citations: u64,
     deletions: u64,
+    /// Values read as other than written, by field and how.
+    corrected: BTreeMap<(&'static str, &'static str), u64>,
     /// Records the checked-in exclusion list kept out, by reason.
     excluded: BTreeMap<&'static str, u64>,
     doi: [u64; 3],
@@ -5379,6 +5471,9 @@ struct PubmedStats {
     history_time_malformed: BTreeMap<&'static str, u64>,
     publication_status: BTreeMap<&'static str, u64>,
     relations: BTreeMap<&'static str, u64>,
+    /// Relations with no PMID whose `RefSource` is a DOI, which names the
+    /// other record (model version 12), by kind.
+    relation_dois: BTreeMap<&'static str, u64>,
     references: u64,
     reference_ids: BTreeMap<&'static str, u64>,
     reference_doi_malformed: u64,
@@ -5388,6 +5483,17 @@ struct PubmedStats {
 }
 
 impl PubmedStats {
+    /// The relations, by kind, and those a DOI in `RefSource` names.
+    fn report_relations(&self) {
+        eprintln!("  relations {:?}", self.relations);
+        if !self.relation_dois.is_empty() {
+            eprintln!(
+                "  relations naming the other record by a DOI in RefSource, no PMID: {:?}",
+                self.relation_dois
+            );
+        }
+    }
+
     /// The `MedlineDate`s kept rather than read, with the commonest of
     /// them as written: what the grammar is taught from next.
     fn report_kept(&self) {
@@ -5438,6 +5544,9 @@ impl StatsReport for PubmedStats {
 
     fn report(&self) {
         eprintln!("citations {}  deletions {}", self.citations, self.deletions);
+        if !self.corrected.is_empty() {
+            eprintln!("  read as other than written {:?}", self.corrected);
+        }
         for (reason, n) in &self.excluded {
             eprintln!("  excluded by the checked-in list: {n}, {reason}");
         }
@@ -5515,7 +5624,7 @@ impl StatsReport for PubmedStats {
             );
         }
         eprintln!("  publication status {:?}", self.publication_status);
-        eprintln!("  relations {:?}", self.relations);
+        self.report_relations();
         eprintln!("references {}", self.references);
         eprintln!("  ids {:?}", self.reference_ids);
         if !self.reference_loose.is_empty() {
@@ -5678,6 +5787,9 @@ impl<'n> Sink<'n, Pubmed> for PubmedStats {
         }
         for r in &c.relations {
             *self.relations.entry(r.kind.token()).or_default() += 1;
+            if r.doi.is_some() {
+                *self.relation_dois.entry(r.kind.token()).or_default() += 1;
+            }
         }
     }
 
@@ -5718,6 +5830,10 @@ impl<'n> Sink<'n, Pubmed> for PubmedStats {
     fn excluded(&mut self, _: &Pmid, reason: &'static str) {
         *self.excluded.entry(reason).or_default() += 1;
     }
+
+    fn corrected(&mut self, _: &Pmid, field: &'static str, how: &'static str) {
+        *self.corrected.entry((field, how)).or_default() += 1;
+    }
 }
 
 /// The Crossref stats report.
@@ -5732,6 +5848,12 @@ struct CrossrefStats {
     excluded: BTreeMap<&'static str, u64>,
     /// Values read and not kept, by field and value.
     set_aside: BTreeMap<(&'static str, &'static str), u64>,
+    /// Values read as other than written, by field and how.
+    corrected: BTreeMap<(&'static str, &'static str), u64>,
+    /// `aliases`: valid, malformed.
+    aliases: [u64; 2],
+    /// Works whose DOI has an ASCII spelling of its own.
+    ascii_dois: u64,
     doi_lowercased: u64,
     owner_differs: u64,
     /// What `alternative-id` became as a name (merge plan §3.1).
@@ -5743,6 +5865,8 @@ struct CrossrefStats {
     abstracts: [u64; 3],
     persons: u64,
     orgs: u64,
+    /// Authors with a given name and nothing else.
+    given_only: u64,
     with_orcid: u64,
     orcid_malformed: u64,
     /// `<institution>`s: authors' affiliations, then works' own.
@@ -5803,6 +5927,7 @@ impl<'n> Sink<'n, Crossref> for CrossrefStats {
             match a.name {
                 source_crossref::normalize::AuthorName::Person { .. } => self.persons += 1,
                 source_crossref::normalize::AuthorName::Org(_) => self.orgs += 1,
+                source_crossref::normalize::AuthorName::Given(_) => self.given_only += 1,
             }
             match &a.orcid {
                 None => {}
@@ -5857,6 +5982,16 @@ impl<'n> Sink<'n, Crossref> for CrossrefStats {
         }
         self.version_part[0] += u64::from(w.version.is_some());
         self.version_part[1] += u64::from(w.part_number.is_some());
+        for a in &w.aliases {
+            match a {
+                Claim::Valid(_) => self.aliases[0] += 1,
+                Claim::Malformed { raw, error } => {
+                    self.aliases[1] += 1;
+                    sample(&mut self.malformed_samples, raw, error);
+                }
+            }
+        }
+        self.ascii_dois += u64::from(w.ascii_doi.is_some());
         self.unowned[0] += u64::from(w.member.is_none());
         self.unowned[1] += u64::from(w.publisher.is_none());
     }
@@ -5893,6 +6028,10 @@ impl<'n> Sink<'n, Crossref> for CrossrefStats {
     fn set_aside(&mut self, _: &Doi<'n>, field: &'static str, value: &'static str) {
         *self.set_aside.entry((field, value)).or_default() += 1;
     }
+
+    fn corrected(&mut self, _: &Doi<'n>, field: &'static str, how: &'static str) {
+        *self.corrected.entry((field, how)).or_default() += 1;
+    }
 }
 
 impl StatsReport for CrossrefStats {
@@ -5917,8 +6056,8 @@ impl StatsReport for CrossrefStats {
             self.abstracts[0], self.abstracts[1], self.abstracts[2]
         );
         eprintln!(
-            "  authors persons {} orgs {} with orcid {} malformed {}",
-            self.persons, self.orgs, self.with_orcid, self.orcid_malformed
+            "  authors persons {} orgs {} given name only {} with orcid {} malformed {}",
+            self.persons, self.orgs, self.given_only, self.with_orcid, self.orcid_malformed
         );
         eprintln!(
             "  affiliations {}  the works' own institutions {}",
@@ -5936,6 +6075,13 @@ impl StatsReport for CrossrefStats {
         if !self.set_aside.is_empty() {
             eprintln!("  set aside {:?}", self.set_aside);
         }
+        if !self.corrected.is_empty() {
+            eprintln!("  read as other than written {:?}", self.corrected);
+        }
+        eprintln!(
+            "  aliases {} malformed {}  DOIs with an ASCII spelling {}",
+            self.aliases[0], self.aliases[1], self.ascii_dois
+        );
         eprintln!("  relations {:?}", self.relations);
         eprintln!(
             "  licenses {:?}  from publication {} on a day {} unreadable {}",
@@ -6036,6 +6182,8 @@ impl Display for InstitutionCounts {
 struct OpenAlexStats {
     works: u64,
     deletions: u64,
+    /// Values read as other than written, by field and how.
+    corrected: BTreeMap<(&'static str, &'static str), u64>,
     types: BTreeMap<source_openalex::vocab::WorkType, u64>,
     doi: [u64; 3],
     doi_lowercased: u64,
@@ -6090,6 +6238,9 @@ struct OpenAlexStats {
 impl StatsReport for OpenAlexStats {
     fn report(&self) {
         eprintln!("works {}  deletions {}", self.works, self.deletions);
+        if !self.corrected.is_empty() {
+            eprintln!("  read as other than written {:?}", self.corrected);
+        }
         eprintln!("  types {:?}", self.types);
         eprintln!(
             "  doi valid {} malformed {} none {}  lowercased (allocations) {}",
@@ -6290,23 +6441,27 @@ impl<'n> Sink<'n, OpenAlex> for OpenAlexStats {
     fn deletion(&mut self, _: &OpenAlexId) {
         self.deletions += 1;
     }
+
+    fn corrected(&mut self, _: &OpenAlexId, field: &'static str, how: &'static str) {
+        *self.corrected.entry((field, how)).or_default() += 1;
+    }
 }
 
 impl Merge for PubmedStats {
     fn merge(&mut self, other: Self) {
-        absorb_all!(self, other: PubmedStats { citations, deletions, excluded, doi, elocation_doi, doi_lowercased, doi_disagree, pii, pii_extra, publisher, pmc, pmc_malformed, published, published_kept, published_kept_why, published_kept_certain, electronic, revised, completed, status, languages, publication_types, unplaced_types, title, abstracts, sections, sections_markup, sections_math, other_abstracts, journal_issn, journal_issn_linking, journal_issn_malformed, persons, collectives, orcid, affiliations, affiliation_ids, investigators, mesh_headings, mesh_major, chemicals, keywords, grants, grants_with_country, data_banks, history, history_date_malformed, history_time_malformed, publication_status, relations, references, reference_ids, reference_loose, reference_doi_malformed, reference_pmid_malformed, reference_pmc_malformed, malformed_samples });
+        absorb_all!(self, other: PubmedStats { citations, deletions, corrected, excluded, doi, elocation_doi, doi_lowercased, doi_disagree, pii, pii_extra, publisher, pmc, pmc_malformed, published, published_kept, published_kept_why, published_kept_certain, electronic, revised, completed, status, languages, publication_types, unplaced_types, title, abstracts, sections, sections_markup, sections_math, other_abstracts, journal_issn, journal_issn_linking, journal_issn_malformed, persons, collectives, orcid, affiliations, affiliation_ids, investigators, mesh_headings, mesh_major, chemicals, keywords, grants, grants_with_country, data_banks, history, history_date_malformed, history_time_malformed, publication_status, relations, relation_dois, references, reference_ids, reference_loose, reference_doi_malformed, reference_pmid_malformed, reference_pmc_malformed, malformed_samples });
     }
 }
 
 impl Merge for CrossrefStats {
     fn merge(&mut self, other: Self) {
-        absorb_all!(self, other: CrossrefStats { works, deletions, types, untyped, excluded, set_aside, doi_lowercased, owner_differs, publisher, issued, title, alternate_titles, subtitle_empty, abstracts, persons, orgs, with_orcid, orcid_malformed, institutions, issns, isbns, languages, references, reference_doi, reference_empty, updates, update_words, relations, licenses, license_starts, dates, version_part, unowned, malformed_samples });
+        absorb_all!(self, other: CrossrefStats { works, deletions, types, untyped, excluded, set_aside, corrected, aliases, ascii_dois, doi_lowercased, owner_differs, publisher, issued, title, alternate_titles, subtitle_empty, abstracts, persons, orgs, given_only, with_orcid, orcid_malformed, institutions, issns, isbns, languages, references, reference_doi, reference_empty, updates, update_words, relations, licenses, license_starts, dates, version_part, unowned, malformed_samples });
     }
 }
 
 impl Merge for OpenAlexStats {
     fn merge(&mut self, other: Self) {
-        absorb_all!(self, other: OpenAlexStats { works, deletions, types, doi, doi_lowercased, pmid, mag, languages, language_malformed, title, oa_status, oa_url, with_best_oa, authorships, authors_with_id, with_orcid, with_raw_orcid, orcid_conflicts, corresponding, corresponding_institutions_disagree, institutions, institution_countries, institutions_without_ror, authorship_countries, affiliations, locations, provenance, location_ids, with_source, issn_l, issn, host_lineage, licenses, versions, topics, keywords, concepts, mesh, sdgs, awards, funders, funders_with_ror, apc, abstracts, counts_by_year, indexed_in, flags, references, self_references, related, malformed_samples });
+        absorb_all!(self, other: OpenAlexStats { works, deletions, corrected, types, doi, doi_lowercased, pmid, mag, languages, language_malformed, title, oa_status, oa_url, with_best_oa, authorships, authors_with_id, with_orcid, with_raw_orcid, orcid_conflicts, corresponding, corresponding_institutions_disagree, institutions, institution_countries, institutions_without_ror, authorship_countries, affiliations, locations, provenance, location_ids, with_source, issn_l, issn, host_lineage, licenses, versions, topics, keywords, concepts, mesh, sdgs, awards, funders, funders_with_ror, apc, abstracts, counts_by_year, indexed_in, flags, references, self_references, related, malformed_samples });
     }
 }
 

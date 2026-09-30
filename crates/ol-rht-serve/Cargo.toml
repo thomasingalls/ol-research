@@ -18,6 +18,7 @@ axum.workspace = true
 graph.workspace = true
 ingest.workspace = true
 merge.workspace = true
+mimalloc.workspace = true
 model.workspace = true
 prost.workspace = true
 query-parser.workspace = true

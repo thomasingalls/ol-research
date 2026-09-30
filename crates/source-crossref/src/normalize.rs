@@ -67,6 +67,12 @@ pub struct Work<'n> {
     /// The work's DOI, lowercased.
     #[serde(borrow)]
     pub doi: Doi<'n>,
+    /// The DOI spelled in ASCII, where it has letters beyond ASCII
+    /// ([`Doi::ascii_spelling`]): a name the merge gives the work beside
+    /// its own, so a publisher's ASCII twin of it (`día` and `dia`) is the
+    /// same work and a citation of either lands on it.
+    #[serde(borrow)]
+    pub ascii_doi: Option<Doi<'n>>,
     /// `prefix`: the DOI's current owner, which differs from the DOI's own
     /// registrant on 7 % of works.
     pub owner: Registrant,
@@ -134,6 +140,12 @@ pub struct Work<'n> {
     /// `status`: posted content withdrawn or removed.
     #[serde(borrow)]
     pub status: Option<PostedStatus<'n>>,
+    /// `aliases`: other DOIs the registry holds for this work — a
+    /// figshare item's `.v1`, on 138 of the records the March 2026 file's
+    /// survey named or stopped at (2026-09-26) — each a name the merge
+    /// gives the work beside its own. Dropped until model 10.
+    #[serde(borrow)]
+    pub aliases: Few<DoiClaim<'n>, 1>,
     /// `publisher`; absent with `member`.
     #[serde(borrow)]
     pub publisher: Option<Interned<'n>>,
@@ -204,6 +216,13 @@ pub enum AuthorName<'n> {
     },
     #[allow(missing_docs)]
     Org(&'n str),
+    /// A given name and nothing else: a person known by one name
+    /// (`Siddhartha`), a whole name written in the given-name field
+    /// (`Nguyen Minh Duc`), initials (`F.`), or an organisation (`ASDEX
+    /// Upgrade Team`) — which, the record does not say, so it is kept as
+    /// written (81 records of the March 2026 file, the user's call,
+    /// 2026-09-26).
+    Given(&'n str),
 }
 
 /// An organisation as the deposit schema's `<institution>` describes it:
@@ -522,6 +541,9 @@ struct Ctx {
     /// What the record's reading set aside, by field and value, for the
     /// sink once the record is read ([`Sink::set_aside`]).
     set_aside: std::cell::RefCell<Vec<(&'static str, &'static str)>>,
+    /// What it read as other than written, by field and how
+    /// ([`Sink::corrected`]).
+    corrected: std::cell::RefCell<Vec<(&'static str, &'static str)>>,
 }
 
 /// Where an `<institution>` sits: the field its failures name.
@@ -588,6 +610,16 @@ impl<'n, 'a> Parts<'n, 'a> {
 }
 
 impl Ctx {
+    /// A DOI, read ([`Doi::read`]), with what the reading changed noted
+    /// for the sink under `field`.
+    fn doi<'n>(&self, field: &'static str, raw: &'n str) -> Result<Doi<'n>, DoiError> {
+        let (doi, readings) = Doi::read(raw)?;
+        self.corrected
+            .borrow_mut()
+            .extend(readings.made().map(|how| (field, how)));
+        Ok(doi)
+    }
+
     fn err(&self, field: &'static str, raw: &str, kind: ErrorKind) -> Error {
         Error {
             doi: self.doi.clone(),
@@ -718,23 +750,16 @@ impl Ctx {
                     ErrorKind::Inconsistent("both family and name"),
                 ));
             }
-            (None, None) => {
-                return Err(match c.given.as_deref() {
-                    // "ASDEX Upgrade Team" (10.1238/physica.topical.108a00007):
-                    // an organisation in a person's given name, or a person
-                    // with one name; which, the record does not say.
-                    Some(given) => self.err(
-                        "author",
-                        given,
-                        ErrorKind::Unmodelled("a given name with neither a family name nor a name"),
-                    ),
-                    None => self.err(
+            (None, None) => match c.given.as_deref() {
+                Some(given) => AuthorName::Given(given),
+                None => {
+                    return Err(self.err(
                         "author",
                         "",
                         ErrorKind::Inconsistent("neither family nor name"),
-                    ),
-                });
-            }
+                    ));
+                }
+            },
         };
         let orcid = c.orcid.as_deref().map(|o| {
             let read = match Orcid::from_https_url(o) {
@@ -874,9 +899,11 @@ impl Ctx {
     /// its kind — a ROR and an ISNI as claims, a Wikidata item strictly.
     /// `None` for an empty one, `{}`, which says nothing and is set aside:
     /// 5,806 records of the March 2026 file carry one, Maximum Academic
-    /// Press's above all (2026-09-26). The schema requires a name or an
-    /// id of any other; a DOI, a second id of one kind or an id Retraction
-    /// Watch asserted has not been seen, and stops the run.
+    /// Press's above all (2026-09-26). One with anything is kept, though
+    /// the schema asks for a name or an id: 5 records give a place and no
+    /// more (`Belgrade,Serbia`), kept as written (the user's call). A DOI,
+    /// a second id of one kind or an id Retraction Watch asserted has not
+    /// been seen, and stops the run.
     fn institution<'n>(
         &self,
         held: Held,
@@ -885,13 +912,6 @@ impl Ctx {
         if p.is_empty() {
             self.set_aside.borrow_mut().push((held.field(), "{}"));
             return Ok(None);
-        }
-        if p.name.is_none() && p.id.is_empty() {
-            return Err(self.err(
-                held.field(),
-                "",
-                ErrorKind::Inconsistent("neither a name nor an id"),
-            ));
         }
         let (mut ror, mut isni, mut wikidata) = (None, None, None);
         for id in p.id {
@@ -965,7 +985,9 @@ impl Ctx {
             }
         };
         Ok(Some(Update {
-            doi: Doi::parse(&u.doi).map_err(|e| self.err(field, &u.doi, ErrorKind::Doi(e)))?,
+            doi: self
+                .doi(field, &u.doi)
+                .map_err(|e| self.err(field, &u.doi, ErrorKind::Doi(e)))?,
             kind,
             word: u.r#type,
             at: self.stamp(
@@ -995,6 +1017,58 @@ fn first<'n>(list: Option<&'n [Text<'_>]>) -> Option<&'n str> {
     list.and_then(|l| l.first()).map(|t| &**t)
 }
 
+/// What the reader reads of where a work was published and does not keep,
+/// set aside so a survey counts it (citation fields plan §7, CF0 part 3)
+/// while nothing a set holds changes:
+/// - a second `container-title`, the record keeping only the first;
+/// - `short-container-title`, the journal's abbreviation;
+/// - the `journal-issue` object's own dates, against the work's.
+///
+/// Journal articles are told apart from the rest, since a second title
+/// is expected of a book chapter (its series) and not of an article.
+fn placement_set_aside(ctx: &Ctx, w: &Native<'_>) {
+    let of = if w.r#type == Some(WorkType::JournalArticle) {
+        "journal-article"
+    } else {
+        "other types"
+    };
+    let mut aside = ctx.set_aside.borrow_mut();
+    if w.container_title.as_deref().is_some_and(|t| t.len() > 1) {
+        aside.push(("container-title, a second title", of));
+    }
+    if w.short_container_title
+        .as_deref()
+        .is_some_and(|t| !t.is_empty())
+    {
+        aside.push(("short-container-title", of));
+    }
+    if let Some(issue) = &w.journal_issue {
+        for (field, of_issue, of_work) in [
+            (
+                "journal-issue.published-print",
+                issue.published_print,
+                w.published_print,
+            ),
+            (
+                "journal-issue.published-online",
+                issue.published_online,
+                w.published_online,
+            ),
+        ] {
+            if let Some(date) = of_issue {
+                aside.push((
+                    field,
+                    match of_work {
+                        None => "the work gives none",
+                        Some(own) if own == date => "the work's own",
+                        Some(_) => "differs from the work's",
+                    },
+                ));
+            }
+        }
+    }
+}
+
 /// Normalizes one work, emitting it and then its references.
 ///
 /// # Errors
@@ -1006,8 +1080,11 @@ pub fn normalize<'n, K: Sink<'n, Crossref>>(w: &'n Native<'_>, emit: &mut K) -> 
     let mut ctx = Ctx {
         doi: None,
         set_aside: std::cell::RefCell::new(Vec::new()),
+        corrected: std::cell::RefCell::new(Vec::new()),
     };
-    let doi = Doi::parse(&w.doi).map_err(|e| ctx.err("DOI", &w.doi, ErrorKind::Doi(e)))?;
+    let doi = ctx
+        .doi("DOI", &w.doi)
+        .map_err(|e| ctx.err("DOI", &w.doi, ErrorKind::Doi(e)))?;
     ctx.doi = Some(doi.as_str().to_owned());
     if w.url.strip_prefix(Doi::URL_PREFIX) != Some(&*w.doi) {
         return Err(ctx.err(
@@ -1220,8 +1297,18 @@ pub fn normalize<'n, K: Sink<'n, Crossref>>(w: &'n Native<'_>, emit: &mut K) -> 
         }));
     }
 
+    let aliases = w
+        .aliases
+        .iter()
+        .flatten()
+        .map(|a| Claim::from_parse(a, ctx.doi("aliases", a)))
+        .collect();
+    placement_set_aside(&ctx, w);
     for (field, value) in ctx.set_aside.take() {
         emit.set_aside(&doi, field, value);
+    }
+    for (field, how) in ctx.corrected.take() {
+        emit.corrected(&doi, field, how);
     }
     emit.work(&Work {
         owner,
@@ -1253,6 +1340,7 @@ pub fn normalize<'n, K: Sink<'n, Crossref>>(w: &'n Native<'_>, emit: &mut K) -> 
         part_number: w.part_number.as_deref(),
         version: w.version.as_ref().map(|v| &*v.version),
         status,
+        aliases,
         publisher: w.publisher.as_deref().map(Interned::Text),
         language,
         authors,
@@ -1269,6 +1357,7 @@ pub fn normalize<'n, K: Sink<'n, Crossref>>(w: &'n Native<'_>, emit: &mut K) -> 
             .flat_map(|a| a.iter())
             .map(|t| &**t)
             .collect(),
+        ascii_doi: doi.ascii_spelling(),
         doi: doi.clone(),
     });
 
@@ -1280,14 +1369,22 @@ pub fn normalize<'n, K: Sink<'n, Crossref>>(w: &'n Native<'_>, emit: &mut K) -> 
                 ErrorKind::Inconsistent("DOI and doi-asserted-by must appear together"),
             ));
         }
+        let cited = r.doi.as_deref().map(|d| {
+            Claim::from_parse(
+                d,
+                Doi::read(d).map(|(cited, readings)| {
+                    for how in readings.made() {
+                        emit.corrected(&doi, "reference.DOI", how);
+                    }
+                    cited
+                }),
+            )
+        });
         emit.reference(
             &doi,
             &Reference {
                 key: &r.key,
-                doi: r
-                    .doi
-                    .as_deref()
-                    .map(|d| Claim::from_parse(d, Doi::parse(d))),
+                doi: cited,
                 asserted_by: r.doi_asserted_by,
                 unstructured: r.unstructured.as_deref(),
                 year: r.year.as_deref(),

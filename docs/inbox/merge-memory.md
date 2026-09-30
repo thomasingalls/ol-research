@@ -434,6 +434,242 @@ byte (the reports' examples excepted at 2a), a second merge that reuses
 every id, and the full/incremental harness, whose store has to be
 normalized again at model 8 first.
 
+## PubMed and an eighth of Crossref, measured 2026-09-26
+
+The first run with Crossref in it: `ol-rht merge --survey` over the
+whole PubMed baseline (39,994,988 records) and every eighth shard of
+Crossref's March 2026 file (22,439,985 records, 341,523,302
+references), both at model 10, against the registry of record
+(42,066,697 lines), in a scratch store of links to the sets (homelab
+`ol-rht-merge-survey-v6`, ol-rht 7d2ef1b, merge version 15). Beside it,
+the PubMed merge of record at model 9 (`ol-rht-merge-corpus-v2`, the
+same merge version). Heap from the run's own phase lines, in GiB, the
+peak so far in brackets (M); the last column scales the eighth's growth
+by eight (E):
+
+| phase | PubMed | + ⅛ Crossref | growth | whole file (E) |
+|---|---|---|---|---|
+| copies read | 3.78 (4.92) | 7.51 (9.84) | +3.73 | 33.6 |
+| records and names read | 8.65 (10.31) | 12.55 (14.03) | +3.90 | 39.8 |
+| identity resolved | 15.74 (22.01) | 25.58 (34.19) | +9.84 (+12.18) | 94.5 (119.5) |
+| names table built | 17.06 (24.82) | 30.81 (43.06) | +13.75 (+18.24) | 127.1 (170.7) |
+| merged rows, peak | 38.03 | 52.10 | +14.07 | 150.6 |
+
+Beside the heap (M): distinct record names 91,073,972 → 111,413,496,
+and 25,397,773 stub works from names Crossref's references cite and no
+record holds; rows spilled 916 million (38.4 GiB) → 1,531 million (71.1
+GiB), under /tmp on the node's disk; 60 → 96 minutes; the container's
+peak 55.2 → 80 GiB, its limit, reached by the spill's page cache, which
+the kernel took back — the heap never came near it.
+
+What grows is the heap carried into pass 2: +13.75 GiB for the eighth's
+22.4 million records, 20.3 million record names and 25.4 million stub
+names. Pass 2's own share over it stays about 21 GiB (38.0 − 17.1 and
+52.1 − 30.8), bounded by the spill range. Scaling by eight overstates
+the whole file: a name cited from every eighth is one name, and a stub
+of one eighth is often a record of another. But at half that growth
+pass 2 still peaks near 94 GiB (E), against the ~100 GB ol-rht may take
+of the box, and at the full growth near 150 GiB, past the box's 128. So
+the whole file waits on this plan, and the first thing to measure is
+which structures hold the heap carried into pass 2. The whole file's
+spill, about 300 GiB (E), fits the node's 1.8 TB; its time, about 5.8
+hours (E), is the first wall below.
+
+**Where the heap into pass 2 goes** (2026-09-26). A probe, not kept in
+the repository, dropped each structure alive after registry assignment
+and inside `Builder::new` on the laptop's store — two PubMed baseline
+files and Crossref's 100-shard sample, 44,989 records, 465,870 stub
+works from 561,996 stub names — and read the counting allocator after
+each (M per item; D at the eighth, by its counts):
+
+| structure | per item (M) | at the eighth (D) |
+|---|---|---|
+| `res.works` | 104 B a work | 6.1 GB |
+| `res.records` | 56 B a record, and the list's spare capacity | 3.8–5.1 GB |
+| `Copies` | 77 B a record | 4.8 GB |
+| `res.stubs`, the stub names, still hashed | 109 B a stub name | 2.8 GB |
+| `Builder`'s `stub_works`, each stub's names as owned names | 138 B a stub work | 3.5 GB |
+| `res.arena`, the dictionary | 12.6 B a name | 1.4 GB |
+| natives, stub parents, ids, the names and records tables | 4–9 B an item | about 1.5 GB |
+
+That is about 20 of the 26.4 GiB the survey measured after the registry
+(D against M); the rest is most likely what grows with the conflict
+components, 212,327 on the box against 12 on the laptop, and the
+tables' slack at that size, which only a probe at that size can
+settle. Two of these are new with Crossref: the stub names and the
+stubs' name lists, 25.4 million stubs at the eighth where PubMed alone
+had 2.0 million, since the stubs never went through the dictionary.
+Two are this plan's "not done": the works as flat arrays (2d) and
+`Copies` keyed by a name's number (2c).
+
+And one was waste. `Builder::new` made a view slot for every record,
+200 bytes each, written, and `spill_to` threw the list away before any
+view was read: a full merge has spilled since step 1, so it cost the
+peak and bought nothing — 11.6 GiB at the eighth (D), the jump from
+34.19 to 43.06 GiB its survey printed between registry assignment and
+the names table, and about 41 GiB for the whole file (E). *Built
+2026-09-26* (the user: "go ahead"): the list is made by a pass that
+holds views, on the first view it keeps, and never under a spill. On
+the laptop's store a real merge with and without it writes the same 56
+merged files and the same registry, byte for byte, and the same report;
+the journal line differs in its time alone, and the run makes one
+allocation fewer.
+
+**The stub names, by number.** *Built 2026-09-26* (the user: "continue
+with the next memory steps"). The stubs are found while the references
+are read, a name at a time, so the stubs' arena stays hashed through
+the pass; once it has resolved, `Resolution::sort_stubs` puts the stub
+names through the dictionary the arena's go through — sorted runs under
+the temporary directory, an FST and a front-coded list — and renumbers
+them in name order, before anything but the arena has used their
+numbers. The stubs then travel as numbers (`StubWorks`: where each
+stub's names start, and the names' numbers), in name order within and
+between, which under a dictionary is number order, so nothing sorts
+names. Registry assignment and pass 2 are handed the same list, not a
+copy of every stub's names each, and a stub's names are read out for
+its own row as its range is finished. On the laptop's store (M): 15
+bytes a stub name in the dictionary, against 109 hashed, and about 8 a
+stub against 138; the heap into pass 2 went from 0.14 to 0.03 GiB, the
+store being mostly stubs; the same 58 merged files and registry byte
+for byte, the same report, the journal line different in its time
+alone. A test gives the same citations to a hashed and a renumbered
+pass, a refused publisher id among them, and finds the same stubs in
+the same order, each name where the run's index finds it. At the
+eighth that is about 2.8 + 3.5 GB carried into pass 2 down to about
+0.6 (D), and registry assignment no longer copies every stub's names
+(another 3.5 GB there, D). The price is a lookup in an FST, not a hash
+map, for each name a reference gives that no record holds.
+
+**The works, flat.** *Built 2026-09-26*, 2d's "not done". A `Work` kept
+three small lists inline — its records, its names, its rejections, room
+for three, four and one — which every work paid for whether it used
+them or not, most having one record and no rejection: 104 bytes a work
+(M). The identity pass still builds `Work`s one at a time, and once it
+has resolved, `Works` keeps them as three flat lists, each work's place
+in them, and its two flags, every list made the length it will be;
+readers take a `WorkRef`, the same fields as slices. On the laptop's
+store (M): 35.3 bytes a work; the same 58 merged files and registry
+byte for byte, the same report, the journal line different in its time
+alone; a test gives works with empty lists, full lists and none at all
+and gets them back. At the eighth about 6.1 GB down to 2.1 (D); for the
+whole file, at about 190 million works (E), about 20 GB down to 7. The
+two forms are held together only while the works are made flat, which
+at the eighth comes below the peak the pass already had while
+resolving.
+
+**The copies, settled.** *Built 2026-09-26*, 2c's "not done", in a
+different form than it proposed. `Copies` kept every record's newest
+copy by the record's name, 77 bytes a record, and every phase asked it
+by name, an owned copy of the name made for each question. But a full
+merge reads every copy before it asks about any, and every phase asks
+about a copy by its set and its place in the set, as the copies read
+saw it; so once that read is done, `Copies::settle` writes each copy's
+fate — speaks, superseded, withdrawn — in a byte by set and place, and
+lets the table by name go. The withdrawals stay by name: they are few,
+and a reference asks them. Keying the table by the name's number, as
+2c proposed, would have kept four times as much and asked every phase
+to look the number up first. On the laptop's store (M): settling freed
+3,465,013 of the table's 3,475,249 bytes; the same 58 merged files and
+registry byte for byte, the same report, the journal line different in
+its time alone; a test reads the same copies into a table by name and
+a settled one and gets every fate alike. At the eighth about 4.8 GB
+down to 0.06 (D), and for the whole file about 17 GB to 0.2 (E) —
+after the copies read, whose own peak still holds the table by name
+while it reads. The incremental merge and the test fixture never
+settle, and ask by name as before.
+
+**What is still not accounted for.** The per-item costs above were
+measured on small tables, and a hash table at the eighth's size sits
+emptier: hashbrown rounds 62.4 million entries up to 134 million slots.
+Sized by the entry sizes (M, `size_of`: 48 bytes a copy's entry, 56 a
+record, 8 a work's name, 20 a rejection) and the tables' rounding, the
+eighth's heap after registry assignment comes to about 22 GB (D) — the
+copies about 7.1 of it, not 4.8 — against the 26.4 GiB, 28.4 GB, the
+survey printed (M). About 6 GB is still nobody's: not the counts and
+examples in `Stats` and `Components`, and not the sets' symbol tables,
+which go with their readers. The table by name and the hashed stubs
+are gone now, which is where the rounding was, so the next survey will
+show how much of the 6 GB went with them: it prints, once the stubs are
+numbered, what the resolution holds part by part (`Resolution::held`,
+by the lists' capacities), and the heap beside it; what the heap holds
+beyond that is outside the resolution. By the arithmetic, the heap
+after registry assignment should come to about 13–14 GiB at the eighth
+(D) where it was 26.4.
+
+The five changes of 2026-09-26 together, on a store of the laptop's
+two PubMed baseline files, its five update files and Crossref's
+100-shard sample, all normalized at model 10 (`target/scratch/
+harness-src`, the harnesses' store now): the full/incremental harness,
+`pubmed26n1334` held out and merged as a batch, 0 differences in
+511,014 ids; the update-files harness, 1335 to 1339 batched in order,
+0 differences in 1,836,438 ids (M).
+
+**On the box** (`ol-rht-merge-survey-v7`, ol-rht 463f41a, 2026-09-26/27;
+the same PubMed baseline and eighth of Crossref as v6; M). Exit 0, in
+5,764 s against v6's 5,781. The report is v6's line for line but for the
+16 `cites` records, whose 19 relations are now kept (4 more stubs). The
+heap, and its peak so far, in GiB:
+
+| phase | v6 | v7 |
+|---|---|---|
+| copies read (and settled) | 7.51 (9.84) | 0.93 (9.91) |
+| records and names read | 12.55 (14.03) | 5.97 (9.91) |
+| identity resolved | 25.58 (34.19) | 9.48 (27.60) |
+| identity and registry done | 26.40 | 8.08 |
+| names table built | 30.81 (43.06) | 9.06 (27.60) |
+| merged rows finished, peak | 52.10 | 30.36 |
+
+Resident high-water 24.6 GB against 43.1. Once the stubs are numbered
+the resolution holds 6.91 GiB — names 1.22, stub names 0.36, records
+3.50, works 1.83 — of a 7.05 GiB heap: the 6 GB nobody accounted for
+was the two hashed tables, gone. Where the peaks are now, read off the
+minute lines: the copies read, 10.7 GB resident, the table by name
+while it fills; `resolve`, 17.4 GB resident in its last minute against
+27.6 GiB asked for, most of the difference memory asked for and never
+touched; and the finish, 24.6 GB resident, about 15 over the 9.2 GiB
+pass 2 carries, which a spill range bounds. Scaled to the whole file by
+records, about 3.5 times the eighth's (E): the copies read near 35 GB
+resident, `resolve` near 60, the finish near 45 — under what ol-rht may
+take of the box, `resolve` the tallest, and the one whose own parts no
+progress line yet separates.
+
+**The whole file** (`ol-rht-merge-survey-v8`, the same image, on the
+store itself: the PubMed baseline and all of Crossref's March 2026 file,
+219,531,073 records; 2026-09-27; M). It ran to the end, 22,819 s, six
+hours and twenty minutes, no kill, and exited 1 on three components the
+rules could not resolve (merge plan §11 item 28). The phases:
+
+| phase | ends at | heap (peak) | resident high-water |
+|---|---|---|---|
+| copies read and settled (253,568,864 names, a dictionary of 1,901 MiB) | 1,182 s | 2.30 (20.62) | 22.8 GB |
+| records and names read | 2,366 s | 21.41 (27.24) | 31.2 GB |
+| identity resolved (1,302,924 conflict components) | 7,184 s | 23.25 (81.04) | 50.7 GB |
+| stub names numbered (3,506,761) | — | 22.94 | — |
+| identity and registry done | 7,334 s | 24.69 | — |
+| names table built | — | 27.30 | — |
+| views read | 8,640 s | 27.66 | — |
+| references read (5,851,637,147 rows spilled, 320 GiB) | 17,363 s | 27.66 | 51.5 GB |
+| merged rows finished | 22,819 s | 1.34 (81.04) | 62.2 GB |
+
+The resolution holds 22.47 of the 22.94 GiB once the stubs are
+numbered: names 3.20, stub names 0.09, records 14.00, works 5.18. The
+records are most of it now. The stubs were 25.4 million at the eighth
+and are 3.5 million over the whole file, most names an eighth cited
+being records of another. The container's peak was its 96 GiB limit,
+the spill's page cache, as before. Against the estimates from v7: the
+copies read 22.8 GB resident where 35 was guessed, `resolve` 50.7
+against 60 (81 GiB asked for, much of it never touched), the finish
+62.2 against 45 — a spill range holds about 16 million rows over the
+whole file against 9.6 million over the eighth, so the finish's own
+share grew with the file after all. A merge of record also writes the
+sets, promotes 152 million registry lines and mints about 150 million
+public ids through `Public`'s two string maps, about 119 bytes an id,
+some 30 GB (D) — after the finish, on a heap of 1.3 GiB. So the whole
+file fits in what ol-rht may take of the box, at 62 GB resident, with
+the finish the tallest; nothing here has to change before a merge of
+record, and the records and the finish's range are where to look if
+the next source brings it closer.
+
 ## Walls behind this one
 
 - **Time.** Pass 1 decodes on one thread: 26 minutes for 36.5 GiB. The

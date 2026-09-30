@@ -9,3 +9,13 @@ t = "test --workspace"
 # `just db-prepare`/`db-prepare-check` explicitly opt into the local database.
 [env]
 SQLX_OFFLINE = "true"
+
+# The image is built and run on the homelab tower (deployment plan §2).
+# Rust's default x86-64 target is the 2003 baseline, without even POPCNT;
+# x86-64-v3 lets the compiler use AVX2, BMI2, FMA and POPCNT throughout.
+# A CPU without them cannot run the binary at all (illegal instruction at
+# start), so every machine that runs the image must have x86-64-v3; ask a
+# new one with `/lib64/ld-linux-x86-64.so.2 --help | grep x86-64-v3` in a
+# Jammy container before it serves. Only Linux x86-64 builds read this.
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "target-cpu=x86-64-v3"]

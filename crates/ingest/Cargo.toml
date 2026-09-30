@@ -8,6 +8,7 @@ description = "Shared ingestion plumbing: reading raw files, and later the trait
 [dependencies]
 flate2.workspace = true
 md-5.workspace = true
+mimalloc.workspace = true
 model.workspace = true
 postcard.workspace = true
 serde.workspace = true

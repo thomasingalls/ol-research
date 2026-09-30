@@ -33,6 +33,7 @@ struct Collect<'n> {
     references: Vec<Reference<'n>>,
     excluded: Vec<&'static str>,
     set_aside: Vec<(&'static str, &'static str)>,
+    corrected: Vec<(&'static str, &'static str)>,
 }
 
 impl<'n> Sink<'n, source_crossref::Crossref> for Collect<'n> {
@@ -48,6 +49,9 @@ impl<'n> Sink<'n, source_crossref::Crossref> for Collect<'n> {
     }
     fn set_aside(&mut self, _: &Doi<'n>, field: &'static str, value: &'static str) {
         self.set_aside.push((field, value));
+    }
+    fn corrected(&mut self, _: &Doi<'n>, field: &'static str, how: &'static str) {
+        self.corrected.push((field, how));
     }
 }
 
@@ -223,7 +227,12 @@ fn a_comment_is_kept_and_print_is_set_aside() {
     let out = collect("update_to_comment_and_print");
     assert_eq!(
         out.set_aside,
-        [("update-to", "print"), ("updated-by", "print")]
+        [
+            ("update-to", "print"),
+            ("updated-by", "print"),
+            ("short-container-title", "journal-article"),
+            ("journal-issue.published-print", "the work's own"),
+        ]
     );
     let w = &out.works[0];
     assert_eq!(w.updates_to.len(), 1);
@@ -606,7 +615,14 @@ fn an_empty_affiliation_is_set_aside() {
 #[test]
 fn retraction_watch_68818_is_set_aside_beside_the_retraction() {
     let out = collect("update_retraction_watch_68818");
-    assert_eq!(out.set_aside, [("update-to", "68818")]);
+    assert_eq!(
+        out.set_aside,
+        [
+            ("update-to", "68818"),
+            ("short-container-title", "journal-article"),
+            ("journal-issue.published-online", "the work's own"),
+        ]
+    );
     let w = &out.works[0];
     assert_eq!(
         w.updates_to.iter().map(|u| u.kind).collect::<Vec<_>>(),
@@ -685,31 +701,60 @@ fn an_author_with_nothing_in_it_is_set_aside() {
     assert_eq!(out.works[0].authors.len(), 1);
 }
 
-/// The same line with a given name and nothing else in the empty author,
-/// as "ASDEX Upgrade Team" is written (10.1238/physica.topical.108a00007):
-/// an organisation in a given name, or a person with one name — not
-/// decided, so the run stops, under its own signature.
-#[test]
-fn an_author_with_only_a_given_name_stops_the_run() {
-    let e = broken(
-        "author_empty",
-        "{\"affiliation\": [], \"sequence\": \"additional\"}",
-        "{\"affiliation\": [], \"given\": \"ASDEX Upgrade Team\", \"sequence\": \"additional\"}",
-    );
-    assert!(
-        e.contains("a given name with neither a family name nor a name"),
-        "{e}"
-    );
+/// The record `name` with `from` written as `to`, normalized: a real line
+/// changed in one place, for a shape the survey counted on records not
+/// dumped.
+fn edited(name: &str, from: &str, to: &str) -> Collect<'static> {
+    let text = fixture(name);
+    assert_eq!(text.matches(from).count(), 1, "{name}: {from}");
+    let input = Box::leak(text.replacen(from, to, 1).into_boxed_str());
+    let native: &'static source_crossref::Work<'static> =
+        Box::leak(Box::new(serde_json::from_str(input).expect("parses")));
+    let mut out = Collect::default();
+    normalize(native, &mut out).unwrap_or_else(|e| panic!("{name}: {e}"));
+    out
 }
 
-/// 10.6084/m9.figshare.12732866, shard 13435 line 4974: a figshare
-/// component whose landing link is `null`, as on 921 of the records the
-/// survey named or stopped at. Read, and not kept: no resource is.
+/// The same line with a given name and nothing else in the empty author,
+/// as 81 records of the file write one — `Siddhartha`
+/// (10.1002/adv.21567), `Nguyen Minh Duc`, `ASDEX Upgrade Team`: kept as
+/// written, a given name alone.
 #[test]
-fn a_null_landing_link_is_read() {
-    let native = native("resource_url_null");
-    assert_eq!(native.resource.as_ref().unwrap().primary.url, None);
-    run("resource_url_null");
+fn an_author_with_only_a_given_name_is_kept_as_written() {
+    let out = edited(
+        "author_empty",
+        "{\"affiliation\": [], \"sequence\": \"additional\"}",
+        "{\"affiliation\": [], \"given\": \"Siddhartha\", \"sequence\": \"additional\"}",
+    );
+    let names: Vec<_> = out.works[0].authors.iter().map(|a| a.name).collect();
+    assert!(names.contains(&source_crossref::normalize::AuthorName::Given("Siddhartha")));
+}
+
+/// AARP's line with its author's affiliation written as a place and no
+/// more, as 5 records of the file write one (`Belgrade,Serbia`,
+/// 10.7251/noe1619089s): kept, an institution with no name.
+#[test]
+fn an_affiliation_with_only_a_place_is_kept() {
+    let out = edited(
+        "affiliation_acronym",
+        "\"affiliation\": [{\"acronym\": [\"AARP\"], \"department\": [\"Research\"], \"name\": \"AARP\", \"place\": [\"Washington, DC\"]}]",
+        "\"affiliation\": [{\"place\": [\"Belgrade,Serbia\"]}]",
+    );
+    let a = &out.works[0].authors[0].affiliations[0];
+    assert_eq!((a.name, texts(&a.places)), (None, vec!["Belgrade,Serbia"]));
+}
+
+/// The Instituto Nacional Materno Perinatal's line with its language
+/// written `nsg`, as the University of Szeged's supplement writes it
+/// (10.14232/sua.sup.2024.13): an ISO 639-3 code, Ngasa, and read.
+#[test]
+fn an_iso_639_3_language_code_is_read() {
+    let out = edited(
+        "language_alpha_3",
+        "\"language\": \"spa\"",
+        "\"language\": \"nsg\"",
+    );
+    assert_eq!(out.works[0].language.map(Lang::name), Some("Ngasa"));
 }
 
 /// 10.1603/an13119.s1, shard 22839 line 3956: a secondary link with a
@@ -800,6 +845,21 @@ fn a_twelve_digit_isbn_is_a_claim() {
     );
 }
 
+/// The same chapter, 10.1214/lnms/1196285108, names its series and then
+/// its book in `container-title`. The record keeps the first, the
+/// series; the second is set aside and counted, for the citation fields
+/// survey (plan §7, CF0 part 3).
+#[test]
+fn a_second_container_title_is_counted() {
+    let out = collect("isbn_twelve_digits");
+    assert!(
+        out.set_aside
+            .contains(&("container-title, a second title", "other types")),
+        "{:?}",
+        out.set_aside
+    );
+}
+
 /// 10.33421/inmp.2023386, shard 20 line 2059: the Instituto Nacional
 /// Materno Perinatal writes `spa`, a three-letter code, where most write
 /// two letters; read as Spanish, as on 303 records of the file.
@@ -836,4 +896,83 @@ fn an_orcid_whose_check_character_fails_is_a_claim() {
             error: OrcidError::Checksum
         }
     );
+}
+
+/// 10.1027/0838–1925.18.2.82, shard 32585 line 253: Hogrefe's second
+/// registration of an article, its DOI written with an en dash; doi.org
+/// redirects it to the hyphen twin, which is the live record. Read as the
+/// twin's DOI, and counted.
+#[test]
+fn an_en_dash_in_a_records_doi_is_a_hyphen_and_counted() {
+    let out = collect("doi_en_dash");
+    assert_eq!(out.works[0].doi.as_str(), "10.1027/0838-1925.18.2.82");
+    assert_eq!(out.corrected, [("DOI", "a dash read as a hyphen")]);
+}
+
+/// 10.1556/mentál.5.2004.1.1, shard 34231 line 4842: Akadémiai Kiadó's
+/// DOI with an accented letter, registered and resolving: the DOI of
+/// record, and nothing to count.
+#[test]
+fn an_accented_letter_is_the_doi_of_record() {
+    let out = collect("doi_accented");
+    let w = &out.works[0];
+    assert_eq!(w.doi.as_str(), "10.1556/ment\u{e1}l.5.2004.1.1");
+    assert!(out.corrected.is_empty());
+    // Its ASCII spelling, which Akadémiai Kiadó registered too, is a name
+    // the merge gives the work: the census found the twin, one article.
+    assert_eq!(
+        w.ascii_doi.as_ref().map(Doi::as_str),
+        Some("10.1556/mental.5.2004.1.1")
+    );
+    let mut names = Vec::new();
+    <source_crossref::Crossref as merge::Contributor>::names(w, &mut |a| {
+        names.push((a.name.to_string(), a.field, a.native));
+    });
+    assert!(names.contains(&(
+        "doi:10.1556/mental.5.2004.1.1".to_owned(),
+        "doi_ascii",
+        false
+    )));
+}
+
+/// 10.3354/meps7782 and a non-breaking space, shard 29882 line 4840: an
+/// early registration of an article whose DOI is `meps07782`; the space
+/// dropped, and counted, since what is left names nothing a registry knows.
+#[test]
+fn a_trailing_space_is_dropped_and_counted() {
+    let out = collect("doi_trailing_space");
+    assert_eq!(out.works[0].doi.as_str(), "10.3354/meps7782");
+    assert_eq!(out.corrected, [("DOI", "whitespace at an end dropped")]);
+}
+
+/// `10.2195/lj_not_ref_d_gã¼nthner_0120052`, shard 33247 line 4997: `ü`
+/// written as its UTF-8 bytes read as Latin-1, then lowercased; its
+/// `günthner` twin is registered and resolves.
+#[test]
+fn a_broken_encoding_is_repaired_and_counted() {
+    let out = collect("doi_broken_encoding");
+    assert_eq!(
+        out.works[0].doi.as_str(),
+        "10.2195/lj_not_ref_d_g\u{fc}nthner_0120052"
+    );
+    assert_eq!(out.corrected, [("DOI", "a broken encoding repaired")]);
+}
+
+/// 10.26686/wgtn.16850662, shard 10933 line 3720: a Wellington thesis on
+/// figshare, whose `.v1` DOI Crossref holds as its alias: kept, and a
+/// name the merge gives the work.
+#[test]
+fn an_alias_is_kept_and_is_a_name_of_the_work() {
+    let w = run("aliases");
+    let aliases: Vec<_> = w
+        .aliases
+        .iter()
+        .map(|a| a.valid().unwrap().as_str().to_owned())
+        .collect();
+    assert_eq!(aliases, ["10.26686/wgtn.16850662.v1"]);
+    let mut names = Vec::new();
+    <source_crossref::Crossref as merge::Contributor>::names(&w, &mut |a| {
+        names.push((a.name.to_string(), a.field, a.native));
+    });
+    assert!(names.contains(&("doi:10.26686/wgtn.16850662.v1".to_owned(), "aliases", false)));
 }

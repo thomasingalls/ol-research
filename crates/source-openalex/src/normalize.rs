@@ -722,9 +722,22 @@ fn interned<'n, const N: usize>(list: &'n [Text<'_>]) -> Few<Interned<'n>, N> {
 
 struct Ctx {
     id: Option<OpenAlexId>,
+    /// What the record's reading read as other than written, by field and
+    /// how, for the sink once the record is read.
+    corrected: std::cell::RefCell<Vec<(&'static str, &'static str)>>,
 }
 
 impl Ctx {
+    /// A DOI, read ([`Doi::read`]), with what the reading changed noted
+    /// for the sink under `field` ([`Sink::corrected`]).
+    fn doi<'n>(&self, field: &'static str, raw: &'n str) -> Result<Doi<'n>, DoiError> {
+        let (doi, readings) = Doi::read(raw)?;
+        self.corrected
+            .borrow_mut()
+            .extend(readings.made().map(|how| (field, how)));
+        Ok(doi)
+    }
+
     fn err(&self, field: &'static str, raw: &str, kind: ErrorKind) -> Error {
         Error {
             id: self.id,
@@ -980,7 +993,7 @@ impl Ctx {
                         .map_err(|e| self.err("locations.id", raw, ErrorKind::Id(e)))?,
                 ),
                 Some(Provenance::Crossref | Provenance::Datacite) => LocationId::Doi(
-                    Doi::parse(raw)
+                    self.doi("locations.id", raw)
                         .map_err(|e| self.err("locations.id", raw, ErrorKind::Doi(e)))?,
                 ),
                 Some(Provenance::Repo) => LocationId::Repo(raw),
@@ -1030,7 +1043,7 @@ impl Ctx {
     /// namespace — what the snapshot says with `provenance`.
     fn namespaced_location_id<'n>(&self, id: &'n str) -> Result<LocationId<'n>, Error> {
         if let Some(doi) = id.strip_prefix("doi:") {
-            Doi::parse(doi)
+            self.doi("locations.id", doi)
                 .map(LocationId::Doi)
                 .map_err(|e| self.err("locations.id", id, ErrorKind::Doi(e)))
         } else if let Some(pmid) = id.strip_prefix("pmid:") {
@@ -1123,7 +1136,10 @@ impl Ctx {
 /// emitter may already have received the work when an edge fails.
 #[allow(clippy::too_many_lines)] // one block per field group; the field set is the point
 pub fn normalize<'n, K: Sink<'n, OpenAlex>>(w: &'n Native<'_>, emit: &mut K) -> Result<(), Error> {
-    let mut ctx = Ctx { id: None };
+    let mut ctx = Ctx {
+        id: None,
+        corrected: std::cell::RefCell::new(Vec::new()),
+    };
     let id: OpenAlexId = ctx.entity("id", &w.id)?;
     ctx.id = Some(id);
     if w.ids.openalex != w.id {
@@ -1141,7 +1157,7 @@ pub fn normalize<'n, K: Sink<'n, OpenAlex>>(w: &'n Native<'_>, emit: &mut K) -> 
         .as_deref()
         .map(|d| {
             d.strip_prefix(Doi::URL_PREFIX)
-                .map(|bare| Claim::from_parse(bare, Doi::parse(bare)))
+                .map(|bare| Claim::from_parse(bare, ctx.doi("doi", bare)))
                 .ok_or_else(|| ctx.err("doi", d, ErrorKind::Doi(DoiError::BadPrefix)))
         })
         .transpose()?;
@@ -1540,6 +1556,9 @@ pub fn normalize<'n, K: Sink<'n, OpenAlex>>(w: &'n Native<'_>, emit: &mut K) -> 
         indexed_in.0 |= IndexedIn::bit(*i);
     }
 
+    for (field, how) in ctx.corrected.take() {
+        emit.corrected(&id, field, how);
+    }
     emit.work(&Work {
         id,
         doi,

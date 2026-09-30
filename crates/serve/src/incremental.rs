@@ -32,7 +32,7 @@ use merge::copies::Delivery;
 use merge::delta::{
     self, Appender, CitedAsLine, EdgeLine, Related, RelationLine, UnresolvedLine, WorkLine,
 };
-use merge::identity::{Identity, Standing};
+use merge::identity::{Facts, Identity, Reason, Standing};
 use merge::journal::{self, Kind, Line};
 use merge::name::{Assertion, field_static};
 use merge::public::{self, Key, Public};
@@ -60,6 +60,9 @@ pub struct Incoming {
     pub text: Text,
     #[allow(missing_docs)]
     pub relations: Vec<merge::relation::Related>,
+    /// Whether the source's list says the record's aliases are what it
+    /// corrects ([`merge::Contributor::corrects_its_aliases`]).
+    pub corrects_its_aliases: bool,
     #[allow(missing_docs)]
     pub references: Vec<Reference>,
 }
@@ -69,7 +72,7 @@ impl Incoming {
     /// join this copy's, and its values fill what this copy has none of
     /// (merge plan §8, 2026-09-18). Its citations are appended by the
     /// caller, which knows the order; its relations stay behind, which
-    /// the speaking copy alone gives.
+    /// the speaking copy alone aliasing.
     pub fn absorb(&mut self, older: &Self) {
         for a in &older.asserts {
             if !self.asserts.iter().any(|x| x.name == a.name) {
@@ -168,7 +171,7 @@ pub trait Records {
     ) -> Result<Option<Incoming>, String>;
 
     /// Every record of `natives` that `set` holds, as
-    /// [`Records::record`] gives each: what a batch reads of the earlier
+    /// [`Records::record`] aliasing each: what a batch reads of the earlier
     /// copies of the records it carries (merge version 15). A reader
     /// that scans a set to find a record answers them all in one pass;
     /// the default asks one at a time.
@@ -798,7 +801,7 @@ impl Engine<'_> {
     /// A row's record as the rule leaves it (merge plan §8, 2026-09-18):
     /// with the names of the batch's older copy of the same record, and
     /// its values wherever the row's copy has none. Absence is not an
-    /// assertion, so a copy delivered out of order still gives what the
+    /// assertion, so a copy delivered out of order still aliasing what the
     /// newer one never had.
     fn joined(&self, record: &crate::row::Record) -> (Vec<OwnedAssert>, Owned) {
         let mut asserts: Vec<OwnedAssert> = record.asserts.to_vec();
@@ -1015,7 +1018,7 @@ impl Engine<'_> {
                 // not name — a wrong link, rejected in favour of the
                 // record that holds the name (merge plan §3.3) — and an
                 // older copy in the batch adds its names to the record,
-                // which `joined` gives the pass (§8), a publisher id the
+                // which `joined` aliasing the pass (§8), a publisher id the
                 // full merge refused among them. A claim whose other
                 // claimants the component leaves out is accepted: the
                 // refused id or the wrong link returns, and the registry
@@ -1081,11 +1084,19 @@ impl Engine<'_> {
         let mut identity = Identity::new();
         let mut origins: Vec<Origin> = Vec::new();
         let mut existing: BTreeMap<WorkId, Row> = BTreeMap::new();
+        // What the identity pass is told of each record beside its names
+        // (merge plan §11 item 28): whether it is a container's, from its
+        // form, and what it corrects — a batch record's own relations and
+        // its source's list, and for a row's record the names the full
+        // merge refused it as names its work corrects, since rows keep no
+        // relations.
         let push = |identity: &mut Identity,
                     source: SourceId,
                     asserts: &[OwnedAssert],
-                    view: &Owned|
-         -> Result<(), Error> {
+                    view: &Owned,
+                    corrects: &[OwnedName],
+                    corrects_its_aliases: bool|
+         -> Result<u32, Error> {
             let assertions: Vec<Assertion<'_>> = asserts
                 .iter()
                 .map(|a| Assertion {
@@ -1094,43 +1105,148 @@ impl Engine<'_> {
                     native: a.native,
                 })
                 .collect();
-            identity.push(
+            let corrects: Vec<merge::Name<'_>> = corrects.iter().map(OwnedName::as_name).collect();
+            Ok(identity.push_with(
                 source,
                 &assertions,
                 Titles {
                     title: view.title.as_deref(),
                     vernacular: view.vernacular.as_deref(),
                 },
-            )?;
-            Ok(())
+                &Facts {
+                    container: view.form.is_some_and(merge::Form::is_container),
+                    corrects: &corrects,
+                    corrects_its_aliases,
+                },
+            )?)
         };
+        // Where the rows cannot say what the full merge would decide of an
+        // alias — a group of records its corrections come from, joined or
+        // changed by the batch — the batch stops for a full merge (§11
+        // item 28): the relations that decide it are not in the rows.
+        let mut works_in = 0usize;
+        let mut aliased: HashSet<u32> = HashSet::new();
+        let mut row_aliases: HashSet<(SourceId, OwnedName, OwnedName)> = HashSet::new();
+        let mut batch_aliases: Vec<(SourceId, OwnedName, OwnedName)> = Vec::new();
         for item in items {
             match *item {
                 Item::Work(id) => {
                     let Some(row) = self.rows.get(id)? else {
                         continue;
                     };
+                    works_in += 1;
                     for (j, record) in row.records.iter().enumerate() {
                         let key = (record.source, record.native.clone());
+                        let mut aliasing = false;
+                        let given = row
+                            .rejected
+                            .iter()
+                            .filter(|r| r.by == record.source && r.record == record.native)
+                            .map(|r| (&r.name, &*r.field));
+                        for (name, field) in record
+                            .asserts
+                            .iter()
+                            .map(|a| (&a.name, &*a.field))
+                            .chain(given)
+                        {
+                            if field == merge::ALIASES {
+                                aliasing = true;
+                                row_aliases.insert((
+                                    record.source,
+                                    record.native.clone(),
+                                    name.clone(),
+                                ));
+                            }
+                        }
                         if self.deleted_in.contains_key(&key) || batch_natives.contains(&key) {
                             continue;
                         }
                         let (mut asserts, view) = self.joined(record);
                         given_back(&mut asserts, record, &row.rejected);
-                        push(&mut identity, record.source, &asserts, &view)?;
+                        let corrects: Vec<OwnedName> = row
+                            .rejected
+                            .iter()
+                            .filter(|r| {
+                                r.why == Reason::Corrected
+                                    && r.by == record.source
+                                    && r.record == record.native
+                            })
+                            .map(|r| r.name.clone())
+                            .collect();
+                        let rix = push(
+                            &mut identity,
+                            record.source,
+                            &asserts,
+                            &view,
+                            &corrects,
+                            false,
+                        )?;
+                        if aliasing {
+                            aliased.insert(rix);
+                        }
                         origins.push(Origin::Row(id, j));
                     }
                     existing.insert(id, row);
                 }
                 Item::Batch(i) => {
                     let r = &self.batch.records[i];
-                    push(&mut identity, r.source, &r.asserts, &r.view)?;
+                    let mut aliasing = false;
+                    for a in &r.asserts {
+                        if &*a.field == merge::ALIASES {
+                            aliasing = true;
+                            batch_aliases.push((r.source, r.native.clone(), a.name.clone()));
+                        }
+                    }
+                    let corrects: Vec<OwnedName> = r
+                        .relations
+                        .iter()
+                        .filter(|rel| rel.kind.corrects())
+                        .filter_map(|rel| rel.target.clone())
+                        .collect();
+                    let rix = push(
+                        &mut identity,
+                        r.source,
+                        &r.asserts,
+                        &r.view,
+                        &corrects,
+                        r.corrects_its_aliases,
+                    )?;
+                    if aliasing {
+                        aliased.insert(rix);
+                    }
                     origins.push(Origin::Batch(i));
                 }
             }
         }
+        if works_in > 0
+            && let Some((source, native, alias)) =
+                batch_aliases.iter().find(|key| !row_aliases.contains(key))
+        {
+            return Err(Error::FullMerge(format!(
+                "{source}={native} aliasing {alias} as an alias its row does not, which its work's relations decide"
+            )));
+        }
         identity.mark();
         let res = identity.resolve(false)?;
+        // Records of two works joined into one, a record among them giving
+        // aliases: which of those the joined work corrects is in the
+        // relations of both, and the rows keep none.
+        for work in res.works.iter() {
+            let from: HashSet<WorkId> = work
+                .records
+                .iter()
+                .filter_map(|&rix| match origins.get(rix as usize) {
+                    Some(Origin::Row(id, _)) => Some(*id),
+                    _ => None,
+                })
+                .collect();
+            if from.len() > 1 && work.records.iter().any(|rix| aliased.contains(rix)) {
+                return Err(Error::FullMerge(format!(
+                    "a batch joins {} works where a record aliasing aliases, whose corrections are in their relations",
+                    from.len()
+                )));
+            }
+        }
         let order = res.held_order();
         let all: Vec<Vec<OwnedName>> = order.iter().map(|(_, n)| n.clone()).collect();
         // The batch answers as the full merge does only if every claimant
@@ -1288,7 +1404,7 @@ impl Engine<'_> {
                 let Some(w) = held_ids.iter().position(|x| x == part) else {
                     continue;
                 };
-                for n in &res.works[w].names {
+                for n in res.works.get(w).names {
                     taken.insert(res.arena.get(n.name).into_owned(), p);
                 }
             }
@@ -1574,8 +1690,8 @@ impl Engine<'_> {
         let mut puts = Vec::with_capacity(res.works.len());
         for (w, work) in res.works.iter().enumerate() {
             let id = held_ids[w];
-            let owned = build::held(&res, work, id, &views, &mut tallies);
-            for &rix in &work.records {
+            let owned = build::held(&res, &work, id, &views, &mut tallies);
+            for &rix in work.records {
                 if let Origin::Batch(i) = origins[rix as usize] {
                     self.work_of_batch.insert(i, id);
                     self.batch_sources
@@ -2140,7 +2256,7 @@ impl Cited {
 
 /// A stub name's citers joined per landing rather than per citing
 /// record: [`build::join_citers`]'s rule, on the finer key the cited-as
-/// evidence gives.
+/// evidence aliasing.
 fn join_cited(cited: &mut Vec<Cited>) {
     cited.sort_unstable_by_key(|c| (c.landing(), c.citer));
     let mut joined: Vec<Cited> = Vec::with_capacity(cited.len());
@@ -2946,7 +3062,7 @@ impl Engine<'_> {
                 } else {
                     // The record moved: its citations, the earlier copies'
                     // included, move with it. What a record of its source
-                    // the work keeps still gives stays behind, and that
+                    // the work keeps still aliasing stays behind, and that
                     // record restates the pair it leaves (2026-09-18).
                     let kept = twins.get(&(old_work, r.source)).map_or_else(
                         || (BTreeSet::new(), Vec::new(), Vec::new()),
@@ -3180,7 +3296,7 @@ impl Engine<'_> {
             }
         }
         // Deleted records: their lists go, except what a record of the
-        // same source the work keeps still gives, which that record
+        // same source the work keeps still aliasing, which that record
         // restates (2026-09-18).
         for ((source, _native), work) in self.deleted_in.clone() {
             let by: Sources = [source].into_iter().collect();
@@ -3196,7 +3312,7 @@ impl Engine<'_> {
                 .map(|a| a.work)
                 .collect();
             // The arcs the graph holds are in the ids it had before this
-            // batch; what the kept record gives is resolved against the
+            // batch; what the kept record aliasing is resolved against the
             // ids after it. An arc whose target this batch retired is the
             // same arc under a new id, and the retirement leaves it to
             // this loop, the pair's record having been withdrawn.
@@ -3856,7 +3972,7 @@ fn earlier_copies(
             };
             read += 1;
             r.references.extend(copy.references.iter().cloned());
-            // A copy of the batch's the row's copy speaks over gives no
+            // A copy of the batch's the row's copy speaks over aliasing no
             // relations; the row's copy does, and the pair is restated
             // from it (the first set is the one the row names).
             if i >= speaking && k == 0 {

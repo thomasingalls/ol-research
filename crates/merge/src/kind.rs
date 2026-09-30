@@ -103,6 +103,25 @@ pub enum Genre {
 }
 
 impl Form {
+    /// Whether the form is a container of other works — a journal, a
+    /// volume or issue of one, a series or set — rather than a work in
+    /// one. A container is not the articles in it, so the DOIs a
+    /// container's record gives as aliases are not its names (merge plan
+    /// §11 item 28, the user's rule of 2026-09-27).
+    #[must_use]
+    pub const fn is_container(self) -> bool {
+        matches!(
+            self,
+            Self::Journal
+                | Self::JournalVolume
+                | Self::JournalIssue
+                | Self::BookSeries
+                | Self::BookSet
+                | Self::ProceedingsSeries
+                | Self::ReportSeries
+        )
+    }
+
     /// Every form, in Crossref's order.
     pub const ALL: [Self; 30] = [
         Self::Book,

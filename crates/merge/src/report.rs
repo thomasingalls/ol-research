@@ -10,9 +10,8 @@ use ingest::Key;
 
 use crate::build::Merged;
 use crate::layout::Summary;
-use crate::name::OwnedName;
 
-use crate::identity::{Resolution, Standing};
+use crate::identity::{Resolution, Standing, StubWorks};
 use crate::registry::Assignment;
 use crate::work::SourceId;
 
@@ -26,8 +25,9 @@ use crate::work::SourceId;
 pub fn identity(
     out: &mut impl Write,
     res: &Resolution,
-    stub_works: &[Vec<OwnedName>],
+    stub_works: &StubWorks,
     registry: Option<&Assignment>,
+    changes: &[String],
 ) -> io::Result<()> {
     let s = &res.stats;
     writeln!(out, "identity")?;
@@ -57,10 +57,40 @@ pub fn identity(
     if s.collided > 0 {
         writeln!(
             out,
-            "  publisher ids one source claimed for more than one of its records, and so no article's id: {} values, {} assertions rejected",
+            "  publisher ids and aliases one source claimed for more than one of its records, and so no article's id: {} values, {} assertions rejected",
             s.collided, s.collided_assertions
         )?;
         for example in &s.collided_examples {
+            writeln!(out, "              {example}")?;
+        }
+    }
+    if s.corrected > 0 {
+        writeln!(
+            out,
+            "  aliases a record of their own work says it corrects, and so not its names: {} assertions rejected; the records giving most",
+            s.corrected
+        )?;
+        for example in &s.corrected_examples {
+            writeln!(out, "              {example}")?;
+        }
+    }
+    if !s.listed_corrections.is_empty() {
+        writeln!(
+            out,
+            "  records whose aliases their source's list says are what they correct, judged by hand: {}",
+            s.listed_corrections.len()
+        )?;
+        for record in &s.listed_corrections {
+            writeln!(out, "              {record}")?;
+        }
+    }
+    if s.container_aliases > 0 {
+        writeln!(
+            out,
+            "  aliases a container's record gives — a journal's, a volume's, an issue's, a series' — and so not its names: {} assertions rejected; the records giving most",
+            s.container_aliases
+        )?;
+        for example in &s.container_examples {
             writeln!(out, "              {example}")?;
         }
     }
@@ -161,7 +191,7 @@ pub fn identity(
         by_key[Key::ALL.iter().position(|k| *k == name.key()).unwrap_or(0)] += 1;
     }
     let mut sizes: BTreeMap<usize, u64> = BTreeMap::new();
-    for names in stub_works {
+    for names in stub_works.iter() {
         *sizes.entry(names.len().min(4)).or_default() += 1;
     }
     writeln!(
@@ -198,6 +228,15 @@ pub fn identity(
             "  registry, held works then stubs: {} minted, {} reused, {} merged, {} split, {} names attached, {} dropped",
             a.minted, a.reused, a.merged, a.split, a.attached, a.dropped
         )?;
+    }
+    if !changes.is_empty() {
+        writeln!(
+            out,
+            "  ids of record merged and split, the first of each: the work each went into, its records then its names"
+        )?;
+        for change in changes {
+            writeln!(out, "              {change}")?;
+        }
     }
     Ok(())
 }

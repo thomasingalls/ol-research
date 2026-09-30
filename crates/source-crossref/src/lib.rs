@@ -25,6 +25,7 @@ pub mod date;
 pub mod error;
 pub mod exclusions;
 pub mod list;
+pub mod listed_corrections;
 pub mod normalize;
 pub mod parse;
 pub mod record;
@@ -74,6 +75,23 @@ impl merge::Contributor for Crossref {
         // the DOI the record is registered under. The DOI-shaped ones —
         // 13,659 of the census's — are refused by the scope, whether they
         // restate this record's DOI or name another (§11, item 9).
+        // The DOI spelled in ASCII, where it has letters beyond ASCII: the
+        // name of a publisher's ASCII twin, when there is one.
+        if let Some(ascii) = &work.ascii_doi {
+            out(merge::Assertion {
+                name: merge::Name::Doi(ascii.as_str()),
+                field: "doi_ascii",
+                native: false,
+            });
+        }
+        // `aliases`: other DOIs the registry holds for the work.
+        for alias in work.aliases.iter().filter_map(model::Claim::valid) {
+            out(merge::Assertion {
+                name: merge::Name::Doi(alias.as_str()),
+                field: merge::ALIASES,
+                native: false,
+            });
+        }
         let scope = view::publisher_scope(work);
         for value in &work.alternative_ids {
             if let Ok(name) = scope.name(value) {
@@ -84,6 +102,15 @@ impl merge::Contributor for Crossref {
                 });
             }
         }
+    }
+
+    fn container(work: &normalize::Work<'_>) -> bool {
+        work.kind
+            .is_some_and(|kind| view::form(kind).is_container())
+    }
+
+    fn corrects_its_aliases(work: &normalize::Work<'_>) -> bool {
+        listed_corrections::corrects_its_aliases(&work.doi, work.deposited)
     }
 
     fn native<'w>(id: &'w model::Doi<'_>) -> merge::Name<'w> {

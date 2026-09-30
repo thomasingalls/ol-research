@@ -157,7 +157,8 @@ pub struct Citation<'n> {
     /// `PubmedData/PublicationStatus`.
     pub publication_status: Option<PublicationStatus>,
     /// `CommentsCorrections*`: errata, retractions, comments, by kind.
-    pub relations: Few<Relation, 4>,
+    #[serde(borrow)]
+    pub relations: Few<Relation<'n>, 4>,
 }
 
 /// `GeneralNote`: free text with an owner.
@@ -759,12 +760,19 @@ impl fmt::Display for HistoryTime<'_> {
 }
 
 /// A `CommentsCorrections` entry: how this record relates to another.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Relation {
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Relation<'n> {
     /// `ErratumFor`, `RetractionOf`, `CommentOn`, …
     pub kind: RefType,
     /// The other record, when PubMed identified it.
     pub pmid: Option<Pmid>,
+    /// The other record's DOI, where PubMed gives no PMID and the
+    /// `RefSource` is a DOI and nothing else (model version 12): the
+    /// erratum 41585761 names the 102 abstracts it corrects so, none of
+    /// them in PubMed. A `RefSource` that is a citation in words is not
+    /// read for one.
+    #[serde(borrow)]
+    pub doi: Option<Doi<'n>>,
 }
 
 /// One entry of a record's reference list: an edge whose target is
@@ -862,9 +870,22 @@ impl std::error::Error for Error {}
 /// Error context: the PMID once known.
 struct Ctx {
     pmid: Option<Pmid>,
+    /// What the record's reading read as other than written, by field and
+    /// how, for the sink once the record is read.
+    corrected: std::cell::RefCell<Vec<(&'static str, &'static str)>>,
 }
 
 impl Ctx {
+    /// A DOI, read ([`Doi::read`]), with what the reading changed noted
+    /// for the sink under `field` ([`Sink::corrected`]).
+    fn doi<'n>(&self, field: &'static str, raw: &'n str) -> Result<Doi<'n>, DoiError> {
+        let (doi, readings) = Doi::read(raw)?;
+        self.corrected
+            .borrow_mut()
+            .extend(readings.made().map(|how| (field, how)));
+        Ok(doi)
+    }
+
     fn err(&self, field: &'static str, raw: &str, kind: ErrorKind) -> Error {
         Error {
             pmid: self.pmid,
@@ -1454,7 +1475,9 @@ fn identifiers<'n>(
             ErrorKind::Inconsistent("differs from MedlineCitation/PMID"),
         ));
     }
-    let doi = own.doi.map(|raw| Claim::from_parse(raw, Doi::parse(raw)));
+    let doi = own
+        .doi
+        .map(|raw| Claim::from_parse(raw, ctx.doi("ArticleId(doi)", raw)));
     // One PMC slot for the two tokens that fill it. `pmc_of` no longer takes
     // the citation's version to check a suffix against: PMC counts versions
     // of the article and `PMID@Version` counts versions of the record about
@@ -1501,7 +1524,10 @@ fn identifiers<'n>(
             continue;
         }
         match e.eid_type {
-            EIdType::Doi => elocation_doi.push(Claim::from_parse(&e.value, Doi::parse(&e.value))),
+            EIdType::Doi => elocation_doi.push(Claim::from_parse(
+                &e.value,
+                ctx.doi("ELocationID(doi)", &e.value),
+            )),
             EIdType::Pii => elocation_pii.push(&*e.value),
         }
     }
@@ -1635,7 +1661,10 @@ pub fn normalize<'n, K: Sink<'n, Pubmed>>(
     emit: &mut K,
 ) -> Result<(), Error> {
     let c = &article.medline_citation;
-    let mut ctx = Ctx { pmid: None };
+    let mut ctx = Ctx {
+        pmid: None,
+        corrected: std::cell::RefCell::new(Vec::new()),
+    };
     let pmid = Pmid::from_digits(&c.pmid.value)
         .map_err(|e| ctx.err("PMID", &c.pmid.value, ErrorKind::Id(e)))?;
     ctx.pmid = Some(pmid);
@@ -1823,9 +1852,18 @@ pub fn normalize<'n, K: Sink<'n, Pubmed>>(
                     .map_err(|e| ctx.err("CommentsCorrections/PMID", &p.value, ErrorKind::Id(e)))
             })
             .transpose()?;
+        // No PMID: a `RefSource` that reads whole as a DOI names the
+        // record (model version 12), each reading counted as any DOI's.
+        let doi = match (&pmid, &cc.ref_source) {
+            (None, std::borrow::Cow::Borrowed(source)) => {
+                ctx.doi("CommentsCorrections/RefSource", source).ok()
+            }
+            _ => None,
+        };
         relations.push(Relation {
             kind: cc.ref_type,
             pmid,
+            doi,
         });
     }
 
@@ -1848,6 +1886,9 @@ pub fn normalize<'n, K: Sink<'n, Pubmed>>(
         None => (Few::new(), None),
     };
 
+    for (field, how) in ctx.corrected.take() {
+        emit.corrected(&pmid, field, how);
+    }
     emit.work(&Citation {
         pmid,
         version,
@@ -1932,7 +1973,10 @@ pub fn deletions<'n, K: Sink<'n, Pubmed>>(
     deleted: &'n DeleteCitation<'_>,
     emit: &mut K,
 ) -> Result<(), Error> {
-    let ctx = Ctx { pmid: None };
+    let ctx = Ctx {
+        pmid: None,
+        corrected: std::cell::RefCell::new(Vec::new()),
+    };
     for p in &deleted.pmids {
         let pmid = Pmid::from_digits(&p.value)
             .map_err(|e| ctx.err("DeleteCitation/PMID", &p.value, ErrorKind::Id(e)))?;
@@ -2023,7 +2067,15 @@ fn references<'n, K: Sink<'n, Pubmed>>(
                     IdType::Doi => doi.push(Said {
                         kind,
                         raw,
-                        claim: Claim::from_parse(raw, Doi::parse(raw)),
+                        claim: Claim::from_parse(
+                            raw,
+                            Doi::read(raw).map(|(doi, readings)| {
+                                for how in readings.made() {
+                                    emit.corrected(&from, "ReferenceList/ArticleId(doi)", how);
+                                }
+                                doi
+                            }),
+                        ),
                     }),
                     // The 2026 baseline files write `pmcid` with bare
                     // digits; 295,126 reference ids looked up from older

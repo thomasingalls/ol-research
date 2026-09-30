@@ -135,6 +135,7 @@ pub(crate) fn record(
         view: owned(&view),
         text,
         relations: Vec::new(),
+        corrects_its_aliases: false,
         references: Vec::new(),
     }
 }

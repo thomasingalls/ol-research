@@ -144,6 +144,16 @@ pub trait Sink<'n, S: Source> {
         let _ = (id, field, value);
     }
 
+    /// A value of a record's that the source read as other than written,
+    /// by a rule of the model (plan §6): `field`, read `how` — a DOI's en
+    /// dash read as a hyphen, its trailing space dropped. What is kept is
+    /// the reading; a sink that reports counts it, so a reading that leaves
+    /// an id no registry knows is a number, as a record the exclusion list
+    /// keeps out is. May come before the record's work.
+    fn corrected(&mut self, id: &S::Id<'n>, field: &'static str, how: &'static str) {
+        let _ = (id, field, how);
+    }
+
     /// Called before the first record of each raw file, with the file's
     /// path and its index among the run's files.
     ///
@@ -205,6 +215,10 @@ impl<'n, S: Source, K: Sink<'n, S>> Sink<'n, S> for &mut K {
         (**self).set_aside(id, field, value);
     }
 
+    fn corrected(&mut self, id: &S::Id<'n>, field: &'static str, how: &'static str) {
+        (**self).corrected(id, field, how);
+    }
+
     fn begin_file(&mut self, path: &Path, index: usize) -> io::Result<()> {
         (**self).begin_file(path, index)
     }
@@ -250,6 +264,12 @@ impl<'n, S: Source, K: Sink<'n, S>> Sink<'n, S> for Option<K> {
         }
     }
 
+    fn corrected(&mut self, id: &S::Id<'n>, field: &'static str, how: &'static str) {
+        if let Some(k) = self {
+            k.corrected(id, field, how);
+        }
+    }
+
     fn begin_file(&mut self, path: &Path, index: usize) -> io::Result<()> {
         self.as_mut().map_or(Ok(()), |k| k.begin_file(path, index))
     }
@@ -289,6 +309,11 @@ impl<'n, S: Source, A: Sink<'n, S>, B: Sink<'n, S>> Sink<'n, S> for (A, B) {
     fn set_aside(&mut self, id: &S::Id<'n>, field: &'static str, value: &'static str) {
         self.0.set_aside(id, field, value);
         self.1.set_aside(id, field, value);
+    }
+
+    fn corrected(&mut self, id: &S::Id<'n>, field: &'static str, how: &'static str) {
+        self.0.corrected(id, field, how);
+        self.1.corrected(id, field, how);
     }
 
     fn begin_file(&mut self, path: &Path, index: usize) -> io::Result<()> {

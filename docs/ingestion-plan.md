@@ -127,7 +127,9 @@ wart is a claim the POC run confirms or refutes, not a commitment.
   same from 5.3.1 to 5.5.0). All of it is kept, each id with who asserted
   it; a ROR and an ISNI are claims, because a few records' fail their
   checks. An empty one, `{}`, says nothing and is set aside, and so is an
-  author with nothing in it but its `sequence`.
+  author with nothing in it but its `sequence`; one with anything in it
+  is kept, a place alone included. An author may be a given name alone,
+  kept as written.
 - Types (model 10). A record may have no `type` — 2,257 among those the
   survey stopped at, EMBL-EBI's dataset pages first — and its kind is then
   unknown: no form, no genre but a notice's. Crossmark's update type was
@@ -1218,6 +1220,60 @@ in your environment, never in the repo or in this conversation.
    name, as a `pmc` slot holding something else is kept (§6); or read the
    id after the leaked prefix as a modelled repair of a known shape. Not a
    silent strip.
+10. **Whitespace inside a DOI — to settle carefully, later** (the user,
+    2026-09-26). `model::Doi` drops whitespace at either end and refuses
+    it inside, so a reference DOI with a space in it is malformed, and
+    the merge drops it. The first normalize of Crossref's whole file under
+    model 10 counted 1,185,296 malformed reference DOIs of 2,742,943,742
+    references (M; how many for a space was not counted). Of the 64
+    malformed ones its reports printed as samples, eight per share, 49
+    have a space (M, a sample and no more), in two shapes that look alike
+    and want opposite readings:
+    - a space *inside* a DOI, where dropping it gives the DOI:
+      `10.1136/bmjop en-2018-027049`, `10.1186/ s12916-017-0906-5`,
+      `10.1111/chd. 12608`, `10.1088/1757 - 899X/1320/1/012002`, and
+      Wiley's SICI DOIs with a space before `<`
+      (`10.1002/(SICI)1097-0134(1999)37:3 <22::AID-PROT5>3.0.CO;2-W`,
+      18 of the 64);
+    - a space *after* a DOI, before text that is not part of it, where the
+      DOI ends at the space and joining would make a DOI no one
+      registered: `10.1101/gr.229102. Article published online before
+      print in May 2002`, `10.13998/j.cnki.issn1002-1248.25-0444,
+      2025-11-05.`, `10.1371/journal.pntd.0008959 journals.plos.org`,
+      `10.1007/s11325-021-02382-0 10.1007/s11325-021-02382-0` (the DOI
+      twice), `10.1006/jmbi.1990.9999 S0022-2836(05)80360-2 [pii]`.
+    Some are neither for certain (`10.1111/test.1236 7`,
+    `10.1016/0190-9622 (93)70259-v`). To settle first: count the spaces
+    by shape over the whole file, check a sample of each at doi.org, then
+    decide with the user between leaving them malformed (today), a
+    modelled reading per shape, each counted as the other readings are,
+    and a claim. The same samples show other shapes not taken up either:
+    `≤`/`≥` for `<`/`>` in a SICI, a private-use U+F6BA for a dash
+    (`10.2478/sjecr\u{f6ba}2019\u{f6ba}0006`), a zero-width space
+    (`10.1128/aem.45.4.1394-\u{200b}1397.1983`), curly quotes after the
+    DOI, a registrant written with a letter (`10.l007/…`).
+11. **What `model::Doi` writes and does not read back — for a model
+    version** (2026-09-29). Every code point tried (the `doi` module's
+    tests), `parse` fails to read its own output back in three places.
+    - `İ` (U+0130) lowercases to `i` and a combining dot above, which is
+      not a letter. A reference's `10.1002/İJC.22088` wrote
+      `10.1002/i\u{307}jc.22088` into the first registry with Crossref,
+      and the publish after it stopped there. It is almost certainly
+      `10.1002/ijc.22088` (the International Journal of Cancer), typed
+      where capital `I` is dotted.
+    - The encoding repair turns `Ã\u{97}` and `Ã·` into `×` and `÷`,
+      which are symbols the DOI rule refuses wherever else they are
+      written.
+    - A zero-width space dropped between `ã` and `µ`, `ª` or `º` leaves a
+      pair the repair reads again.
+
+    Readers take the stored form through `Doi::from_canonical`, which
+    accepts what `parse` writes, so none of this stops a run (merge plan
+    §10, 2026-09-29). To decide, with counts over the whole file: `İ` read
+    as `i` (its ASCII spelling, as a Turkish locale's capital `I`) or kept
+    as written; the repair limited to letters, and `×` and `÷` refused;
+    and whether a dropped character may join a repair's two halves. Each
+    changes what is normalized, so it is a model version.
 
 ## 9. Milestones
 
@@ -2041,6 +2097,183 @@ cross-IDs and a second edge namespace early.
   character fails (1) is a claim, as the other ids with checks are.
   Every one of the 234 records the whole-file survey named as examples
   now normalizes.
+- 2026-09-26, still model 10: DOIs beyond ASCII, the user's decisions.
+  About 200 records of the file had a DOI the model refused; all 97 the
+  survey named were found by their escaped spelling (homelab
+  `ol-rht-dump-crossref-v3`) and checked at doi.org and Crossref's API.
+  In `model::Doi`, for every source and every DOI, records' and
+  references' alike:
+  - every Unicode dash, and the minus sign, is `-`. The 61 en-dash DOIs
+    are second registrations — Wiley's, Hogrefe's, AAIDD's — of articles
+    whose hyphen twins are the live records, and doi.org redirects the
+    one to the other (`10.1027/0838–1925.18.2.82`, 301); read as the
+    twin's DOI, a second registration is a copy of the twin's record in
+    the merge, one work;
+  - a letter beyond ASCII is the DOI of record, lowercased as registries
+    write it (33: Lavoisier's `réseaux`, Akadémiai Kiadó's `mentál`),
+    since doi.org resolves them. Some publishers registered an ASCII twin
+    too (`día` and `dia`); that the merge joins such twins waits on a
+    count of them over the whole file (homelab
+    `ol-rht-census-doi-spellings-v1`);
+  - whitespace at an end is dropped (2: `10.3354/meps7782` and a
+    non-breaking space — an early registration of an article whose DOI is
+    `meps07782` — and `10.4021/gr2008.11.1240` with three); neither
+    spelling resolves, and the user wants such readings counted;
+  - a letter written as its UTF-8 bytes read as Latin-1 is repaired (1:
+    Fraunhofer's `gã¼nthner`, whose `günthner` twin is live), a table the
+    data will add to.
+  Each reading is counted in the survey's report (`Sink::corrected`, new),
+  by field and kind, so a reading that leaves a DOI no registry knows is
+  a number, as an exclusion is. Crossref's own `aliases` (138 of the
+  dumped records; a figshare item's `.v1`) were parsed and dropped, and
+  are now kept, each a name the merge gives the work.
+- 2026-09-26, still model 10: an accented DOI's ASCII twin is the same
+  work (the user: "i don't like that ascii twins count as separate works,
+  or counting these records twice"). The census of the whole file
+  (homelab `ol-rht-census-doi-spellings-v1`, two passes) found 215
+  records whose own DOI is not ASCII — 113 with a dash, 99 with a
+  letter, 2 with a space, 1 broken encoding — and looked for each one's
+  ASCII spelling (M): 99 of the dash ones have a twin, every one with
+  its title; 16 of the letter ones have a twin with the same title and
+  one with the same article's title written otherwise (Benjamins'
+  `babel.54.1.04día`, escaped HTML against a typo); none has a twin that
+  is another article. A Crossref record keeps its DOI's ASCII spelling
+  (`model::Doi::ascii_spelling`, a table of 294 Latin letters from
+  Unicode's decompositions, `ß` `ss`), and the merge takes it as a name
+  of the work, `doi_ascii`, so twins are one work by the rules already
+  there — records of one source sharing a name, their titles agreeing —
+  and a citation or a lookup by either spelling lands on it; the title
+  check stays the guard against a false join. On a scratch merge of
+  three pairs from the census: two works each holding both records and
+  both DOIs, and the en-dash registration a copy of its twin's record.
+  Of the two spellings the accented one is shown (merge plan §3.4, the
+  user: "the accented one should be displayed when available").
+  The same merge found that a Crossref reference, which names its
+  journal, could not be fingerprinted (merge v15's `build::fingerprint`
+  serialized the interned journal outside any file being written); the
+  fingerprint takes the owned citation now, and prints a PubMed
+  reference, which names none, as before.
+- 2026-09-26, the third survey of the whole March 2026 file, model 10
+  (homelab `ol-rht-survey-crossref-v3`, ol-rht 54ca5aa): 179,536,204
+  records, 87 failing (M). What the readings did over the file: 3,738,308
+  reference DOIs with a dash read as `-` and 1,511 with a space dropped;
+  113 record DOIs with a dash, 2 with a space, 1 repaired; 303,081 empty
+  authors and 28,412 empty affiliations set aside; 1,011,666 aliases
+  kept; 17,638 records with no type, 15,535 with no member; 100 DOIs
+  with an ASCII spelling; 7 test deposits kept out; 1,292 ISBNs and one
+  ORCID kept as claims. The 87, settled the same day, still as version
+  10 (the user's calls): 81 authors with a given name and nothing else —
+  people known by one name (`Siddhartha`, `Divya`), whole names in the
+  given field (`Nguyen Minh Duc`), initials, one organisation — kept as
+  written, `AuthorName::Given`, no rule telling them apart; 5
+  affiliations with a place and no more (`Belgrade,Serbia`), kept, the
+  schema's "a name or an id" no longer enforced where anything is given;
+  and one language, `nsg`, which is ISO 639-3's (Ngasa) and not ISO
+  639-2's: `model::Lang` now holds ISO 639-3's 7,927 individual
+  languages beside ISO 639-2's codes, 7,993 in all (SIL International's
+  table, the 639-3 registration authority's; `tools/gen_lang_table.py`),
+  where PubMed's bibliographic reader still takes ISO 639-2's alone. On
+  that record — a Szeged supplement in Uralic studies — Nganasan (`nio`)
+  would fit where Ngasa, a language of Tanzania, does not; the code is
+  the publisher's, and read as written. OpenAlex's `sh`, a claim since
+  2026-09-15 as a code outside ISO 639-2, is now a language the model
+  knows (Serbo-Croatian, ISO 639-3's `hbs`), and read.
+- 2026-09-26, the first normalize of the whole March 2026 file, model 10
+  (homelab `ol-rht-normalize-crossref-v1` and, beside it, the PubMed
+  baseline's `ol-rht-normalize-baseline-v3`; ol-rht 7d2ef1b), every
+  share exit 0 (M): Crossref 179,536,204 records read, 179,536,197
+  written (the 7 test deposits kept out), 2,742,943,742 references of
+  which 1,985,281,469 have a DOI, 1,185,296 a malformed one and
+  756,476,977 none; 198.6 GiB of sets, 23 to 28 minutes a share. Every
+  reading's count equals the third survey's. PubMed 39,994,988 works,
+  446,087,838 references, 12 minutes. The reports' samples of malformed
+  reference DOIs showed a soft hyphen, U+00AD, in four of 64 and a
+  zero-width space, U+200B, in one; the user: "we can normalize the soft
+  hyphens already", and the zero-width space "in the same way". Each is
+  dropped, not read as `-`: neither is a character of the name, each a
+  place a line may break, the soft hyphen shown only where one does
+  (`10.11646/zoo\u{ad}taxa.4966.5.3` is Zootaxa's
+  `10.11646/zootaxa.4966.5.3`; JAMA's are cited with one after the
+  slash, and ASM's `10.1128/aem.45.4.1394-\u{200b}1397.1983` with a
+  zero-width space in the page range). Each is counted, "a soft hyphen
+  dropped" and "a zero-width space dropped", beside the other readings.
+  That is model version 11, since what a set holds changes, and it was
+  to wait: the user kept the server on model 10 "all the way through a
+  full merge", so that the first merge of record would read these v10
+  sets, and model 11 was kept on its own branch until then, its sets to
+  be rebuilt rather than patched (see the entry below: it came in first).
+  Whitespace inside a DOI, in the same samples, is open item 10 (§8), the
+  user's "to deal with more carefully later".
+- 2026-09-27, model 11 before the first merge of record. The survey of
+  the whole file at model 10 and merge version 15
+  (`ol-rht-merge-survey-v8`) took six hours and stopped on three
+  Crossref alias shapes, which merge version 16 settles, so the next
+  whole-file survey was another six hours; the user: "if we're in for a
+  6 hour wait, i feel like we might as well pull in model-11 changes
+  too". The branch applied to main cleanly (no file both touched), and
+  nothing else waits on the model — open item 10 is deferred — so the
+  renormalize, about 35 minutes for both sources side by side, is paid
+  once. The first merge of record with Crossref is at model 11; the v10
+  sets were surveyed and never merged of record.
+- 2026-09-27, model 12: a PubMed `CommentsCorrections` entry with no PMID
+  keeps its `RefSource` as the other record's DOI where the `RefSource`
+  reads whole as one, each reading counted as any DOI's, and the report
+  counts them by kind. The survey of the whole file at model 11 and merge
+  16 (`ol-rht-merge-survey-v9`) stopped on one component alone: the
+  erratum PMID 41585761, whose Crossref twin `10.1161/svin.122.000762`
+  gives the 102 supplement abstracts it corrects as aliases. PubMed says
+  it is the erratum for all 102 — `ErratumFor`, each `RefSource` a bare
+  DOI, no PMID, none of the abstracts being in PubMed — but the model
+  kept a relation's PMID and nothing else, so the merge's rule that a
+  work's aliases are not what it corrects (merge plan §11 item 28) saw
+  only the one abstract Crossref's own `update-to` names. The user's
+  call. On the two baseline files on this machine no relation lacks a
+  PMID; the model 12 normalize of the whole baseline counts them. The
+  model 11 sets were only surveyed; model 12's are rebuilt, not patched.
+- 2026-09-27, page ranges read at normalization, planned as model 13
+  ([citation fields plan](citation-fields-plan.md) D8; planned as 12,
+  which the entry above took first). The user: `123-9`
+  "has to become 123-129 when stored", and what a formatter later does
+  with a range is an access pattern, not what gets stored. So Crossref's
+  `page` and PubMed's `Pagination` are read into ranges where dates and
+  DOIs are read, not in the merge's view, and NLM's shortened end is
+  expanded. The rule is checked first against Crossref's whole ranges on
+  works both sources hold, and the grammar for other shapes (`iii-xiv`,
+  `S12-5`, `123-9; 131`) is learned from the plan's survey (CF0). What it
+  cannot read whole falls back as `MedlineDate` does, keeping what is
+  certain beside the raw text, unless the user decides otherwise on the
+  survey's counts. Crossref's `short-container-title` is kept in the same
+  model version. It waits until the merge of record at model 12 has run
+  and been published.
+- 2026-09-28, Crossref's `journal-issue` dates kept in model 13 (the
+  user). The reader has read the object's own print and online dates and
+  thrown them away. Over the whole file (`ol-rht-survey-crossref-v4`),
+  the issue's online date differs from the article's on 9,409,481 records,
+  and the issue gives a print date the article lacks on 1,669,210. They
+  are the issue's own dates (its month, or its year), which the citation
+  fields plan's D4 keeps apart from the article's online date.
+- 2026-09-28, Crossref's `container-title` and `short-container-title`
+  kept whole in model 13 (the user). The reader keeps the first of each.
+  The second means different things by type. For 173,277 journal
+  articles (`ol-rht-survey-crossref-v4`) it is the same journal's name
+  in another language or form, in all 322 examples
+  `ol-rht-dump-crossref-v4` printed. For a book chapter it is the book
+  behind the series. So the lists are kept as written and read by type
+  in the merge's view (citation fields plan §4).
+- 2026-09-29, the counting allocator (rule 13, `ingest::alloc`) counts
+  per thread. Every allocation on every core updated the same four
+  counters, and on many cores the parse spent its time waiting for them.
+  Measured on the M1 Pro (10 cores), `crossref normalize --survey` over
+  the lookup files read ten times over (506,400 records, 114 allocations
+  each), five rounds: 12.3 s with one set of counters, 5.0 s with a tally
+  per thread; instructions per cycle 1.25 and 3.22. Keeping one set
+  but padding its counters onto separate cache lines gave about 9.5 s; no
+  counting at all, 4.6 s. The dev store's whole rebuild used 7.5% less
+  CPU, its search build 41% less, and the single-threaded merge about the
+  same.
+  The reports read as before: 65,710,497 allocations in the dev store's
+  merge and a peak of 2.83 GiB. The peak is the one number that loosens
+  (§13). The user's choice of the per-thread tallies over the padding.
 
 ## 11. Dependencies
 
@@ -2073,6 +2306,20 @@ Semantic Scholar's paging will use the same client.
   release listing at `https://api.semanticscholar.org/datasets/v1/release/latest`,
   [API key form](https://www.semanticscholar.org/product/api).
 - PubMed: baseline listing at `https://ftp.ncbi.nlm.nih.gov/pubmed/baseline/` — 1,334 files, highest `pubmed26n1334.xml.gz` (13 MB).
+
+## 13. What we are compromising on
+
+Kept as we go, at the user's request (2026-09-26: "so long as we're
+keeping track of what we're compromising on in documentation as we
+go"). Each line: the compromise, what it costs, what would lift it.
+
+1. **The peak heap is looked for in steps** (2026-09-29, §10). Each
+   thread's tally looks at the whole heap when its own live bytes have
+   grown by `PEAK_STEP` (1 MiB) since it last looked, not at every
+   allocation, so `peak_bytes` can read low by up to 1 MiB per thread:
+   16 MiB on the tower's 16 threads, against peaks measured in GiB. On
+   the dev store it read exactly as before. Lifted by a smaller step, at
+   the cost of more looks across every tally.
 
 ## Appendix A — speculative normalized shape (not the plan)
 
@@ -2126,7 +2373,7 @@ give one string; splitting names is a modelling decision not made here.
 | `Orcid`         | 16 digits, last may be `X`, ISO 7064 checksum verified                                                |
 | `Issn`          | 8 characters, checksum verified                                                                       |
 | `PartialDate`   | `Year` \| `YearMonth` \| `YearMonthDay` \| `Range` (for `MedlineDate`); calendar-valid; sane year     |
-| `Lang`          | ISO 639-1/2 code                                                                                      |
+| `Lang`          | ISO 639-1/2/3 code (ISO 639-3's individual languages beside 639-2's codes since model 10)              |
 | `NonEmptyText`  | trimmed, non-empty, no control characters                                                             |
 | `WorkKind`, `Subject.scheme`, `WorkStatus` | closed enums. No `Other`. An unknown value is a parse failure (§6)          |
 
