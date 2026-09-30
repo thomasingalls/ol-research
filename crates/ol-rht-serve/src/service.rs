@@ -15,15 +15,16 @@ use std::time::{Duration, Instant};
 use merge::{Sources, WorkId};
 use search::Hits;
 use serve::{By, Resolved, Walk};
-use tokio::sync::{Semaphore, mpsc};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
 
 use crate::answers::{Answers, Direction};
 use crate::convert;
+use crate::lookup;
 use crate::proto::v1 as pb;
 use crate::proto::v1::serving_server::Serving;
-use crate::querylog::{self, Outcome};
+use crate::querylog::{self, Looked, Outcome};
 use crate::terms::Terms;
 
 /// Arcs a page may carry.
@@ -64,6 +65,10 @@ pub const PATH_VISITS: u64 = graph::Bounds::DEFAULT.visits;
 /// How long a search may take, from its request's arrival to its answer,
 /// when the server is not told otherwise (`--search-deadline`).
 pub const SEARCH_DEADLINE: Duration = Duration::from_secs(10);
+/// Bytes a citation may hold. A line of a reference list is a few hundred;
+/// a page pasted by mistake is refused rather than read (citation lookup
+/// plan, D7).
+pub const CITATION_MAX_BYTES: usize = 4 * 1024;
 
 /// Searches that may run at once when the server is not told otherwise
 /// (`--search-threads`): half the cores, so that the other half is always
@@ -256,7 +261,8 @@ pub(crate) fn epoch_info<A: Answers>(a: &A, terms: &Terms) -> pb::EpochInfo {
 /// Which work a name or public id is: one, the several a shared name was
 /// accepted into, or the id a split retired with the works its names went
 /// to — a path that was once true, answered as what was once so rather
-/// than not at all (serving plan §11, item 24).
+/// than not at all (serving plan §11, item 24). Text that is no name as it
+/// stands is read every way it can be ([`found`]).
 ///
 /// # Errors
 ///
@@ -266,22 +272,26 @@ pub(crate) fn resolved<A: Answers>(
     terms: &Terms,
     text: &str,
 ) -> Result<pb::ResolveResponse, Status> {
-    let outcome = match a.resolve(text).map_err(|e| status(&e))? {
-        Some(Resolved::One(id)) => pb::resolve_response::Outcome::PublicId(convert::public(a, id)?),
-        Some(Resolved::Shared(ids)) => pb::resolve_response::Outcome::Shared(pb::Shared {
+    let outcome = match a.resolve(text) {
+        Ok(Some(Resolved::One(id))) => {
+            pb::resolve_response::Outcome::PublicId(convert::public(a, id)?)
+        }
+        Ok(Some(Resolved::Shared(ids))) => pb::resolve_response::Outcome::Shared(pb::Shared {
             public_ids: ids
                 .into_iter()
                 .map(|id| convert::public(a, id))
                 .collect::<Result<_, _>>()?,
         }),
-        Some(Resolved::Split { id, into }) => pb::resolve_response::Outcome::Split(pb::Split {
+        Ok(Some(Resolved::Split { id, into })) => pb::resolve_response::Outcome::Split(pb::Split {
             public_id: convert::public(a, id)?,
             into: into
                 .into_iter()
                 .map(|part| convert::public(a, part))
                 .collect::<Result<_, _>>()?,
         }),
-        None => return Err(Status::not_found(format!("{text}: no such work"))),
+        Ok(None) => return Err(Status::not_found(format!("{text}: no such work"))),
+        Err(serve::Error::NotAName(why)) => found(a, text, &why)?,
+        Err(e) => return Err(status(&e)),
     };
     Ok(pb::ResolveResponse {
         // No sources, and not for want of asking: this is the one answer
@@ -306,6 +316,154 @@ pub(crate) fn resolved<A: Answers>(
         answered: Some(answered(a, terms, Sources::NONE)),
         outcome: Some(outcome),
     })
+}
+
+/// Which works a citation may be, and why (citation lookup plan, §3): the
+/// text capped, its words read by the query parser, and the lookup itself
+/// ([`crate::lookup`]) run on a search thread within the search's time
+/// limit — half of it is a search, and a search holds no request thread
+/// (2026-09-25). Written to the query log whatever became of it.
+///
+/// # Errors
+///
+/// `INVALID_ARGUMENT` for text over [`CITATION_MAX_BYTES`] or over the
+/// parser's caps; `RESOURCE_EXHAUSTED` when no search thread comes free
+/// within the time limit; `DEADLINE_EXCEEDED` for a lookup that runs past
+/// it; and the engine's failures, a row that does not decode, a work with
+/// no public id.
+pub(crate) async fn looked_up<A: Answers>(
+    service: &Service<A>,
+    a: Arc<A>,
+    text: &str,
+) -> Result<pb::LookupCitationResponse, Status> {
+    let started = Instant::now();
+    let log = |outcome, looked: Option<&Looked>| {
+        querylog::looked_up(outcome, text, looked, started.elapsed());
+    };
+    if text.len() > CITATION_MAX_BYTES {
+        log(Outcome::TooLong, None);
+        return Err(Status::invalid_argument(format!(
+            "the citation is {} bytes, over the cap of {CITATION_MAX_BYTES}: one citation at a time",
+            text.len()
+        )));
+    }
+    let asked = match query_parser::parse(&citation_match::check::searchable(text)) {
+        Ok(asked) => asked,
+        Err(e) => {
+            log(Outcome::TooLong, None);
+            return Err(Status::invalid_argument(e.to_string()));
+        }
+    };
+    let deadline = service.searches.deadline;
+    let until = started + deadline;
+    let permit = match search_thread(service, until).await {
+        Ok(permit) => permit,
+        Err((outcome, refusal)) => {
+            log(outcome, None);
+            return Err(refusal);
+        }
+    };
+    let terms = Arc::clone(&service.terms);
+    let owned = text.to_owned();
+    // The permit goes with the lookup, as with a search.
+    let task = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        lookup::lookup(&*a, &terms, &owned, &asked, until)
+    });
+    match tokio::time::timeout_at(until.into(), task).await {
+        Ok(Ok(Ok((response, looked)))) => {
+            log(Outcome::Answered, Some(&looked));
+            Ok(response)
+        }
+        Err(_) | Ok(Ok(Err(Stopped::Search(serve::Error::Search(search::Error::Deadline))))) => {
+            log(Outcome::TimedOut, None);
+            Err(Status::deadline_exceeded(format!(
+                "the lookup ran past its time limit of {} s",
+                deadline.as_secs()
+            )))
+        }
+        Ok(Ok(Err(Stopped::Search(e)))) => {
+            log(Outcome::Failed, None);
+            Err(status(&e))
+        }
+        Ok(Ok(Err(Stopped::Answer(refusal)))) => {
+            log(Outcome::Failed, None);
+            Err(refusal)
+        }
+        Ok(Err(stopped)) => {
+            eprintln!("ol-rht-serve: a lookup stopped: {stopped}");
+            log(Outcome::Failed, None);
+            Err(Status::internal(format!("the lookup stopped: {stopped}")))
+        }
+    }
+}
+
+/// A search thread, waited for until `until`; or why there is none, as the
+/// log's outcome and the refusal.
+async fn search_thread<A: Answers>(
+    service: &Service<A>,
+    until: Instant,
+) -> Result<OwnedSemaphorePermit, (Outcome, Status)> {
+    let permits = Arc::clone(&service.searches.permits);
+    match tokio::time::timeout_at(until.into(), permits.acquire_owned()).await {
+        Ok(Ok(permit)) => Ok(permit),
+        Ok(Err(closed)) => {
+            eprintln!("ol-rht-serve: search threads: {closed}");
+            Err((Outcome::Failed, Status::internal(closed.to_string())))
+        }
+        Err(_) => {
+            eprintln!(
+                "ol-rht-serve: every search thread was busy for the whole {} s time limit",
+                service.searches.deadline.as_secs()
+            );
+            Err((
+                Outcome::Busy,
+                Status::resource_exhausted("every search thread is busy; try again shortly"),
+            ))
+        }
+    }
+}
+
+/// Text that is no name as it stands, read every way it can be (the user,
+/// 2026-09-28: "'find by id' should not require namespace"): the names the
+/// citation reader finds in it, or the whole of it as one token in every
+/// namespace ([`lookup::read_names`]), each that names something listed
+/// with what it names. A public id written wrong is still refused as
+/// written: `ol:` says what it was meant to be, and nothing else is tried.
+///
+/// # Errors
+///
+/// `INVALID_ARGUMENT` for a malformed public id, or text of more than one
+/// word with no identifier in it; `NOT_FOUND` for a token no namespace
+/// holds anything by.
+fn found<A: Answers>(
+    a: &A,
+    text: &str,
+    why: &str,
+) -> Result<pb::resolve_response::Outcome, Status> {
+    let token = text.trim();
+    if token
+        .get(..3)
+        .is_some_and(|p| p.eq_ignore_ascii_case(merge::public::PREFIX))
+    {
+        return Err(Status::invalid_argument(why.to_owned()));
+    }
+    let names = lookup::read_names(a, text)?
+        .into_iter()
+        .filter(lookup::Read::names_something)
+        .map(|read| lookup::cited(a, text, read).map(|(name, _)| name))
+        .collect::<Result<Vec<_>, _>>()?;
+    if !names.is_empty() {
+        return Ok(pb::resolve_response::Outcome::Found(pb::Found { names }));
+    }
+    if token.is_empty() || token.contains(char::is_whitespace) {
+        return Err(Status::invalid_argument(format!(
+            "{text:?} is no name, and there is no identifier in it: {why}"
+        )));
+    }
+    Err(Status::not_found(format!(
+        "{token}: nothing we hold by that, in any namespace"
+    )))
 }
 
 /// Everything the merge knows about the one work `text` names.
@@ -397,23 +555,11 @@ pub(crate) async fn searched<A: Answers>(
         }
     };
     let words = Some(asked.words().len());
-    let permits = Arc::clone(&service.searches.permits);
-    let permit = match tokio::time::timeout_at(until.into(), permits.acquire_owned()).await {
-        Ok(Ok(permit)) => permit,
-        Ok(Err(closed)) => {
-            eprintln!("ol-rht-serve: search threads: {closed}");
-            log(Outcome::Failed, words, None);
-            return Err(Status::internal(closed.to_string()));
-        }
-        Err(_) => {
-            eprintln!(
-                "ol-rht-serve: every search thread was busy for the whole {} s time limit",
-                deadline.as_secs()
-            );
-            log(Outcome::Busy, words, None);
-            return Err(Status::resource_exhausted(
-                "every search thread is busy; try again shortly",
-            ));
+    let permit = match search_thread(service, until).await {
+        Ok(permit) => permit,
+        Err((outcome, refusal)) => {
+            log(outcome, words, None);
+            return Err(refusal);
         }
     };
     let terms = Arc::clone(&service.terms);
@@ -458,9 +604,9 @@ pub(crate) async fn searched<A: Answers>(
     }
 }
 
-/// Why a search on its thread gave no answer: the engine, or the answer
-/// made from its hits.
-enum Stopped {
+/// Why a search or a lookup on its thread gave no answer: the engine, or
+/// the answer made from what it found.
+pub(crate) enum Stopped {
     Search(serve::Error),
     Answer(Status),
 }
@@ -746,6 +892,16 @@ impl<A: Answers> Serving for Service<A> {
             &self.terms,
             &req.into_inner().text,
         )?))
+    }
+
+    async fn lookup_citation(
+        &self,
+        req: Request<pb::LookupCitationRequest>,
+    ) -> Result<Response<pb::LookupCitationResponse>, Status> {
+        let a = self.current()?;
+        Ok(Response::new(
+            looked_up(self, a, &req.into_inner().text).await?,
+        ))
     }
 
     async fn get_work(

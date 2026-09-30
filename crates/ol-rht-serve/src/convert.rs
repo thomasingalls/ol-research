@@ -284,7 +284,7 @@ fn hydrated<A: Answers>(
 ///
 /// The fields are the ones [`work`] promotes, read the same way, so a
 /// summary never disagrees with the work it summarises.
-fn summary(public_id: String, row: &Row) -> pb::Summary {
+pub(crate) fn summary(public_id: String, row: &Row) -> pb::Summary {
     let text = row.text.as_ref();
     let status = &row.fields.status;
     let sources = |s: Sources| s.iter().map(|x| x.name().to_owned()).collect::<Vec<_>>();

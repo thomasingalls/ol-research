@@ -19,23 +19,23 @@ use std::collections::HashSet;
 use query_parser::Query as Asked;
 use tantivy::Index;
 use tantivy::query::{BooleanQuery, EmptyQuery, Occur, PhraseQuery, Query, TermQuery};
-use tantivy::schema::{IndexRecordOption, Term};
+use tantivy::schema::{Field, IndexRecordOption, Term};
 
 use crate::error::Error;
-use crate::schema::Fields;
 
-/// `asked` as a query over `fields`' searched fields.
+/// `asked` as a query over `fields` — the search box's
+/// ([`crate::schema::Fields::searched`]) or a citation's
+/// ([`crate::schema::Fields::cited`]).
 ///
 /// # Errors
 ///
 /// A searched field with no analyzer: another mapping's index.
 pub(crate) fn query(
     index: &Index,
-    fields: &Fields,
+    fields: Vec<Field>,
     asked: &Asked,
 ) -> Result<Box<dyn Query>, Error> {
     let mut analyzers = fields
-        .searched()
         .into_iter()
         .map(|field| Ok((field, index.tokenizer_for_field(field)?)))
         .collect::<Result<Vec<_>, Error>>()?;
@@ -175,7 +175,12 @@ mod tests {
     }
 
     fn ours(index: &Index, fields: &Fields, text: &str) -> Box<dyn tantivy::query::Query> {
-        super::query(index, fields, &query_parser::parse(text).unwrap()).unwrap()
+        super::query(
+            index,
+            fields.searched(),
+            &query_parser::parse(text).unwrap(),
+        )
+        .unwrap()
     }
 
     /// A word Tantivy's own parser read as a plain word: letters, digits

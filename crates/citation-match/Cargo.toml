@@ -1,0 +1,24 @@
+[package]
+name = "citation-match"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Citation lookup: a citation pasted as text, read for the identifiers it carries and checked against candidate works (docs/citation-lookup-plan.md)."
+
+# No index, no store, no server here (the plan's D9): plain functions over
+# text, so that the server calls them for one citation today and a batch
+# could, later.
+[dependencies]
+icu_casemap.workspace = true
+icu_normalizer.workspace = true
+icu_properties.workspace = true
+model.workspace = true
+
+[dev-dependencies]
+# The names found here are the names the table is keyed by; the tests hold
+# them to the merge's own parser.
+merge.workspace = true
+proptest.workspace = true
+
+[lints]
+workspace = true

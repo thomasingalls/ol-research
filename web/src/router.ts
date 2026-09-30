@@ -6,6 +6,8 @@ import { searchRoute } from "@/routes/search"
 import { workRoute } from "@/routes/work-detail"
 import { resolveRoute } from "@/routes/resolve"
 import { chatRoute } from "@/routes/chat"
+import { citationRoute } from "@/routes/citation"
+import { findRoute } from "@/routes/find"
 
 /**
  * Code-based routes, not file-based. Four screens do not need a codegen step
@@ -19,7 +21,10 @@ import { chatRoute } from "@/routes/chat"
  */
 const routeTree = rootRoute.addChildren([
   browseRoute.addChildren([searchRoute, workRoute]),
+  findRoute,
+  // Find by ID's and Find by citation's old addresses, sent on to /find.
   resolveRoute,
+  citationRoute,
   chatRoute,
 ])
 

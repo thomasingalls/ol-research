@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use tantivy::collector::{Count, FacetCollector, FacetCounts as Counted, TopDocs};
 use tantivy::query::{AllQuery, Query};
 use tantivy::schema::{Facet, TantivyDocument, Value};
-use tantivy::{Index, IndexReader, IndexWriter, ReloadPolicy, Term};
+use tantivy::{DocAddress, Index, IndexReader, IndexWriter, ReloadPolicy, Searcher, Term};
 
 use crate::error::Error;
 use crate::schema::{self, Fields};
@@ -451,7 +451,7 @@ impl Opened {
         top: usize,
         until: Option<Instant>,
     ) -> Result<Hits, Error> {
-        let query = translate::query(&self.index, &self.fields, asked)?;
+        let query = translate::query(&self.index, self.fields.searched(), asked)?;
         let searcher = self.reader.searcher();
         let collectors = (
             TopDocs::with_limit(limit.max(1)).order_by_score(),
@@ -471,6 +471,49 @@ impl Opened {
                 })?
             }
         };
+        Ok(Hits {
+            total,
+            hits: self.hits(&searcher, docs)?,
+            facets: facet_counts(&counted, top),
+        })
+    }
+
+    /// The top `limit` works for a citation's words, read by the query
+    /// parser (citation lookup plan, D3): searched in the fields a citation
+    /// names a work by ([`Fields::cited`]), with no facets and no count —
+    /// they are candidates for the check, not an answer; stopped at `until`
+    /// when there is one.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Deadline`] past `until`, or the engine.
+    pub fn candidates(
+        &self,
+        asked: &query_parser::Query,
+        limit: usize,
+        until: Option<Instant>,
+    ) -> Result<Vec<Hit>, Error> {
+        let query = translate::query(&self.index, self.fields.cited(), asked)?;
+        let searcher = self.reader.searcher();
+        let collector = TopDocs::with_limit(limit.max(1)).order_by_score();
+        let docs = match until {
+            None => searcher.search(&*query, &collector)?,
+            Some(until) => {
+                let collector = Until::new(collector, until);
+                searcher.search(&*query, &collector).map_err(|e| {
+                    if collector.expired() {
+                        Error::Deadline
+                    } else {
+                        e.into()
+                    }
+                })?
+            }
+        };
+        self.hits(&searcher, docs)
+    }
+
+    /// Each scored document as a hit: its id and stored title.
+    fn hits(&self, searcher: &Searcher, docs: Vec<(f32, DocAddress)>) -> Result<Vec<Hit>, Error> {
         let mut hits = Vec::with_capacity(docs.len());
         for (score, address) in docs {
             let doc: TantivyDocument = searcher.doc(address)?;
@@ -486,11 +529,7 @@ impl Opened {
                 .map(str::to_owned);
             hits.push(Hit { score, id, title });
         }
-        Ok(Hits {
-            total,
-            hits,
-            facets: facet_counts(&counted, top),
-        })
+        Ok(hits)
     }
 
     /// The top `top` values of every facet root over every document.
@@ -667,6 +706,54 @@ mod tests {
             .find(|(root, _)| root == "/status")
             .unwrap();
         assert_eq!(status.1, vec![("retracted".to_owned(), 1)]);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// A citation's candidates are found by title, authors and journal,
+    /// never by abstract, which no citation carries (citation lookup plan,
+    /// D3); the search box still finds by all four.
+    #[test]
+    fn candidates_are_found_by_what_a_citation_names() {
+        let root = std::env::temp_dir().join(format!("ol-rht-search-cited-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let dir = root.join(crate::version());
+        let docs = vec![
+            document(
+                1,
+                "Randomized trial of aspirin",
+                "Adults with headache.",
+                2020,
+            ),
+            document(2, "Something else entirely", "Mentions aspirin once.", 2021),
+        ];
+        build(&dir, &docs, 1).unwrap();
+        let opened = Opened::open(&dir).unwrap();
+        let ids = |hits: Vec<super::Hit>| hits.iter().map(|h| h.id.get()).collect::<Vec<_>>();
+
+        let cited = opened.candidates(&asked("aspirin"), 20, None).unwrap();
+        assert_eq!(
+            ids(cited),
+            [1],
+            "the abstract's aspirin is not a citation's"
+        );
+        let boxed = opened.search(&asked("aspirin"), 20, 5, None).unwrap();
+        assert_eq!(boxed.total, 2, "the search box's is");
+
+        // Authors and journal are searched, and the stored title comes back.
+        let cited = opened
+            .candidates(&asked("Lovelace. Journal of Tests."), 20, None)
+            .unwrap();
+        assert_eq!(cited.len(), 2);
+        assert!(cited.iter().all(|h| h.title.is_some()));
+        // A limit is a limit.
+        assert_eq!(
+            opened
+                .candidates(&asked("Lovelace"), 1, None)
+                .unwrap()
+                .len(),
+            1
+        );
         std::fs::remove_dir_all(&root).unwrap();
     }
 

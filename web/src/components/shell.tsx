@@ -66,7 +66,7 @@ export function Shell() {
             </Link>
           </Button>
           <Button asChild variant="ghost" size="sm">
-            <Link to="/resolve">Find by ID</Link>
+            <Link to="/find">Find a paper</Link>
           </Button>
           <Button asChild variant="ghost" size="sm">
             <Link to="/chat">Chat</Link>

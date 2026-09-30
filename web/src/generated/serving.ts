@@ -59,6 +59,68 @@ export type Arc = {
 };
 
 /**
+ * A work a citation may be.
+ */
+export type CitationMatch = {
+  public_id: string,
+  /**
+   * The names in the citation that name it, in text form. Two works named
+   * by one citation are two works the citation disagrees about.
+   */
+  named_by: Array<string>,
+  /**
+   * As on Arc: present when the work has a row.
+   */
+  summary: Summary | null,
+  /**
+   * A search of the citation's words turned it up.
+   */
+  by_text: boolean,
+  /**
+   * What the citation says of it, field by field.
+   */
+  verdict: Verdict | null,
+};
+
+/**
+ * What `/v1/citation` takes.
+ */
+export type CitationParams = {
+  /**
+   * One citation, as text — a line from a reference list — at most
+   * 4 KiB.
+   */
+  text: string,
+};
+
+/**
+ * An identifier as a text wrote it — a citation, or what was typed into
+ * Find by ID — and the name it was read as.
+ */
+export type CitedName = {
+  /**
+   * What was read, as written, and where: byte offsets into the text.
+   */
+  written: string,
+  start: number,
+  end: number,
+  /**
+   * The name it was read as, in text form: `doi:10.1000/x`.
+   */
+  name: string,
+  /**
+   * What the name is: `one` work; `shared`, accepted into several; `split`,
+   * an id retired by a split, whose names went to others; `none`, a name
+   * nothing we hold answers to.
+   */
+  resolved: string,
+  /**
+   * The works it names: one, several, or none.
+   */
+  public_ids: Array<string>,
+};
+
+/**
  * A promoted field another source disagrees with.
  */
 export type Disputed = {
@@ -130,6 +192,10 @@ export type FacetValue = {
   count: number,
 };
 
+export type Found = {
+  names: Array<CitedName>,
+};
+
 export type GetWorkResponse = {
   answered: Answered | null,
   work: Work | null,
@@ -172,6 +238,47 @@ export type ListParams = {
    * Off unless asked, in either literal `true` or `false`.
    */
   hydrate?: boolean,
+};
+
+export type LookupCitationResponse = {
+  answered: Answered | null,
+  /**
+   * Every DOI, PMID and PMC id written in the citation, in the order they
+   * stand there, and what each names.
+   */
+  identifiers: Array<CitedName>,
+  /**
+   * The works the citation may be, best first: every work an identifier
+   * in it names, and every work its words turned up that passed the
+   * check. Empty when there are none.
+   */
+  matches: Array<CitationMatch>,
+  /**
+   * Why `matches` is empty, and empty when it is not: `nothing-to-go-on`,
+   * no text at all; `nothing-came-up`, nothing the citation names or says
+   * led to a work; `nothing-agreed`, its words turned up works and none
+   * passed the check.
+   */
+  could_not: string,
+  /**
+   * The works its words turned up that failed the check, best first, each
+   * with what failed: shown while the lookup is young, to see where it
+   * falls short (docs/citation-lookup-plan.md, D5).
+   */
+  near_misses: Array<CitationMatch>,
+  /**
+   * An identifier in the citation names one work and its words match
+   * another: the two are different works, and the citation disagrees with
+   * itself (D2).
+   */
+  differ: boolean,
+  /**
+   * The text is identifiers and nothing more — with their labels and
+   * links, and not a word besides — so its words were not searched: a DOI
+   * or a PMID pasted on its own, where a client may go straight to the work
+   * it names (2026-09-28).
+   */
+  only_names: boolean,
 };
 
 export type Name = {
@@ -372,14 +479,17 @@ export type RelatedResponse = {
 export type ResolveOutcome =
   | { "public_id": string }
   | { "shared": Shared }
-  | { "split": Split };
+  | { "split": Split }
+  | { "found": Found };
 
 /**
  * What `/v1/resolve` takes.
  */
 export type ResolveParams = {
   /**
-   * A name — `doi:10.1000/x`, `pmid:12345678` — or a public id.
+   * A name — `doi:10.1000/x`, `pmid:12345678` — or a public id; or an
+   * identifier with no namespace, or a link to one, which is read every
+   * way it can be (2026-09-28).
    */
   text: string,
 };
@@ -495,6 +605,37 @@ export type Summary = {
 };
 
 /**
+ * A work's fields against a citation (docs/citation-lookup-plan.md, D4):
+ * each of the five `agrees`, `not-in-citation`, or `work-does-not-say`.
+ */
+export type Verdict = {
+  title: string,
+  first_author: string,
+  year: string,
+  volume: string,
+  first_page: string,
+  /**
+   * The citation's numbers nothing the work says accounts for.
+   */
+  unaccounted: Array<string>,
+  /**
+   * From 0 to 1, for ordering only: what agreed, over everything either
+   * side mentions.
+   */
+  score: number,
+  /**
+   * It passes, by `rule`.
+   */
+  passes: boolean,
+  /**
+   * The rule it passes by: `every-field`, every one of the five the work
+   * has agrees, and it has one (D4); `title-alone`, the citation is the
+   * work's title and nothing more. Empty when it does not pass.
+   */
+  rule: string,
+};
+
+/**
  * Which way an expansion walks. Named and not numbered: the protocol's
  * enum has no text form a query string could carry, and a number here
  * would be a client writing `2` and meaning nothing it could read back.
@@ -557,6 +698,7 @@ export type WorkParams = {
 export type Routes = {
   "/v1/epoch": { params: EpochParams, response: EpochInfo },
   "/v1/resolve": { params: ResolveParams, response: ResolveResponse },
+  "/v1/citation": { params: CitationParams, response: LookupCitationResponse },
   "/v1/work": { params: WorkParams, response: GetWorkResponse },
   "/v1/references": { params: ListParams, response: WorkPage },
   "/v1/citers": { params: ListParams, response: WorkPage },
