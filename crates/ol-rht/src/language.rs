@@ -97,6 +97,32 @@ struct Kept {
     script: &'static str,
     chars: usize,
     text: String,
+    /// A title's own work's abstract, cut to [`CONTEXT_CHARS`]; empty for
+    /// anything else.
+    context: String,
+}
+
+/// Characters of a title's abstract the key keeps beside it: enough for a
+/// detector to be sure of its language.
+const CONTEXT_CHARS: usize = 2_000;
+
+/// A title's abstract as offered: already plain (PubMed's sections,
+/// joined), or markup still in it (Crossref's JATS), stripped only if the
+/// title is kept.
+#[derive(Debug, Clone, Copy)]
+enum Context<'a> {
+    Plain(&'a str),
+    Markup(&'a str),
+}
+
+impl Context<'_> {
+    fn text(self) -> String {
+        let text = match self {
+            Self::Plain(t) => t.to_owned(),
+            Self::Markup(t) => plain(t),
+        };
+        text.chars().take(CONTEXT_CHARS).collect()
+    }
 }
 
 #[derive(Debug, Default)]
@@ -143,8 +169,9 @@ struct Sampler {
 }
 
 impl Sampler {
-    /// Offers one text. A labelled one is filed by its language, an
-    /// unlabelled one by its script.
+    /// Offers one text, with its work's abstract when it is a title. A
+    /// labelled one is filed by its language, an unlabelled one by its
+    /// script and whether it has an abstract beside it.
     fn offer(
         &mut self,
         kind: Kind,
@@ -152,14 +179,19 @@ impl Sampler {
         language: Option<String>,
         tagged: String,
         text: String,
+        context: Option<Context<'_>>,
     ) {
         if !text.chars().any(char::is_alphanumeric) {
             return;
         }
+        let context = context.filter(|c| match c {
+            Context::Plain(t) | Context::Markup(t) => !t.trim().is_empty(),
+        });
         let chars = text.chars().count();
         let script = dominant(&text).map_or("none", Script::name);
         let (label, cap) = match &language {
             Some(language) => (language.clone(), CAP),
+            None if context.is_some() => (format!("{script}+abstract"), CROSSREF_CAP),
             None => (script.to_owned(), CROSSREF_CAP),
         };
         let stratum = self.strata.entry((kind, label, length(chars))).or_default();
@@ -179,6 +211,7 @@ impl Sampler {
             script,
             chars,
             text,
+            context: context.map(Context::text).unwrap_or_default(),
         });
     }
 
@@ -195,6 +228,16 @@ impl Sampler {
         let id = format!("pmid:{}", c.pmid);
         let english = language == "eng";
         let title = plain(c.title);
+        // The record's own abstract: the text a title stands beside in the
+        // index, whatever language the article is in.
+        let abstract_text: Option<String> = c.r#abstract.as_ref().map(|a| {
+            a.sections
+                .iter()
+                .map(|s| plain(s.text))
+                .collect::<Vec<_>>()
+                .join(" ")
+        });
+        let context = abstract_text.as_deref().map(Context::Plain);
         if english {
             self.offer(
                 Kind::Title,
@@ -202,15 +245,16 @@ impl Sampler {
                 Some(language.clone()),
                 tagged.clone(),
                 title,
+                context,
             );
-            if let Some(a) = &c.r#abstract {
-                let text: Vec<String> = a.sections.iter().map(|s| plain(s.text)).collect();
+            if let Some(text) = &abstract_text {
                 self.offer(
                     Kind::Abstract,
                     format!("{id}/abstract"),
                     Some(language.clone()),
                     tagged.clone(),
-                    text.join(" "),
+                    text.clone(),
+                    None,
                 );
             }
         } else {
@@ -224,8 +268,13 @@ impl Sampler {
                     Some("eng".to_owned()),
                     tagged.clone(),
                     inner.trim().to_owned(),
+                    context,
                 );
             }
+            // Not a title the index holds (it holds NLM's English one), but
+            // a labelled title in another language beside what is most
+            // often an English abstract: the case where borrowing the
+            // abstract's language would go wrong.
             if let Some(v) = c.vernacular_title {
                 self.offer(
                     Kind::VernacularTitle,
@@ -233,6 +282,7 @@ impl Sampler {
                     Some(language.clone()),
                     tagged.clone(),
                     plain(v),
+                    context,
                 );
             }
         }
@@ -251,6 +301,7 @@ impl Sampler {
                 Some(own),
                 tagged.clone(),
                 text.join(" "),
+                None,
             );
         }
     }
@@ -268,6 +319,7 @@ impl Sampler {
             None,
             tagged,
             plain(title),
+            w.r#abstract.map(Context::Markup),
         );
     }
 }
@@ -381,7 +433,7 @@ fn write(out: &Path, store: &Store, sampler: &Sampler, limit: Option<usize>) -> 
     let mut file = io::BufWriter::new(std::fs::File::create(partial.join(KEY))?);
     writeln!(
         file,
-        "id\tkind\tlanguage\ttagged\tscript\tlength\tchars\ttext"
+        "id\tkind\tlanguage\ttagged\tscript\tlength\tchars\ttext\tcontext"
     )?;
     let mut strata = Vec::new();
     for ((kind, label, length), s) in &sampler.strata {
@@ -390,14 +442,15 @@ fn write(out: &Path, store: &Store, sampler: &Sampler, limit: Option<usize>) -> 
         for k in &kept {
             writeln!(
                 file,
-                "{}\t{}\t{}\t{}\t{}\t{length}\t{}\t{}",
+                "{}\t{}\t{}\t{}\t{}\t{length}\t{}\t{}\t{}",
                 k.id,
                 kind.name(),
                 k.language,
                 k.tagged,
                 k.script,
                 k.chars,
-                k.text
+                k.text,
+                k.context
             )?;
         }
         strata.push(serde_json::json!({
@@ -459,7 +512,10 @@ struct Row {
     tagged: String,
     script: String,
     length: String,
+    chars: usize,
     text: String,
+    /// A title's own work's abstract; empty for anything else.
+    context: String,
 }
 
 impl Row {
@@ -472,37 +528,117 @@ impl Row {
     }
 }
 
+/// One detector's answer for a text: its language, folded, and its
+/// confidence.
+type Said = (String, f64);
+
 /// One detector's answers, and what its run said of itself.
 #[derive(Debug)]
 struct Answers {
     name: String,
     about: serde_json::Value,
-    by_id: std::collections::HashMap<String, (String, f64)>,
+    by_id: std::collections::HashMap<String, Said>,
+    /// Its answers for the titles' abstracts, by the title's id.
+    context: std::collections::HashMap<String, Said>,
 }
 
 impl Answers {
-    /// The folded answer for a row, and whether it calls English at `t`.
+    /// The folded answer for a row.
     fn get(&self, row: &Row) -> (&str, f64) {
         self.by_id
             .get(&row.id)
             .map_or(("-", 0.0), |(label, confidence)| (fold(label), *confidence))
     }
 
+    /// The folded answer for a title's abstract, if it has one.
+    fn get_context(&self, row: &Row) -> Option<(&str, f64)> {
+        self.context
+            .get(&row.id)
+            .map(|(label, confidence)| (fold(label), *confidence))
+    }
+
     fn english(&self, row: &Row, t: f64) -> bool {
         let (label, confidence) = self.get(row);
         label == "eng" && confidence >= t
     }
+
+    /// A title's language under `rule`: its own answer, or its abstract's
+    /// where the rule says the title alone is not enough.
+    fn title_language(&self, row: &Row, rule: Borrow) -> (&str, f64) {
+        let own = self.get(row);
+        if !row.title() {
+            return own;
+        }
+        let Some(abstract_says) = self.get_context(row) else {
+            return own;
+        };
+        let short = row.chars <= rule.short;
+        let unsure = own.1 < rule.unsure;
+        if (short || unsure) && abstract_says.1 >= BORROW_CONFIDENCE {
+            abstract_says
+        } else {
+            own
+        }
+    }
 }
+
+/// When a title takes its abstract's language: when it is `short`
+/// characters or fewer, or its own answer is below `unsure`.
+#[derive(Debug, Clone, Copy)]
+struct Borrow {
+    name: &'static str,
+    short: usize,
+    unsure: f64,
+}
+
+/// The rules tried. The abstract's own answer must be at least
+/// [`BORROW_CONFIDENCE`] to be borrowed.
+const BORROWS: [Borrow; 4] = [
+    Borrow {
+        name: "title of 20 characters or fewer",
+        short: 20,
+        unsure: 0.0,
+    },
+    Borrow {
+        name: "title of 50 characters or fewer",
+        short: 50,
+        unsure: 0.0,
+    },
+    Borrow {
+        name: "title's answer below 0.5",
+        short: 0,
+        unsure: 0.5,
+    },
+    Borrow {
+        name: "50 characters or fewer, or below 0.5",
+        short: 50,
+        unsure: 0.5,
+    },
+];
+
+/// An abstract's answer a title borrows only at this confidence or above.
+const BORROW_CONFIDENCE: f64 = 0.5;
 
 fn read_rows(dir: &Path) -> Result<Vec<Row>, String> {
     let path = dir.join(KEY);
     let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
     let mut rows = Vec::new();
     for (n, line) in text.lines().enumerate().skip(1) {
-        let c: Vec<&str> = line.splitn(8, '\t').collect();
-        let [id, kind, language, tagged, script, length, _, text] = c.as_slice() else {
+        let c: Vec<&str> = line.split('\t').collect();
+        let [
+            id,
+            kind,
+            language,
+            tagged,
+            script,
+            length,
+            chars,
+            text,
+            context,
+        ] = c.as_slice()
+        else {
             return Err(format!(
-                "{}: line {}: not eight columns",
+                "{}: line {}: not nine columns (a key drawn before the context column: draw a new one)",
                 path.display(),
                 n + 1
             ));
@@ -514,7 +650,11 @@ fn read_rows(dir: &Path) -> Result<Vec<Row>, String> {
             tagged: (*tagged).to_owned(),
             script: (*script).to_owned(),
             length: (*length).to_owned(),
+            chars: chars
+                .parse()
+                .map_err(|e| format!("{}: line {}: {e}", path.display(), n + 1))?,
             text: (*text).to_owned(),
+            context: (*context).to_owned(),
         });
     }
     Ok(rows)
@@ -571,21 +711,37 @@ fn read_answers(path: &Path, key_digest: &str) -> Result<Answers, String> {
         .to_owned();
     let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let mut by_id = std::collections::HashMap::new();
+    let mut context = std::collections::HashMap::new();
+    let number = |s: &str, n: usize| -> Result<f64, String> {
+        s.parse()
+            .map_err(|e| format!("{}: line {}: {e}", path.display(), n + 1))
+    };
     for (n, line) in text.lines().enumerate().skip(1) {
         let c: Vec<&str> = line.split('\t').collect();
-        let [id, label, confidence, _] = c.as_slice() else {
+        let [id, label, confidence, _, context_label, context_confidence] = c.as_slice() else {
             return Err(format!(
-                "{}: line {}: not four columns",
+                "{}: line {}: not six columns (answers from before the context column)",
                 path.display(),
                 n + 1
             ));
         };
-        let confidence: f64 = confidence
-            .parse()
-            .map_err(|e| format!("{}: line {}: {e}", path.display(), n + 1))?;
-        by_id.insert((*id).to_owned(), ((*label).to_owned(), confidence));
+        by_id.insert(
+            (*id).to_owned(),
+            ((*label).to_owned(), number(confidence, n)?),
+        );
+        if !context_label.is_empty() {
+            context.insert(
+                (*id).to_owned(),
+                ((*context_label).to_owned(), number(context_confidence, n)?),
+            );
+        }
     }
-    Ok(Answers { name, about, by_id })
+    Ok(Answers {
+        name,
+        about,
+        by_id,
+        context,
+    })
 }
 
 /// A share of texts with its interval: `values` are 0 and 1.
@@ -806,7 +962,29 @@ fn score_of(
                 cell(&ones(rs.iter().map(|r| d.get(r).0 == r.language)))
             );
         }
-        english_at(&mut out, &english, &other, &weight, &|r, t| d.english(r, t));
+        english_at(
+            &mut out,
+            "English at a confidence",
+            &english,
+            &other,
+            &weight,
+            &|r, t| d.english(r, t),
+            &THRESHOLDS,
+        );
+        english_at(
+            &mut out,
+            "English unless another language at a confidence",
+            &english,
+            &other,
+            &weight,
+            &|r, t| {
+                let (label, confidence) = d.get(r);
+                label == "eng" || confidence < t
+            },
+            &THRESHOLDS[1..],
+        );
+        borrowing(&mut out, d, &labelled);
+        misses(&mut out, d, &labelled);
     }
 
     if let [first, second, ..] = detectors.as_slice() {
@@ -815,9 +993,15 @@ fn score_of(
             "\n== {} and {} both English, each at the same confidence:",
             first.name, second.name
         );
-        english_at(&mut out, &english, &other, &weight, &|r, t| {
-            first.english(r, t) && second.english(r, t)
-        });
+        english_at(
+            &mut out,
+            "English at a confidence",
+            &english,
+            &other,
+            &weight,
+            &|r, t| first.english(r, t) && second.english(r, t),
+            &THRESHOLDS,
+        );
     }
 
     let crossref: Vec<&Row> = rows.iter().filter(|r| !r.labelled()).collect();
@@ -858,17 +1042,34 @@ fn score_of(
     }
 
     if let Some(path) = hand_check {
+        // Each detector's answer for the title and for its abstract, and
+        // the first detector's under the widest borrowing rule; a `person`
+        // column to fill; the title; the abstract's first characters.
+        const CONTEXT_SHOWN: usize = 300;
+        let rule = BORROWS[BORROWS.len() - 1];
         let mut text = String::from("id\tscript\ttagged");
         for d in &detectors {
-            let _ = write!(text, "\t{}", d.name);
+            let _ = write!(text, "\t{0}\t{0}:abstract", d.name);
         }
-        text.push_str("\tperson\ttext\n");
+        if let Some(first) = detectors.first() {
+            let _ = write!(text, "\t{}:borrowing", first.name);
+        }
+        text.push_str("\tperson\ttext\tabstract\n");
         for r in &crossref {
             let _ = write!(text, "{}\t{}\t{}", r.id, r.script, r.tagged);
             for d in &detectors {
-                let _ = write!(text, "\t{}", d.get(r).0);
+                let _ = write!(
+                    text,
+                    "\t{}\t{}",
+                    d.get(r).0,
+                    d.get_context(r).map_or("", |c| c.0)
+                );
             }
-            let _ = writeln!(text, "\t\t{}", r.text);
+            if let Some(first) = detectors.first() {
+                let _ = write!(text, "\t{}", first.title_language(r, rule).0);
+            }
+            let context: String = r.context.chars().take(CONTEXT_SHOWN).collect();
+            let _ = writeln!(text, "\t\t{}\t{context}", r.text);
         }
         if path.exists() {
             return Err(format!("{} exists; name a new one", path.display()));
@@ -883,23 +1084,43 @@ fn score_of(
     Ok(out)
 }
 
+/// A share weighted back to PubMed's populations: each text counts as
+/// many as its stratum's population over what the key kept of it. No
+/// interval: it is a ratio (§7 item 9).
+fn weighted(rows: &[&Row], weight: &dyn Fn(&Row) -> f64, yes: &dyn Fn(&Row) -> bool) -> f64 {
+    let (mut hit, mut all) = (0.0, 0.0);
+    for r in rows {
+        all += weight(r);
+        if yes(r) {
+            hit += weight(r);
+        }
+    }
+    if all > 0.0 { hit / all } else { 0.0 }
+}
+
 /// English calls at each threshold: how many English titles and abstracts
-/// are called English, how many texts in other languages are too, and the
-/// precision of a call as PubMed's populations would make it.
+/// are called English — as the key drew them, each length alike, and
+/// weighted to how often each length occurs — how many texts in other
+/// languages are too, and the precision of a call as PubMed's populations
+/// would make it.
 fn english_at(
     out: &mut String,
+    heading: &str,
     english: &[&Row],
     other: &[&Row],
     weight: &dyn Fn(&Row) -> f64,
     calls: &dyn Fn(&Row, f64) -> bool,
+    thresholds: &[f64],
 ) {
     let _ = writeln!(
         out,
-        "English at a confidence: English titles called English; English abstracts; other languages' texts called English; PubMed-weighted precision (no interval)"
+        "{heading}: English titles called English (weighted by length's share, no interval); English abstracts (weighted); other languages' texts called English; PubMed-weighted precision (no interval)"
     );
-    for t in THRESHOLDS {
-        let titles = ones(english.iter().filter(|r| r.title()).map(|r| calls(r, t)));
-        let abstracts = ones(english.iter().filter(|r| !r.title()).map(|r| calls(r, t)));
+    let titles: Vec<&Row> = english.iter().copied().filter(|r| r.title()).collect();
+    let abstracts: Vec<&Row> = english.iter().copied().filter(|r| !r.title()).collect();
+    for &t in thresholds {
+        let title_calls = ones(titles.iter().map(|r| calls(r, t)));
+        let abstract_calls = ones(abstracts.iter().map(|r| calls(r, t)));
         let false_english = ones(other.iter().map(|r| calls(r, t)));
         let (mut right, mut called) = (0.0, 0.0);
         for r in english.iter().chain(other) {
@@ -913,11 +1134,108 @@ fn english_at(
         let precision = if called > 0.0 { right / called } else { 0.0 };
         let _ = writeln!(
             out,
-            "  ≥{t:.2}  titles {}; abstracts {}; others {}; precision {precision:.4}",
-            cell(&titles),
-            cell(&abstracts),
+            "  ≥{t:.2}  titles {} ({:.3}); abstracts {} ({:.3}); others {}; precision {precision:.4}",
+            cell(&title_calls),
+            weighted(&titles, weight, &|r| calls(r, t)),
+            cell(&abstract_calls),
+            weighted(&abstracts, weight, &|r| calls(r, t)),
             cell(&false_english)
         );
+    }
+}
+
+/// Whether a title borrowing its abstract's language helps: for each rule,
+/// English titles called English, titles in another language called
+/// English (the abstract beside them most often English), titles in
+/// another language answered right, and how many titles the rule changed.
+fn borrowing(out: &mut String, d: &Answers, labelled: &[&Row]) {
+    let titles: Vec<&Row> = labelled
+        .iter()
+        .copied()
+        .filter(|r| r.title() && !r.context.is_empty())
+        .collect();
+    let english: Vec<&Row> = titles
+        .iter()
+        .copied()
+        .filter(|r| r.language == "eng")
+        .collect();
+    let other: Vec<&Row> = titles
+        .iter()
+        .copied()
+        .filter(|r| r.language != "eng")
+        .collect();
+    let _ = writeln!(
+        out,
+        "A title taking its abstract's language (the abstract's answer at {BORROW_CONFIDENCE} or above), over the {} labelled titles with an abstract beside them: English titles called English; other titles called English; other titles answered right; titles changed",
+        titles.len()
+    );
+    let none = Borrow {
+        name: "the title alone",
+        short: 0,
+        unsure: 0.0,
+    };
+    for rule in std::iter::once(none).chain(BORROWS) {
+        let called = |r: &Row| d.title_language(r, rule).0 == "eng";
+        let changed = titles
+            .iter()
+            .filter(|r| d.title_language(r, rule).0 != d.get(r).0)
+            .count();
+        let _ = writeln!(
+            out,
+            "  {:<38} English {}; others English {}; others right {}; changed {changed}",
+            rule.name,
+            cell(&ones(english.iter().map(|r| called(r)))),
+            cell(&ones(other.iter().map(|r| called(r)))),
+            cell(&ones(
+                other
+                    .iter()
+                    .map(|r| d.title_language(r, rule).0 == r.language)
+            ))
+        );
+    }
+}
+
+/// Texts to read: English titles a detector called something else, a few
+/// of each length, and texts in other languages it called English, one of
+/// a language at a time.
+fn misses(out: &mut String, d: &Answers, labelled: &[&Row]) {
+    const PER_LENGTH: usize = 5;
+    const OTHERS: usize = 15;
+    const SHOWN: usize = 100;
+    let show = |r: &Row| -> String {
+        let (label, confidence) = d.get(r);
+        let cut: String = r.text.chars().take(SHOWN).collect();
+        format!("{label} {confidence:.2}  {}  `{cut}`", r.id)
+    };
+    let _ = writeln!(
+        out,
+        "To read — English titles called something else ({PER_LENGTH} of each length):"
+    );
+    for (_, length) in LENGTHS {
+        for r in labelled
+            .iter()
+            .filter(|r| r.title() && r.language == "eng" && r.length == length)
+            .filter(|r| d.get(r).0 != "eng")
+            .take(PER_LENGTH)
+        {
+            let _ = writeln!(out, "  {length:<8} {}", show(r));
+        }
+    }
+    let _ = writeln!(
+        out,
+        "To read — texts in another language called English (one a language, {OTHERS} at most):"
+    );
+    let mut seen = std::collections::HashSet::new();
+    for r in labelled
+        .iter()
+        .filter(|r| r.language != "eng" && d.get(r).0 == "eng")
+    {
+        if seen.len() == OTHERS {
+            break;
+        }
+        if seen.insert(r.language.as_str()) {
+            let _ = writeln!(out, "  {:<8} {}", r.language, show(r));
+        }
     }
 }
 
@@ -936,6 +1254,7 @@ mod tests {
                     Some("eng".to_owned()),
                     "eng".to_owned(),
                     "A title".to_owned(),
+                    None,
                 );
             }
             s
@@ -969,6 +1288,7 @@ mod tests {
             Some("zho".into()),
             "zho".into(),
             "肺癌基因治疗".into(),
+            Some(Context::Plain("An abstract in English.")),
         );
         s.offer(
             Kind::CrossrefTitle,
@@ -976,6 +1296,7 @@ mod tests {
             None,
             "-".into(),
             "Разработка метода".into(),
+            None,
         );
         s.offer(
             Kind::CrossrefTitle,
@@ -983,6 +1304,23 @@ mod tests {
             None,
             "-".into(),
             "  --  ".into(),
+            None,
+        );
+        s.offer(
+            Kind::CrossrefTitle,
+            "d".into(),
+            None,
+            "-".into(),
+            "Разработка метода".into(),
+            Some(Context::Markup("<jats:p>Аннотация &amp; текст</jats:p>")),
+        );
+        s.offer(
+            Kind::CrossrefTitle,
+            "e".into(),
+            None,
+            "-".into(),
+            "Разработка метода".into(),
+            Some(Context::Markup("   ")),
         );
         let keys: Vec<_> = s
             .strata
@@ -993,9 +1331,26 @@ mod tests {
             keys,
             vec![
                 ("vernacular-title", "zho", "1-20"),
-                ("crossref-title", "Cyrillic", "1-20")
+                ("crossref-title", "Cyrillic", "1-20"),
+                ("crossref-title", "Cyrillic+abstract", "1-20"),
             ]
         );
+        let kept = |stratum: &str| {
+            s.strata
+                .iter()
+                .find(|((_, l, _), _)| l == stratum)
+                .map(|(_, st)| {
+                    st.kept
+                        .iter()
+                        .map(|k| k.context.clone())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap()
+        };
+        assert_eq!(kept("zho"), vec!["An abstract in English."]);
+        assert_eq!(kept("Cyrillic+abstract"), vec!["Аннотация & текст"]);
+        // A blank abstract is no abstract: filed without, kept without.
+        assert_eq!(kept("Cyrillic"), vec!["", ""]);
     }
 
     #[test]
@@ -1035,6 +1390,68 @@ mod tests {
         assert!(
             text.starts_with("0.250 (") && text.contains("n 100"),
             "{text}"
+        );
+    }
+
+    #[test]
+    fn a_title_borrows_its_abstracts_language_only_as_the_rule_says() {
+        let row = |id: &str, kind: &str, chars: usize| Row {
+            id: id.to_owned(),
+            kind: kind.to_owned(),
+            language: "eng".to_owned(),
+            tagged: "eng".to_owned(),
+            script: "Latin".to_owned(),
+            length: length(chars).to_owned(),
+            chars,
+            text: String::new(),
+            context: "an abstract".to_owned(),
+        };
+        let said = |pairs: &[(&str, &str, f64)]| {
+            pairs
+                .iter()
+                .map(|(id, l, c)| ((*id).to_owned(), ((*l).to_owned(), *c)))
+                .collect()
+        };
+        let d = Answers {
+            name: "test".to_owned(),
+            about: serde_json::Value::Null,
+            by_id: said(&[
+                ("short", "nld", 0.9),
+                ("long", "nld", 0.9),
+                ("unsure", "nld", 0.3),
+                ("doubtful-abstract", "nld", 0.3),
+                ("abstract", "nld", 0.3),
+            ]),
+            context: said(&[
+                ("short", "eng", 0.99),
+                ("long", "eng", 0.99),
+                ("unsure", "eng", 0.99),
+                ("doubtful-abstract", "eng", 0.4),
+                ("abstract", "eng", 0.99),
+            ]),
+        };
+        let [short, _, unsure, either] = BORROWS;
+        assert_eq!(d.title_language(&row("short", "title", 15), short).0, "eng");
+        assert_eq!(d.title_language(&row("long", "title", 80), short).0, "nld");
+        assert_eq!(d.title_language(&row("long", "title", 80), unsure).0, "nld");
+        assert_eq!(
+            d.title_language(&row("unsure", "title", 80), unsure).0,
+            "eng"
+        );
+        assert_eq!(
+            d.title_language(&row("unsure", "title", 80), either).0,
+            "eng"
+        );
+        // An abstract the detector is unsure of lends nothing.
+        assert_eq!(
+            d.title_language(&row("doubtful-abstract", "title", 10), either)
+                .0,
+            "nld"
+        );
+        // Only titles borrow.
+        assert_eq!(
+            d.title_language(&row("abstract", "abstract", 10), either).0,
+            "nld"
         );
     }
 }

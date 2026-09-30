@@ -1,5 +1,8 @@
 [workspace]
 members = ["crates/*"]
+# Third-party crates carried with a change of ours (see [patch.crates-io]):
+# not members, so the workspace's lints and builds leave them as published.
+exclude = ["vendor"]
 resolver = "3"
 
 # Inherited by members via `version.workspace = true`, etc.
@@ -135,3 +138,8 @@ debug = "line-tables-only"
 # You rarely step into third-party code, so don't pay to generate its
 # debuginfo. Applies to dependencies only, never to workspace members.
 debug = false
+
+# fasttext-pure-rs with its allocation guard raised so GlotLID v3 loads
+# (vendor/fasttext-pure-rs/VENDORED.md; tokenizer plan section 7).
+[patch.crates-io]
+fasttext-pure-rs = { path = "vendor/fasttext-pure-rs" }

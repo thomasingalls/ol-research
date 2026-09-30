@@ -10,7 +10,16 @@
 # Read this worktree's optional configuration, without searching parent directories.
 set dotenv-path := ".env"
 
-store := env_var_or_default("OL_RHT_STORE", "data")
+# The main checkout, wherever `just` runs from — itself or a worktree under
+# it — since the dev store and the raw sample live there and nowhere else.
+checkout := env_var("HOME") / "Code/ol-rht"
+# The dev machine's store: the dev store unless OL_RHT_STORE says otherwise
+# (2026-09-30; it was ./data, stale since v2.9). Not exported: exported,
+# OL_RHT_STORE would make `just test` run the store-backed harnesses.
+dev_store := checkout / "target/dev-store"
+store := env_var_or_default("OL_RHT_STORE", dev_store)
+# The raw sample: PubMed's and Crossref's files as downloaded.
+raw := env_var_or_default("OL_RHT_RAW", checkout / "data/raw")
 key := env_var_or_default("OL_RHT_PUBLIC_KEY", env_var("HOME") / ".config/ol-rht/public.key")
 cli := "cargo run --release -p ol-rht --"
 postgres_port := env_var_or_default("OL_RHT_POSTGRES_PORT", "55432")
@@ -181,11 +190,11 @@ report:
 
 # The normalize survey over raw PubMed and Crossref
 survey-publisher:
-    {{cli}} pubmed normalize {{store}}/raw/pubmed/baseline/*.xml.gz \
-        {{store}}/raw/pubmed/updatefiles/*.xml.gz \
-        {{store}}/raw/pubmed/lookup/*/*.xml --survey
-    {{cli}} crossref normalize {{store}}/raw/crossref/api/*.json \
-        {{store}}/raw/crossref/lookup/*/*.json --survey
+    {{cli}} pubmed normalize {{raw}}/pubmed/baseline/*.xml.gz \
+        {{raw}}/pubmed/updatefiles/*.xml.gz \
+        {{raw}}/pubmed/lookup/*/*.xml --survey
+    {{cli}} crossref normalize {{raw}}/crossref/api/*.json \
+        {{raw}}/crossref/lookup/*/*.json --survey
 
 # The published epoch's own consistency check
 epoch-check:
@@ -260,6 +269,37 @@ search-build:
 # Cut the epoch readers serve from
 publish:
     {{cli}} epoch publish --store {{store}}
+
+# The dev store: a small store for trying features, built from the raw
+# sample — PubMed's baseline 1333-1334 and update files 1335-1339, and
+# Crossref's 100 sample shards — at this checkout's versions, with a
+# throwaway key of its own (never the real one). Rebuild it when a model or
+# merge version moves: a server built at the new versions waits on a store
+# of older ones. It keeps its key and registry, so its public ids hold
+# from one rebuild to the next; normalizing writes normalized/v<model>
+# beside the older layers, which stay until removed. Always the dev store,
+# whatever OL_RHT_STORE says.
+
+# Rebuild the dev store at this checkout's versions (~90 s after a build)
+dev-store:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    model=$(sed -n 's/^pub const VERSION: u32 = \([0-9]*\);$/\1/p' crates/model/src/lib.rs)
+    test -n "$model"
+    out="{{dev_store}}/normalized/v$model"
+    mkdir -p "{{dev_store}}"
+    test -f "{{dev_store}}/public.key" || head -c 32 /dev/urandom > "{{dev_store}}/public.key"
+    {{cli}} pubmed normalize {{raw}}/pubmed/baseline/*.xml.gz --out "$out/pubmed/baseline"
+    {{cli}} pubmed normalize {{raw}}/pubmed/updatefiles/*.xml.gz --out "$out/pubmed/updatefiles"
+    {{cli}} crossref normalize "{{raw}}/crossref/[Sample Dataset] March 2026 Public Data File from Crossref/"*.jsonl.gz \
+        --out "$out/crossref/public-data-file-2026"
+    {{cli}} merge --store "{{dev_store}}" --public-key "{{dev_store}}/public.key"
+    {{cli}} names build --store "{{dev_store}}"
+    {{cli}} works build --store "{{dev_store}}"
+    {{cli}} graph build --store "{{dev_store}}"
+    {{cli}} search build --store "{{dev_store}}"
+    {{cli}} epoch publish --store "{{dev_store}}"
+    {{cli}} epoch check --store "{{dev_store}}"
 
 # ----------------------------------------------------------- harnesses
 

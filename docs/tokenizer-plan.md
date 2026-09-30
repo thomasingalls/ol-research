@@ -164,6 +164,55 @@ do not write (`D770N`, `G12V`), other names (`cholangiocarcinoma`),
 RELISH, the title's own filler (`from`, `analysis`, `novel`), the title
 as query (evaluation plan §12).
 
+### 3.3 Which language a text is in (D13's measurement, 2026-09-30)
+
+The Jobs `ol-rht-language-d13-v1` (the key, lingua) and `-v2` (all three
+detectors on one build, main-fc21636): 143,557 texts drawn from 40.0
+million PubMed and 179.5 million Crossref records, 132,599 of them
+labelled by NLM (18,161 English), the rest Crossref titles by script.
+Each detector's top answer, any confidence; shares with 95% intervals over
+texts:
+
+| | GlotLID v3 | lingua 1.8 | lingua, low accuracy | both English |
+|---|---|---|---|---|
+| English titles called English | 0.866 (0.859–0.872) | 0.718 (0.709–0.727) | 0.564 | 0.682 |
+| English abstracts called English | 0.904 (0.898–0.911) | 0.909 (0.902–0.915) | 0.765 | 0.865 |
+| other languages' texts called English | 0.015 (0.015–0.016) | 0.008 (0.008–0.009) | 0.010 | 0.006 |
+| texts a second, 8 threads | 12,167 | 3,385 | 2,593 | — |
+| memory; load | 3.4 GB; 2.8 s | 320 MB; built in | 330 MB; built in | — |
+
+- **lingua takes scientific English for Latin**: its commonest wrong
+  answer on English texts is `lat`, 2,269 of 18,143; GlotLID's is `nld`,
+  333.
+- **lingua names Latin for scripts it lacks**: of Crossref's titles,
+  GlotLID calls Lao 190 of 191 and Burmese 68 of 70, and Khmer 30 of 66
+  (36 undetermined); lingua calls most of them `lat`, since it must pick
+  one of its 75 languages.
+- **GlotLID answers where there is no language**: titles without a
+  letter get a language (`pol`, `eng`), where lingua gives none; and it
+  says undetermined for 112 of 4,333 Chinese titles (lingua: 0).
+- **By language**, GlotLID is ahead on most of Europe's — Spanish,
+  French, Italian, Portuguese, Hungarian, Dutch (0.879 against 0.800),
+  Danish (0.807 against 0.666), Swedish, Slovenian — and lingua on German,
+  Turkish, Serbo-Croatian, Icelandic and Chinese (0.999 against 0.940).
+  Titles NLM romanized (Russian, Bulgarian, Ukrainian, Greek in Latin
+  letters) are 0 for all (§7 item 7); texts in their own script (Korean,
+  Cyrillic Russian, Arabic, Japanese kana) near 1 for all.
+- **Short text is where all fail**: English titles of 20 characters or
+  fewer, 0.666 (GlotLID) and 0.548 (lingua); from 51 characters, GlotLID
+  0.93–0.97.
+- **Confidence** tracks being right for GlotLID (0.22 right below 0.5,
+  0.98 at 0.99 and above), less for lingua (0.95 at the top), little for
+  lingua's low mode. A floor mostly costs English: GlotLID at 0.5 calls
+  0.792 of English titles English, and 0.011 of the rest.
+- **Both agreeing** halves the texts wrongly called English (0.015 to
+  0.006) and costs 18 points of English titles.
+
+PubMed-weighted precision is 0.9995–0.9999 for every detector: PubMed is
+mostly English, so it says little (§7 item 9). The full report is on the
+bulk claim under `evaluation/language/ol-rht-language-d13-v2/`, with the
+hand-check sheet of Crossref's titles.
+
 ## 4. Decisions
 
 Recommendations; the user's to take or change. The indexing policy is the
@@ -278,6 +327,22 @@ user's (serving plan §11 item 11), and this plan is its analysis part.
   translates into English, beside their original-language titles
   (`VernacularTitle`, kept in the normalized layer), tagged by NLM's
   indexers; and a hand-checked sample of Crossref's titles by script.
+  **Amended after the measurement (2026-09-30):** a record's language tag
+  never decides a text's language. PubMed's `Language` is "the language
+  in which the article was published" — the full text, one tag for each
+  language it appears in — not the title and abstract the index holds:
+  a Chinese article's PubMed title is NLM's English translation, and its
+  abstract most often the English one its authors supplied. So every
+  text is detected, the key labels only where the label settles the
+  text's own language (as §3.3's key does), and two rules are measured
+  as candidates: *English unless the detector names another language at a
+  confidence t or above*, since an English text left unstemmed searches as
+  today while another language stemmed as English costs little; and *a
+  title borrowing its abstract's language* when the title is short or its
+  answer unsure and the abstract's answer sure, since short titles are
+  where every detector fails (§3.3). The borrowing is measured where it
+  can go wrong too: a title in another language beside an English
+  abstract, as PubMed's original-language titles sit beside theirs.
   *Built 2026-09-29 for the measurement:* `ol-rht evaluate language-key`
   (the key: NLM's English titles and bracketed translations, original
   titles and other-language abstracts under NLM's tags, English
@@ -410,6 +475,22 @@ Made in measuring D13:
     author's, on data it may have been trained on. *Costs* the one fast,
     pure-Rust detector of 188 languages. *Lifted by* adding it if lingua
     and GlotLID both disappoint.
+11. **GlotLID is read through a vendored `fasttext-pure-rs`** whose guard
+    against malformed files is raised from 1 GiB to 4 GiB: the published
+    guard refused GlotLID's 1.67 GB input matrix on the box
+    (`ol-rht-language-d13-v1`, 2026-09-30), and the crate has no way to
+    set it. One constant changed, in `vendor/fasttext-pure-rs/`, put in
+    place by the workspace's `[patch.crates-io]`; answers on lid.176 the
+    same as the published crate's. *Costs* a copy of a third-party crate to
+    keep. *Lifted by* an upstream release that lets a caller set the limit.
+12. **Some of the key's labels are wrong.** Read in the texts a detector
+    called English against their label (the score's samples, 2026-09-30):
+    original-language titles tagged Russian or Italian that are English
+    sentences, and other-language abstracts whose language attribute says
+    Hungarian, Lithuanian, Spanish, Swedish or Turkish over English text.
+    *Costs* the shares of other languages called English, which count
+    those as the detector's errors. *Lifted by* reading the samples and a
+    set of texts a person labels.
 
 ## 8. Open items
 
@@ -466,3 +547,15 @@ Made in measuring D13:
   table as recommended, ambiguous forms mapped to both" — D10's lexicon
   table (SPECIALIST and VarCon, American canonical, one-sense variants
   skipped, contextual lemmatization out), a switch of its own in T2.
+- **2026-09-30, after D13's measurement (§3.3).** The user proposed
+  assuming English unless a detector says otherwise, asked whether 86%
+  should alarm, and then: "*are* we confident that pubmed is labelling
+  english correctly? … what *is* that pubmed label actually labeling? …
+  for convenience, authors will submit an english translation of their
+  title, abstract while the real work is in their original language",
+  and "we *should* add abstract scanning to titles that are too short. the
+  language we care about for the purposes of indexing is the actual
+  language of the text we're ingesting". D13 amended so (record tags never
+  decide); the default-English and borrowing rules measured on a key that
+  carries each title's abstract ("go ahead with the new key and extended
+  score").
