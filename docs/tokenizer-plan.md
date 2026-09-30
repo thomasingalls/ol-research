@@ -233,6 +233,23 @@ user's (serving plan §11 item 11), and this plan is its analysis part.
   mined from the term dictionary and from the titles two sources give one
   work, reviewed at the head and versioned. *Recommended: after D8, once
   the miss analysis says how much of what is left it would reach.*
+  **Brought forward, after T0 — a lexicon table first** (taken
+  2026-09-29): irregular inflections (`mice`, `foci`, `bacteria`,
+  `analyses`) and British and American spellings (`labour`, `tumour`,
+  `oesophagus`) are lookups no stemmer makes, so a table from published
+  lexicons maps each English word form to one canonical form, applied
+  alike to text and query in the stemmed field, before the stemmer; its
+  own switch in T2's screen, apart from the stemmer so each is measured
+  alone. Built from NLM's SPECIALIST Lexicon (its inflection and spelling
+  tables, LRAGR and LRSPL; open, cited by release number and date, our
+  changes stated) and VarCon (general English spellings, and its flags on
+  variants that hold in one sense only, which are skipped); the canonical
+  form American; a form with two lemmas (`leaves`, `axes`, `left`,
+  `media`) mapped to both, never collapsed to one. Contextual
+  lemmatization stays out. Mining the term dictionary is what is left of
+  D10 afterwards. The survey: `docs/inbox/word-form-lexicons.md`. The
+  same inflection groups serve as the collision census's key for the
+  stemmers, independent of any stemmer.
 - **D11. Measuring what the published sets cannot.** Every set so far is
   English, so D2's effect on Chinese, Japanese and Thai shows in none of
   them. What checks it: the census of I1 run again after the change (the
@@ -261,6 +278,21 @@ user's (serving plan §11 item 11), and this plan is its analysis part.
   translates into English, beside their original-language titles
   (`VernacularTitle`, kept in the normalized layer), tagged by NLM's
   indexers; and a hand-checked sample of Crossref's titles by script.
+  *Built 2026-09-29 for the measurement:* `ol-rht evaluate language-key`
+  (the key: NLM's English titles and bracketed translations, original
+  titles and other-language abstracts under NLM's tags, English
+  abstracts, at most 1,000 texts a stratum of kind, language and length,
+  drawn by a seeded hash with each stratum's population kept; and
+  Crossref's titles by script, unlabelled); `ol-rht-language detect`, a
+  binary of its own so no other carries a detector's models (lingua, all
+  75 languages in the image, and GlotLID through a pure-Rust fastText
+  reader); `ol-rht evaluate language-score` (English called English by
+  kind and length, each language and script answered right and called
+  English, calibration, English at each confidence alone and with both
+  detectors agreeing, languages folded to ISO 639-3 macrolanguages by
+  SIL's mappings, intervals as the evaluation's). The survey of detectors
+  is `docs/inbox/language-identification.md`; its run on the box, the
+  Jobs `ol-rht-fetch-models-v1` and `ol-rht-language-d13-v1`.
 
 ## 5. Order
 
@@ -354,6 +386,31 @@ Made in T0:
    deterministic, and biased toward early ids (PubMed's first). *Lifted
    by* a seeded sample of examples, if the first ones mislead.
 
+Made in measuring D13:
+
+7. **The key's labels are NLM's, text and all.** Some original titles are
+   romanized (Russian in Latin letters) and some older ones have lost
+   their accents (`Hygiena zeny`): the label is right, the text is not the
+   language as its readers write it. *Costs* a detector's score on those
+   strata; the score reads each language by its text's script, so
+   `rus/Latin` and `rus/Cyrillic` stand apart. *Lifted by* keys from
+   other sources.
+8. **The key is PubMed's**: biomedical, weighted toward European
+   languages; Crossref's titles, where the untagged third of the corpus
+   lives, are unlabelled until a person reads the hand-check sheet.
+   *Costs* the languages PubMed rarely has. *Lifted by* that sheet, and
+   title-length slices of FLORES+ and UDHR-LID.
+9. **PubMed-weighted English precision has no interval**: it is a ratio,
+   and the evaluation's bootstrap bounds means. *Costs* a point estimate
+   read without its uncertainty (the per-language shares called English,
+   which have intervals, carry the same news). *Lifted by* a bootstrap of
+   the ratio.
+10. **langram is left out of the first round**: its models are a separate
+    581 MB download, it has one maintainer, and its only evaluation is its
+    author's, on data it may have been trained on. *Costs* the one fast,
+    pure-Rust detector of 188 languages. *Lifted by* adding it if lingua
+    and GlotLID both disappoint.
+
 ## 8. Open items
 
 1. Whether T0's miss analysis should also sort what no change of form
@@ -394,3 +451,18 @@ Made in T0:
   today, particularly in rust, but also what exactly fastText
   derivatives are up to these days/if their crown has been taken by
   another method". Both surveys (detectors, English stemming) under way.
+- **2026-09-29, after the surveys.** The detector measurement: the user,
+  "i'd say yes to that, but we keep running out of disk space on my
+  laptop; might need to do this experiment on the cluster" — built so,
+  lingua and GlotLID measured on the box (langram left out, §7 item 10).
+  English stemming: "kstem is a good idea; the others i wouldn't bother
+  with. *maybe* current porter2" — the factor's levels none, KStem and
+  perhaps current Porter2. The user asked about irregular plurals and
+  British and American spellings, and "do we want to keep lemmatization
+  out of this for now?" — recommended, not yet decided: a lookup table
+  from a published lexicon as its own switch, contextual lemmatization
+  kept out; a survey of lexicons under way.
+- **2026-09-29, after the lexicon survey.** The user: "yes to the lexicon
+  table as recommended, ambiguous forms mapped to both" — D10's lexicon
+  table (SPECIALIST and VarCon, American canonical, one-sense variants
+  skipped, contextual lemmatization out), a switch of its own in T2.
