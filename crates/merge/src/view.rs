@@ -14,13 +14,15 @@ use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 
 use crate::kind::{Form, Genre};
+use crate::placement::{OwnedPlacement, Placement};
 use crate::title::{OwnedTitles, Titles};
 
 /// An OpenAlex source (a journal, a repository), by its `S` number.
 pub type OpenAlexSource = model::id::SourceId;
 
-/// The venue as ids only: whichever of the three the source gives. Names
-/// stay in the normalized layer.
+/// The journal as ids only: whichever of the three the source gives, the
+/// top level of a record's [`Placement`] (merge version 17). Names stay in
+/// the normalized layer.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Venue<'a> {
     /// OpenAlex's source id.
@@ -97,11 +99,16 @@ pub struct View<'a> {
     pub has_abstract: bool,
     /// How many authors the record lists.
     pub authors: u32,
-    #[allow(missing_docs)]
+    /// Where the record says the work was published: the journal, the
+    /// levels below it, the pages, the issue's date (citation fields plan
+    /// §4; merge version 17, which it replaced the venue in).
     #[serde(borrow)]
-    pub venue: Venue<'a>,
+    pub placement: Placement<'a>,
     /// The earliest publication date the source gives, at its precision.
     pub published: Option<Bound>,
+    /// The date the source gives for the work online: PubMed's electronic
+    /// date, Crossref's `published-online` (D4; merge version 17).
+    pub online: Option<Bound>,
     #[allow(missing_docs)]
     pub language: Option<Lang>,
     /// The form, native for Crossref and mapped for the others.
@@ -531,9 +538,11 @@ pub struct Owned {
     #[allow(missing_docs)]
     pub authors: u32,
     #[allow(missing_docs)]
-    pub venue: OwnedVenue,
+    pub placement: OwnedPlacement,
     #[allow(missing_docs)]
     pub published: Option<Bound>,
+    #[allow(missing_docs)]
+    pub online: Option<Bound>,
     #[allow(missing_docs)]
     pub language: Option<Lang>,
     #[allow(missing_docs)]
@@ -561,8 +570,9 @@ struct Raw {
     vernacular: Option<Box<str>>,
     has_abstract: bool,
     authors: u32,
-    venue: OwnedVenue,
+    placement: OwnedPlacement,
     published: Option<Bound>,
+    online: Option<Bound>,
     language: Option<Lang>,
     form: Option<Form>,
     genre: Option<Genre>,
@@ -587,8 +597,9 @@ impl From<Raw> for Owned {
             vernacular: r.vernacular,
             has_abstract: r.has_abstract,
             authors: r.authors,
-            venue: r.venue,
+            placement: r.placement,
             published: r.published,
+            online: r.online,
             language: r.language,
             form: r.form,
             genre: r.genre,
@@ -601,14 +612,15 @@ impl From<Raw> for Owned {
 }
 
 impl Owned {
-    /// A copy of `view` that owns its text. A venue id given as a symbol
-    /// rather than text is dropped: contributors resolve through [`text`],
-    /// and a merged row is read through [`Owned::resolve`].
+    /// A copy of `view` that owns its text. A journal id given as a
+    /// symbol rather than text is dropped: contributors resolve through
+    /// [`text`], and a merged row is read through [`Owned::resolve`].
     #[must_use]
     pub fn of(view: &View<'_>) -> Self {
         Self::with_nlm(
             view,
-            view.venue
+            view.placement
+                .journal
                 .nlm
                 .as_ref()
                 .and_then(Interned::as_text)
@@ -616,13 +628,14 @@ impl Owned {
         )
     }
 
-    /// A copy of `view` that owns its text, a venue id given as a symbol
-    /// resolved through `table`.
+    /// A copy of `view` that owns its text, a journal id given as a
+    /// symbol resolved through `table`.
     #[must_use]
     pub fn resolve(view: &View<'_>, table: &Table) -> Self {
         Self::with_nlm(
             view,
-            view.venue
+            view.placement
+                .journal
                 .nlm
                 .as_ref()
                 .and_then(|n| n.resolve(table))
@@ -641,12 +654,9 @@ impl Owned {
             titles: OwnedTitles::of(view.titles),
             has_abstract: view.has_abstract,
             authors: view.authors,
-            venue: OwnedVenue {
-                openalex: view.venue.openalex,
-                issns: view.venue.issns.clone(),
-                nlm,
-            },
+            placement: view.placement.to_owned(nlm),
             published: view.published,
+            online: view.online,
             language: view.language,
             form: view.form,
             genre: view.genre,
@@ -671,8 +681,9 @@ impl Owned {
             },
             has_abstract: self.has_abstract,
             authors: self.authors,
-            venue: self.venue.borrow(),
+            placement: self.placement.borrow(),
             published: self.published,
+            online: self.online,
             language: self.language,
             form: self.form,
             genre: self.genre,
@@ -701,9 +712,10 @@ impl Owned {
     /// truncated title or a reference list PMC cut down still speaks,
     /// because it is there.
     ///
-    /// The venue fills as one id, never field by field: its three ids
-    /// name one journal, and a later copy that moved the article would
-    /// otherwise leave a venue no journal has.
+    /// The placement fills as one, never part by part: its parts name one
+    /// place, and a later copy that moved the article would otherwise
+    /// leave a journal, an issue and pages no issue has (merge version 17,
+    /// as the venue did before it).
     pub fn fill_from(&mut self, older: &Self) {
         for set in std::iter::once(&older.set).chain(&older.superseded) {
             if !set.is_empty() && *set != self.set && !self.superseded.contains(set) {
@@ -723,10 +735,11 @@ impl Owned {
         if self.authors == 0 {
             self.authors = older.authors;
         }
-        if self.venue.is_empty() {
-            self.venue = older.venue.clone();
+        if self.placement.is_empty() {
+            self.placement = older.placement.clone();
         }
         self.published = self.published.or(older.published);
+        self.online = self.online.or(older.online);
         self.language = self.language.or(older.language);
         self.form = self.form.or(older.form);
         self.genre = self.genre.or(older.genre);

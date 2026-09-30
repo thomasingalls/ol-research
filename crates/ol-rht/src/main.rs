@@ -3772,6 +3772,60 @@ fn print_row(
 }
 
 /// The promoted fields on one line, and which are disputed.
+/// The promoted placement on a line of its own, and how its records
+/// joined (merge version 17).
+fn print_placement(out: &mut impl Write, f: &merge::build::OwnedFields) -> io::Result<()> {
+    if let Some(p) = &f.placement {
+        let mut parts: Vec<String> = p
+            .levels
+            .iter()
+            .map(|l| match &l.value.label {
+                Some(label) => format!("{} {label}", l.value.kind.as_str()),
+                None => l.value.kind.as_str().to_owned(),
+            })
+            .collect();
+        if let Some(w) = &p.within {
+            parts.push(format!("pages {}", w.value));
+        }
+        if let Some(d) = &p.date {
+            parts.push(format!("issue date {}", d.value.year.get()));
+        }
+        writeln!(
+            out,
+            "  placement: {} ({})",
+            parts.join(", "),
+            p.join.as_str()
+        )?;
+    }
+    Ok(())
+}
+
+/// The placement's parts where another source differs (merge version 17).
+fn placement_disputed(f: &merge::build::OwnedFields, disputed: &mut Vec<&'static str>) {
+    if let Some(p) = &f.placement {
+        if p.journal
+            .as_ref()
+            .is_some_and(merge::record::Field::disputed)
+        {
+            disputed.push("journal");
+        }
+        for level in &p.levels {
+            if level.disputed() {
+                disputed.push(level.value.kind.as_str());
+            }
+        }
+        if p.within
+            .as_ref()
+            .is_some_and(merge::record::Field::disputed)
+        {
+            disputed.push("pages");
+        }
+        if p.date.as_ref().is_some_and(merge::record::Field::disputed) {
+            disputed.push("issue date");
+        }
+    }
+}
+
 fn print_facts(out: &mut impl Write, row: &serve::Row) -> io::Result<()> {
     let f = &row.fields;
     let mut facts = Vec::new();
@@ -3810,6 +3864,7 @@ fn print_facts(out: &mut impl Write, row: &serve::Row) -> io::Result<()> {
     if !facts.is_empty() {
         writeln!(out, "  {}", facts.join("; "))?;
     }
+    print_placement(out, f)?;
     let mut disputed = Vec::new();
     if f.title.as_ref().is_some_and(merge::record::Field::disputed) {
         disputed.push("title");
@@ -3820,8 +3875,12 @@ fn print_facts(out: &mut impl Write, row: &serve::Row) -> io::Result<()> {
     {
         disputed.push("authors");
     }
-    if f.venue.as_ref().is_some_and(merge::record::Field::disputed) {
-        disputed.push("venue");
+    placement_disputed(f, &mut disputed);
+    if f.online
+        .as_ref()
+        .is_some_and(merge::record::Field::disputed)
+    {
+        disputed.push("online");
     }
     if f.published
         .as_ref()

@@ -6,8 +6,11 @@
 
 use model::Table;
 use model::date::Bound;
+use model::label::{Label, LevelKind};
+use model::pages::Pages;
 
 use merge::kind::{Form, Genre};
+use merge::placement::{Placement, Within};
 use merge::relation::{Kind, Related};
 use merge::view::{Status, Text, Unmapped, Venue, View, inverted_index, text};
 use merge::{Name, OwnedName};
@@ -107,11 +110,8 @@ pub fn view<'w>(work: &'w Work<'_>, _: &'w Table) -> Result<View<'w>, Unmapped> 
         titles: <crate::OpenAlex as merge::Contributor>::titles(work),
         has_abstract: work.abstract_inverted_index.is_some(),
         authors: u32::try_from(work.authorships.len()).unwrap_or(u32::MAX),
-        venue: Venue {
-            openalex: primary.map(|s| s.id),
-            issns,
-            nlm: None,
-        },
+        placement: placement(work, primary.map(|s| s.id), issns),
+        online: None,
         published: work.published.map(|d| Bound {
             year: d.year(),
             month: Some(d.month()),
@@ -134,6 +134,39 @@ pub fn view<'w>(work: &'w Work<'_>, _: &'w Table) -> Result<View<'w>, Unmapped> 
         references: Some(work.referenced_works_count),
         cited_by: Some(work.cited_by_count),
     })
+}
+
+/// Where the record says the work was published: its primary source,
+/// and its `biblio`, which OpenAlex's reader keeps as written, read here
+/// by the model's grammars (citation fields plan D8, D12). No issue date:
+/// OpenAlex's one date is not the issue's (D4).
+fn placement<'w>(
+    work: &'w Work<'_>,
+    source: Option<model::id::SourceId>,
+    issns: smallvec::SmallVec<[model::Issn; 3]>,
+) -> Placement<'w> {
+    let biblio = &work.biblio;
+    let volume = biblio
+        .volume
+        .and_then(|v| Label::read(v, LevelKind::Volume).0);
+    let issue = biblio
+        .issue
+        .and_then(|i| Label::read_issue(i, volume.as_ref()).0);
+    let pages = biblio
+        .first_page
+        .and_then(|first| Pages::from_parts(first, biblio.last_page).0);
+    Placement::of(
+        Venue {
+            openalex: source,
+            issns,
+            nlm: None,
+        },
+        volume.as_ref(),
+        issue.as_ref(),
+        None,
+        pages.as_ref().map(Within::of_pages),
+        None,
+    )
 }
 
 /// The record's relations: every location whose DOI or PMID is not the

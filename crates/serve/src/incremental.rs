@@ -1718,7 +1718,13 @@ impl Engine<'_> {
         let wants = [
             ("abstract", merge::document::abstract_source(&borrowed)),
             ("authors", work.fields.authors.as_ref().map(|f| f.from)),
-            ("venue", work.fields.venue.as_ref().map(|f| f.from)),
+            (
+                "venue",
+                work.fields
+                    .placement
+                    .as_ref()
+                    .and_then(merge::placement::Promoted::journal_from),
+            ),
         ];
         let mut text = Text::default();
         for (field, source) in wants {
@@ -1747,7 +1753,13 @@ impl Engine<'_> {
                             merge::document::abstract_source(&row.work().borrow()) == Some(source)
                         }
                         "authors" => row.fields.authors.as_ref().map(|f| f.from) == Some(source),
-                        _ => row.fields.venue.as_ref().map(|f| f.from) == Some(source),
+                        _ => {
+                            row.fields
+                                .placement
+                                .as_ref()
+                                .and_then(merge::placement::Promoted::journal_from)
+                                == Some(source)
+                        }
                     };
                     let promoted_then = row
                         .records

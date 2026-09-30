@@ -4,10 +4,13 @@
 //! form and a default genre, the Crossmark update types, the `relation`
 //! types.
 
+use std::borrow::Cow;
+
 use model::symbol::Interned;
 use model::{Claim, Doi, PmcId, Pmid, Table};
 
 use merge::kind::{Form, Genre};
+use merge::placement::{Placement, Within};
 use merge::record::Citation;
 use merge::relation::{Kind, Related, Update};
 use merge::view::{Status, Text, Unmapped, Venue, View, bound, strip_markup, text};
@@ -254,6 +257,23 @@ pub fn relation_kind(kind: &str, by: RelationAssertedBy) -> Option<Kind> {
     })
 }
 
+/// The issue's date, the one a citation prints (D4; CF2's rule 5): the
+/// `journal-issue` object's print date, else its online date, else the
+/// work's print date, else `issued` alone, Crossref's own earliest, which
+/// the normalize survey counts where it is all a record gives.
+fn issue_date(work: &Work<'_>) -> Option<model::date::Bound> {
+    [
+        work.issue_published_print.as_ref(),
+        work.issue_published_online.as_ref(),
+        work.published_print.as_ref(),
+        work.issued.as_ref(),
+    ]
+    .into_iter()
+    .flatten()
+    .next()
+    .map(bound)
+}
+
 /// The view of one record.
 ///
 /// # Errors
@@ -298,12 +318,23 @@ pub fn view<'w>(work: &'w Work<'_>, table: &'w Table) -> Result<View<'w>, Unmapp
         titles: <crate::Crossref as merge::Contributor>::titles(work),
         has_abstract: work.r#abstract.is_some(),
         authors: u32::try_from(work.authors.len()).unwrap_or(u32::MAX),
-        venue: Venue {
-            openalex: None,
-            issns,
-            nlm: None,
-        },
+        placement: Placement::of(
+            Venue {
+                openalex: None,
+                issns,
+                nlm: None,
+            },
+            work.volume.as_ref(),
+            work.issue.as_ref(),
+            work.level_in_pages,
+            work.pages.as_ref().map(Within::of_pages).or_else(|| {
+                work.article_number
+                    .map(|n| Within::ArticleNumber(Cow::Borrowed(n)))
+            }),
+            issue_date(work),
+        ),
         published,
+        online: work.published_online.as_ref().map(bound),
         language: work.language,
         form: work.kind.map(form),
         genre: genre(work),

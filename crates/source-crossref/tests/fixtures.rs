@@ -151,6 +151,44 @@ mod normalized {
         (input.to_owned(), out)
     }
 
+    /// Where the record says the work sits (merge version 17): the
+    /// journal's ISSN, volume 5, issue 6, pages 1290-1294, the issue's own
+    /// print date from `journal-issue` (2024-12), and the online date.
+    #[test]
+    fn a_journal_articles_placement_is_in_its_view() {
+        use model::label::LevelKind;
+        let (_, out) = run("journal_article_full");
+        let table = model::Table::default();
+        let view = <Crossref as merge::Contributor>::view(&out.works[0], &table).expect("views");
+        let p = &view.placement;
+        assert_eq!(p.journal.issns.len(), 1);
+        let levels: Vec<_> = p
+            .levels
+            .iter()
+            .map(|l| (l.kind, l.label.as_deref()))
+            .collect();
+        assert_eq!(
+            levels,
+            [
+                (LevelKind::Volume, Some("5")),
+                (LevelKind::Issue, Some("6"))
+            ]
+        );
+        assert_eq!(
+            p.within.as_ref().map(ToString::to_string).as_deref(),
+            Some("1290-1294")
+        );
+        let date = p.date.unwrap();
+        assert_eq!(
+            (date.year.get(), date.month.map(|m| m as u8)),
+            (2024, Some(12))
+        );
+        assert_eq!(
+            view.online.and_then(|o| o.day).map(model::Day::get),
+            Some(20)
+        );
+    }
+
     #[test]
     fn journal_article_normalizes_with_edges() {
         let (_, out) = run("journal_article_full");

@@ -7,6 +7,7 @@
 //! merge builds after it, and that merge appends nothing.
 
 use merge::journal;
+use merge::placement::Placement;
 use merge::view::{Text, Venue, View};
 use merge::{OwnedName, SourceId, WorkId};
 use model::Issn;
@@ -39,9 +40,12 @@ fn view(has_abstract: bool, authors: u32, issn: Option<&str>) -> View<'static> {
     View {
         has_abstract,
         authors,
-        venue: Venue {
-            issns: issn.map(|i| Issn::parse(i).unwrap()).into_iter().collect(),
-            ..Venue::default()
+        placement: Placement {
+            journal: Venue {
+                issns: issn.map(|i| Issn::parse(i).unwrap()).into_iter().collect(),
+                ..Venue::default()
+            },
+            ..Placement::default()
         },
         ..View::default()
     }
@@ -224,8 +228,8 @@ fn batch() -> Batch {
         Crossref,
         &["doi:10.1000/b"],
         "Beta",
-        view(false, 1, None),
-        text(None, &["Bea"], None),
+        view(false, 1, Some("1879-0682")),
+        text(None, &["Bea"], Some("Journal of Beta")),
     );
     cites(&mut b2, &["pmid:1"]);
     cites(&mut b2, &["doi:10.1000/new"]);
@@ -444,8 +448,16 @@ fn a_batch_folds_and_equals_the_full_merge_after_it() {
     );
     assert_eq!(
         t.venue.as_deref(),
-        Some("J Alpha (OA)"),
-        "OpenAlex first, from the batch"
+        Some("Journal of Alpha"),
+        "the journal Crossref's first (merge version 17), from the old row"
+    );
+    // B's Crossref record, re-deposited in the batch, names its journal:
+    // text from the batch.
+    let row = serving.work(b).unwrap().unwrap();
+    assert_eq!(
+        row.text.as_ref().unwrap().venue.as_deref(),
+        Some("Journal of Beta"),
+        "Crossref's, from the batch"
     );
     let w99 = resolve(&serving, "openalex:W99").unwrap();
     assert!(serving.is_stub(w99));

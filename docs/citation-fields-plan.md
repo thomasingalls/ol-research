@@ -1,11 +1,13 @@
 # Citation fields plan
 
-**Status:** draft 3, 2026-09-29. The survey (CF0) is done, and the user
+**Status:** draft 4, 2026-09-30. The survey (CF0) is done, and the user
 settled draft 2's open decisions on its numbers (§3, §12). §4 is the
-design CF1 and CF2 build. Built so far: the survey command, and model
-13's reading at normalization (CF1: the title lists, the issue's own
-dates, pages and labels), which stays off main until model 13 is whole. Draft 1 (2026-09-24)
-was walked through on 2026-09-27; draft 2 is superseded.
+design CF1 and CF2 build. CF1, model 13's reading at normalization (the
+title lists, the issue's own dates, pages and labels), is built and
+surveyed over both whole files; it stays off main until model 13 is
+whole. Draft 4 adds CF2's rules for the merge (the user, 2026-09-30).
+Draft 1 (2026-09-24) was walked through on 2026-09-27; draft 2 is
+superseded.
 **Inputs:**
 - The conversation of 2026-09-24 about exporting citations through a
   CSL processor. It found that the merge drops most of what a citation
@@ -687,6 +689,51 @@ before anything is normalized of record. Then the user's normalize Jobs
 run on the box.
 
 **CF2 — Merge 17: the chain.**
+
+*The rules* (the user, 2026-09-30, all seven as proposed):
+1. Two records' placements are compared level by level (journal,
+   volume, issue, supplement, part and the rest) and by first page. They
+   agree where every level both give is the same but for notation (`06`
+   and `6`, `E29` and `e29`); a level only one gives is added (D2). A
+   level both give differently is a conflict, and then Crossref's whole
+   placement wins (D3) and the other's values are kept as its
+   disagreements: levels of two records that disagree are never mixed.
+   Joins that share no value at all are counted apart.
+2. A different last page alone is a disagreement, recorded, and does not
+   block the join; the pages come from the record that wins them.
+3. A label saying the work awaits its issue (`PP`, `ahead-of-print`) is
+   no level, so another record's volume fills in; a label kept as
+   written joins as its text; a supplement read before NLM's pages is a
+   supplement level.
+4. The journal level carries the ISSNs of every record that agrees, with
+   PubMed's NLM id and OpenAlex's source id. ISSNs that do not overlap
+   at all are a disagreement on the journal, as the venue's are today.
+   `venue` as a field of its own goes; the journal's name stays text.
+5. A placement has one date, the issue's, which a citation prints:
+   PubMed's issue date; Crossref's `journal-issue` print date, else its
+   online date, else the work's print date, else `issued` alone, counted
+   as the fallback. The online date is the record's own (PubMed's
+   electronic date, Crossref's `published-online`). `published`, the
+   earliest, stays as it is.
+6. Books wait (D9): the chain holds what each record gives, its
+   journal's ids, its labels' levels, its pages or article number.
+7. The rows change shape, so serve moves to 9 here rather than at CF3,
+   which then goes on within 9.
+
+*Built 2026-09-30, off main* (merge 17, serve 9): `merge::placement`, the
+view's `placement` and `online` in the place of its venue, `Fields`'
+promoted placement (each part naming its record, the others' values
+beside it, the join's class) and online date, and authors in D5's order.
+Each part is tallied as a field (`journal`, `volume`, `issue`, `pages`,
+`issue date` and the rest) and the report counts the joins by class.
+Both harnesses read 0 differences (1,833,848 and 1,836,439 ids), and
+`compare` checks the placement, as it compares rows whole. Bytes on the
+laptop's harness store (110,469 held works, 1,723,245 stubs): the merged
+works sets grow from 167,676,304 to 177,119,750 bytes raw (+5.6%, about
+85 a held work) and from 36,467,735 to 38,001,208 compressed (+4.2%);
+the served works from 123,030,634 to 124,800,424 (+1.4%). That store
+holds 8 works both sources hold, so how the corpus's placements join
+waits for a merge survey on the box.
 - Each source's view assembles the placement and gives the online date.
 - Promotion joins the chains (D2), Crossref winning a conflict (D3); the
   journal is the chain's top level and `venue` goes (D14); each level

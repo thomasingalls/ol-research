@@ -69,6 +69,54 @@ fn venue_text(v: &OwnedVenue) -> String {
     parts.join("; ")
 }
 
+/// The placement's parts where another source differs (merge version 17):
+/// the journal, each level, the pages, the issue's date.
+fn placement_disputed(
+    p: &merge::placement::OwnedPromoted,
+    push: &mut impl FnMut(&str, SourceId, Vec<(SourceId, String)>),
+) {
+    if let Some(x) = &p.journal {
+        push(
+            "journal",
+            x.from,
+            x.others
+                .iter()
+                .map(|o| (o.source, venue_text(&o.value)))
+                .collect(),
+        );
+    }
+    for x in &p.levels {
+        push(
+            x.value.kind.as_str(),
+            x.from,
+            x.others
+                .iter()
+                .map(|o| (o.source, o.value.label.as_deref().unwrap_or("").to_owned()))
+                .collect(),
+        );
+    }
+    if let Some(x) = &p.within {
+        push(
+            "pages",
+            x.from,
+            x.others
+                .iter()
+                .map(|o| (o.source, o.value.to_string()))
+                .collect(),
+        );
+    }
+    if let Some(x) = &p.date {
+        push(
+            "issue date",
+            x.from,
+            x.others
+                .iter()
+                .map(|o| (o.source, o.value.year.get().to_string()))
+                .collect(),
+        );
+    }
+}
+
 fn disputed(f: &Fields) -> Vec<pb::Disputed> {
     let mut out = Vec::new();
     let mut push = |field: &str, from: SourceId, others: Vec<(SourceId, String)>| {
@@ -103,13 +151,16 @@ fn disputed(f: &Fields) -> Vec<pb::Disputed> {
                 .collect(),
         );
     }
-    if let Some(x) = &f.venue {
+    if let Some(p) = &f.placement {
+        placement_disputed(p, &mut push);
+    }
+    if let Some(x) = &f.online {
         push(
-            "venue",
+            "online",
             x.from,
             x.others
                 .iter()
-                .map(|o| (o.source, venue_text(&o.value)))
+                .map(|o| (o.source, o.value.year.get().to_string()))
                 .collect(),
         );
     }

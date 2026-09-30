@@ -12,8 +12,9 @@ use smallvec::SmallVec;
 use crate::identity::{Reason, Standing};
 use crate::kind::{Form, Genre};
 use crate::name::Name;
+use crate::placement::Promoted;
 use crate::relation;
-use crate::view::{Venue, View};
+use crate::view::View;
 use crate::work::{SourceId, Sources, WorkId};
 
 /// One work: a summary and an index over the normalized layer, not a
@@ -250,11 +251,17 @@ pub struct Fields<'a> {
     pub abstract_in: Sources,
     /// The author count; others where it differs.
     pub authors: Option<Field<u32>>,
-    /// Others where the ISSN sets are disjoint.
+    /// Where the work was published, the records' placements joined by
+    /// the rules of the citation fields plan's CF2 (merge version 17,
+    /// which it replaced the venue in): the journal first, its ISSNs
+    /// disjoint the journal's disagreement.
     #[serde(borrow)]
-    pub venue: Option<Field<Venue<'a>>>,
+    pub placement: Option<Promoted<'a>>,
     /// The earliest date any source gives; others where the year differs.
     pub published: Option<Field<Bound>>,
+    /// The date online, Crossref's then PubMed's; others where the year
+    /// differs (merge version 17).
+    pub online: Option<Field<Bound>>,
     #[allow(missing_docs)]
     pub language: Option<Field<Lang>>,
     #[allow(missing_docs)]

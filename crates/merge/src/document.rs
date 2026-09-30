@@ -307,7 +307,11 @@ impl Assembler {
         let wanted = Wanted {
             abstract_text: abstract_source(work),
             authors: f.authors.as_ref().map(|a| a.from),
-            venue: f.venue.as_ref().map(|v| v.from),
+            venue: f
+                .placement
+                .as_ref()
+                .and_then(|p| p.journal.as_ref())
+                .map(|j| j.from),
         };
         for record in &work.records {
             let set = self.set(record.view.set);

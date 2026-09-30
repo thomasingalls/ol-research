@@ -384,6 +384,49 @@ mod normalized {
         assert!(!view_of(&plain.citations[0], &table).status.duplicate);
     }
 
+    /// Where the record says the work sits (merge version 17): its
+    /// journal's ISSNs and NLM id, its volume and issue read into levels,
+    /// its pages read, the issue's date; and its electronic date as the
+    /// online one.
+    #[test]
+    fn a_records_placement_is_in_its_view() {
+        use model::label::LevelKind;
+        let input = fixture("shortest")
+            .replace(
+                "<PubDate>",
+                "<Volume>335</Volume><Issue>4 Suppl 2</Issue><PubDate>",
+            )
+            .replace(
+                "</ArticleTitle>",
+                "</ArticleTitle><Pagination><MedlinePgn>301-9</MedlinePgn></Pagination>",
+            );
+        let out = run_text(input);
+        let table = model::Table::default();
+        let view = view_of(&out.citations[0], &table);
+        let p = &view.placement;
+        assert_eq!(p.journal.issns.len(), 2);
+        assert!(p.journal.nlm.is_some());
+        let levels: Vec<_> = p
+            .levels
+            .iter()
+            .map(|l| (l.kind, l.label.as_deref()))
+            .collect();
+        assert_eq!(
+            levels,
+            [
+                (LevelKind::Volume, Some("335")),
+                (LevelKind::Issue, Some("4")),
+                (LevelKind::Supplement, Some("2"))
+            ]
+        );
+        assert_eq!(
+            p.within.as_ref().map(ToString::to_string).as_deref(),
+            Some("301-309")
+        );
+        assert_eq!(p.date.map(|d| d.year.get()), Some(2026));
+        assert!(view.online.is_some());
+    }
+
     #[test]
     fn shortest_record_normalizes_every_field() {
         let out = run("shortest");

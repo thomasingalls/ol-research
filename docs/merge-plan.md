@@ -451,6 +451,21 @@ hypothesis the report revises (§10):
 | `access`    | OpenAlex, a Creative Commons license at Crossref, a PMC copy at PubMed | flags differing         | 0.1 %; the 52 pairs of duplicate OpenAlex records differ 16 times                                           |
 | counts      | kept per source, never promoted                        | —                                       | the graph computes its own                                                                                 |
 
+Merge version 17 (2026-09-30, the citation fields plan's CF2) changes
+three rows. `venue` is gone as a field of its own: the journal is the top
+level of the work's placement (`merge::placement`), which also carries
+the levels below it (volume, issue, supplement, part and the rest), where
+the work sits (pages or article number) and the issue's date. The
+records' placements are compared level by level and by first page;
+where they agree but for notation they join, a level only one gives
+added, the journal's ISSNs those of every record that agrees; where any
+differs, Crossref's whole placement stands and the others' values are its
+disagreements. The order is Crossref, PubMed, OpenAlex, and each part is
+tallied as a field is (`journal`, `volume`, `pages`, `issue date`),
+beside a count of how the records joined. `authors` goes Crossref,
+PubMed, OpenAlex (the citation fields plan's D5). And the date online is
+promoted in the placement's order, a year apart its disagreement.
+
 The first cut put OpenAlex before PubMed for `genre`; the first report
 reversed it. Where the two differed, PubMed's curated publication type
 was the specific one — review, letter, editorial, news, guideline

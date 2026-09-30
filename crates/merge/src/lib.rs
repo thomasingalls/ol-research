@@ -38,6 +38,7 @@ pub mod journal;
 pub mod kind;
 pub mod layout;
 pub mod name;
+pub mod placement;
 pub mod public;
 pub mod publisher;
 pub mod record;
@@ -199,4 +200,20 @@ pub use work::{SourceId, Sources, WorkId};
 /// whole file split the two records of one article where PubMed's
 /// punctuated PII and Crossref's bare one, under a registrant off the
 /// list, were two names.
-pub const VERSION: u32 = 16;
+///
+/// Version 17 (2026-09-30): where a work was published (the citation
+/// fields plan's CF2, on model 13). Each record's view carries its
+/// placement ([`placement`]): the journal by its ids, which was the view's
+/// venue, the levels below it as its volume and issue read, where the
+/// work sits (its pages or article number), and the issue's date, the
+/// one a citation prints; and its online date. The promoted fields join
+/// the records' placements by the user's rules of 2026-09-30: compared
+/// level by level and by first page, joined where they agree but for
+/// notation, a level only one gives added; where any differs, Crossref's
+/// whole placement stands and the others' values are its disagreements;
+/// joins with nothing shared counted apart. `venue` as a promoted field of
+/// its own is gone: the journal is the placement's top level, its ISSNs
+/// those of every record that agrees. Authors go Crossref, PubMed,
+/// OpenAlex (D5). The rows' layout changes, and a merge under version 16
+/// is rebuilt, not patched.
+pub const VERSION: u32 = 17;

@@ -54,8 +54,11 @@ pub use row::Row;
 /// records carry merge version 15's views, which name the sets of every
 /// copy their speaking copy supersedes, and the cited-as lookup holds a
 /// relation's row whatever its target, a stub's included (serving plan
-/// §11, item 35).
-pub const VERSION: u32 = 8;
+/// §11, item 35). Version 9 (2026-09-30): a row's records and fields
+/// carry merge version 17's placement and online date, the journal in the
+/// place of the venue (the citation fields plan's CF2, which moved this
+/// bump from CF3 to here).
+pub const VERSION: u32 = 9;
 
 /// The directory name for this binary's versions.
 #[must_use]

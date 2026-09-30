@@ -935,7 +935,11 @@ impl Pairs {
         self.by_pmid.insert(pmid, ix);
         self.by_doi.insert(doi.into(), ix);
         self.found.push(Pair {
-            venue: work.fields.venue.as_ref().map(|f| f.from),
+            venue: work
+                .fields
+                .placement
+                .as_ref()
+                .and_then(merge::placement::Promoted::journal_from),
             pubmed: None,
             compared: false,
         });

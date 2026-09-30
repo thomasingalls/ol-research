@@ -15,7 +15,6 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use ingest::{Key, Kind};
-use model::Issn;
 use model::date::Bound;
 use model::symbol::{Interned, Table};
 use serde::{Deserialize, Serialize};
@@ -28,6 +27,7 @@ use crate::identity::{Reason, RecordIx, Resolution, Standing, StubWorks, WorkRef
 use crate::kind::{Form, Genre};
 use crate::layout;
 use crate::name::{Name, OwnedName};
+use crate::placement::{self, Join, OwnedPlacement, OwnedPromoted};
 use crate::record::{
     Assert, Citation, CitedAs, Citer, Edge, Field, Fields, Flags, NameRow, Named, Other, Record,
     Rejected, Relation, StatusBy, Unresolved, Why, Work,
@@ -36,7 +36,7 @@ use crate::relation::{self, Related};
 use crate::sets;
 use crate::spill::{Row, Spill};
 use crate::title::{self, Agreement};
-use crate::view::{self, Owned, OwnedVenue, Unmapped, Venue};
+use crate::view::{self, Owned, Unmapped};
 use crate::work::{SourceId, Sources, WorkId};
 
 /// Why the pass stopped.
@@ -250,9 +250,11 @@ pub struct OwnedFields {
     #[allow(missing_docs)]
     pub authors: Option<Field<u32>>,
     #[allow(missing_docs)]
-    pub venue: Option<Field<OwnedVenue>>,
+    pub placement: Option<OwnedPromoted>,
     #[allow(missing_docs)]
     pub published: Option<Field<Bound>>,
+    #[allow(missing_docs)]
+    pub online: Option<Field<Bound>>,
     #[allow(missing_docs)]
     pub language: Option<Field<model::Lang>>,
     #[allow(missing_docs)]
@@ -343,8 +345,9 @@ impl OwnedWork {
                 title: f.title.as_ref().map(|t| t.map(|s| &**s)),
                 abstract_in: f.abstract_in,
                 authors: f.authors.clone(),
-                venue: f.venue.as_ref().map(|v| v.map(OwnedVenue::borrow)),
+                placement: f.placement.as_ref().map(OwnedPromoted::borrow),
                 published: f.published.clone(),
+                online: f.online.clone(),
                 language: f.language.clone(),
                 form: f.form.clone(),
                 genre: f.genre.clone(),
@@ -411,14 +414,11 @@ impl OwnedWork {
                 title: f.title.as_ref().map(|t| t.map(|s| Box::from(*s))),
                 abstract_in: f.abstract_in,
                 authors: f.authors.clone(),
-                venue: f.venue.as_ref().map(|v| {
-                    v.map(|x| OwnedVenue {
-                        openalex: x.openalex,
-                        issns: x.issns.clone(),
-                        nlm: x.nlm.as_ref().and_then(|n| n.resolve(table)).map(Box::from),
-                    })
+                placement: f.placement.as_ref().map(|p| {
+                    p.to_owned(|v| v.nlm.as_ref().and_then(|n| n.resolve(table)).map(Box::from))
                 }),
                 published: f.published.clone(),
+                online: f.online.clone(),
                 language: f.language.clone(),
                 form: f.form.clone(),
                 genre: f.genre.clone(),
@@ -627,8 +627,11 @@ pub struct Merged {
     pub cited_as: Vec<OwnedCitedAs>,
     #[allow(missing_docs)]
     pub stats: Stats,
-    /// Per promoted field, by name.
+    /// Per promoted field, by name; the placement's parts each as a field
+    /// (`journal`, `volume`, `pages`, `issue date`).
     pub fields: BTreeMap<&'static str, FieldStat>,
+    /// Works by how their records' placements joined (merge version 17).
+    pub joins: BTreeMap<Join, u64>,
     /// Works by promoted form and genre.
     pub kinds: BTreeMap<(Form, Genre), u64>,
     /// Works whose promoted genre cannot live in their form.
@@ -2136,6 +2139,7 @@ fn merged_of(whole: &Whole<'_>, counted: Counted, stats: Stats, rows: Option<Fin
         cited_as,
         stats,
         fields: counted.tallies.fields,
+        joins: counted.tallies.joins,
         kinds: counted.tallies.kinds,
         kind_conflicts: counted.tallies.kind_conflicts,
         status: counted.tallies.status,
@@ -2152,6 +2156,7 @@ fn merged_of(whole: &Whole<'_>, counted: Counted, stats: Stats, rows: Option<Fin
 #[derive(Debug, Default)]
 pub struct Tallies {
     fields: BTreeMap<&'static str, FieldStat>,
+    joins: BTreeMap<Join, u64>,
     kinds: BTreeMap<(Form, Genre), u64>,
     kind_conflicts: u64,
     status: BTreeMap<(&'static str, String), u64>,
@@ -2183,12 +2188,16 @@ struct Cand<'v> {
 /// editorial, news, guideline against OpenAlex's `article` — 7,070
 /// times, and OpenAlex's 288.
 const TITLE: [SourceId; 3] = [SourceId::Pubmed, SourceId::Crossref, SourceId::OpenAlex];
-const AUTHORS: [SourceId; 3] = [SourceId::Crossref, SourceId::OpenAlex, SourceId::Pubmed];
-const VENUE: [SourceId; 3] = [SourceId::OpenAlex, SourceId::Crossref, SourceId::Pubmed];
+/// Authors, Crossref's then PubMed's then OpenAlex's (citation fields
+/// plan D5, merge version 17): with OpenAlex merged, a work with no
+/// Crossref record takes PubMed's split names over OpenAlex's whole ones.
+const AUTHORS: [SourceId; 3] = [SourceId::Crossref, SourceId::Pubmed, SourceId::OpenAlex];
 const LANGUAGE: [SourceId; 3] = TITLE;
 const FORM: [SourceId; 3] = [SourceId::Crossref, SourceId::Pubmed, SourceId::OpenAlex];
 const GENRE: [SourceId; 3] = [SourceId::Pubmed, SourceId::OpenAlex, SourceId::Crossref];
-const ACCESS: [SourceId; 3] = VENUE;
+/// Open access, in the venue's order before merge version 17 took the
+/// venue into the placement.
+const ACCESS: [SourceId; 3] = [SourceId::OpenAlex, SourceId::Crossref, SourceId::Pubmed];
 
 /// Candidates in a field's precedence: the order's sources first, a
 /// source's promoted record before its others, then by native name.
@@ -2288,8 +2297,38 @@ fn published(cands: &[Cand<'_>], tallies: &mut Tallies) -> Option<Field<Bound>> 
     })
 }
 
-fn issns_disjoint(a: &[Issn], b: &[Issn]) -> bool {
-    !a.is_empty() && !b.is_empty() && !a.iter().any(|i| b.contains(i))
+/// Where the work was published (citation fields plan CF2): the records'
+/// placements joined by [`placement::promote`], the records in
+/// [`placement::ORDER`]. Each part is tallied as a field is, once a work,
+/// and the join by its class.
+fn placement(cands: &[Cand<'_>], tallies: &mut Tallies) -> Option<OwnedPromoted> {
+    let records: SmallVec<[(SourceId, &OwnedPlacement); 3]> = ordered(cands, placement::ORDER)
+        .into_iter()
+        .map(|c| (c.source, &c.view.placement))
+        .collect();
+    let mut seen = Vec::new();
+    let promoted = placement::promote(&records, &mut seen)?;
+    *tallies.joins.entry(promoted.join).or_default() += 1;
+    let mut done: SmallVec<[&'static str; 6]> = SmallVec::new();
+    for s in seen {
+        if done.contains(&s.part) {
+            continue;
+        }
+        done.push(s.part);
+        let stat = tallies.fields.entry(s.part).or_default();
+        stat.present += 1;
+        *stat.from.entry(s.from).or_default() += 1;
+        stat.compared += u64::from(!s.compared.is_empty());
+        let mut disputed = false;
+        for (source, differs) in s.compared {
+            let pair = stat.pairs.entry((s.from, source)).or_default();
+            pair.0 += 1;
+            pair.1 += u64::from(differs);
+            disputed |= differs;
+        }
+        stat.disputed += u64::from(disputed);
+    }
+    Some(promoted)
 }
 
 /// One held work's row (merge plan §5): the records with their evidence,
@@ -2381,15 +2420,16 @@ pub fn held<V: Views + ?Sized>(
         |a, b| a != b,
         tallies,
     );
-    let venue = promote(
-        "venue",
+    let placement = placement(&cands, tallies);
+    let published = published(&cands, tallies);
+    let online = promote(
+        "online",
         &cands,
-        VENUE,
-        |v| (!v.venue.borrow().is_empty()).then(|| v.venue.clone()),
-        |a, b| issns_disjoint(&a.issns, &b.issns),
+        placement::ORDER,
+        |v| v.online,
+        |a, b| a.year != b.year,
         tallies,
     );
-    let published = published(&cands, tallies);
     let language = promote(
         "language",
         &cands,
@@ -2514,8 +2554,9 @@ pub fn held<V: Views + ?Sized>(
             title,
             abstract_in,
             authors,
-            venue,
+            placement,
             published,
+            online,
             language,
             form,
             genre,
@@ -2570,20 +2611,6 @@ pub fn stub(names: &[OwnedName], citers: &[Vec<Citer>], id: WorkId) -> OwnedWork
         fields: OwnedFields::default(),
         flags: Flags::default(),
     }
-}
-
-/// A venue's borrowed form is what the disagreement rule reads.
-impl OwnedVenue {
-    /// The disagreement rule of §5 on owned venues.
-    #[must_use]
-    pub fn disjoint(&self, other: &Self) -> bool {
-        issns_disjoint(&self.issns, &other.issns)
-    }
-}
-
-#[allow(dead_code)] // the borrowed rule, kept beside the owned one
-fn venue_disjoint(a: &Venue<'_>, b: &Venue<'_>) -> bool {
-    a.disjoint(b)
 }
 
 #[cfg(test)]
@@ -2765,6 +2792,7 @@ mod tests {
     #[test]
     #[allow(clippy::too_many_lines)] // one scenario, every rule
     fn fields_are_promoted_by_precedence_with_disagreements_kept() {
+        use crate::placement::{Join, Placement};
         let (mut b, [alpha, beta, stub]) = scenario();
         let base = View {
             titles: Titles {
@@ -2786,9 +2814,12 @@ mod tests {
                     retracted: true,
                     ..Status::default()
                 },
-                venue: Venue {
-                    issns: [Issn::parse("0960-1481").unwrap()].into_iter().collect(),
-                    ..Venue::default()
+                placement: Placement {
+                    journal: Venue {
+                        issns: [Issn::parse("0960-1481").unwrap()].into_iter().collect(),
+                        ..Venue::default()
+                    },
+                    ..Placement::default()
                 },
                 ..base.clone()
             }
@@ -2805,9 +2836,12 @@ mod tests {
                 language: Lang::from_bibliographic("eng").ok(),
                 form: Some(Form::JournalArticle),
                 genre: Some(Genre::Article),
-                venue: Venue {
-                    issns: [Issn::parse("1879-0682").unwrap()].into_iter().collect(),
-                    ..Venue::default()
+                placement: Placement {
+                    journal: Venue {
+                        issns: [Issn::parse("1879-0682").unwrap()].into_iter().collect(),
+                        ..Venue::default()
+                    },
+                    ..Placement::default()
                 },
                 access: Some(true),
                 references: Some(12),
@@ -2979,8 +3013,14 @@ mod tests {
         );
         assert_eq!(f.genre.as_ref().unwrap().others.len(), 2);
         assert!(!a.flags.kind_conflict, "a review in a journal article");
-        assert_eq!(f.venue.as_ref().unwrap().from, SourceId::Crossref);
-        assert_eq!(f.venue.as_ref().unwrap().others.len(), 1, "disjoint ISSNs");
+        let placement = f.placement.as_ref().unwrap();
+        assert_eq!(placement.journal_from(), Some(SourceId::Crossref));
+        assert_eq!(
+            placement.journal.as_ref().unwrap().others.len(),
+            1,
+            "disjoint ISSNs"
+        );
+        assert_eq!(placement.join, Join::Conflict, "disjoint ISSNs");
         assert!(!f.access.as_ref().unwrap().value, "OpenAlex first");
         assert_eq!(f.access.as_ref().unwrap().others.len(), 1);
         assert_eq!(

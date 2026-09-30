@@ -180,7 +180,13 @@ fn text_of(work: &merge::record::Work<'_>, records: &[Incoming]) -> Text {
     if let Some(r) = work.fields.authors.as_ref().and_then(|f| find(f.from)) {
         text.authors.clone_from(&r.text.authors);
     }
-    if let Some(r) = work.fields.venue.as_ref().and_then(|f| find(f.from)) {
+    if let Some(r) = work
+        .fields
+        .placement
+        .as_ref()
+        .and_then(merge::placement::Promoted::journal_from)
+        .and_then(find)
+    {
         text.venue.clone_from(&r.text.venue);
     }
     text

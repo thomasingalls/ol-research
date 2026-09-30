@@ -16,6 +16,7 @@ use model::symbol::Interned;
 use model::{Claim, Table};
 
 use merge::kind::{Form, Genre};
+use merge::placement::{Placement, Within};
 use merge::relation::Kind;
 use merge::view::{Status, Text, Unmapped, Venue, View, bound, join_sections, strip_markup, text};
 
@@ -330,12 +331,21 @@ pub fn view<'w>(work: &'w Citation<'_>, table: &'w Table) -> Result<View<'w>, Un
         titles: <crate::Pubmed as merge::Contributor>::titles(work),
         has_abstract: work.r#abstract.is_some() || !work.other_abstracts.is_empty(),
         authors: u32::try_from(work.authors.len()).unwrap_or(u32::MAX),
-        venue: Venue {
-            openalex: None,
-            issns,
-            nlm,
-        },
+        // The issue's date is the citation's (D4; CF2's rule 5).
+        placement: Placement::of(
+            Venue {
+                openalex: None,
+                issns,
+                nlm,
+            },
+            work.journal.volume.as_ref(),
+            work.journal.issue.as_ref(),
+            work.journal.level_in_pages,
+            work.journal.pages.as_ref().map(Within::of_pages),
+            Some(issue),
+        ),
         published: Some(published),
+        online: electronic,
         language: work.languages.first().copied(),
         form: Some(form(genre)),
         genre,

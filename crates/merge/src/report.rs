@@ -309,6 +309,14 @@ pub fn merge(out: &mut impl Write, m: &Merged, written: Option<&Summary>) -> io:
             )?;
         }
     }
+    let placed: u64 = m.joins.values().sum();
+    writeln!(
+        out,
+        "  placements: {placed} works with one; how their records' placements joined (citation fields plan CF2)"
+    )?;
+    for (join, n) in &m.joins {
+        writeln!(out, "    {:<40} {n:>9}", join.as_str())?;
+    }
     let with_both: u64 = m.kinds.values().sum();
     writeln!(
         out,
