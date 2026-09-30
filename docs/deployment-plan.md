@@ -251,6 +251,27 @@ it and failed silently — the patch brings its own tests, so `go test` passes
 on unpatched source too. The runbook now derives its paths and greps the
 source before building.
 
+**Build settings** (2026-09-29). The Linux x86-64 build targets
+`x86-64-v3` (`.cargo/config.toml`), so the compiler may use AVX2, BMI2,
+FMA and POPCNT throughout, where Rust's default target is the 2003
+baseline. The tower's AMD Ryzen 7 PRO 5755G (8 cores, 16 threads) has
+all of them, read with `talosctl read /proc/cpuinfo`; every machine that
+runs the image must (§12). Thin link-time optimisation was measured and
+not taken: on the M1 Pro, with and without it, the dev store's rebuild
+and a ten-core parse came within two percent of each other, while it
+added build time and 2–4 MB of binary. The same measurements found a
+larger cost than any build setting, the allocation counters every core
+shared (ingestion plan §10, 2026-09-29).
+
+Both binaries allocate through mimalloc (the crate's 0.1.52, bundling
+mimalloc 3), the batch binary under its counting allocator. On the M1
+Pro, with the per-thread counting on both sides, the dev store's rebuild
+ran 7–8% faster than on macOS's allocator and used 14% less CPU, and the
+ten-core parse was a little faster again (5.0 s to 4.7 s). The merge's
+resident peak was about 10% higher for the same 2.83 GiB the program
+asked for (§12). Against glibc's allocator, which the image would use
+otherwise, it was not measured; nor was the server.
+
 The web UI is a separate build and waits for the exposure plan (§7).
 
 ## 3. The store on the box
@@ -584,6 +605,16 @@ image.
 - 2026-09-23, D1 done (§2). Measured on the way: the build fits the
   namespace's limits with room, and the Jammy build image compiles the
   workspace's C dependencies.
+- 2026-09-29, build settings (§2). The user took `x86-64-v3` for the
+  image once the tower's CPU was read — it had to come first, since Flux
+  rolls every `main` image onto the server — and the per-thread counting
+  (ingestion plan §10). Thin LTO was measured and dropped. Profile-guided
+  optimisation is left out for now (the user): a profile fits only the
+  compiler, target and profile it was recorded with, so it would be
+  trained in the pipeline, on the tower, at every build.
+- 2026-09-29, mimalloc under both binaries (§2). The user kept it as "a
+  win in hand", with jemalloc to compare later if it seems worth it
+  (§11).
 
 ## 10. Open items
 
@@ -619,8 +650,47 @@ Not goals for now; recorded so they are not lost.
 
 - **Distroless, or from scratch** (the user, 2026-09-22). Move the image
   toward as little as possible beyond the two binaries: static musl on
-  Paketo's static run image or a scratch image, with an allocator under
-  the counting one, since musl's is slow under many threads. The reason
-  is construction, not scanning: what is absent cannot be exploited, and
-  Trivy only reports what is already there. The first deployment keeps
-  the Jammy base for its shell.
+  Paketo's static run image or a scratch image. musl's own allocator is
+  slow under many threads; mimalloc already stands in for it (§2). The
+  reason is construction, not scanning: what is absent cannot be
+  exploited, and Trivy only reports what is already there. The first
+  deployment keeps the Jammy base for its shell.
+- **jemalloc, measured against mimalloc** (the user, 2026-09-29, "if it
+  seems worth it later"). It is maintained again: Meta's renewed
+  commitment of 2026-03-02, releases 5.3.1 (2026-04-13) and 5.4.0
+  (2026-09-17); `tikv-jemallocator` 0.7.1 on crates.io bundles 5.3.1,
+  its repository 5.4.0. No recent neutral benchmark matches this
+  workload, so it would be measured, not chosen from the literature: on
+  Linux, against mimalloc and glibc, each phase's resident peak with its
+  decay settings, the tower's transparent huge pages read first (its
+  purging has fought them). Its heap profiler would say where memory
+  goes, which the counting allocator only totals.
+
+## 12. What we are compromising on
+
+Kept as we go, at the user's request (2026-09-26: "so long as we're
+keeping track of what we're compromising on in documentation as we
+go"). Each line: the compromise, what it costs, what would lift it.
+
+1. **The image needs an x86-64-v3 CPU** (2026-09-29, §2). A machine
+   without AVX2, BMI2 and FMA cannot start either binary: an illegal
+   instruction before `main`. A spare swapped in for the tower must have
+   them; ask one with `/lib64/ld-linux-x86-64.so.2 --help | grep
+   x86-64-v3` in a Jammy container. On the tower itself a wrong image
+   would stall the rollout rather than stop the server
+   (`maxUnavailable: 0` and the readiness probe). Lifted by building for
+   the baseline again, one line of `.cargo/config.toml`.
+2. **Build settings measured on the laptop, not the box** (§2): an M1
+   Pro under macOS, neither x86-64 nor glibc, and `x86-64-v3` not
+   measured at all; the server not benchmarked. Lifted by a pair of Jobs
+   on the tower, one image against the other, on the same input.
+3. **mimalloc holds more memory resident than the program asks for**
+   (§2): about 10% more at the dev store merge's peak, on macOS. Under
+   glibc and at the corpus's scale it is not measured, and memory is the
+   tower's tighter resource. Lifted by measuring it on Linux; mimalloc's
+   own options for returning freed pages if it matters; or the system's
+   allocator again, a few lines.
+4. **C code compiled into both binaries** (§2): mimalloc joins zstd and
+   ring, against the image's direction toward as little as possible
+   (§11). Lifted by an allocator written in Rust that measures as well;
+   none has been measured.

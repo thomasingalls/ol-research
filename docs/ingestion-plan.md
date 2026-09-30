@@ -1252,6 +1252,28 @@ in your environment, never in the repo or in this conversation.
     (`10.2478/sjecr\u{f6ba}2019\u{f6ba}0006`), a zero-width space
     (`10.1128/aem.45.4.1394-\u{200b}1397.1983`), curly quotes after the
     DOI, a registrant written with a letter (`10.l007/…`).
+11. **What `model::Doi` writes and does not read back — for a model
+    version** (2026-09-29). Every code point tried (the `doi` module's
+    tests), `parse` fails to read its own output back in three places.
+    - `İ` (U+0130) lowercases to `i` and a combining dot above, which is
+      not a letter. A reference's `10.1002/İJC.22088` wrote
+      `10.1002/i\u{307}jc.22088` into the first registry with Crossref,
+      and the publish after it stopped there. It is almost certainly
+      `10.1002/ijc.22088` (the International Journal of Cancer), typed
+      where capital `I` is dotted.
+    - The encoding repair turns `Ã\u{97}` and `Ã·` into `×` and `÷`,
+      which are symbols the DOI rule refuses wherever else they are
+      written.
+    - A zero-width space dropped between `ã` and `µ`, `ª` or `º` leaves a
+      pair the repair reads again.
+
+    Readers take the stored form through `Doi::from_canonical`, which
+    accepts what `parse` writes, so none of this stops a run (merge plan
+    §10, 2026-09-29). To decide, with counts over the whole file: `İ` read
+    as `i` (its ASCII spelling, as a Turkish locale's capital `I`) or kept
+    as written; the repair limited to letters, and `×` and `÷` refused;
+    and whether a dropped character may join a repair's two halves. Each
+    changes what is normalized, so it is a model version.
 
 ## 9. Milestones
 
@@ -2193,6 +2215,65 @@ cross-IDs and a second edge namespace early.
   renormalize, about 35 minutes for both sources side by side, is paid
   once. The first merge of record with Crossref is at model 11; the v10
   sets were surveyed and never merged of record.
+- 2026-09-27, model 12: a PubMed `CommentsCorrections` entry with no PMID
+  keeps its `RefSource` as the other record's DOI where the `RefSource`
+  reads whole as one, each reading counted as any DOI's, and the report
+  counts them by kind. The survey of the whole file at model 11 and merge
+  16 (`ol-rht-merge-survey-v9`) stopped on one component alone: the
+  erratum PMID 41585761, whose Crossref twin `10.1161/svin.122.000762`
+  gives the 102 supplement abstracts it corrects as aliases. PubMed says
+  it is the erratum for all 102 — `ErratumFor`, each `RefSource` a bare
+  DOI, no PMID, none of the abstracts being in PubMed — but the model
+  kept a relation's PMID and nothing else, so the merge's rule that a
+  work's aliases are not what it corrects (merge plan §11 item 28) saw
+  only the one abstract Crossref's own `update-to` names. The user's
+  call. On the two baseline files on this machine no relation lacks a
+  PMID; the model 12 normalize of the whole baseline counts them. The
+  model 11 sets were only surveyed; model 12's are rebuilt, not patched.
+- 2026-09-27, page ranges read at normalization, planned as model 13
+  ([citation fields plan](citation-fields-plan.md) D8; planned as 12,
+  which the entry above took first). The user: `123-9`
+  "has to become 123-129 when stored", and what a formatter later does
+  with a range is an access pattern, not what gets stored. So Crossref's
+  `page` and PubMed's `Pagination` are read into ranges where dates and
+  DOIs are read, not in the merge's view, and NLM's shortened end is
+  expanded. The rule is checked first against Crossref's whole ranges on
+  works both sources hold, and the grammar for other shapes (`iii-xiv`,
+  `S12-5`, `123-9; 131`) is learned from the plan's survey (CF0). What it
+  cannot read whole falls back as `MedlineDate` does, keeping what is
+  certain beside the raw text, unless the user decides otherwise on the
+  survey's counts. Crossref's `short-container-title` is kept in the same
+  model version. It waits until the merge of record at model 12 has run
+  and been published.
+- 2026-09-28, Crossref's `journal-issue` dates kept in model 13 (the
+  user). The reader has read the object's own print and online dates and
+  thrown them away. Over the whole file (`ol-rht-survey-crossref-v4`),
+  the issue's online date differs from the article's on 9,409,481 records,
+  and the issue gives a print date the article lacks on 1,669,210. They
+  are the issue's own dates (its month, or its year), which the citation
+  fields plan's D4 keeps apart from the article's online date.
+- 2026-09-28, Crossref's `container-title` and `short-container-title`
+  kept whole in model 13 (the user). The reader keeps the first of each.
+  The second means different things by type. For 173,277 journal
+  articles (`ol-rht-survey-crossref-v4`) it is the same journal's name
+  in another language or form, in all 322 examples
+  `ol-rht-dump-crossref-v4` printed. For a book chapter it is the book
+  behind the series. So the lists are kept as written and read by type
+  in the merge's view (citation fields plan §4).
+- 2026-09-29, the counting allocator (rule 13, `ingest::alloc`) counts
+  per thread. Every allocation on every core updated the same four
+  counters, and on many cores the parse spent its time waiting for them.
+  Measured on the M1 Pro (10 cores), `crossref normalize --survey` over
+  the lookup files read ten times over (506,400 records, 114 allocations
+  each), five rounds: 12.3 s with one set of counters, 5.0 s with a tally
+  per thread; instructions per cycle 1.25 and 3.22. Keeping one set
+  but padding its counters onto separate cache lines gave about 9.5 s; no
+  counting at all, 4.6 s. The dev store's whole rebuild used 7.5% less
+  CPU, its search build 41% less, and the single-threaded merge about the
+  same.
+  The reports read as before: 65,710,497 allocations in the dev store's
+  merge and a peak of 2.83 GiB. The peak is the one number that loosens
+  (§13). The user's choice of the per-thread tallies over the padding.
 
 ## 11. Dependencies
 
@@ -2225,6 +2306,20 @@ Semantic Scholar's paging will use the same client.
   release listing at `https://api.semanticscholar.org/datasets/v1/release/latest`,
   [API key form](https://www.semanticscholar.org/product/api).
 - PubMed: baseline listing at `https://ftp.ncbi.nlm.nih.gov/pubmed/baseline/` — 1,334 files, highest `pubmed26n1334.xml.gz` (13 MB).
+
+## 13. What we are compromising on
+
+Kept as we go, at the user's request (2026-09-26: "so long as we're
+keeping track of what we're compromising on in documentation as we
+go"). Each line: the compromise, what it costs, what would lift it.
+
+1. **The peak heap is looked for in steps** (2026-09-29, §10). Each
+   thread's tally looks at the whole heap when its own live bytes have
+   grown by `PEAK_STEP` (1 MiB) since it last looked, not at every
+   allocation, so `peak_bytes` can read low by up to 1 MiB per thread:
+   16 MiB on the tower's 16 threads, against peaks measured in GiB. On
+   the dev store it read exactly as before. Lifted by a smaller step, at
+   the cost of more looks across every tally.
 
 ## Appendix A — speculative normalized shape (not the plan)
 

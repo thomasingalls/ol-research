@@ -4,10 +4,12 @@
 [_]
 schema-version = "0.2"
 
-# The two binaries. Without it the cargo buildpack runs `cargo install`
+# The binaries. Without it the cargo buildpack runs `cargo install`
 # on every workspace member, the library crates included, and fails.
 # Picking members by name needs the patched cargo buildpack: upstream's
 # 0.16.0 misreads Rust 1.77+ member ids (upstream-contributions/).
+# `ol-rht-language` carries the language detectors and their models, for
+# the tokenizer plan's D13 measurement, apart from the other two.
 [[io.buildpacks.build.env]]
 name = "BP_CARGO_WORKSPACE_MEMBERS"
-value = "ol-rht,ol-rht-serve"
+value = "ol-rht,ol-rht-serve,ol-rht-language"

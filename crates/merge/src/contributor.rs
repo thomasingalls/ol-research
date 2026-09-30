@@ -31,6 +31,15 @@ pub trait Contributor: Source {
         false
     }
 
+    /// Whether the record's aliases are the works it corrects, though no
+    /// relation of it says so: a deposit judged by hand, on the source's
+    /// list. Its aliases are then what it corrects to the rule that a
+    /// work's aliases are not what it corrects (merge plan §11 item 28).
+    /// No, unless the source's list says so.
+    fn corrects_its_aliases(_work: &Self::Work<'_>) -> bool {
+        false
+    }
+
     /// The native id a references set carries with each edge, as a name.
     fn native<'w>(id: &'w Self::Id<'_>) -> Name<'w>;
 

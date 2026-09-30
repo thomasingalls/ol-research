@@ -1,0 +1,32 @@
+[package]
+name = "ol-rht-language"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Language identification for the tokenizer plan's D13: detectors run over an answer key, kept in a binary of their own so their models stay out of the others."
+
+[features]
+default = ["all-languages"]
+# Every language lingua has: what the image builds.
+all-languages = ["lingua/default"]
+# A handful, for a local build short of disk:
+# `--no-default-features --features few-languages`.
+few-languages = [
+    "lingua/english",
+    "lingua/german",
+    "lingua/french",
+    "lingua/spanish",
+    "lingua/russian",
+    "lingua/chinese",
+    "lingua/japanese",
+]
+
+[dependencies]
+blake3.workspace = true
+fasttext-pure-rs.workspace = true
+lingua.workspace = true
+model.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

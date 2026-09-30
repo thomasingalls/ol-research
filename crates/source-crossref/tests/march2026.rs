@@ -227,7 +227,12 @@ fn a_comment_is_kept_and_print_is_set_aside() {
     let out = collect("update_to_comment_and_print");
     assert_eq!(
         out.set_aside,
-        [("update-to", "print"), ("updated-by", "print")]
+        [
+            ("update-to", "print"),
+            ("updated-by", "print"),
+            ("short-container-title", "journal-article"),
+            ("journal-issue.published-print", "the work's own"),
+        ]
     );
     let w = &out.works[0];
     assert_eq!(w.updates_to.len(), 1);
@@ -610,7 +615,14 @@ fn an_empty_affiliation_is_set_aside() {
 #[test]
 fn retraction_watch_68818_is_set_aside_beside_the_retraction() {
     let out = collect("update_retraction_watch_68818");
-    assert_eq!(out.set_aside, [("update-to", "68818")]);
+    assert_eq!(
+        out.set_aside,
+        [
+            ("update-to", "68818"),
+            ("short-container-title", "journal-article"),
+            ("journal-issue.published-online", "the work's own"),
+        ]
+    );
     let w = &out.works[0];
     assert_eq!(
         w.updates_to.iter().map(|u| u.kind).collect::<Vec<_>>(),
@@ -830,6 +842,21 @@ fn a_twelve_digit_isbn_is_a_claim() {
     assert_eq!(
         bad_isbns("isbn_twelve_digits"),
         [("978094060069", IsbnError::Shape)]
+    );
+}
+
+/// The same chapter, 10.1214/lnms/1196285108, names its series and then
+/// its book in `container-title`. The record keeps the first, the
+/// series; the second is set aside and counted, for the citation fields
+/// survey (plan §7, CF0 part 3).
+#[test]
+fn a_second_container_title_is_counted() {
+    let out = collect("isbn_twelve_digits");
+    assert!(
+        out.set_aside
+            .contains(&("container-title, a second title", "other types")),
+        "{:?}",
+        out.set_aside
     );
 }
 

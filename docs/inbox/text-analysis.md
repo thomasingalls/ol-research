@@ -20,6 +20,9 @@ as hand-built is the one there is: analyzing a query differently from the
 index is a change to the translation, not to a parser. The tokenizer as a
 project of its own is serving plan §11, item 11; the query language's
 second pass, item 36; the order proposed for what comes next, item 37.
+The plan for the tokenizer, draft 1 of 2026-09-29, is
+[tokenizer plan](../tokenizer-plan.md): its first finding, that Chinese,
+Japanese and Thai text yields no terms at all, is its §3.
 
 ## 1. The thesis
 

@@ -42,6 +42,14 @@ tantivy = "0.26"
 fst = "0.4"
 # The public id (serving plan §6): a keyed hash of the WorkId.
 blake3 = "1"
+# Language identification (tokenizer plan D13), measured in
+# `ol-rht-language` alone so no other binary carries a detector's models:
+# lingua (pure Rust), its languages chosen by that crate's features — every
+# one in the image, a few in a local build short of disk; and a pure-Rust
+# reader of fastText models, for GlotLID, whose model is fetched onto the
+# box and never built in (docs/inbox/language-identification.md).
+lingua = { version = "1.8", default-features = false }
+fasttext-pure-rs = "0.1"
 # The transport (serving plan §7): gRPC on tonic over hyper 1; protox
 # compiles the protocol in pure Rust, so nothing outside cargo is
 # installed; reflection and health so grpcurl can drive the server.
@@ -90,6 +98,10 @@ proptest = "1"
 icu_normalizer = "2"
 icu_casemap = "2"
 icu_properties = "2"
+# The allocator under both binaries (deployment plan §2): the dev store's
+# rebuild ran 7-8% faster on it than on the system's (2026-09-29). Built
+# from its C source, with the compiler zstd needs anyway.
+mimalloc = "0.1"
 
 [workspace.lints.rust]
 missing_debug_implementations = "warn"

@@ -31,7 +31,12 @@ impl<'n> Sink<'n, source_crossref::Crossref> for Collect<'n> {
 }
 
 fn run(name: &str) -> Collect<'static> {
-    let input = Box::leak(fixture(name).into_boxed_str());
+    normalized(name, fixture(name))
+}
+
+/// A record as JSON, normalized.
+fn normalized(name: &str, input: String) -> Collect<'static> {
+    let input = Box::leak(input.into_boxed_str());
     let native: &'static source_crossref::Work<'static> =
         Box::leak(Box::new(serde_json::from_str(input).expect("parses")));
     let mut out = Collect::default();
@@ -136,6 +141,29 @@ fn a_correction_gives_what_it_corrects_as_its_aliases() {
     assert_eq!(aliases.len(), 102);
     assert_eq!(corrects, ["doi:10.1161/svin.01.suppl_1.000048"]);
     assert!(aliases.contains(&corrects[0]));
+}
+
+/// That correction's deposit is on Crossref's list of deposits whose
+/// aliases are what they correct (`source_crossref::listed_corrections`),
+/// since nothing PubMed's 2026 baseline says settles it; the same record
+/// deposited again is not, and is judged on what it says.
+#[test]
+fn a_listed_corrections_aliases_are_what_it_corrects_and_a_later_deposits_are_not() {
+    use merge::Contributor;
+    let name = "correction_aliases_what_it_corrects";
+    let listed = run(name);
+    assert!(source_crossref::Crossref::corrects_its_aliases(
+        &listed.works[0]
+    ));
+    let again = fixture(name).replace(
+        r#"[[2024, 5, 13]], "date-time": "2024-05-13T11:40:20Z", "timestamp": 1715600420000"#,
+        r#"[[2026, 9, 27]], "date-time": "2026-09-27T00:00:00Z", "timestamp": 1790467200000"#,
+    );
+    assert_ne!(again, fixture(name));
+    let again = normalized(name, again);
+    assert!(!source_crossref::Crossref::corrects_its_aliases(
+        &again.works[0]
+    ));
 }
 
 /// A journal's record, which gives its articles' old DOIs as its aliases:

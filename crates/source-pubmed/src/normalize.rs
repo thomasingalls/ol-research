@@ -157,7 +157,8 @@ pub struct Citation<'n> {
     /// `PubmedData/PublicationStatus`.
     pub publication_status: Option<PublicationStatus>,
     /// `CommentsCorrections*`: errata, retractions, comments, by kind.
-    pub relations: Few<Relation, 4>,
+    #[serde(borrow)]
+    pub relations: Few<Relation<'n>, 4>,
 }
 
 /// `GeneralNote`: free text with an owner.
@@ -759,12 +760,19 @@ impl fmt::Display for HistoryTime<'_> {
 }
 
 /// A `CommentsCorrections` entry: how this record relates to another.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Relation {
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Relation<'n> {
     /// `ErratumFor`, `RetractionOf`, `CommentOn`, …
     pub kind: RefType,
     /// The other record, when PubMed identified it.
     pub pmid: Option<Pmid>,
+    /// The other record's DOI, where PubMed gives no PMID and the
+    /// `RefSource` is a DOI and nothing else (model version 12): the
+    /// erratum 41585761 names the 102 abstracts it corrects so, none of
+    /// them in PubMed. A `RefSource` that is a citation in words is not
+    /// read for one.
+    #[serde(borrow)]
+    pub doi: Option<Doi<'n>>,
 }
 
 /// One entry of a record's reference list: an edge whose target is
@@ -1844,9 +1852,18 @@ pub fn normalize<'n, K: Sink<'n, Pubmed>>(
                     .map_err(|e| ctx.err("CommentsCorrections/PMID", &p.value, ErrorKind::Id(e)))
             })
             .transpose()?;
+        // No PMID: a `RefSource` that reads whole as a DOI names the
+        // record (model version 12), each reading counted as any DOI's.
+        let doi = match (&pmid, &cc.ref_source) {
+            (None, std::borrow::Cow::Borrowed(source)) => {
+                ctx.doi("CommentsCorrections/RefSource", source).ok()
+            }
+            _ => None,
+        };
         relations.push(Relation {
             kind: cc.ref_type,
             pmid,
+            doi,
         });
     }
 

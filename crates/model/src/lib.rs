@@ -161,7 +161,17 @@
 /// were surveyed on the box but never merged of record; the user took
 /// version 11 in before the first merge of record with Crossref
 /// (2026-09-27), and its sets are rebuilt, not patched.
-pub const VERSION: u32 = 11;
+///
+/// Version 12 (2026-09-27): a PubMed `CommentsCorrections` entry that
+/// gives no PMID keeps its `RefSource` as the other record's DOI where
+/// the `RefSource` reads whole as one, each reading counted as any DOI's.
+/// The erratum PMID 41585761 names the 102 supplement abstracts it
+/// corrects so, none of them in PubMed, and without the DOIs the merge's
+/// rule that a work's aliases are not what it corrects (merge plan §11
+/// item 28) could not see what PubMed said: the survey of the whole file
+/// at version 11 stopped on it alone. Output under version 11 is rebuilt,
+/// not patched.
+pub const VERSION: u32 = 12;
 
 pub mod claim;
 pub mod code;

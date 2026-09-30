@@ -1017,6 +1017,58 @@ fn first<'n>(list: Option<&'n [Text<'_>]>) -> Option<&'n str> {
     list.and_then(|l| l.first()).map(|t| &**t)
 }
 
+/// What the reader reads of where a work was published and does not keep,
+/// set aside so a survey counts it (citation fields plan §7, CF0 part 3)
+/// while nothing a set holds changes:
+/// - a second `container-title`, the record keeping only the first;
+/// - `short-container-title`, the journal's abbreviation;
+/// - the `journal-issue` object's own dates, against the work's.
+///
+/// Journal articles are told apart from the rest, since a second title
+/// is expected of a book chapter (its series) and not of an article.
+fn placement_set_aside(ctx: &Ctx, w: &Native<'_>) {
+    let of = if w.r#type == Some(WorkType::JournalArticle) {
+        "journal-article"
+    } else {
+        "other types"
+    };
+    let mut aside = ctx.set_aside.borrow_mut();
+    if w.container_title.as_deref().is_some_and(|t| t.len() > 1) {
+        aside.push(("container-title, a second title", of));
+    }
+    if w.short_container_title
+        .as_deref()
+        .is_some_and(|t| !t.is_empty())
+    {
+        aside.push(("short-container-title", of));
+    }
+    if let Some(issue) = &w.journal_issue {
+        for (field, of_issue, of_work) in [
+            (
+                "journal-issue.published-print",
+                issue.published_print,
+                w.published_print,
+            ),
+            (
+                "journal-issue.published-online",
+                issue.published_online,
+                w.published_online,
+            ),
+        ] {
+            if let Some(date) = of_issue {
+                aside.push((
+                    field,
+                    match of_work {
+                        None => "the work gives none",
+                        Some(own) if own == date => "the work's own",
+                        Some(_) => "differs from the work's",
+                    },
+                ));
+            }
+        }
+    }
+}
+
 /// Normalizes one work, emitting it and then its references.
 ///
 /// # Errors
@@ -1251,6 +1303,7 @@ pub fn normalize<'n, K: Sink<'n, Crossref>>(w: &'n Native<'_>, emit: &mut K) -> 
         .flatten()
         .map(|a| Claim::from_parse(a, ctx.doi("aliases", a)))
         .collect();
+    placement_set_aside(&ctx, w);
     for (field, value) in ctx.set_aside.take() {
         emit.set_aside(&doi, field, value);
     }
