@@ -683,13 +683,15 @@ Sketches, not plans.
 5. **Names**: the route, the rpc and the crate are built as
    `/v1/citation`, `LookupCitation` and `citation-match`; renaming them
    is the user's call.
-6. **A DOI the model does not read back** (found 2026-09-27, building
-   CL1). `model::Doi` lowercases `İ` to `i` and a combining dot
-   (U+0307), then refuses that dot when it reads its own output again.
-   So a DOI with a capital dotted I is stored in a form the names table
-   calls not canonical. The finder leaves such a reading out rather than
-   ask the table a question it refuses. This is a model question
-   (a model version), not this plan's.
+6. ~~**A DOI the model does not read back**~~ (found 2026-09-27, building
+   CL1). `model::Doi` lowercases `İ` to `i` and a combining dot (U+0307),
+   then refuses that dot when it reads its own output again.
+   *Settled on main 2026-09-29* (0ace304): the name parser reads a stored
+   DOI back through `Doi::from_canonical`, after the first merge of
+   record stored a reference's `10.1002/İJC.22088` so. The finder now
+   offers the DOI in that form and checks it the same way; it had been
+   leaving such readings out. What `parse` should write there is the
+   ingestion plan's model question (§8, item 11).
 
 ## 11. Held for later
 

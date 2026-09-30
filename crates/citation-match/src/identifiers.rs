@@ -213,9 +213,8 @@ fn dois(text: &str) -> Vec<Found> {
 /// then with a trailing `.`, `,`, `;`, `:` or `'` taken off, or a closing
 /// bracket the run never opened, one character at a time until the end
 /// is none of those or the suffix would be empty. Left out: a reading the
-/// model refuses; one it does not read back as itself, which the names
-/// table would refuse as not canonical; and one that reads as the same
-/// name as a longer one.
+/// model refuses; one the name parser would not read back ([`canonical`]);
+/// and one that reads as the same name as a longer one.
 fn doi_readings(text: &str, start: usize, suffix: usize, end: usize) -> Vec<Reading> {
     let mut out: Vec<Reading> = Vec::new();
     let mut end = end;
@@ -248,13 +247,15 @@ fn doi_readings(text: &str, start: usize, suffix: usize, end: usize) -> Vec<Read
     out
 }
 
-/// The DOI `written` reads as, when the model reads that back as itself:
-/// the names table holds a DOI only in the form the model gives it, and
-/// refuses any other as not canonical.
+/// The DOI `written` reads as, in the form the names table holds it: what
+/// the model writes, which the name parser reads back through
+/// [`Doi::from_canonical`] (2026-09-29) — so a name offered here is never
+/// one the table refuses. Until then the check was the model's `parse`
+/// reading its own output again, which it does not for `İ`'s lowercase and
+/// two of its encoding repairs.
 fn canonical(written: &str) -> Option<String> {
     let doi = Doi::parse(written).ok()?;
-    let again = Doi::parse(doi.as_str()).ok()?;
-    (again.as_str() == doi.as_str()).then(|| doi.as_str().to_owned())
+    Doi::from_canonical(doi.as_str()).map(|stored| stored.as_str().to_owned())
 }
 
 /// Whether `written` closes more brackets than it opens: the bracket
@@ -506,13 +507,18 @@ mod tests {
         }
     }
 
-    /// The model lowercases `İ` to `i` and a combining dot, and refuses
-    /// that dot when it reads the result again (2026-09-27), so no name
-    /// the table could hold is spelled that way: nothing is found rather
-    /// than a name the table refuses.
+    /// The model writes `İ` as `i` and a combining dot, which its `parse`
+    /// does not read back and the name parser does, through
+    /// `Doi::from_canonical` (2026-09-29): the first merge of record stored
+    /// a reference's `10.1002/İJC.22088` so. A DOI is offered in the form
+    /// the table holds, and it is one the name parser takes.
     #[test]
-    fn a_doi_the_model_does_not_read_back_is_not_offered() {
-        assert!(find("10.1000/İ").is_empty(), "{:?}", names("10.1000/İ"));
+    fn a_doi_is_offered_in_the_form_the_names_table_holds() {
+        assert_eq!(
+            names("10.1002/İJC.22088"),
+            [["doi:10.1002/i\u{307}jc.22088"]]
+        );
+        assert!(merge::Name::parse("doi:10.1002/i\u{307}jc.22088").is_ok());
         assert_eq!(names("10.1000/Σ"), [["doi:10.1000/σ"]]);
     }
 
