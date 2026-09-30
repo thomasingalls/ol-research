@@ -327,6 +327,22 @@ user's (serving plan §11 item 11), and this plan is its analysis part.
   translates into English, beside their original-language titles
   (`VernacularTitle`, kept in the normalized layer), tagged by NLM's
   indexers; and a hand-checked sample of Crossref's titles by script.
+  **Amended after the measurement (2026-09-30):** a record's language tag
+  never decides a text's language. PubMed's `Language` is "the language
+  in which the article was published" — the full text, one tag for each
+  language it appears in — not the title and abstract the index holds:
+  a Chinese article's PubMed title is NLM's English translation, and its
+  abstract most often the English one its authors supplied. So every
+  text is detected, the key labels only where the label settles the
+  text's own language (as §3.3's key does), and two rules are measured
+  as candidates: *English unless the detector names another language at a
+  confidence t or above*, since an English text left unstemmed searches as
+  today while another language stemmed as English costs little; and *a
+  title borrowing its abstract's language* when the title is short or its
+  answer unsure and the abstract's answer sure, since short titles are
+  where every detector fails (§3.3). The borrowing is measured where it
+  can go wrong too: a title in another language beside an English
+  abstract, as PubMed's original-language titles sit beside theirs.
   *Built 2026-09-29 for the measurement:* `ol-rht evaluate language-key`
   (the key: NLM's English titles and bracketed translations, original
   titles and other-language abstracts under NLM's tags, English
@@ -467,6 +483,14 @@ Made in measuring D13:
     place by the workspace's `[patch.crates-io]`; answers on lid.176 the
     same as the published crate's. *Costs* a copy of a third-party crate to
     keep. *Lifted by* an upstream release that lets a caller set the limit.
+12. **Some of the key's labels are wrong.** Read in the texts a detector
+    called English against their label (the score's samples, 2026-09-30):
+    original-language titles tagged Russian or Italian that are English
+    sentences, and other-language abstracts whose language attribute says
+    Hungarian, Lithuanian, Spanish, Swedish or Turkish over English text.
+    *Costs* the shares of other languages called English, which count
+    those as the detector's errors. *Lifted by* reading the samples and a
+    set of texts a person labels.
 
 ## 8. Open items
 
@@ -523,3 +547,15 @@ Made in measuring D13:
   table as recommended, ambiguous forms mapped to both" — D10's lexicon
   table (SPECIALIST and VarCon, American canonical, one-sense variants
   skipped, contextual lemmatization out), a switch of its own in T2.
+- **2026-09-30, after D13's measurement (§3.3).** The user proposed
+  assuming English unless a detector says otherwise, asked whether 86%
+  should alarm, and then: "*are* we confident that pubmed is labelling
+  english correctly? … what *is* that pubmed label actually labeling? …
+  for convenience, authors will submit an english translation of their
+  title, abstract while the real work is in their original language",
+  and "we *should* add abstract scanning to titles that are too short. the
+  language we care about for the purposes of indexing is the actual
+  language of the text we're ingesting". D13 amended so (record tags never
+  decide); the default-English and borrowing rules measured on a key that
+  carries each title's abstract ("go ahead with the new key and extended
+  score").
