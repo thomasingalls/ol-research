@@ -201,9 +201,10 @@
 /// issues alike; words saying the work awaits its issue (`ahead-of-print`,
 /// IEEE's `PP`, `Online first`) are kept as that, not as a label. A page
 /// the source names (`IFC`) is kept as named; a supplement written before
-/// NLM's pages (`suppl 4:176-80`) is a level of its own. The second pass
-/// of both grammars answers the whole files' surveys at 13
-/// (`ol-rht-survey-crossref-v5`, `ol-rht-survey-baseline-v9`).
+/// NLM's pages (`suppl 4:176-80`) is a level of its own. The second and
+/// third passes of both grammars answer the whole files' surveys at 13
+/// (`ol-rht-survey-crossref-v5` and `-v6`, `ol-rht-survey-baseline-v9`
+/// and `-v10`).
 /// Output under version 12 is rebuilt, not patched.
 pub const VERSION: u32 = 13;
 

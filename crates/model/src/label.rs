@@ -12,24 +12,30 @@
 //! The markers read are those the surveys counted
 //! (`ol-rht-survey-placement-v1`, then `ol-rht-survey-crossref-v5` and
 //! `ol-rht-survey-baseline-v9` at model 13):
-//! - a supplement: `Suppl`, `Supp`, `Sup`, `Supplement`, with a full stop
-//!   or without, joined to what is beside it or not (`11suppl`, `3_suppl`,
-//!   `Supplement_1`, `5_suppl_2`, `Supplement-1`, `sup1`), and an issue
-//!   that is `S` and a number (`S6`, `s73`, `S 01`);
+//! - a supplement: `Suppl`, `Supp`, `Sup`, `Supplement`, `Supplementary`,
+//!   `Supple`, `Supl`, `Suplemento`, with a full stop or without, joined
+//!   to what is beside it or not (`11suppl`, `3_suppl`, `Supplement_1`,
+//!   `5_suppl_2`, `Supplement-1`, `sup1`, `1-Supl`), and an issue that is
+//!   `S` and a number (`S6`, `s73`, `S 01`);
 //! - a part: `Pt`, `Part` (`2 Pt 1`, `73 ( Pt 11)`, `PT1`, `3Pt2`,
 //!   `Pt. 1`, `4 Part B`, `7S_Part_4`);
 //! - a special issue: `Spec No`, `Spec Issue`, `Special Issue`, `Special`,
-//!   `Hors-série`, `Numéro spécial`, `Especial`, and `sp`, `spe`, `si`
-//!   before a number (`sp1`, `spe1`, `si2`);
+//!   `Hors-série`, `Numéro spécial`, `Número Especial`, `Edição Especial`,
+//!   `Especial`, and `sp`, `spe`, `si` before a number (`sp1`, `spe1`,
+//!   `si2`); a number sign straight after one is its number
+//!   (`Hors-série n° 18`);
 //! - a section, which is named: `Laryngol Sect`, `Sect Study Dis Child`,
 //!   or lettered before a number: `Sect B 1`;
 //! - a series before a volume: `s2-XI`, `S5-X`, old journals' volumes
 //!   numbered within a series (D13);
 //! - the level's own name: `Volume 21`, `Vol. 47`, `Tome 91`, `v.51`,
 //!   `Issue 1`, and a number sign, `n° 93`, `No. 6`, `№2`, which names
-//!   the field's own level, or the issue after a volume (`Vol. 19, N° 1-2`
-//!   is volume `19`, issue `1-2`). A volume the source numbers like an
-//!   issue stays a volume (the user, 2026-09-29).
+//!   the field's own level, or the issue where the field names a volume
+//!   (`Vol. 19, N° 1-2` is volume `19`, issue `1-2`; `n° 57, vol. 13` issue
+//!   `57`, volume `13`). A volume the source numbers like an issue stays a
+//!   volume (the user, 2026-09-29). Levels are joined by space, `_`, `-`,
+//!   `.`, `,`, `:` or `/` (`vol. 1 / n° 6`), and a year written after a
+//!   label is dropped, counted: the record's date has it (`№1 2026`).
 //!
 //! Each marker's label is what follows it, up to the next marker: `1E` of
 //! `17 Suppl 1E`. What reading `S6` or `s2-XI` supposes is returned beside
@@ -153,6 +159,8 @@ pub struct Readings {
     pub series: bool,
     /// A level's own name (`Volume`, `n°`) was read before its label.
     pub named: bool,
+    /// A year written after a label was dropped: `№1 2026`.
+    pub year: bool,
 }
 
 impl Readings {
@@ -164,6 +172,7 @@ impl Readings {
             (self.s_number, "S and a number read as a supplement"),
             (self.series, "a series read before the volume"),
             (self.named, "a level's name read before its label"),
+            (self.year, "a year after a label dropped"),
         ]
         .into_iter()
         .filter_map(|(made, what)| made.then_some(what))
@@ -171,9 +180,10 @@ impl Readings {
 }
 
 /// Words a source writes in a volume or an issue for a work not in one
-/// yet, in any case: 411 PubMed volumes `ahead-of-print`; 3,017 `PP`,
+/// yet, in any case: 409 PubMed volumes `ahead-of-print`; 3,017 `PP`,
 /// every one on the laptop an IEEE journal's article `aheadofprint`;
-/// 18,307 Crossref volumes `Online first`.
+/// `Online first` on 258 Crossref volumes and 499 issues
+/// (`ol-rht-survey-crossref-v6`, `ol-rht-survey-baseline-v10`).
 const PENDING: [&str; 5] = [
     "ahead-of-print",
     "ahead of print",
@@ -338,12 +348,17 @@ struct Marker {
 
 /// Two-word markers, tried first: the first word, and the words that may
 /// follow it.
-const PAIRS: [(&str, &[&str]); 5] = [
+const PAIRS: [(&str, &[&str]); 10] = [
     ("spec", &["no", "issue"]),
     ("special", &["issue"]),
     ("hors", &["série", "serie"]),
-    ("numéro", &["spécial", "special"]),
-    ("numero", &["spécial", "special"]),
+    ("numéro", &["spécial", "special", "especial"]),
+    ("numero", &["spécial", "special", "especial"]),
+    ("número", &["especial", "spécial", "special"]),
+    ("edição", &["especial"]),
+    ("edicao", &["especial"]),
+    ("edición", &["especial"]),
+    ("edicion", &["especial"]),
 ];
 
 /// The markers in a label, in the order written.
@@ -377,7 +392,19 @@ fn markers(text: &str) -> SmallVec<[Marker; 2]> {
                 2,
                 words[i + 1].1,
             )
-        } else if is(word, &["suppl", "supp", "sup", "supplement"]) {
+        } else if is(
+            word,
+            &[
+                "suppl",
+                "supp",
+                "sup",
+                "supplement",
+                "supplementary",
+                "supple",
+                "supl",
+                "suplemento",
+            ],
+        ) {
             (Some(Mark::Level(LevelKind::Supplement)), 1, end)
         } else if is(word, &["pt", "part"]) {
             (Some(Mark::Level(LevelKind::Part)), 1, end)
@@ -393,7 +420,8 @@ fn markers(text: &str) -> SmallVec<[Marker; 2]> {
             (Some(Mark::Level(LevelKind::Volume)), 1, end)
         } else if is(word, &["issue"]) {
             (Some(Mark::Level(LevelKind::Issue)), 1, end)
-        } else if word == "№" || is(word, &["nº", "numéro", "numero", "number", "nr"]) {
+        } else if word == "№" || is(word, &["nº", "numéro", "numero", "número", "number", "nr"])
+        {
             (Some(Mark::Number), 1, end)
         } else if is(word, &["n"]) && after.starts_with(['°', 'º']) {
             let sign = after.chars().next().map_or(0, char::len_utf8);
@@ -456,29 +484,43 @@ fn levels<'a>(
     {
         return section(text, own, marks);
     }
+    // A number sign names the issue where the field names a volume, before
+    // it or after: `n° 57, vol. 13` is issue 57 of volume 13.
+    let names_volume = marks
+        .iter()
+        .any(|m| m.mark == Mark::Level(LevelKind::Volume));
     let mut out: SmallVec<[Level<'a>; 2]> = SmallVec::new();
     if let Some(before) = between(&text[..marks[0].start]) {
-        if !is_one(before) {
-            return None;
-        }
         out.push(Level {
             kind: own,
-            label: Some(before),
+            label: Some(one_label(before, readings)?),
         });
     }
     for (i, mark) in marks.iter().enumerate() {
         let end = marks.get(i + 1).map_or(text.len(), |next| next.start);
-        let label = between(&text[mark.end..end]);
-        if label.is_some_and(|l| !is_one(l)) {
-            return None;
-        }
+        let label = match between(&text[mark.end..end]) {
+            Some(label) => Some(one_label(label, readings)?),
+            None => None,
+        };
         let kind = match mark.mark {
             Mark::Level(kind) => kind,
-            Mark::Number if out.iter().any(|l| l.kind == LevelKind::Volume) => LevelKind::Issue,
+            Mark::Number if names_volume || out.iter().any(|l| l.kind == LevelKind::Volume) => {
+                LevelKind::Issue
+            }
             Mark::Number => own,
         };
         if mark.mark == Mark::Number || kind.is_numbered() {
             readings.named = true;
+        }
+        // A number sign straight after a marker with no label is that
+        // level's number: `Hors-série n° 18` is special issue 18.
+        if mark.mark == Mark::Number
+            && let Some(last) = out.last_mut()
+            && !last.kind.is_numbered()
+            && last.label.is_none()
+        {
+            last.label = label;
+            continue;
         }
         // A level's name with no label names the next level: `N°
         // Hors-série` is a special issue, not a volume `N°`.
@@ -487,6 +529,29 @@ fn levels<'a>(
         }
     }
     (!out.is_empty()).then_some(out)
+}
+
+/// One label; or one with a year written after it, the year dropped, as
+/// the record's date has it: `№1 2026` (19,806 Crossref issues), `36
+/// (2025)`, `57, 2025`.
+fn one_label<'a>(label: &'a str, readings: &mut Readings) -> Option<&'a str> {
+    if is_one(label) {
+        return Some(label);
+    }
+    let (head, year) = label.rsplit_once(char::is_whitespace)?;
+    let head = head.trim_end_matches(|c: char| c.is_whitespace() || matches!(c, ',' | '('));
+    let read = is_year(year.trim_matches(['(', ')'])) && !head.is_empty() && is_one(head);
+    if read {
+        readings.year = true;
+    }
+    read.then_some(head)
+}
+
+/// A year: four digits, from 1800 to 2099.
+fn is_year(s: &str) -> bool {
+    s.len() == 4
+        && s.bytes().all(|b| b.is_ascii_digit())
+        && ["18", "19", "20"].iter().any(|c| s.starts_with(c))
 }
 
 /// A label with a section in it. A section is named, before its marker or
@@ -521,10 +586,10 @@ fn section<'a>(
 }
 
 /// The text between two markers, less what joins it to them (space, `_`,
-/// `-`, `.`, `,`, `:`, brackets); `None` where nothing is left.
+/// `-`, `.`, `,`, `:`, `/`, brackets); `None` where nothing is left.
 fn between(piece: &str) -> Option<&str> {
     let piece = piece.trim_matches(|c: char| {
-        c.is_whitespace() || matches!(c, '_' | '-' | '.' | ',' | ':' | '(' | ')')
+        c.is_whitespace() || matches!(c, '_' | '-' | '.' | ',' | ':' | '/' | '(' | ')')
     });
     (!piece.is_empty()).then_some(piece)
 }
@@ -630,6 +695,10 @@ mod tests {
         // Taylor & Francis's, and NLM's shorter spelling.
         assert_eq!(issue("sup1"), "supplement 1");
         assert_eq!(issue("Sup 3"), "supplement 3");
+        assert_eq!(issue("1-Supl"), "issue 1, supplement");
+        assert_eq!(issue("Supple 3"), "supplement 3");
+        assert_eq!(issue("6(Supplementary)"), "issue 6, supplement");
+        assert_eq!(issue("Suplemento 2"), "supplement 2");
     }
 
     #[test]
@@ -686,6 +755,13 @@ mod tests {
         assert_eq!(issue("spe1"), "special issue 1");
         assert_eq!(issue("si2"), "special issue 2");
         assert_eq!(issue("Special Issue: ICCMA"), "special issue ICCMA");
+        // Spanish and Portuguese.
+        assert_eq!(issue("Número Especial"), "special issue");
+        assert_eq!(issue("12 Edição Especial"), "issue 12, special issue");
+        assert_eq!(volume("Edición Especial"), "special issue");
+        // A number sign straight after one is its number.
+        assert_eq!(volume("Hors-série n° 18"), "special issue 18");
+        assert_eq!(issue("Número 3"), "issue 3");
         // `Spec` alone is not a marker, nor `sp` without a number.
         assert_eq!(issue("Spec"), "issue Spec");
         assert_eq!(issue("SP"), "issue SP");
@@ -735,10 +811,32 @@ mod tests {
         assert_eq!(volume("N° Hors-série"), "special issue");
         assert_eq!(issue("Web Server issue"), "issue Web Server issue");
         assert_eq!(issue("Database issue"), "issue Database issue");
-        // Not names: a lone `V`, `T` or `No`.
+        // Not names: a lone `V`; a lone `No` is a placeholder.
         assert_eq!(volume("V"), "volume V");
-        assert_eq!(issue("No"), "issue No");
+        assert_eq!(issue("No"), "none");
+        // A number sign where the field names a volume after it.
+        assert_eq!(volume("n° 57, vol. 13"), "issue 57, volume 13");
+        // Levels joined by `/`, and a no-break space.
+        assert_eq!(volume("vol. 1 / n°\u{a0}6"), "volume 1, issue 6");
+        assert_eq!(volume("n° 6 / Hors-série"), "volume 6, special issue");
         assert_eq!(issue("ISSUE 1 (MARCH) 2026"), "kept ISSUE 1 (MARCH) 2026");
+    }
+
+    #[test]
+    fn a_year_after_a_label() {
+        assert_eq!(issue("№1 2026"), "issue 1");
+        assert_eq!(issue("№6, 2025"), "issue 6");
+        assert_eq!(issue("№  3 2024"), "issue 3");
+        assert_eq!(volume("Vol 57, 2025"), "volume 57");
+        assert_eq!(volume("Volume 54 (2025)"), "volume 54");
+        assert_eq!(issue("Issue 36 (2025)"), "issue 36");
+        assert_eq!(issue("Volume 14, 2025 Number 2"), "volume 14, issue 2");
+        assert!(Label::read("№1 2026", LevelKind::Issue).1.year);
+        // Not a year: a cumulative number, or a month.
+        assert_eq!(issue("№ 4 (170)"), "kept № 4 (170)");
+        assert_eq!(issue("ISSUE 1 (MARCH) 2026"), "kept ISSUE 1 (MARCH) 2026");
+        // Plain labels are as written.
+        assert_eq!(issue("1 2026"), "issue 1 2026");
     }
 
     #[test]
@@ -774,6 +872,11 @@ mod tests {
         assert_eq!(issue("None"), "none");
         assert_eq!(issue("n/a"), "none");
         assert_eq!(issue("  "), "none");
+        assert_eq!(volume("NP"), "none");
+        assert_eq!(volume("nil"), "none");
+        // Blank: nothing that names a value.
+        assert_eq!(volume("-----"), "none");
+        assert_eq!(issue("\u{3164}"), "none");
         let readings = Label::read("&NA;", LevelKind::Volume).1;
         assert_eq!(
             readings.made().collect::<Vec<_>>(),

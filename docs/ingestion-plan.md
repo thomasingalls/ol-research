@@ -2301,6 +2301,16 @@ cross-IDs and a second edge namespace early.
   to page 37; `1098+` keeps its first page; a page count is no pages;
   J-STAGE's issue before its pages is dropped where it is the record's
   own; and a supplement before NLM's pages is read out as a level.
+- 2026-09-29, the third pass (the user, on `ol-rht-survey-crossref-v6` and
+  `ol-rht-survey-baseline-v10`, which failed no record). A blank field
+  (nothing in it names a value, Hangul fillers included), `NP`, `no` and
+  `nil` are placeholders; pages in brackets (`[i]-[vi]`) are pages; a
+  range may be followed by `+`; a year written after a label is dropped,
+  the record's date having it (`№1 2026`); `Supl`, `Supple`,
+  `Supplementary`, `Número Especial`, `Edição Especial` and `/` between
+  levels are read; a number sign names the issue wherever the field names
+  a volume, and straight after a special issue or a supplement it is
+  that level's number.
 
 ## 11. Dependencies
 

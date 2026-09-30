@@ -261,9 +261,13 @@ does with a range is an access pattern, not what gets stored.
     `21-00323-21-00323` (200,253 journal articles);
   - `???` between digits read as a dash, and counted: an en dash lost to
     an encoding, as in `1067???1074` (44,769 journal articles);
-  - placeholders read as no value, and counted: `UNKNOWN` (14,200 PubMed
-    page fields), `&NA;` (130,255 Crossref volumes), `Online first`
-    (18,307 Crossref volumes).
+  - placeholders read as no value, and counted: `UNKNOWN` (1,156 PubMed
+    page fields), `&NA;` (130,255 Crossref volumes). Draft 3 gave `UNKNOWN`
+    14,200 and `Online first` 18,307 Crossref volumes: those were the
+    counts of the shapes they were examples of (`a`, `a a`), not of the
+    values. The surveys at 13 counted the values: `Online first` is on
+    258 Crossref volumes and 499 issues, and is not a placeholder (§12,
+    2026-09-29).
 
   Whatever it cannot read whole falls back the way dates do: keep what is
   certain, and the raw text beside it, counted. The user confirmed this
@@ -661,6 +665,15 @@ which are recorded beside each.
   own name, sections, named pages (`Pages::Named`), an item's number on
   its page, `+`, page counts, J-STAGE's issue before its pages, and a
   supplement before NLM's pages (`level_in_pages`).
+- *Surveyed again 2026-09-29* at ol-rht 9184e74 (`ol-rht-survey-crossref-v6`,
+  `ol-rht-survey-baseline-v10`): no record failed. Crossref's pages kept
+  fell from 760,013 to 349,754, 265,199 named; PubMed's from 45,899 to
+  19,389. The third pass reads what they listed (§12): blanks and more
+  placeholders, pages in brackets, `+` after a range, a year after a
+  label, `Supl` and its kin, `Edição Especial`, `/` between levels; and
+  mends three misreadings of the second: `Número Especial` read as an
+  issue `Número` (6,768 Crossref issues), `Hors-série n° 18` as volume 18
+  (653), `n° 57, vol. 13` as two volumes (654).
 - The stats report counts each reading, as DOI readings are counted.
 - Fixtures cover each shape CF0 found, and the warts it showed: `&amp;`
   in a title, a garbled one, an ISSN given twice.
@@ -764,13 +777,14 @@ Nothing here closes a door the entity work needs:
 | Two records' placements joined where they agree (D2) | A citation can carry a volume from one source and pages from the other, a combination neither printed; 9,684 of 30,795,179 joins share no value to check them by | Nothing needed so far: every level names its record, and the joins are counted, the unchecked apart |
 | Crossref wins a conflict (D3) | Where PubMed was right, its value is shown only as the other source's, on up to 5.0% of two-source works before notation is read | A third source (OpenAlex) or the entity work settling who is right, measured after model 13 |
 | `???` between digits read as a dash (D8) | A reading of text an encoding broke; 44,769 journal articles | Crossref's file written without the loss |
-| Placeholders read as no value (D8): `UNKNOWN`, `&NA;`, `None`, `n/a`, `na`, `null` | A placeholder's intent (not applicable, not known) is kept only in the count | A field that says why a value is missing, if a use for it appears |
+| Placeholders read as no value (D8): `UNKNOWN`, `&NA;`, `None`, `n/a`, `na`, `null`, `NP`, `no`, `nil`, and a blank field (`-----`, Hangul fillers) | A placeholder's intent (not applicable, not known) is kept only in the count | A field that says why a value is missing, if a use for it appears |
 | Words saying the work awaits its issue kept as a statement, not a label: `ahead-of-print`, IEEE's `PP` (and its issue `99`), `Online first`, `Forthcoming` | Often stale (NLM's IEEE records of 2011 still say `PP`); in a page field they read as no pages, counted | The merge letting another source's volume stand where one record only waits; nothing to lift at normalization |
-| A page count read as no pages (`26 pp.`, 7,622 Crossref fields) | The work's length is not kept | A field for it, if a use appears (a book's citation prints one) |
-| `1098+` read as its first page, `+` its note | The last page is not known | Nothing: the source does not say it |
-| An item's number read before a whole last page: `36.1-37`, the first item on page 36 to page 37 (BMJ's journals, 104,858 Crossref fields) | NLM writes Current Protocols' sub-pages the same way, shortened (`1.1-11` is 1.1 to 1.11), which reads as pages 1 to 11; those with the end before the page (`13.1-11`) are kept | The whole files' examples, by source |
+| A page count read as no pages (`26 pp.`, 7,948 Crossref fields) | The work's length is not kept | A field for it, if a use appears (a book's citation prints one) |
+| A page or a range and those after it read as written, `+` its note (`1098+`, `237-239+`; 3,333 PubMed fields) | The last page is not known | Nothing: the source does not say it |
+| A year written after a label dropped (`№1 2026`, `Vol 57, 2025`, `Issue 36 (2025)`) | A label whose year disagrees with the record's date loses the disagreement | Comparing the year with the date before dropping it, if a use appears |
+| An item's number read before a whole last page: `36.1-37`, the first item on page 36 to page 37 (BMJ's journals; 105,100 Crossref fields, 908 PubMed) | NLM writes Current Protocols' sub-pages the same way, shortened (`1.1-11` is 1.1 to 1.11), which reads as pages 1 to 11; those with the end before the page (`13.1-11`) are kept | The whole files' examples, by source |
 | The record's issue before its pages dropped only where it is the record's own (`2_263-2_285` in issue `2`, J-STAGE) | A field whose issue differs, or a record with none, is kept as written | Nothing needed: the check is the record's own issue |
-| Named pages kept as named (`IFC`, `Cover`, `Toc`, 155,031 Crossref fields) | A named page has no number to sort or compare by | Nothing: it is where the work sits (the user) |
+| Named pages kept as named (`IFC`, `Cover`, `Toc`; 265,199 Crossref page fields, 122,983 of them `IFC`; PubMed's `Online`, American Family Physician's online-only items) | A named page has no number to sort or compare by | Nothing: it is where the work sits (the user) |
 | Pages and labels the grammar cannot read whole (D8, D12) | Kept as written beside what is certain, not as parts; a citation prints them as written | The grammar refined as the counts show, as the date grammar was |
 | An issue that is `S` and a number read as a supplement (D12): `S6`, `s73`, `S 01` | Where a publisher means something else by it (a section, a series), the level is misnamed; counted apart, not checked | The whole files' examples, and a publisher's own word where one disagrees |
 | A volume `s` and a number, a hyphen and a roman numeral read as a series and a volume (D13): `s2-XI` | The same, for 272,309 Crossref volumes; a volume in digits (`S1-2`) is left as written, not having been counted | As above |
@@ -939,3 +953,15 @@ Crossref records that give only `issued` (D4).
     7354), not issue 36. `1098+`: "can we just keep the start page?" A
     page count: "i'd be fine dropping it if it's not useful". J-STAGE's
     issue before its pages: "we can parse that out".
+- **2026-09-29, the third pass.** The surveys of the second
+  (`ol-rht-survey-crossref-v6`, `ol-rht-survey-baseline-v10`) failed no
+  record. The user's calls on what they listed: blanks (`-----`, 4,803
+  page fields of Hangul fillers), `NP`, `no` and `nil` as placeholders,
+  "ok"; PubMed's page `online` "might be obvious if we look up a couple
+  of records": eight of them are American Family Physician's online-only
+  items, each with its volume and issue, so it stays a named page; pages
+  in brackets (`[i]-[vi]`) are pages; a year after a label is dropped;
+  `Supl`, `Supple`, `Supplementary`, `Edição Especial` and `/` are read;
+  `237-239+` is a range and its `+`. Corrected in the same pass: three
+  counts draft 3 took from a shape for its example (`UNKNOWN`, `None`,
+  `Online first`).

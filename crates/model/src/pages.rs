@@ -143,6 +143,8 @@ pub struct Readings {
     pub issue_prefix: bool,
     /// A supplement written before the pages was read as a level.
     pub supplement: bool,
+    /// A page in brackets, numbered by the publisher, was read: `[i]-[vi]`.
+    pub bracketed: bool,
 }
 
 impl Readings {
@@ -172,6 +174,7 @@ impl Readings {
                 self.supplement,
                 "a supplement before the pages read as a level",
             ),
+            (self.bracketed, "a page in brackets read"),
         ]
         .into_iter()
         .filter_map(|(made, what)| made.then_some(what))
@@ -179,20 +182,31 @@ impl Readings {
 }
 
 /// What a source writes in a placement field (pages, a volume, an issue)
-/// for a value it does not have: `UNKNOWN` (14,200 PubMed page fields) and
+/// for a value it does not have: `UNKNOWN` (1,156 PubMed page fields) and
 /// `&NA;` (130,255 Crossref volumes), counted by
-/// `ol-rht-survey-placement-v1`; `None` (96,735 Crossref page fields,
-/// `None-None`), `n/a` and `na`, `null` (50,332 Crossref volumes, 11,926
-/// issues), by the surveys at model 13. One list for every such field: a
-/// placeholder means the same wherever it is written. `Online first` was
-/// here until the user set words saying the work awaits its issue apart
-/// (`label::is_pending`, 2026-09-29).
-const PLACEHOLDERS: [&str; 6] = ["UNKNOWN", "&NA;", "None", "n/a", "na", "null"];
+/// `ol-rht-survey-placement-v1` and `ol-rht-survey-baseline-v9`; `None`,
+/// `n/a`, `na` and `null` (17,713 Crossref page fields together; `null` on
+/// 50,332 Crossref volumes and 11,926 issues), and `NP` (13,053 page
+/// fields `NP-NP`), `no` (3,960 `no-no`), `nil`, by the surveys at model
+/// 13. One list for every such field: a placeholder means the same
+/// wherever it is written. `Online first` was here until the user set
+/// words saying the work awaits its issue apart (`label::is_pending`,
+/// 2026-09-29).
+const PLACEHOLDERS: [&str; 9] = [
+    "UNKNOWN", "&NA;", "None", "n/a", "na", "null", "NP", "no", "nil",
+];
+
+/// Characters Crossref's records write for a blank: Hangul fillers, which
+/// are letters to Unicode (4,803 page fields `ㅤ-ㅤ`, U+3164).
+const FILLERS: [char; 4] = ['\u{115F}', '\u{1160}', '\u{3164}', '\u{FFA0}'];
 
 /// Whether a placement field, less the space around it, is a placeholder,
-/// in any case.
+/// in any case, or blank: nothing in it names a value (`-----`, `ㅤ-ㅤ`).
 pub(crate) fn is_placeholder(text: &str) -> bool {
     PLACEHOLDERS.iter().any(|p| p.eq_ignore_ascii_case(text))
+        || text
+            .chars()
+            .all(|c| !c.is_alphanumeric() || FILLERS.contains(&c))
 }
 
 /// The separators of a range: a hyphen, and `???`, an en dash an encoding
@@ -433,16 +447,20 @@ fn span<'a>(item: &'a str, words: &[&'a str]) -> Option<&'a str> {
 
 /// One page or one range, written without spaces.
 fn read_range<'a>(text: &'a str, readings: &mut Readings) -> Result<Range<'a>, Error> {
+    if let Some(pages) = and_following(text) {
+        let range = read_range(pages, readings)?;
+        readings.and_following = true;
+        return Ok(Range {
+            note: Some(&text[pages.len()..]),
+            ..range
+        });
+    }
     if let Some(range) = item_range(text) {
         readings.item = range.is_ok();
         return range;
     }
-    if let Some(page) = and_following(text) {
-        readings.and_following = true;
-        return Ok(Range {
-            note: Some(&text[page.len()..]),
-            ..Range::one(page)
-        });
+    if text.starts_with('[') && pieces(text).all(is_page) {
+        readings.bracketed = true;
     }
     let separators = separators(text);
     match separators.len() {
@@ -561,9 +579,10 @@ fn item_range(text: &str) -> Option<Result<Range<'_>, Error>> {
     })
 }
 
-/// A page and those after it: `1098+`, the page.
+/// A page or a range and those after it: `1098+`, `237-239+`; the pages
+/// before the `+`.
 fn and_following(text: &str) -> Option<&str> {
-    text.strip_suffix('+').filter(|page| is_page(page))
+    text.strip_suffix('+').filter(|pages| is_pages(pages))
 }
 
 /// A page count, not a place: `26 pp.`.
@@ -648,6 +667,10 @@ fn pieces(text: &str) -> impl Iterator<Item = &str> {
 /// A page: letters, digits and dots, with a digit in it, or a roman
 /// numeral.
 fn is_page(s: &str) -> bool {
+    // A page the publisher numbered in brackets, unprinted: `[vi]`.
+    if let Some(inner) = s.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+        return is_page(inner);
+    }
     !s.is_empty()
         && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'.')
         && (s.bytes().any(|b| b.is_ascii_digit()) || is_roman(s))
@@ -662,7 +685,7 @@ fn is_pages(s: &str) -> bool {
         || (pieces(s)
             .all(|p| p.is_empty() || p.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'.'))
             && s.bytes().any(|b| b.is_ascii_digit()))
-        || pieces(s).all(is_roman)
+        || pieces(s).all(is_page)
 }
 
 /// An article number with a hyphen after its letters: `e-88751`.
@@ -845,7 +868,20 @@ mod tests {
         assert!(Pages::read("UNKNOWN").1.placeholder);
         assert_eq!(Pages::read("unknown").0, None);
         assert_eq!(Pages::read("  ").0, None);
-        for none in ["None", "none", "n/a", "na", "null", "None-None", "n/a-n/a"] {
+        for none in [
+            "None",
+            "none",
+            "n/a",
+            "na",
+            "null",
+            "None-None",
+            "n/a-n/a",
+            "NP-NP",
+            "no-no",
+            "nil",
+            "-----",
+            "\u{3164}-\u{3164}",
+        ] {
             let (pages, readings) = Pages::read(none);
             assert_eq!(pages, None, "{none}");
             assert!(readings.placeholder, "{none}");
@@ -896,6 +932,19 @@ mod tests {
         assert_eq!(read("1098+"), ["1098 +"]);
         assert!(Pages::read("1098+").1.and_following);
         assert_eq!(Pages::read("1098+").0.and_then(|p| p.first()), Some("1098"));
+        assert_eq!(read("237-239+"), ["237-239 +"]);
+        assert_eq!(read("237-9+"), ["237-239 +"]);
+    }
+
+    #[test]
+    fn pages_in_brackets() {
+        assert_eq!(read("[i]-[vi]"), ["[i]-[vi]"]);
+        assert_eq!(read("[vii]-[viii]"), ["[vii]-[viii]"]);
+        assert_eq!(read("[iii]"), ["[iii]"]);
+        assert!(Pages::read("[i]-[vi]").1.bracketed);
+        assert!(!Pages::read("i-vi").1.bracketed);
+        // Online-only items of American Family Physician, a named page.
+        assert_eq!(Pages::read("Online").0, Some(Pages::Named("Online")));
     }
 
     #[test]
