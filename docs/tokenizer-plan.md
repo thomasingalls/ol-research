@@ -404,6 +404,15 @@ user's (serving plan §11 item 11), and this plan is its analysis part.
   where every detector fails (§3.3). The borrowing is measured where it
   can go wrong too: a title in another language beside an English
   abstract, as PubMed's original-language titles sit beside theirs.
+  **Decided 2026-09-30, on §3.4's numbers:** GlotLID v3, read through
+  the vendored reader (§7 item 11); every title and abstract detected on
+  its own, a record's tag never consulted; a text is English unless
+  GlotLID names another language at a confidence of 0.5 or above — 0.5
+  against 0.7 left a level of T2's screen, for retrieval to settle; no
+  title borrows its abstract's language until labelled Crossref titles
+  say how often a title and its abstract differ; each answer cached by
+  the text's hash, so a rebuild detects only what is new. lingua is not
+  used.
   *Built 2026-09-29 for the measurement:* `ol-rht evaluate language-key`
   (the key: NLM's English titles and bracketed translations, original
   titles and other-language abstracts under NLM's tags, English
@@ -620,3 +629,7 @@ Made in measuring D13:
   decide); the default-English and borrowing rules measured on a key that
   carries each title's abstract ("go ahead with the new key and extended
   score").
+- **2026-09-30, after §3.4.** The user: "go with the recommendation" —
+  D13 decided: GlotLID, English unless another language at 0.5 or above
+  (0.5 against 0.7 in T2's screen), no borrowing for now, answers cached
+  by text hash.
