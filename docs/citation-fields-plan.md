@@ -809,6 +809,49 @@ Nothing here closes a door the entity work needs:
 - **The export plan:** the CSL-JSON mapping from the chain, RIS, BibTeX
   and the formatter (hayagriva in-process was the recommendation of
   2026-09-24).
+- **The page and label grammars' tail, for polish** (the user,
+  2026-09-30: "so long as we are keeping track of this tail for polish at
+  a later time"). After three passes the whole files' surveys at 13
+  (`ol-rht-survey-crossref-v7`, `ol-rht-survey-baseline-v11`, reports on
+  the claim under `surveys/normalize/`) failed no record; what they still
+  keep as written, counted and printed as written, the commonest first:
+  - *Crossref pages* (348,572 kept, 0.19%): JNCI's lettered items
+    `871-b-871` (51,330); `69-0` on Bloomsbury chapters (41,211), meaning
+    unknown; IEEE conference pages with their volume, `28-33 vol.1`,
+    `1762-1768 Vol. 3` (47,209); Routledge's `I_5-I_28` (18,207); an
+    article id in the page field, `archdischild-2025-329859` (14,735);
+    JSME's underscored numbers, `_104-1_-_104-10_` and kin (about
+    34,000); J-STAGE's `After2_18`, `455-456_2`, `52_2-52_2`, `A59_6`,
+    `4431_12` where the issue is not the record's (about 36,000); IOP's
+    `2541-2544-4` (6,266); SPIE's article number with its page count,
+    `84472L-84472L-8` (5,495); `192-IBC` (3,910).
+  - *Named pages that may be numbered:* Project MUSE's front matter
+    `ebi-ebi`, `ebi-ebii` (48,217), `fmi-fmviii`, `a-a`, `A-B`, `First`.
+  - *PubMed pages* (19,010 kept, 0.05%): ends before their start
+    (`497-50`, 3,828, typos in every example CF0 checked);
+    `2169-2179.e1-4` (1,375); `M49-6`, `I/285-307`, `S6-1-6`, `ORL-875-80`;
+    `Varia, 834-41`; `suppl 2 p.`; `10 pages following 512`; `s:93`; and
+    Current Protocols' shortened sub-pages, `15.1-12` kept and `1.1-11`
+    misread as pages 1 to 11 (§9).
+  - *Crossref volumes* (17,757 kept): `Original Series, Volume 9`
+    (6,098); a month or an edition after the number, `N° 563 -
+    Septembre`, `N° 7 – réédition` (2,719); `no.4 (1976:Jul)`; `n° 349 -
+    350`; the issue in brackets or after `n.`, `vol. 15 (3)`, `v.38 n.2`
+    (1,221); `Year: 17 - Number: 101`; `n° HS 4` (hors-série); a year
+    before a volume read as a second volume, `2023 11` (190). Plain
+    words not read: `os`, `ns` (old and new series, 38,646), `n o 62`.
+  - *Crossref issues* (18,971 kept): `4, Part 1 of 2` (2,193); cumulative
+    numbers in brackets, `Nr 4 (44)`, `№ 4 (170)`, `Vol. 2(34)` (about
+    6,000); `Supplement 1 2S`; `N° 9, 1`; a date after the label,
+    `Volume 36, 8 Jul 2025`; a month, `ISSUE 2 (JUNE)`.
+  - *PubMed volumes and issues* (5,526 kept): named supplements, `43
+    Suppl 2 UCTN`, `Suppl 4 European Workshop on…`, `36 Suppl Fur
+    Praxis`; `34 Abstr Suppl 1`; `22(9)Suppl`, `9(4)Pt 2`; `Su` for a
+    supplement (`56 Su 1 Pt 1`); `E-Suppl`, `Spec Suppl`, `[Special
+    Issue]`; `Suppl. 1 to No. 6`, and `Suppl to 11` misread as a
+    supplement labelled `to` (46; Crossref's `Suppl au 621`, 128). Plain
+    words not read: `Chapter` (3,798 volumes), `Appendix`, `Vyp.` (1,625
+    issues), NAR's `Database issue` and `Web Server issue`, `Half`.
 
 ## 11. Open items
 
