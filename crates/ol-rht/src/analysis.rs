@@ -209,7 +209,7 @@ fn worded(text: Option<&str>) -> Option<&str> {
 }
 
 /// The script most of a text's letters are in; `None` without letters.
-fn dominant(text: &str) -> Option<Script> {
+pub(crate) fn dominant(text: &str) -> Option<Script> {
     let mut letters = [0u64; Script::ALL.len()];
     for c in text.chars().filter(|c| c.is_alphabetic()) {
         letters[analysis::script(c) as usize] += 1;

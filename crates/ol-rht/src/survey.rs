@@ -116,7 +116,7 @@ fn survey(store: &Store, limit: Option<usize>) -> Result<String, String> {
 
 /// Every copy of one source's records, so that each is read once, at the
 /// copy that speaks for it.
-fn read_copies<S: Contributor>(
+pub(crate) fn read_copies<S: Contributor>(
     copies: &mut Copies,
     sets: &Sets,
     limit: Option<usize>,
@@ -135,7 +135,7 @@ fn read_copies<S: Contributor>(
 }
 
 /// Calls `f` with each record of one works set whose copy there speaks.
-fn each<S: Contributor>(
+pub(crate) fn each<S: Contributor>(
     path: &Path,
     set: &str,
     limit: Option<usize>,
