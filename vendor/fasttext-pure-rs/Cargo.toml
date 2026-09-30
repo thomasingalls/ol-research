@@ -1,0 +1,28 @@
+# fasttext-pure-rs 0.1.0 (MIT, https://github.com/silvermine/fasttext-pure-rs),
+# vendored with one change: see VENDORED.md. The published manifest's test
+# and bench targets are left out with their files; the library is as
+# published.
+[package]
+edition = "2024"
+rust-version = "1.89"
+name = "fasttext-pure-rs"
+version = "0.1.0"
+description = "Pure-Rust fastText inference engine for language identification and text classification"
+readme = "README.md"
+license = "MIT"
+repository = "https://github.com/silvermine/fasttext-pure-rs"
+autobins = false
+autoexamples = false
+autotests = false
+autobenches = false
+
+[features]
+default = ["std"]
+std = []
+
+[lib]
+name = "fasttext_pure_rs"
+path = "src/lib.rs"
+
+[dependencies]
+thiserror = "2.0.17"

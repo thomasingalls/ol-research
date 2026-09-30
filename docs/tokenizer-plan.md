@@ -410,6 +410,14 @@ Made in measuring D13:
     author's, on data it may have been trained on. *Costs* the one fast,
     pure-Rust detector of 188 languages. *Lifted by* adding it if lingua
     and GlotLID both disappoint.
+11. **GlotLID is read through a vendored `fasttext-pure-rs`** whose guard
+    against malformed files is raised from 1 GiB to 4 GiB: the published
+    guard refused GlotLID's 1.67 GB input matrix on the box
+    (`ol-rht-language-d13-v1`, 2026-09-30), and the crate has no way to
+    set it. One constant changed, in `vendor/fasttext-pure-rs/`, put in
+    place by the workspace's `[patch.crates-io]`; answers on lid.176 the
+    same as the published crate's. *Costs* a copy of a third-party crate to
+    keep. *Lifted by* an upstream release that lets a caller set the limit.
 
 ## 8. Open items
 
