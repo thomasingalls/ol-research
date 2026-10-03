@@ -153,7 +153,7 @@ const USAGE: &str = "usage:
   ol-rht graph query <#id|name> [--store <root>] [--held] [--limit N]
   ol-rht graph check [--store <root>] [--held]
   ol-rht search build [--store <root>] [--out <dir> [--analyzer ol1-cap<none|N>-<whole|bigrams|words>-fold<0|1>-greek<0|1>-joins<0|1>] [--documents <file>]]
-  ol-rht search documents --works <screening set> --out <file> [--store <root>]
+  ol-rht search documents --works <screening set> --out <file> [--documents <a larger set's file>] [--store <root>]
   ol-rht search query <words>... [--store <root>] [--limit N] [--index <dir>]
   ol-rht names build [--store <root>]
   ol-rht works build [--store <root>]
@@ -233,7 +233,8 @@ fn main() -> ExitCode {
             // asked by `search query` and `evaluate run`, and named
             // nowhere else.
             let searching = |named: &str| *source == "search" && *action == named;
-            if ((opts.analyzer.is_some() || opts.documents.is_some()) && !searching("build"))
+            if (opts.analyzer.is_some() && !searching("build"))
+                || (opts.documents.is_some() && !(searching("build") || searching("documents")))
                 || (opts.works.is_some() && !searching("documents"))
                 || (opts.index.is_some() && !(searching("query") || evaluating("run")))
             {

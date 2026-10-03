@@ -551,7 +551,13 @@ user's (serving plan §11 item 11), and this plan is its analysis part.
       the published index's are, and saved — a zstd stream of JSON
       lines. A build that assembled its own documents would read the
       whole corpus for every variant, which is the cost a screening
-      index is for avoiding.
+      index is for avoiding. With `--documents <a larger set's file>`
+      they are taken from that file and the corpus is not read at all:
+      a larger set holds every smaller one, so several sizes cost one
+      pass (2026-10-03, for §8 item 8).
+    - A sample and a set are each made beside their place and put in it
+      whole, so a draw that stopped leaves nothing a later one is
+      refused over.
     - `search build --out <dir> --documents <file> [--analyzer <name>]`:
       an index of those documents and no others, with no assembly, its
       manifest naming the file and the set by their digests, so a run's
@@ -796,7 +802,15 @@ Made in measuring D13:
    same queries. The smallest set whose figures stand close to the next
    one's is taken — points to measure at, not estimates of what is
    enough; what "close" is, is read off the three and said then. The
-   box's Job is to come.
+   box's Job is written, the homelab's `job-screening-sizes-v1`: it
+   draws the sample and the three sets, saves the largest's documents
+   in one pass over the corpus and takes the smaller two from them,
+   builds each size's control and runs the sample and TREC 2019 against
+   it and against the epoch's own index, compares each size with the
+   next, and ends with T1.4's check on the smallest. Its script ran
+   whole on the sample store at 2,000, 8,000 and 32,000 sampled works —
+   a rehearsal of the script, not a measurement. It waits for an image
+   built from main.
 
 ## 9. Decision log
 

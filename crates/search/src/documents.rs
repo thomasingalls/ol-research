@@ -164,54 +164,104 @@ fn line(out: &mut impl Write, value: &impl Serialize) -> io::Result<()> {
     out.write_all(b"\n")
 }
 
+/// A file of documents, opened: its header read and checked, its
+/// documents still to come.
+pub struct Saved {
+    path: PathBuf,
+    header: Header,
+    lines: io::Lines<BufReader<zstd::stream::read::Decoder<'static, BufReader<File>>>>,
+}
+
+impl std::fmt::Debug for Saved {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Saved")
+            .field("path", &self.path)
+            .field("header", &self.header)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Saved {
+    /// Opens a file of documents.
+    ///
+    /// # Errors
+    ///
+    /// I/O, or a file of another layout, model or merge.
+    pub fn open(path: &Path) -> Result<Self, Error> {
+        let wrong = |what: String| Error::Mismatch(format!("{}: {what}", path.display()));
+        let file = File::open(path).map_err(io_at(path))?;
+        let decoder = zstd::stream::read::Decoder::new(file).map_err(io_at(path))?;
+        let mut lines = BufReader::new(decoder).lines();
+        let first = lines
+            .next()
+            .ok_or_else(|| wrong("empty".to_owned()))?
+            .map_err(io_at(path))?;
+        let header: Header =
+            serde_json::from_str(&first).map_err(|e| wrong(format!("its first line: {e}")))?;
+        if (header.documents_format, header.model, header.merge)
+            != (FORMAT, model::VERSION, merge::VERSION)
+        {
+            return Err(wrong(format!(
+                "documents of layout {}, model {} and merge {}, not this binary's {FORMAT}, {} \
+                 and {}",
+                header.documents_format,
+                header.model,
+                header.merge,
+                model::VERSION,
+                merge::VERSION
+            )));
+        }
+        Ok(Self {
+            path: path.to_path_buf(),
+            header,
+            lines,
+        })
+    }
+
+    #[allow(missing_docs)]
+    #[must_use]
+    pub const fn header(&self) -> &Header {
+        &self.header
+    }
+
+    /// Every document, given to `each` in the file's order.
+    ///
+    /// # Errors
+    ///
+    /// I/O; a line that is not a document; other than the number of
+    /// documents the header says; or whatever `each` returns.
+    pub fn each(self, mut each: impl FnMut(Document) -> Result<(), Error>) -> Result<(), Error> {
+        let wrong = |what: String| Error::Mismatch(format!("{}: {what}", self.path.display()));
+        let mut read = 0u64;
+        for text in self.lines {
+            let text = text.map_err(io_at(&self.path))?;
+            let document = serde_json::from_str(&text)
+                .map_err(|e| wrong(format!("line {}: {e}", read + 2)))?;
+            each(document)?;
+            read += 1;
+        }
+        if read != self.header.works {
+            return Err(wrong(format!(
+                "{read} documents, and its header says {}",
+                self.header.works
+            )));
+        }
+        Ok(())
+    }
+}
+
 /// Reads a file of documents, each given to `each` in the file's order,
-/// and gives its header.
+/// and gives its header: [`Saved::open`] and [`Saved::each`].
 ///
 /// # Errors
 ///
 /// I/O; a file of another layout, model or merge; a line that is not a
 /// document; other than the number of documents its header says; or
 /// whatever `each` returns.
-pub fn read(
-    path: &Path,
-    mut each: impl FnMut(Document) -> Result<(), Error>,
-) -> Result<Header, Error> {
-    let wrong = |what: String| Error::Mismatch(format!("{}: {what}", path.display()));
-    let file = File::open(path).map_err(io_at(path))?;
-    let decoder = zstd::stream::read::Decoder::new(file).map_err(io_at(path))?;
-    let mut lines = BufReader::new(decoder).lines();
-    let first = lines
-        .next()
-        .ok_or_else(|| wrong("empty".to_owned()))?
-        .map_err(io_at(path))?;
-    let header: Header =
-        serde_json::from_str(&first).map_err(|e| wrong(format!("its first line: {e}")))?;
-    if (header.documents_format, header.model, header.merge)
-        != (FORMAT, model::VERSION, merge::VERSION)
-    {
-        return Err(wrong(format!(
-            "documents of layout {}, model {} and merge {}, not this binary's {FORMAT}, {} and {}",
-            header.documents_format,
-            header.model,
-            header.merge,
-            model::VERSION,
-            merge::VERSION
-        )));
-    }
-    let mut read = 0u64;
-    for text in lines {
-        let text = text.map_err(io_at(path))?;
-        let document =
-            serde_json::from_str(&text).map_err(|e| wrong(format!("line {}: {e}", read + 2)))?;
-        each(document)?;
-        read += 1;
-    }
-    if read != header.works {
-        return Err(wrong(format!(
-            "{read} documents, and its header says {}",
-            header.works
-        )));
-    }
+pub fn read(path: &Path, each: impl FnMut(Document) -> Result<(), Error>) -> Result<Header, Error> {
+    let saved = Saved::open(path)?;
+    let header = saved.header.clone();
+    saved.each(each)?;
     Ok(header)
 }
 

@@ -92,6 +92,21 @@ fn write_about(dir: &Path, about: &serde_json::Value) -> io::Result<()> {
     std::fs::write(dir.join("about.json"), text)
 }
 
+/// A directory made whole or not at all: `fill` makes it beside its place,
+/// as `<out>.partial`, and only when it is made does it take its place —
+/// so a draw that stopped leaves nothing a later one would be refused
+/// over.
+fn made_whole(out: &Path, fill: impl FnOnce(&Path) -> Result<(), String>) -> Result<(), String> {
+    let partial = std::path::PathBuf::from(format!("{}.partial", out.display()));
+    let at = |path: &Path, e: io::Error| format!("{}: {e}", path.display());
+    if partial.exists() {
+        std::fs::remove_dir_all(&partial).map_err(|e| at(&partial, e))?;
+    }
+    std::fs::create_dir_all(&partial).map_err(|e| at(&partial, e))?;
+    fill(&partial)?;
+    std::fs::rename(&partial, out).map_err(|e| at(out, e))
+}
+
 /// `evaluate sample <suite> --out <suite> --limit N`: the N queries of
 /// the suite's working half whose draw is smallest, as a suite of its own
 /// (evaluation plan §14.2) — what variants are screened on, the same
@@ -128,10 +143,14 @@ fn sample_of(of: &Path, out: &Path, n: u64) -> Result<String, String> {
         "queries": n,
         "ol_rht": env!("CARGO_PKG_VERSION"),
     });
-    sampled
-        .write(out)
-        .and_then(|()| write_about(out, &about))
-        .map_err(|e| format!("{}: {e}", out.display()))?;
+    made_whole(out, |dir| {
+        // The suite's files are never written over, and the directory is
+        // there already.
+        sampled
+            .write(dir)
+            .and_then(|()| write_about(dir, &about))
+            .map_err(|e| format!("{}: {e}", dir.display()))
+    })?;
     Ok(format!(
         "{n} of the working half's {working} queries, drawn with {SAMPLE_SEED:?}\n  suite: {}",
         out.display()
@@ -186,25 +205,12 @@ fn set_of(
         ));
     }
     let drawn = drawing.finish();
-    let file = out.join(screening::WORKS);
-    let written = (|| -> io::Result<()> {
-        std::fs::create_dir_all(out)?;
-        let mut to = io::BufWriter::new(
-            std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&file)?,
-        );
-        drawn.set.write(&mut to)?;
-        to.flush()
-    })();
-    written.map_err(|e| format!("{}: {e}", file.display()))?;
     let (judged, seeds, sampled) = (
         drawn.set.count(Why::Judged),
         drawn.set.count(Why::Seed),
         drawn.set.count(Why::Sample),
     );
-    let about = serde_json::json!({
+    let mut about = serde_json::json!({
         "suites": suites
             .iter()
             .map(|path| Ok(serde_json::json!({
@@ -221,12 +227,22 @@ fn set_of(
         "sample": sampled,
         "held": drawn.held,
         "judged_or_seed_not_held": drawn.not_held,
-        "works_blake3": digest(&file)?,
         "epoch": serving.epoch(),
         "search_absorbed_batch": index.batch().map_err(|e| e.to_string())?,
         "ol_rht": env!("CARGO_PKG_VERSION"),
     });
-    write_about(out, &about).map_err(|e| format!("{}: {e}", out.display()))?;
+    let file = out.join(screening::WORKS);
+    made_whole(out, |dir| {
+        let list = dir.join(screening::WORKS);
+        let written = (|| -> io::Result<()> {
+            let mut to = io::BufWriter::new(std::fs::File::create(&list)?);
+            drawn.set.write(&mut to)?;
+            to.flush()
+        })();
+        written.map_err(|e| format!("{}: {e}", list.display()))?;
+        about["works_blake3"] = digest(&list)?.into();
+        write_about(dir, &about).map_err(|e| format!("{}: {e}", dir.display()))
+    })?;
     Ok(format!(
         "{} works of the {} epoch {} holds: {judged} judged, {seeds} seeds, \
          {sampled} drawn from the rest with {SET_SEED:?}; {} judged or seeds not held, left out\n  \
@@ -295,7 +311,9 @@ fn listed(store: &Store, path: &Path) -> Result<Listed, String> {
 /// works' documents, assembled from the merged and normalized sets as the
 /// published index's are — the one pass over the corpus a screening set
 /// costs — and saved, so that every treatment's index is built from the
-/// file (`search build --documents`).
+/// file (`search build --documents`). With `--documents <file>`, taken
+/// from a larger set's saved documents instead, with no pass over the
+/// corpus at all: a larger set holds every smaller one.
 pub(crate) fn documents(opts: &Options) -> ExitCode {
     let what = "search documents";
     let (Some(list), Some(out)) = (opts.works.as_ref(), opts.out.as_ref()) else {
@@ -314,6 +332,9 @@ pub(crate) fn documents(opts: &Options) -> ExitCode {
                 return ExitCode::FAILURE;
             }
         };
+    if let Some(larger) = &opts.documents {
+        return report(what, taken_from(larger, out, listed, started));
+    }
     let batch = match super::current_batch(what, &store) {
         Ok(line) => line.batch,
         Err(code) => return code,
@@ -363,6 +384,45 @@ pub(crate) fn documents(opts: &Options) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// A set's documents taken from a larger set's saved ones: those the list
+/// names, every one of which the larger file must hold, at the batch the
+/// larger were assembled at — which must be the batch of the epoch the
+/// list's ids were read in.
+fn taken_from(
+    larger: &Path,
+    out: &Path,
+    listed: Listed,
+    started: Instant,
+) -> Result<String, String> {
+    let saved = search::documents::Saved::open(larger).map_err(|e| e.to_string())?;
+    let (batch, of) = (saved.header().batch, saved.header().works);
+    if batch != listed.batch {
+        return Err(format!(
+            "{} was assembled at batch {batch} and epoch {}'s index is at batch {}",
+            larger.display(),
+            listed.epoch,
+            listed.batch
+        ));
+    }
+    let works = listed.works.len();
+    let mut writer =
+        search::documents::Writer::create(out, listed.list, listed.digest, batch, listed.works)
+            .map_err(|e| e.to_string())?;
+    saved
+        .each(|document| writer.add(std::slice::from_ref(&document)))
+        .map_err(|e| e.to_string())?;
+    let bytes = writer.finish().map_err(|e| e.to_string())?;
+    #[allow(clippy::cast_precision_loss)]
+    let mib = bytes as f64 / (1024.0 * 1024.0);
+    Ok(format!(
+        "{works} works' documents of the {of} in {}, at batch {batch}: {mib:.1} MiB in {:.1} s\n  \
+         documents: {}",
+        larger.display(),
+        started.elapsed().as_secs_f64(),
+        out.display()
+    ))
 }
 
 /// `search build --documents <file>`: an index of the saved documents and
