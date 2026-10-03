@@ -949,6 +949,19 @@ Nothing here closes a door the entity work needs:
      2024-02-18), the issnlister harvest (2019, and without the ISSN-L),
      Wikidata's P7363. OpenAlex is not leaned on yet (the user).
 
+   **The direction** (the user, 2026-10-03, on the survey's laptop
+   numbers): "nlm's journal list is probably what we'll end up with, but
+   it also looks like we're going to have to be robust against issn org
+   gatekeeping, i can't pay 1k for this list that i could just wait 2-3h
+   to discover." So which ISSNs name one journal comes from NLM's journal
+   list (§10) and from what our own records pair, a few hours of the box
+   being the price worth paying, and nothing in the design waits on the
+   ISSN Centre: no subscription, and its table an addition if it ever
+   arrives. The survey's classes measure both halves, NLM's own word and
+   what Crossref's records pair, and its class of pairs Crossref joins
+   while NLM has another journal is the check on what discovery may be
+   trusted with.
+
    **The survey** (`ol-rht survey journals [--out <list.tsv>]`, built
    2026-10-03, to run on the box): each PubMed record paired with the
    Crossref record of a DOI it names, and each pair sharing no ISSN counted
@@ -1127,4 +1140,7 @@ Crossref records that give only `issued` (D4).
   on the records we hold, and the ISSN portal's public record of one
   ISSN at a time. The user asked for the survey that measures how many
   of the journal conflicts NLM settles and how many ISSNs it leaves
-  (`survey journals`), before anything is asked of the portal.
+  (`survey journals`), before anything is asked of the portal. On its
+  laptop numbers the user set the direction: NLM's journal list and what
+  our records pair, robust against the ISSN Centre's gatekeeping, no
+  paying for a list a few hours of the box can discover.
