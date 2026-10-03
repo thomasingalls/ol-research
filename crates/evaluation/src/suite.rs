@@ -145,6 +145,72 @@ impl Suite {
             .collect()
     }
 
+    /// The working half's queries, in the queries file's order; of a suite
+    /// kept whole, every scored query, and of one held out whole, none.
+    #[must_use]
+    pub fn working(&self) -> Vec<String> {
+        if self.halves.is_empty() {
+            return self.scored();
+        }
+        self.queries
+            .iter()
+            .filter(|(q, _)| self.halves.get(q) == Some(&Half::Working))
+            .map(|(q, _)| q.clone())
+            .collect()
+    }
+
+    /// A sample of the working half as a suite of its own (evaluation
+    /// plan §14.2), kept whole: the `n` working queries whose `draw` is
+    /// smallest, with their key and filters. A query's draw is its own —
+    /// its id's and a seed's, nothing the other queries are — so a larger
+    /// sample holds every smaller one, and the sample is the same however
+    /// the queries are ordered. No query of the test half is in it.
+    ///
+    /// # Errors
+    ///
+    /// Fewer than `n` working queries — a suite held out whole has none —
+    /// or `n` under [`MIN_QUERIES`], which an interval needs.
+    pub fn sample(&self, n: usize, draw: impl Fn(&str) -> u64) -> Result<Self, Error> {
+        let mut working = self.working();
+        if n < MIN_QUERIES {
+            return Err(Error::Mismatch(format!(
+                "a sample of {n} queries: an interval needs {MIN_QUERIES}"
+            )));
+        }
+        if working.len() < n {
+            return Err(Error::Mismatch(format!(
+                "a sample of {n} queries from a working half of {}",
+                working.len()
+            )));
+        }
+        working.sort_by_cached_key(|q| (draw(q), q.clone()));
+        let drawn: std::collections::BTreeSet<String> = working.into_iter().take(n).collect();
+        Ok(Self {
+            queries: self
+                .queries
+                .iter()
+                .filter(|(q, _)| drawn.contains(q))
+                .cloned()
+                .collect(),
+            key: Key {
+                queries: self
+                    .key
+                    .queries
+                    .iter()
+                    .filter(|(q, _)| drawn.contains(*q))
+                    .map(|(q, judged)| (q.clone(), judged.clone()))
+                    .collect(),
+            },
+            filters: self
+                .filters
+                .iter()
+                .filter(|(q, _)| drawn.contains(*q))
+                .map(|(q, filter)| (q.clone(), filter.clone()))
+                .collect(),
+            halves: BTreeMap::new(),
+        })
+    }
+
     /// The key over one half. A suite kept whole is all working half and
     /// has no test half.
     #[must_use]
@@ -404,6 +470,118 @@ mod tests {
         assert!(suite.is_held_out());
         assert!(suite.key_over(Half::Working).queries.is_empty());
         assert_eq!(suite.key_over(Half::Test).queries.len(), 2);
+    }
+
+    /// A draw that is a query's own: FNV-1a of its id.
+    fn place(id: &str) -> u64 {
+        id.bytes().fold(0xcbf2_9ce4_8422_2325, |h, b| {
+            (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
+        })
+    }
+
+    /// A suite of `n` scored queries and two the key has nothing for,
+    /// halved when there are enough, each with a filter.
+    fn scored_suite(n: usize) -> Suite {
+        let mut suite = Suite {
+            queries: ids(n + 2)
+                .into_iter()
+                .map(|q| (q.clone(), format!("text of {q}")))
+                .collect(),
+            ..Suite::default()
+        };
+        for q in ids(n) {
+            suite
+                .key
+                .queries
+                .entry(q.clone())
+                .or_default()
+                .insert(format!("ol:{q}"), 1);
+            suite.filters.insert(
+                q.clone(),
+                Filter {
+                    until: Some(2018),
+                    exclude: Some(format!("ol:seed-{q}")),
+                },
+            );
+        }
+        suite.halves = halves(&suite.scored());
+        suite
+    }
+
+    #[test]
+    fn a_sample_is_of_the_working_half_and_whole() {
+        let suite = scored_suite(200);
+        let sample = suite.sample(40, place).unwrap();
+        let working = suite.working();
+        assert_eq!(working.len(), 100);
+        assert_eq!(sample.queries.len(), 40);
+        assert!(sample.halves.is_empty(), "kept whole");
+        assert_eq!(sample.key_over(Half::Working).queries.len(), 40);
+        for (q, text) in &sample.queries {
+            assert!(working.contains(q), "{q} is not of the working half");
+            assert_eq!(text, &format!("text of {q}"));
+            assert_eq!(sample.key.queries[q], suite.key.queries[q]);
+            assert_eq!(sample.filters[q], suite.filters[q]);
+        }
+        assert_eq!(sample.key.queries.len(), 40);
+        assert_eq!(sample.filters.len(), 40);
+        // In the file's order, and not simply its first forty.
+        let order: Vec<&String> = sample.queries.iter().map(|(q, _)| q).collect();
+        let in_file: Vec<&String> = suite
+            .queries
+            .iter()
+            .map(|(q, _)| q)
+            .filter(|q| order.contains(q))
+            .collect();
+        assert_eq!(order, in_file);
+        assert_ne!(
+            order,
+            working.iter().take(40).collect::<Vec<_>>(),
+            "drawn, not the first"
+        );
+        // Too few for an interval, more than there are, and a suite held
+        // out whole, which has no working half.
+        assert!(suite.sample(MIN_QUERIES - 1, place).is_err());
+        assert!(suite.sample(101, place).is_err());
+        let mut held = suite.clone();
+        held.halves = held_out(&held.scored());
+        assert!(held.sample(40, place).is_err());
+        // A suite kept whole is all working half.
+        assert_eq!(
+            scored_suite(50).sample(30, place).unwrap().queries.len(),
+            30
+        );
+    }
+
+    mod properties {
+        use proptest::prelude::*;
+
+        use super::*;
+
+        proptest! {
+            /// A larger sample holds every smaller one, and a sample is
+            /// the same however the suite's queries are ordered.
+            #[test]
+            fn samples_are_nested_and_the_orders_own(
+                n in 60usize..160,
+                over in 0usize..40,
+                more in 0usize..10,
+                turn in 0usize..50,
+            ) {
+                let suite = scored_suite(n);
+                let small = MIN_QUERIES + over.min(suite.working().len() - MIN_QUERIES);
+                let small_sample = suite.sample(small, place).unwrap();
+                let Ok(larger) = suite.sample(small + more, place) else {
+                    return Ok(());
+                };
+                let ids = |s: &Suite| s.queries.iter().map(|(q, _)| q.clone()).collect::<std::collections::BTreeSet<_>>();
+                prop_assert!(ids(&small_sample).is_subset(&ids(&larger)));
+                let mut turned = suite.clone();
+                turned.queries.rotate_left(turn % (n + 2));
+                turned.queries.reverse();
+                prop_assert_eq!(ids(&turned.sample(small, place).unwrap()), ids(&small_sample));
+            }
+        }
     }
 
     #[test]
