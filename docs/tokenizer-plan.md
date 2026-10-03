@@ -364,7 +364,8 @@ user's (serving plan §11 item 11), and this plan is its analysis part.
   English, so D2's effect on Chinese, Japanese and Thai shows in none of
   them. What checks it: the census of I1 run again after the change (the
   works whose text now yields terms, by language), explicit cases from
-  real titles in each script, and, when their hurdles are cleared, judged
+  real titles in each script, every word ICU4X finds in those titles
+  split again alone (§7 item 13), and, when their hurdles are cleared, judged
   sets in those languages (NTCIR's Japanese academic collections, the
   CLEF Domain-Specific track's German and Russian — the benchmarks note
   §2.4). *Recommended.*
@@ -472,9 +473,17 @@ user's (serving plan §11 item 11), and this plan is its analysis part.
     Greek letters' names and mu's `u`; hyphen joins and letter–digit and
     script splits as extra terms at the same position; the cap a switch
     (D3 decided it gone, kept switchable for the ablation). The switches
-    a value, recorded in the index's manifest, their digest in the name
-    the tokenizer is registered under. All switches off is today's
-    analyzer, term for term — a property test holds it.
+    a value, recorded in the index's manifest and spelled out in the name
+    the tokenizer is registered under (`ol1-capnone-bigrams-fold1-…`), so
+    a report shows what an index was built with. All switches off is
+    today's analyzer, term for term — a property test holds it. Built
+    2026-09-30 (`search::analyzer`): the index side writes a text's forms
+    and every other spelling's at the same positions, the query side one
+    canonical form of each piece, so a query never asks for every
+    alternative at once. ICU4X's dictionary model, not its LSTM model:
+    the LSTM reads a word by its neighbours, and `เบาหวาน` (diabetes),
+    one word in a Thai title, is two typed alone — a query that misses
+    its own title (I2; §7 item 13).
   - **T1.2 An index with it.** The mapping takes the switches; an opened
     index registers the analyzer its manifest names, so a query is split
     as its text was (I2); `search build` over the epoch's rows with given
@@ -590,6 +599,19 @@ Made in measuring D13:
     *Costs* the shares of other languages called English, which count
     those as the detector's errors. *Lifted by* reading the samples and a
     set of texts a person labels.
+13. **ICU4X's dictionary model splits Thai, Lao, Khmer and Burmese**, not
+    its LSTM model, ICU4X's default for them. The LSTM splits a word by
+    its neighbours: in a sentence written for the analyzer's tests,
+    `เบาหวาน` (diabetes) is one word in the title and `เบา` `หวาน` typed
+    alone, so the query misses the title (I2); the dictionary model split
+    every word of seven such sentences, one or two per script, as it
+    splits the word alone. A dictionary's longest match can still depend
+    on context, and those sentences are not the corpus's titles.
+    *Costs* the LSTM's reading of words its dictionary lacks, which the
+    dictionary splits wrongly (D2), and I2 unmeasured on real titles.
+    *Lifted by* T2's census (D11): every word the analyzer finds in the
+    corpus's titles in these scripts, and in Chinese and Japanese under
+    `Words`, split again alone, the share that splits otherwise counted.
 
 ## 8. Open items
 

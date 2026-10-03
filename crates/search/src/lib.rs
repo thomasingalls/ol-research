@@ -15,6 +15,7 @@
 //! report prints what it did.
 
 pub mod analysis;
+pub mod analyzer;
 pub mod error;
 pub mod index;
 pub mod report;

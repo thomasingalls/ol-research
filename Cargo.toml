@@ -53,6 +53,13 @@ blake3 = "1"
 # box and never built in (docs/inbox/language-identification.md).
 lingua = { version = "1.8", default-features = false }
 fasttext-pure-rs = "0.1"
+# The analyzer's treatments (tokenizer plan D2): ICU4X's word breaks for
+# the scripts written without spaces, the Unicode Consortium's own data
+# compiled in; its NFKC (D4) is `icu_normalizer`, below. The dictionary
+# model only: the LSTM model (`auto`) splits a word typed alone otherwise
+# than it split the word in its title (`เบาหวาน`, diabetes), and a query
+# is typed alone (I2).
+icu_segmenter = { version = "2", default-features = false, features = ["compiled_data"] }
 # The transport (serving plan §7): gRPC on tonic over hyper 1; protox
 # compiles the protocol in pure Rust, so nothing outside cargo is
 # installed; reflection and health so grpcurl can drive the server.

@@ -1,0 +1,10 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 6c49c50ae59eaeaf975f5c7866c14b5806d6ee19eaa5f75eef8b020b053ecbe7 # shrinks to switches = Switches { cap: None, unspaced: Bigrams, fold: true, greek: false, joins: false }, text = "ￂa"
+cc 990917cb5c28c98db9acf5ddc67489bbe0d76c98aad55e18e271cb75803b2939 # shrinks to switches = Switches { cap: Some(41), unspaced: Whole, fold: false, greek: true, joins: false }, text = "ก국因าéຢγ0ΣAカAA因\u{eb8}a"
+cc 61a6dc7c907ca7a901841c5f30cffdb10a893c1e0a7e56d097db5cac5d164e67 # shrinks to switches = Switches { cap: None, unspaced: Whole, fold: true, greek: false, joins: false }, text = "ꟽ"
+cc c79fda2aa314e083561c2f4340a9a1cbcfa1445342210dc2dbe032a5617b6ce9 # shrinks to switches = Switches { cap: None, unspaced: Bigrams, fold: false, greek: false, joins: false }, text = "\u{eb8}ຢຢA"
