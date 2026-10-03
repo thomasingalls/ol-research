@@ -987,6 +987,70 @@ Nothing here closes a door the entity work needs:
    list (§10) gives a journal's print and online ISSNs together under its
    NLM id, and whether it has these is not checked.
 
+   **On the box** (`ol-rht-survey-journals-v1`, 2026-10-03: exit 0, 27
+   minutes, 22 GB at its peak; the report on the claim under
+   `surveys/journals/`, a copy in `target/m13-surveys/`). 30,804,790
+   pairs; 30,600,009 give ISSNs on both sides and 992,248 of them share
+   none (3.2%), over 3,662 pairs of a PubMed journal and a set of
+   Crossref's ISSNs. The merge counted 993,260 of 30,662,791, so pairing
+   by DOI stands in for the merge's. By class, the first that holds:
+
+   | Of the pairs sharing no ISSN | Pairs | | Journal pairs |
+   |---|---|---|---|
+   | NLM gives Crossref's ISSN this ISSN-L on another record | 254,366 | 25.6% | 421 |
+   | NLM gives it this NLM id on another record | 10,928 | 1.1% | 8 |
+   | Crossref pairs them on another record; NLM has not Crossref's | 37,845 | 3.8% | 277 |
+   | Crossref pairs them on another record; NLM has another journal | 59,391 | 6.0% | 69 |
+   | NLM has Crossref's ISSN as another journal's | 450,870 | 45.4% | 2,114 |
+   | No PubMed record names Crossref's ISSN | 178,848 | 18.0% | 773 |
+
+   What it says, in three parts of the 992,248:
+   - **265,294 (26.7%) NLM's own records settle** (the first two
+     classes): one title's ISSNs, which NLM gives one ISSN-L or one id
+     (`Appl Opt`, `Mol Cell Biol`, `Genetics`).
+   - **510,261 (51.4%) NLM has under another journal** (the fourth and
+     fifth classes, 2,183 journal pairs): one of Crossref's ISSNs is, by
+     NLM, a different title's. By the largest of them these are a journal
+     renamed (`Br Med J` and BMJ, 47,648 over three pairs; `Proc Soc Exp
+     Biol Med` and Experimental Biology and Medicine, 28,347; `Br Heart J`
+     and Heart; `J Reprod Fertil` and Reproduction) and a journal NLM
+     indexes whole where Crossref names its section (`Biochim Biophys
+     Acta`, `Am J Physiol`). PubMed gives the journal as it was titled
+     when the work came out, Crossref the one its back volumes are filed
+     under now. An ISSN-L joins one title's media, and these are two
+     titles: in 436,546 pairs (44.0% of all) every ISSN on both sides has
+     NLM's ISSN-L and the two sides' differ, so no table of ISSN-Ls
+     settles those, the ISSN Centre's included. Only the largest fifteen
+     journal pairs of each class were read; the rest are not checked.
+   - **216,693 (21.8%) NLM is silent on** (the third and sixth classes,
+     1,050 journal pairs): no PubMed record names any of Crossref's
+     ISSNs. Some are the other medium of an NLM title, which its journal
+     list should have (`J Mech Behav Biomed Mater`'s print 1751-6161,
+     `Int J Surg`'s 1743-9191); some are sections and former ISSNs again
+     (`Biochem J`'s 0306-3283, the BBA sections NLM never indexed apart).
+     Crossref pairs the two on another record in 37,845 of them.
+
+   The list: 1,437 ISSNs NLM gives no ISSN-L are named in 290,408 of the
+   726,954 unsettled pairs, the hundred in the most pairs in 240,940.
+   That is the most a lookup of them could touch and more than it would
+   settle: the list's first, BMJ's online ISSN (47,657 pairs), sits in
+   pairs that are a renamed journal whatever its ISSN-L is.
+
+   NLM's table is nearly one: 40,067 ISSNs under 32,202 ISSN-Ls, two
+   ISSNs under two ISSN-Ls, no NLM id with two, 45 ISSN-Ls under more than
+   one NLM id. It reaches 27,663 of Crossref's 210,097 ISSNs, which 63.6%
+   of the Crossref records giving an ISSN name; 181,736 no PubMed record
+   names, 6,581 of those beside one that one does.
+
+   **Open on these numbers** (the user's): the question was posed as which
+   ISSNs name one journal, and the larger part of the conflicts is another
+   relation, one journal's line through its titles and sections. Whether
+   two records naming a journal and its later title, or a journal and its
+   section, agree on the journal; and, if they do, where the line comes
+   from: the pairs themselves, each a PubMed journal and a set of
+   Crossref's ISSNs met on many DOIs, checked against what NLM's catalogue
+   says continues what.
+
 Settled in draft 3 (2026-09-29): the journal as a level (D14), and
 Crossref records that give only `issued` (D4).
 
@@ -1143,4 +1207,9 @@ Crossref records that give only `issued` (D4).
   (`survey journals`), before anything is asked of the portal. On its
   laptop numbers the user set the direction: NLM's journal list and what
   our records pair, robust against the ISSN Centre's gatekeeping, no
-  paying for a list a few hours of the box can discover.
+  paying for a list a few hours of the box can discover. The box's
+  numbers the same day: NLM's records settle 26.7% of the 992,248 pairs
+  sharing no ISSN; in 51.4% NLM has Crossref's ISSN under another
+  journal, renamed journals and sections by the largest, and 44.0% have
+  an ISSN-L on both sides that differs, which no ISSN-L table would have
+  settled; NLM is silent on the other 21.8%.
