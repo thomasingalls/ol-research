@@ -1,0 +1,138 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT c.id, c.session_id, c.revision, c.runner, c.runner_version,\n                    c.format, c.format_version, c.native_session_id, c.payload, c.created_at\n             FROM workbench_checkpoints c JOIN workbench_sessions s ON s.id = c.session_id\n             WHERE s.project_id = $1 AND s.id = $2 AND c.id = $3",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "workbench_checkpoints",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "session_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "workbench_checkpoints",
+            "name": "session_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "revision",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "workbench_checkpoints",
+            "name": "revision"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "runner",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "workbench_checkpoints",
+            "name": "runner"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "runner_version",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "workbench_checkpoints",
+            "name": "runner_version"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "format",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "workbench_checkpoints",
+            "name": "format"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "format_version",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "workbench_checkpoints",
+            "name": "format_version"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "native_session_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "workbench_checkpoints",
+            "name": "native_session_id"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "payload",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "workbench_checkpoints",
+            "name": "payload"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "workbench_checkpoints",
+            "name": "created_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "10afa9a0f85fa49ece85916e07a851f1fd6ece1eb1322b68d290c49e8837ad02"
+}

@@ -1,6 +1,6 @@
 # ol-rht web
 
-A small query interface over the citation graph. Three screens, one person, no
+A small query interface over the citation graph. Four screens, one person, no
 product ambitions:
 
 - **Search** — text box, list of results. A result is the same row as any
@@ -44,6 +44,12 @@ product ambitions:
   `openalex:W…`, `reg1038:…` — a publisher's own id) or a public id. One work jumps straight there; a **shared**
   name offers the choice between the works it was accepted into; an id retired
   by a **split** says so.
+- **Chat** — an assistant-ui thread connected through the Rust chat API,
+  with corpus search, paper retrieval and Postgres-backed conversation history.
+  The hosted version is a public shared demo: anyone can read and change its
+  conversations. A persistent notice explains this and reproduces NVIDIA's
+  free-endpoint disclosure with links to its privacy policy and trial terms.
+  See [deployment](../docs/chat-deployment.md) before changing the provider.
 
 Vocabulary, kept the same as the pipeline: a **work** is one entity; its
 **names** are the identifiers that point at it; a **stub** is a work we know
@@ -94,7 +100,7 @@ Routing is [TanStack Router](https://tanstack.com/router), code-based: routes
 declared beside the components they render, composed in `src/router.ts`.
 Search and work share a layout route, `browse`, which owns the search panel
 and `q` — that is what keeps the panel mounted when a work opens beside it.
-No file-based codegen — three screens do not earn a generated route tree.
+No file-based codegen — four screens do not earn a generated route tree.
 
 | route            | URL                                          | notes                                       |
 | ---------------- | -------------------------------------------- | ------------------------------------------- |
@@ -102,6 +108,7 @@ No file-based codegen — three screens do not earn a generated route tree.
 | `/work/$workId`  | `/work/ol:3FWKF485MRW1QF?q=protein+folding`  | `workId` is a public id; `q` is the search beside it, if any |
 | `/work/$workId`  | `/work/ol:3FWKF485MRW1QF?list=cited-alongside` | which list is open: `references` (the default, which normalises away), `cites-same`, `citers`, `cited-alongside` |
 | `/resolve`       | `/resolve?text=pmid:10410805`                | one outcome redirects to the work           |
+| `/chat`          | `/chat`                                      | model configured by the chat backend; session ID in the URL |
 
 A link from one work to another keeps `q` and `list`, so the results stay
 beside it and the same list opens on it.
@@ -351,7 +358,8 @@ Keep the version pinned to something at least two weeks old. Currently
 installed: `button`, `input`, `card`, `badge`, `skeleton`, `alert`,
 `input-group`, `empty`, `textarea`, which `input-group` imports,
 `dropdown-menu` and `button-group`, the Read button's, and `separator`,
-which `button-group` imports.
+which `button-group` imports. Chat also brings `tooltip`, `avatar`,
+`collapsible` and `dialog` through the assistant-ui registry.
 
 The list tabs beside a work are not a `tabs` component. Which tab is open lives in
 the URL, so each tab is a `Link` — a real one, that can be middle-clicked,
@@ -359,8 +367,8 @@ copied and pasted to someone else — styled as a segmented control. A component
 holding that in its own state would have to be kept in step with the URL, and
 would not be a link.
 
-`components.json` records the choices made at init: the Radix UI primitives,
-the `radix-nova` style, neutral base color, and the `@/` import alias.
+`components.json` records the choices: the Radix UI primitives,
+the `radix-rhea` style, zinc base color, and the `@/` import alias.
 
 Dark mode follows the system setting, in CSS alone. Init puts the dark
 palette under a `.dark` class that something would have to set; here it is
@@ -368,3 +376,98 @@ under `@media (prefers-color-scheme: dark)` instead, and Tailwind's `dark:`
 means that same query (the `@custom-variant` line in `src/index.css`). A
 component added later needs nothing: its `dark:` classes go through the same
 variant. A toggle, if one is ever wanted, means putting the class back.
+
+## Chat UI
+
+The [dated library survey](../docs/inbox/ai-chat-ui-landscape.md) records why
+assistant-ui was chosen. Its own CLI is optional. This project used the
+existing shadcn CLI, with the `@assistant-ui` registry in `components.json`:
+
+```sh
+pnpm exec shadcn add @assistant-ui/thread
+```
+
+The [research workbench design](../docs/research-workbench-design.md)
+records the proposed persistence, runner and artifact architecture beyond
+this first chat implementation, including open decisions and demo criteria.
+The [Postgres storage foundation](../docs/workbench-storage.md) is implemented
+and now backs a versioned chat-history API. Conversation branches and selected
+head survive reloads; native runner state and durable execution remain separate.
+
+The UI source is in `src/components/assistant-ui/elements`; its runtime is
+an ordinary dependency (`@assistant-ui/react`, with
+`@assistant-ui/react-markdown` for markdown). Existing shared shadcn
+components were kept. No cloud account, assistant-ui CLI, AI SDK provider,
+or Next.js migration is needed to run it.
+
+The September 26 live registry referenced APIs newer than the runtime
+allowed by the 14-day release-age policy. The copied assistant-ui elements
+and their two hooks were therefore aligned with upstream
+[`af7466155560aa3ff364abf57e89c7209882ab0d`](https://github.com/assistant-ui/assistant-ui/commit/af7466155560aa3ff364abf57e89c7209882ab0d)
+(September 10, React runtime `0.15.19`, markdown `0.14.15`). Upstream source
+is under `packages/ui/src/components/react/assistant-ui/elements` and
+`packages/ui/src/hooks`. Its Base UI tooltip/dialog triggers were adapted
+to this app's Radix `asChild` API, as the registry does. The tooltip button
+retains Radix `Slot.Slottable` for its icon and accessible label.
+
+Local customizations are the literature placeholder, keeping Send on the
+right without attachments, hiding attachment controls without an adapter,
+an accessible edit-field label, a token-limit notice, and the welcome
+component supplied by `src/components/chat.tsx`. The shared header wraps on narrow screens so
+the added Chat link fits. The registry includes renderers for richer
+message parts; the local adapter currently supports text and exposed
+reasoning, plus server-executed corpus search and paper lookup.
+`chat-tools.tsx` renders search results and compact lookup status. The model writes citations using
+retrieved metadata and reading links; citation formatting has no dedicated
+UI yet. Links in answers and search cards open new tabs to preserve the
+conversation. Upgrades should review both the copied sources and
+runtime package versions together, then typecheck and exercise the UI.
+Running the registry command again fetches its **current** source, not
+the snapshot documented here. The dependency-age policy is unchanged.
+
+`src/routes/chat.tsx` loads the chat screen lazily. `src/components/chat.tsx`
+creates an assistant-ui `LocalRuntime` scoped to that screen, and
+`src/lib/chat-adapter.ts` is the model adapter. It sends the selected branch
+to `/v1/chat`, decodes typed NDJSON events, and yields cumulative ordered
+parts to assistant-ui. Rust is the source of the request/event types in
+`src/generated/chat.ts`; regenerate with `just chat-types`. Assistant-ui
+owns the composer, messages, edit branches and regeneration.
+`src/lib/chat-history.ts` connects its history adapter to Postgres through
+Rust: it saves the full tree and selected head, gates generation on the user
+message's save, and exposes save/retry/conflict status. Session selection is
+stored in the `/chat?session=…` URL. Failed saves retain an exportable local
+snapshot; they never silently overwrite a newer revision.
+
+Copy the repository root's `.env.example` to `.env` if needed and fill in
+`OPENROUTER_API_KEY` there. The example selects `nvidia/nemotron-3-ultra-550b-a55b:free` on
+OpenRouter. Run `just db-up db-migrate` first, then `just chat-api` and
+`just web` in separate terminals, then open `/chat`. The API runs on
+loopback port 50053; `just` loads the root `.env` automatically.
+Vite proxies `/v1/chat` there **during development only**. Production serves
+the static build and routes `/v1/chat` to Rust without Vite. Run `just serve`
+for both corpus tools; plain conversation works without it. The shell's
+existing `/v1/epoch` request remains separate.
+
+The browser has no model hostname or credentials. Rust sends chat messages
+and corpus tool results to OpenRouter over HTTPS. For offline Gemma, set
+`OL_RHT_CHAT_PROVIDER=local` and `OL_RHT_CHAT_MODEL=local-gemma` in the root
+`.env`, and also run `just chat-model`. That mode uses llama.cpp's cached
+model and the dummy key `local-dev-only`.
+See [the chat API documentation](../docs/chat-api.md) for startup,
+the wire contract, limits, cancellation behavior and tests.
+
+Check that an empty/whitespace draft cannot send, Enter sends, Shift+Enter
+adds a line, and IME composition does not send. Stop should freeze the
+partial answer and close the upstream connection (also freeing the generation
+slot with the tested local llama.cpp backend). Refresh creates
+another response branch; editing preserves the earlier branch. Leaving
+Chat and reopening the same session URL, or reloading after `Saved`, restores
+that conversation. Selecting **New chat** keeps earlier conversations.
+A running reply saves on completion/Stop; abrupt closure before that save
+can lose the reply. This is history persistence, not run resumption. Attachments
+and voice controls stay hidden until their adapters exist.
+
+`pnpm test:chat` runs stream and history-adapter tests without a model.
+`just db-test` covers the storage and chat API against isolated Postgres databases. The backend
+tests also use a local fake; `just chat-check` runs both. The Node tests
+use native TypeScript stripping (Node 22.18+).

@@ -22,6 +22,7 @@ search = { path = "crates/search" }
 query-parser = { path = "crates/query-parser" }
 citation-match = { path = "crates/citation-match" }
 evaluation = { path = "crates/evaluation" }
+workbench-store = { path = "crates/workbench-store" }
 source-crossref = { path = "crates/source-crossref" }
 source-openalex = { path = "crates/source-openalex" }
 source-pubmed = { path = "crates/source-pubmed" }
@@ -77,6 +78,15 @@ protox = "0.9"
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "time", "sync"] }
 tokio-stream = { version = "0.1", features = ["net"] }
+# Async chat transport, including HTTPS for OpenRouter. Dropping a browser
+# response also drops the in-flight model request.
+reqwest = { version = "0.13", default-features = false, features = ["json", "stream", "rustls"] }
+async-stream = "0.3"
+# Application persistence, separate from the corpus and Temporal's own store.
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls-ring-native-roots", "postgres", "macros", "migrate", "uuid", "chrono"] }
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+thiserror = "2"
 # Fetching (plan §3.5): rustls, no transparent decompression — raw bytes
 # must land as served — and the two digests the sources publish or imply.
 ureq = { version = "3", default-features = false, features = ["rustls"] }

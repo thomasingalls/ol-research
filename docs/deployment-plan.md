@@ -100,7 +100,10 @@ merges.
 - **The toolchain.** rustup reads `rust-toolchain.toml`, so the image is
   built by whatever stable is current at build time, rustfmt and clippy
   included, as on the laptop. Pinning a version there is what would make
-  two builds of one commit use one compiler.
+  two builds of one commit use one compiler. A new stable costs one cold
+  build: the Rustup buildpack fails on a cached toolchain that has an
+  update, and the homelab's build step answers that one failure by
+  building again without the cache (§9, 2026-10-03).
 - **Native code.** `ring` and `zstd-sys` need a C compiler; Paketo's
   Jammy base build image carries `build-essential`. The protocol is
   compiled by `protox` in `build.rs`, so no `protoc`. Whether the
@@ -615,6 +618,19 @@ image.
 - 2026-09-29, mimalloc under both binaries (§2). The user kept it as "a
   win in hand", with jemalloc to compare later if it seems worth it
   (§11).
+- 2026-10-03, a new stable Rust and the build cache (§2). The first Rust
+  image after Rust 1.99.0 (run `ol-rht-ci-run-cb8tx`, on `4312fcd`, the
+  chat merge) failed in 27 seconds, compiling nothing: the cache held
+  1.98.1 as `stable`, rustup 1.29's `rustup check` exits 100 when an
+  update exists, and the Rustup buildpack (1.17.0, the latest, with
+  nothing filed upstream) takes that for an error. The user's answer is
+  in the homelab's build step (`6effdd7`): on that one failure it clears
+  the restored layers and runs the lifecycle again with `-skip-restore`,
+  and what that exports replaces the cache. One cold build for each Rust
+  release, about four minutes on the model-13 lane. The toolchain stays
+  `stable`: pinning it to 1.98.1 was drafted and withdrawn the same day
+  (open item 8). That run did build the frontend image of `4312fcd`; the
+  commit that adds this entry is what asks for the Rust image again.
 
 ## 10. Open items
 
@@ -636,6 +652,7 @@ image.
    distroless or from scratch eventually (§11).
 8. **The toolchain** (§2): `rust-toolchain.toml` says `stable`, so each
    build takes the stable of its day; pinning is the user's call.
+   Considered 2026-10-03 and left open (§9).
 9. **The store mount for the server** (§5): read-only if Tantivy allows.
 10. **The graph on the NVMe** (§3): proposed, awaiting the user; measured
    at D6 against the same graph on ZFS. The tower's NVMe is inferred to

@@ -42,14 +42,14 @@ export function Shell() {
       <header
         data-vt="header"
         className={cn(
-          "mb-8 flex items-center gap-4",
+          "mb-8 flex flex-wrap items-center gap-4",
           "xl:bg-background xl:sticky xl:top-0 xl:z-20 xl:mb-0 xl:h-(--bar)",
           focused && "xl:bg-canvas",
         )}
       >
         {/* The mark and wordmark are one lockup, as on the homepage, set back
             so that what this site is — Research — reads first. */}
-        <Link to="/" className="flex items-center gap-2">
+        <Link to="/" className="flex shrink-0 items-center gap-2">
           <span className="text-muted-foreground flex items-center gap-2">
             <Logo className="size-8" />
             <span className="font-brand text-xl leading-none">
@@ -67,6 +67,9 @@ export function Shell() {
           </Button>
           <Button asChild variant="ghost" size="sm">
             <Link to="/find">Find a paper</Link>
+          </Button>
+          <Button asChild variant="ghost" size="sm">
+            <Link to="/chat">Chat</Link>
           </Button>
         </nav>
       </header>
