@@ -294,7 +294,12 @@ user's (serving plan §11 item 11), and this plan is its analysis part.
   lands, and a word the dictionary lacks is split wrongly.
   *Recommended: (a) for the four CJK scripts in the first treatment, (b)
   for Thai and its neighbours, and (b) for CJK as its own treatment
-  against (a) — the measurement decides between them.*
+  against (a) — the measurement decides between them.* **Amended
+  2026-10-03**, the user's call (§9): under (a) the index writes each
+  character beside its pairs, at its own position, so that a word of
+  one character (`癌`) and a character alone beside a digit (the `型` of
+  `2型`) are found (I1); a query asks pairs of anything longer than one
+  character. Part of pairs, not a switch of its own.
 - **D3. The length cap.** Raise it to what the longest real terms need,
   as the census finds them (T0), with the engine's own limit the only
   ceiling. *Recommended.* **Taken, after T0**: no cap on titles or
@@ -495,7 +500,13 @@ user's (serving plan §11 item 11), and this plan is its analysis part.
     thing — pairs no longer split `IL6` beside Han, which is the joins
     switch's to do. The tokens leave in the order of their positions, a
     form once at a position, which the engine requires. Properties hold
-    each of these on generated text.
+    each of these on generated text. And, D2 as amended the same day:
+    under pairs the index writes each character at its own position
+    beside the pairs, a stretch takes a position a character, and a
+    query asks a character only when it is the whole stretch — so any
+    piece of a stretch finds it, one character or more, and the end of a
+    stretch typed with the word glued to it (`2型`, `型2`) finds the
+    text.
   - **T1.2 An index with it.** The mapping takes the switches; an opened
     index registers the analyzer its manifest names, so a query is split
     as its text was (I2); `search build` over the documents the epoch's
@@ -718,18 +729,22 @@ Made in measuring D13:
     comparison of two builds, in ranks among tied works. *Lifted by* a
     build of one segment written by one thread, at the price of the
     build's time, or by the next engine.
-16. **Under pairs, one character typed alone finds nothing.** `肺癌基因`
-    is the pairs `肺癌` `癌基` `基因`; `癌` (cancer) typed alone is the
-    term `癌`, which the index never wrote — nor `型` after a digit, in
-    `2型糖尿病` (type 2 diabetes), where `2型` asks for `2` and `型`. As
-    Lucene's CJK analyzer does by default. I1 says every word is
-    findable, and Chinese has words of one character. *Costs* those
-    words, alone or beside a digit or a Latin word, in Chinese, Japanese
-    and Korean text under pairs; not under ICU4X's words, where the
-    dictionary has them. *Lifted by* the index writing each character
-    beside its pairs (Lucene's `outputUnigrams`), the query still asking
-    pairs of anything longer — the user's call (§8 item 7); it adds a
-    term a character to those texts, and item 14's cost with it.
+16. **Under pairs, one character typed alone found nothing** — lifted
+    2026-10-03 (D2 amended; the user's call). `肺癌基因` was the pairs
+    `肺癌` `癌基` `基因`; `癌` (cancer) typed alone was the term `癌`,
+    which the index never wrote — nor `型` after a digit, in `2型糖尿病`
+    (type 2 diabetes) — as Lucene's CJK analyzer does by default, against
+    I1. The index now writes each character beside its pairs (Lucene's
+    `outputUnigrams`), the query still asking pairs of anything longer,
+    and a stretch takes a position a character on both sides, so that
+    what stands beside it stands beside its last character. *Costs*, in
+    its place: a term a character more in Chinese, Japanese and Korean
+    text, so those fields are scored as about twice as long (item 14),
+    and their postings are larger — both measured on the screening
+    build; and a query of one common character matches very many texts,
+    which is what was asked. *Lifted by* nothing sought: the cost is the
+    price of I1 under pairs, and ICU4X's words (the other treatment)
+    does not pay it.
 
 ## 8. Open items
 
@@ -762,27 +777,26 @@ Made in measuring D13:
    languages, or even reliably be able to distinguish japanese from
    chinese writing". Not needed for English stemming (D13, decided).
    Before T3.
-7. **Single characters under pairs** (§7 item 16), the user's to decide:
-   whether the index writes each Han, kana and Hangul character beside
-   its pairs, so that `癌` and the `型` of `2型` are found. *Recommended:
-   yes, as part of pairs and not a switch of its own* — I1 is an
-   invariant, no judged set in those languages would measure the
-   switch, and the index's size and build time with it are measured on
-   the screening build either way. Before T2's screen.
-8. **How large the screening pieces are**, not chosen: how many of the
-   corpus's other works the screening set samples, and how many queries
-   a suite's sample holds. Neither is guessed here. What can be
-   measured on the box before any screen, since a larger draw holds
-   every smaller one: the set at several sizes, each one's documents
-   saved and its control built and run, for its build time, its index's
-   size, and how far its control's figures on the sampled queries stand
-   from the epoch's own on the same queries. *Recommended: measure at
-   about 1, 4 and 16 million sampled works (roughly 0.5%, 2% and 8% of
-   epoch 7's 188.7 million) with a quarter of RELISH's working half, the
-   evaluation plan's own example (§14.2), and take the smallest set
-   whose figures stand close to the next one's* — points to measure at,
-   not estimates of what is enough. The user's to set. Before T2's
-   screen.
+7. **Single characters under pairs** (§7 item 16) — **decided
+   2026-10-03**, as recommended: the index writes each Han, kana and
+   Hangul character beside its pairs, as part of pairs and not a switch
+   of its own (D2 amended), since I1 is an invariant and no judged set
+   in those languages would measure the switch. Built the same day; the
+   index's size and build time with it are measured on the screening
+   build.
+8. **How large the screening pieces are** — **decided 2026-10-03**, as
+   recommended: not guessed, measured on the box before any screen,
+   since a larger draw holds every smaller one. The set at about 1, 4
+   and 16 million sampled works (roughly 0.5%, 2% and 8% of epoch 7's
+   188.7 million), with a quarter of RELISH's working half as the
+   queries, the evaluation plan's own example (§14.2): each size's
+   documents saved and its control built and run, for its build time,
+   its index's size, and how far its control's figures on the sampled
+   queries stand from the next size's and from the epoch's own on the
+   same queries. The smallest set whose figures stand close to the next
+   one's is taken — points to measure at, not estimates of what is
+   enough; what "close" is, is read off the three and said then. The
+   box's Job is to come.
 
 ## 9. Decision log
 
@@ -832,3 +846,11 @@ Made in measuring D13:
   D13 decided: GlotLID, English unless another language at 0.5 or above
   (0.5 against 0.7 in T2's screen), no borrowing for now, answers cached
   by text hash.
+- **2026-10-03, after T1.1 to T1.4 were built.** Two questions put to
+  the user (§8 items 7 and 8), answered: "go with your recommendations
+  for both decisions". Under pairs the index writes each character
+  beside its pairs, part of pairs and not a switch of its own (D2
+  amended; §7 item 16 lifted); and the screening set's size is measured
+  on the box at about 1, 4 and 16 million sampled works with a quarter
+  of RELISH's working half, the smallest whose figures stand close to
+  the next one's taken.

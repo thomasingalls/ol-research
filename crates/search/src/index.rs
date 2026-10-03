@@ -878,6 +878,7 @@ mod tests {
             document(2, "Étude de l'efficacité", "", 2020),
             document(3, "新型冠状病毒肺炎患者的临床特征分析", "", 2020),
             document(4, "Dose of 5 µg of ＤＮＡ", "", 2020),
+            document(5, "2型糖尿病患者", "", 2020),
         ];
         let switches = Switches {
             cap: None,
@@ -921,6 +922,10 @@ mod tests {
             ("ETUDE", 2),
             ("肺炎", 3),
             ("临床特征", 3),
+            // One character, alone and beside a digit.
+            ("肺", 3),
+            ("2型", 5),
+            ("糖尿病", 5),
             ("ug", 4),
             ("DNA", 4),
         ] {

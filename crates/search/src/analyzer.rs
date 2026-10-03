@@ -39,9 +39,10 @@ pub enum Unspaced {
     /// As today: not at all — the whole run one term.
     Whole,
     /// Han, kana and Hangul into overlapping pairs of characters, across
-    /// the three as a word of Han and kana is written (a lone character
-    /// itself), so that any two characters or more of a stretch find it;
-    /// Thai, Lao, Khmer and Burmese into ICU4X's words.
+    /// the three as a word of Han and kana is written, and in the index
+    /// each character beside its pairs, so that any piece of a stretch
+    /// finds it, one character or more; Thai, Lao, Khmer and Burmese into
+    /// ICU4X's words.
     Bigrams,
     /// All of them into ICU4X's words.
     Words,
@@ -232,7 +233,7 @@ impl Analyzer {
                     }
                     Split::Pairs => {
                         last = None;
-                        self.pieces(start, bigrams(stretch), position, out)
+                        self.pairs(start, stretch, position, out)
                     }
                     Split::Words => {
                         last = None;
@@ -347,10 +348,38 @@ impl Analyzer {
         self.push(out, a_at, b_at + b.len(), position, main);
     }
 
-    /// A stretch of a script written without spaces, as its pieces — pairs
-    /// of characters, or words — each with its byte offset in the stretch:
-    /// a piece a position, one of the cap's length or more dropped where
-    /// it stood.
+    /// A stretch split into pairs (D2): every two adjacent characters, at
+    /// the first's position, so that any two characters or more of the
+    /// stretch, typed, are pairs the index wrote side by side. On the
+    /// index side each character too, at its own position — Chinese has
+    /// words of one character, `癌`, and a character can stand alone
+    /// beside a digit, the `型` of `2型` — and on the query side a
+    /// character only when it is the whole stretch, since of anything
+    /// longer the pairs say more. A stretch takes a position a character,
+    /// on both sides, so that what follows it stands beside its last
+    /// character whichever was asked for.
+    fn pairs(&mut self, at: usize, stretch: &str, position: usize, out: &mut Vec<Token>) -> usize {
+        let starts: Vec<usize> = stretch
+            .char_indices()
+            .map(|(i, _)| i)
+            .chain([stretch.len()])
+            .collect();
+        let characters = starts.len() - 1;
+        for i in 0..characters {
+            let from = at + starts[i];
+            if self.side == Side::Index || characters == 1 {
+                self.piece(from, &stretch[starts[i]..starts[i + 1]], position + i, out);
+            }
+            if i + 1 < characters {
+                self.piece(from, &stretch[starts[i]..starts[i + 2]], position + i, out);
+            }
+        }
+        characters
+    }
+
+    /// A stretch of a script written without spaces as the words ICU4X
+    /// finds in it, each with its byte offset in the stretch: a word a
+    /// position.
     fn pieces(
         &mut self,
         at: usize,
@@ -360,14 +389,19 @@ impl Analyzer {
     ) -> usize {
         let taken = pieces.len();
         for (k, (offset, piece)) in pieces.into_iter().enumerate() {
-            if self.switches.cap.is_some_and(|cap| piece.len() >= cap) {
-                continue;
-            }
-            let main = self.main(piece);
-            let start = at + offset;
-            self.push(out, start, start + piece.len(), position + k, main);
+            self.piece(at + offset, piece, position + k, out);
         }
         taken
+    }
+
+    /// One piece of a stretch at its position; one of the cap's length or
+    /// more is dropped where it stood.
+    fn piece(&mut self, at: usize, piece: &str, position: usize, out: &mut Vec<Token>) {
+        if self.switches.cap.is_some_and(|cap| piece.len() >= cap) {
+            return;
+        }
+        let main = self.main(piece);
+        self.push(out, at, at + piece.len(), position, main);
     }
 
     /// A piece's form as the index writes it and the query asks for it:
@@ -458,23 +492,6 @@ fn bigram_script(script: Script) -> bool {
         script,
         Script::Han | Script::Hiragana | Script::Katakana | Script::Hangul
     )
-}
-
-/// Overlapping pairs of characters, each with its byte offset in `part`; a
-/// lone character itself.
-fn bigrams(part: &str) -> Vec<(usize, &str)> {
-    let starts: Vec<usize> = part.char_indices().map(|(i, _)| i).collect();
-    if starts.len() < 2 {
-        return vec![(0, part)];
-    }
-    starts
-        .windows(2)
-        .enumerate()
-        .map(|(k, w)| {
-            let end = starts.get(k + 2).copied().unwrap_or(part.len());
-            (w[0], &part[w[0]..end])
-        })
-        .collect()
 }
 
 /// ICU4X's words by its dictionary model, each with its byte offset in
@@ -639,16 +656,31 @@ pub(crate) mod tests {
 
     #[test]
     fn scripts_written_without_spaces_are_split() {
-        let chinese = index_terms(ALL, "肺癌基因治疗");
+        // Asked: the pairs. Written: the pairs, and each character at its
+        // own position, a position a character.
         assert_eq!(
-            words_of(&chinese),
+            words_of(&query_terms(ALL, "肺癌基因治疗")),
             vec!["肺癌", "癌基", "基因", "因治", "治疗"]
         );
+        assert_eq!(
+            index_terms(ALL, "肺癌基因"),
+            vec![
+                (0, "肺".into()),
+                (0, "肺癌".into()),
+                (1, "癌".into()),
+                (1, "癌基".into()),
+                (2, "基".into()),
+                (2, "基因".into()),
+                (3, "因".into()),
+            ]
+        );
+        // One character is the whole stretch: itself, on both sides.
+        assert_eq!(query_terms(ALL, "癌"), vec![(0, "癌".into())]);
+        assert_eq!(index_terms(ALL, "癌"), vec![(0, "癌".into())]);
         let thai = index_terms(ALL, "การศึกษาความชุกของโรคเบาหวาน");
         assert!(thai.len() > 2, "{thai:?}");
         assert!(thai.iter().all(|(_, t)| t.chars().count() < 12), "{thai:?}");
-        let mixed = index_terms(ALL, "DNA修复");
-        assert_eq!(words_of(&mixed), vec!["dna", "修复"]);
+        assert_eq!(words_of(&query_terms(ALL, "DNA修复")), vec!["dna", "修复"]);
         let words = index_terms(
             Switches {
                 unspaced: Unspaced::Words,
@@ -696,7 +728,7 @@ pub(crate) mod tests {
             }
         }
         assert_eq!(
-            words_of(&index_terms(ALL, "新しい治療")),
+            words_of(&query_terms(ALL, "新しい治療")),
             vec!["新し", "しい", "い治", "治療"]
         );
         assert!(finds(ALL, "新しい", "新しい治療"));
@@ -707,14 +739,44 @@ pub(crate) mod tests {
             ..Switches::TODAY
         };
         assert_eq!(
-            index_terms(pairs_only, "IL6基因"),
+            query_terms(pairs_only, "IL6基因"),
             vec![(0, "il6".into()), (1, "基因".into())]
         );
         // A digit is a word beside the script: `2型糖尿病`, type 2 diabetes.
         assert_eq!(
-            words_of(&index_terms(ALL, "2型糖尿病")),
+            words_of(&query_terms(ALL, "2型糖尿病")),
             vec!["2", "型糖", "糖尿", "尿病"]
         );
+    }
+
+    /// One character finds its text (I1): a word of one character, `癌`,
+    /// cancer; and a character alone beside a digit or a word, whichever
+    /// side it stands on — the `型` of `2型`, type 2.
+    #[test]
+    fn one_character_finds_its_text() {
+        for (query, title) in [
+            ("癌", "肺癌基因治疗"),
+            ("肺", "肺癌基因治疗"),
+            ("疗", "肺癌基因治疗"),
+            ("2型", "2型糖尿病"),
+            ("2型糖尿病", "2型糖尿病患者"),
+            ("型2", "糖尿病型2"),
+            ("病型2", "糖尿病型2"),
+            ("IL6基", "IL-6基因多态性"),
+            ("清IL-6", "血清IL6水平"),
+            ("の", "日本における糖尿病患者の臨床的特徴"),
+            ("국", "한국어"),
+        ] {
+            assert!(finds(ALL, query, title), "{query:?} in {title:?}");
+        }
+        for (query, title) in [
+            ("胃", "肺癌基因治疗"),
+            ("癌肺", "肺癌基因治疗"),
+            ("3型", "2型糖尿病"),
+            ("型2", "2型糖尿病"),
+        ] {
+            assert!(!finds(ALL, query, title), "{query:?} in {title:?}");
+        }
     }
 
     #[test]
@@ -924,12 +986,13 @@ pub(crate) mod tests {
             }
         }
 
-        /// Any two characters or more of a stretch split into pairs find
-        /// it, whatever stands beside it: what pairs are for.
+        /// Any piece of a stretch split into pairs finds it — one
+        /// character or more, whatever stands beside the stretch: what
+        /// pairs, and the characters written beside them, are for.
         #[test]
         fn a_piece_of_a_paired_stretch_finds_it(
             switches in switches(),
-            stretch in "[肺癌基因新日本がんしいカタ한국어]{2,10}",
+            stretch in "[肺癌基因新日本がんしいカタ한국어]{1,10}",
             from in any::<prop::sample::Index>(),
             to in any::<prop::sample::Index>(),
             before in "[a-z0-9 กา-]{0,4}",
@@ -937,13 +1000,41 @@ pub(crate) mod tests {
         ) {
             let switches = Switches { cap: None, unspaced: Unspaced::Bigrams, ..switches };
             let chars: Vec<char> = stretch.chars().collect();
-            let from = from.index(chars.len() - 1);
-            let to = from + 2 + to.index(chars.len() - from - 1);
+            let from = from.index(chars.len());
+            let to = from + 1 + to.index(chars.len() - from);
             let piece: String = chars[from..to].iter().collect();
             let text = format!("{before}{stretch}{after}");
             prop_assert!(
                 finds(switches, &piece, &text),
                 "{:?} in {:?} under {}", piece, text, switches.name()
+            );
+        }
+
+        /// The end of a paired stretch and the word glued to it, typed
+        /// together, find the text, on either side of the stretch: a
+        /// stretch takes a position a character, so the word stands
+        /// beside its last one whether a character or a pair was asked.
+        #[test]
+        fn the_end_of_a_stretch_and_the_word_beside_it_find_the_text(
+            switches in switches(),
+            stretch in "[肺癌基因新日本がんしいカタ한국어]{1,6}",
+            word in "[a-z]{1,4}|[0-9]{1,3}",
+            taken in 1usize..4,
+            word_first in any::<bool>(),
+        ) {
+            let switches = Switches { cap: None, unspaced: Unspaced::Bigrams, ..switches };
+            let chars: Vec<char> = stretch.chars().collect();
+            let taken = taken.min(chars.len());
+            let (text, asked) = if word_first {
+                let end: String = chars[..taken].iter().collect();
+                (format!("{word}{stretch}"), format!("{word}{end}"))
+            } else {
+                let end: String = chars[chars.len() - taken..].iter().collect();
+                (format!("{stretch}{word}"), format!("{end}{word}"))
+            };
+            prop_assert!(
+                finds(switches, &asked, &text),
+                "{:?} in {:?} under {}", asked, text, switches.name()
             );
         }
     }
