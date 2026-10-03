@@ -83,11 +83,24 @@ export OL_RHT_DATABASE_URL='postgres://ol_rht:local-dev-only@127.0.0.1:55432/ol_
 cargo run -p workbench-store --bin workbench-db -- migrate
 ```
 
-The library supports PostgreSQL TLS through rustls and native trust roots;
-connection settings remain explicit in the URL. The disabled TLS setting
-above is for the loopback development container. Configure remote database
-credentials and certificate verification for that deployment separately.
-This database is application storage, separate from Temporal's internals.
+For production, omit the password from `OL_RHT_DATABASE_URL` and supply it
+separately through `PGPASSWORD`. SQLx reads that environment variable as a raw
+password, so reserved URL characters need no percent-encoding. A password in
+the URL overrides `PGPASSWORD`; omit the entire `:password` portion, rather
+than leaving an empty password. Keyword-style libpq DSNs are not supported.
+The chat Deployment and migration Job both use this pattern:
+
+```text
+postgres://ol-rht@postgres-rw.postgres.svc.cluster.local:5432/ol_rht?sslmode=verify-full&sslrootcert=/etc/postgres/ca.crt
+```
+
+The library supports PostgreSQL TLS through rustls and native trust roots.
+The disabled TLS setting in the development example is for the loopback
+container. Production verifies the server: `verify-full` checks Postgres's
+certificate against the CA file named by `sslrootcert` and against the host
+name. SQLx's `require` would only encrypt, accepting any certificate.
+`PGPASSWORD` is injected from a Kubernetes Secret. This database is
+application storage, separate from Temporal's internals.
 
 ## Schema and guarantees
 

@@ -24,10 +24,21 @@ PVCs. No corpus rebuild, GPU, Temporal or model VM is needed for this slice.
 | `OL_RHT_CHAT_MODEL` | `nvidia/nemotron-3-ultra-550b-a55b:free` |
 | `OL_RHT_OPENROUTER_PROVIDER` | `nvidia` (provider allowlist; no fallback) |
 | `OPENROUTER_API_KEY` | Kubernetes Secret; never in a frontend build |
-| `OL_RHT_DATABASE_URL` | Dedicated database/role with verified TLS; Kubernetes Secret |
+| `OL_RHT_DATABASE_URL` | Password-free URL for the dedicated database/role with verified TLS (`sslmode=verify-full`) |
+| `PGPASSWORD` | Raw database password from the `ol-rht-chat` Kubernetes Secret |
 | `OL_RHT_CHAT_MAX_CONCURRENT` | `2` |
 | `OL_RHT_CHAT_REPLIES_PER_MINUTE` | `6` |
 | `OL_RHT_CHAT_WRITES_PER_MINUTE` | `60` |
+
+The chat Deployment and migration Job use the same password-free database URL
+and read `PGPASSWORD` from the same Secret. SQLx accepts the password as-is,
+including reserved URL characters; do not percent-encode it. Omit the password
+entirely from the URL (`postgres://ol-rht@…`), because a password in the URL
+overrides `PGPASSWORD`. The database remains `ol_rht`, owned by role `ol-rht`.
+The URL ends `?sslmode=verify-full&sslrootcert=/etc/postgres/ca.crt`: the
+connection is encrypted and Postgres's certificate is checked against the
+homelab's own CA, whose public certificate both pods mount from a ConfigMap.
+The homelab's `CHAT-ROLLOUT.md` says where the CA lives and who signs what.
 
 The public mode explicitly permits an operator-configured HTTP(S) corpus
 service address. Redirects remain disabled, credentials/query/fragment in

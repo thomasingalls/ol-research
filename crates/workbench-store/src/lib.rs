@@ -22,7 +22,9 @@ pub struct Store {
 
 impl Store {
     /// Connect with a bounded pool and finite connection/statement deadlines.
-    /// TLS and authentication options come from the URL; it is never logged.
+    /// `SQLx` reads connection options from the URL and PostgreSQL environment
+    /// variables, including `PGPASSWORD` when the URL omits a password.
+    /// The URL is never logged.
     ///
     /// # Errors
     /// Returns the `SQLx` connection/configuration error.
