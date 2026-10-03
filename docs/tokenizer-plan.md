@@ -463,7 +463,36 @@ user's (serving plan §11 item 11), and this plan is its analysis part.
   field (D8). Tests: generated text for the analyzer's own properties
   (any text: normalization done twice changes nothing, the query side and
   the index side agree, text with letters never yields no terms), and
-  real titles in each script as fixed cases.
+  real titles in each script as fixed cases. In steps (2026-09-30), so
+  T2's screen of D2–D6 can start before stemming is built:
+  - **T1.1 The analyzer.** One Tantivy tokenizer, D2–D6 each a switch:
+    runs of letters and digits as today; a run of an unspaced script
+    split into bigrams (Han, kana, Hangul) or ICU4X's word breaks (Thai,
+    Lao, Khmer, Burmese, and CJK as the alternative); NFKC and folding;
+    Greek letters' names and mu's `u`; hyphen joins and letter–digit and
+    script splits as extra terms at the same position; the cap a switch
+    (D3 decided it gone, kept switchable for the ablation). The switches
+    a value, recorded in the index's manifest, their digest in the name
+    the tokenizer is registered under. All switches off is today's
+    analyzer, term for term — a property test holds it.
+  - **T1.2 An index with it.** The mapping takes the switches; an opened
+    index registers the analyzer its manifest names, so a query is split
+    as its text was (I2); `search build` over the epoch's rows with given
+    switches into a directory of its own, never published; `evaluate
+    run --index` against it.
+  - **T1.3 The screening pieces (evaluation plan §14, E6).** The
+    screening set — every work a suite judged and a seeded random sample
+    of the rest — drawn once and kept; each working half's seeded query
+    sample; each build's switches in its manifest.
+  - **T1.4 A check before any screen.** The all-off build of the
+    screening set, run, must score as the epoch's index does on the same
+    works — the machinery changes nothing by itself.
+  - **T1.5 D13 and D8 in the index.** GlotLID on every title and
+    abstract at build time, answers cached by text hash on the claim; the
+    English stemmed fields (title, abstract) with KStem, ported from
+    Lucene, and perhaps current Porter2; the lexicon table (D10) as its
+    own switch; the query searching the stemmed fields at a lower weight,
+    a number tuned on the working halves alone (§14.6).
 - **T2. The first treatment: D2 to D6 and English stemming (D8)**, each
   a switch, screened by a fractional factorial design on the screening
   index against a sample of RELISH's working half (§14.4), the survivors
@@ -584,6 +613,15 @@ Made in measuring D13:
    not yet checked against the records. Kanuri (`kr`, Korea's country
    code) and Zhuang (`za`, South Africa's) are tagged on a few works too.
    Both are the model's and the merge's to look at.
+6. **Labelling Crossref's titles, deferred.** A person reading a few
+   hundred Crossref titles for their language would measure GlotLID
+   outside PubMed, say how often a title and its abstract differ (whether
+   borrowing is ever worth it), and ready T3's stemmers. Deferred
+   2026-09-30: it wants readers of the languages — the user: "i don't
+   think i'd personally be able to tell the difference between indic
+   languages, or even reliably be able to distinguish japanese from
+   chinese writing". Not needed for English stemming (D13, decided).
+   Before T3.
 
 ## 9. Decision log
 
