@@ -16,27 +16,41 @@
 //! A pair is a PubMed record and the Crossref record of a DOI it names,
 //! which is how nearly every pair of the merge is made; the merge's other
 //! evidence is not read, so the counts are near the merge's and not its.
-//! Every record is read at its speaking copy (merge plan §8). It writes
-//! nothing but the list `--out` names: the ISSNs NLM gives no ISSN-L for,
-//! the ones another table would be asked about.
+//! Every record is read at its speaking copy (merge plan §8).
+//!
+//! Each pair of a PubMed journal and a set of Crossref's ISSNs sharing none
+//! is also what a journal's line would be discovered from, a journal and
+//! its later title or its section: so each is counted with the evidence
+//! for it, how many DOIs it is met on, how much of the journal's records
+//! that is, the years, and whether the two records otherwise agree, on the
+//! volume and the first page.
+//!
+//! It writes nothing but the two tables `--out` names a directory for:
+//! `pairs.tsv`, every such pair of journals with that evidence, and
+//! `issns.tsv`, the ISSNs NLM gives no ISSN-L for, the ones another table
+//! would be asked about.
 
+use std::collections::hash_map::Entry as Slot;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::{self, Write as _};
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::{self, BufWriter, Write as _};
+use std::path::Path;
 use std::process::ExitCode;
 use std::time::Instant;
 
 use ingest::Store;
 use merge::copies::Copies;
 use merge::{Contributor, Name};
+use model::date::Year;
+use model::pages::Pages;
 use model::{Interned, Issn, Pmid, Table};
 use source_crossref::Crossref;
 use source_crossref::normalize::Work as CrossrefWork;
 use source_pubmed::Pubmed;
 use source_pubmed::normalize::Citation;
 
-use super::{each, read_copies};
+use super::{Agree, agree, each, issue_date, read_copies};
 use crate::{Options, Sets};
 
 /// Journal pairs shown of each class, those of the most pairs first.
@@ -45,8 +59,18 @@ const SHOWN: usize = 15;
 const ODD: usize = 5;
 /// The list's first rows, counted by the unsettled pairs they cover.
 const FIRST: [usize; 4] = [100, 1_000, 10_000, 100_000];
+/// Between a PubMed record's volume and its first page, as kept.
+const SEP: char = '\u{1f}';
+/// The columns of `pairs.tsv`. A pair's share of its journal is `pairs`
+/// of `journal's pairs`, the journal's pairs whose two sides both give
+/// ISSNs; `both given` counts the pairs giving a volume and a first page
+/// on both sides, `both same` those of them with each the same but for
+/// notation.
+const PAIRS: &str = "pairs\tclass\tjournal's pairs\tNLM id\tMedlineTA\tISSN\tISSN-L\t\
+Crossref's ISSNs\tCrossref's title\tfirst year\tlast year\tvolume same\tvolume differs\t\
+first page same\tfirst page differs\tboth given\tboth same\tpmid\tdoi";
 
-/// `survey journals [--store <root>] [--limit N] [--out <list.tsv>]`.
+/// `survey journals [--store <root>] [--limit N] [--out <dir>]`.
 pub(crate) fn journals(opts: &Options) -> ExitCode {
     if !opts.paths.is_empty()
         || opts.workers.is_some()
@@ -63,38 +87,46 @@ pub(crate) fn journals(opts: &Options) -> ExitCode {
     let what = "survey journals";
     let limit = opts.limit.map(|n| usize::try_from(n).unwrap_or(usize::MAX));
     // Before an hour's reading, not after it.
-    let list = match &opts.out {
-        Some(path) => match File::create(path) {
-            Ok(file) => Some((path, BufWriter::new(file))),
+    let tables = match &opts.out {
+        Some(dir) => match create(dir) {
+            Ok(files) => Some(files),
             Err(e) => {
-                eprintln!("{what}: {}: {e}", path.display());
+                eprintln!("{what}: {}: {e}", dir.display());
                 return ExitCode::FAILURE;
             }
         },
         None => None,
     };
-    let (report, rows) = match survey(&opts.store(), limit) {
+    let found = match survey(&opts.store(), limit) {
         Ok(found) => found,
         Err(e) => {
             eprintln!("{what}: {e}");
             return ExitCode::FAILURE;
         }
     };
-    if let Some((path, mut file)) = list {
+    if let (Some(dir), Some((mut pairs, mut issns))) = (&opts.out, tables) {
         let written = (|| -> io::Result<()> {
-            writeln!(file, "issn\tunsettled pairs\tCrossref records")?;
-            for row in &rows {
-                writeln!(file, "{}\t{}\t{}", row.issn, row.pairs, row.records)?;
+            writeln!(pairs, "{PAIRS}")?;
+            for line in &found.pairs {
+                writeln!(pairs, "{line}")?;
             }
-            file.flush()
+            pairs.flush()?;
+            writeln!(issns, "issn\tunsettled pairs\tCrossref records")?;
+            for row in &found.issns {
+                writeln!(issns, "{}\t{}\t{}", row.issn, row.pairs, row.records)?;
+            }
+            issns.flush()
         })();
         if let Err(e) = written {
-            eprintln!("{what}: {}: {e}", path.display());
+            eprintln!("{what}: {}: {e}", dir.display());
             return ExitCode::FAILURE;
         }
     }
     let mut out = io::stdout().lock();
-    match out.write_all(report.as_bytes()).and_then(|()| out.flush()) {
+    match out
+        .write_all(found.report.as_bytes())
+        .and_then(|()| out.flush())
+    {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("stdout: {e}");
@@ -103,7 +135,23 @@ pub(crate) fn journals(opts: &Options) -> ExitCode {
     }
 }
 
-fn survey(store: &Store, limit: Option<usize>) -> Result<(String, Vec<Row>), String> {
+/// The two tables' files in `dir`, made if it is not there.
+fn create(dir: &Path) -> io::Result<(BufWriter<File>, BufWriter<File>)> {
+    fs::create_dir_all(dir)?;
+    let pairs = File::create(dir.join("pairs.tsv"))?;
+    let issns = File::create(dir.join("issns.tsv"))?;
+    Ok((BufWriter::new(pairs), BufWriter::new(issns)))
+}
+
+/// What the survey found: its report and its two tables.
+struct Found {
+    report: String,
+    /// The lines of `pairs.tsv`, those of the most pairs first.
+    pairs: Vec<String>,
+    issns: Vec<Row>,
+}
+
+fn survey(store: &Store, limit: Option<usize>) -> Result<Found, String> {
     let what = "survey journals";
     let started = Instant::now();
     let pubmed = Sets::find::<Pubmed>(store).map_err(|e| e.to_string())?;
@@ -119,7 +167,11 @@ fn survey(store: &Store, limit: Option<usize>) -> Result<(String, Vec<Row>), Str
     }
     crate::phase(
         what,
-        &format!("PubMed read, {} DOIs named", seen.by_doi.len()),
+        &format!(
+            "PubMed read, {} DOIs named by {} records",
+            seen.by_doi.len(),
+            seen.records.len()
+        ),
         started,
     );
     for (path, set) in &crossref.works {
@@ -135,7 +187,8 @@ fn survey(store: &Store, limit: Option<usize>) -> Result<(String, Vec<Row>), Str
     );
     let tables = Tables::of(&seen.journals, &seen.sets);
     let mut out = String::new();
-    let mut rows = Vec::new();
+    let mut issns = Vec::new();
+    let mut pairs = Vec::new();
     let written = (|| -> fmt::Result {
         writeln!(out, "survey journals: {}", store.root().display())?;
         if limit.is_some() {
@@ -143,12 +196,16 @@ fn survey(store: &Store, limit: Option<usize>) -> Result<(String, Vec<Row>), Str
         }
         seen.report_pubmed(&tables, &mut out)?;
         seen.report_crossref(&tables, &mut out)?;
-        rows = seen.report_pairs(&tables, &mut out)?;
+        (issns, pairs) = seen.report_pairs(&tables, &mut out)?;
         Ok(())
     })();
     written.map_err(|e| e.to_string())?;
     crate::phase(what, "counted", started);
-    Ok((out, rows))
+    Ok(Found {
+        report: out,
+        pairs,
+        issns,
+    })
 }
 
 /// A journal as one PubMed record gives it.
@@ -175,16 +232,57 @@ struct Entry {
     /// `MedlineTA` of the first record that gave the journal so.
     title: Box<str>,
     records: u64,
+    /// The pairs its records are in whose two sides both give ISSNs.
+    paired: u64,
+}
+
+/// What is kept of a PubMed record that names a DOI, until the Crossref
+/// record of that DOI is read.
+#[derive(Debug)]
+struct Record {
+    pmid: Pmid,
+    /// Its journal, by its place in [`Survey::journals`].
+    journal: u32,
+    /// Its issue date's year.
+    year: Year,
+    /// Its volume and its first page as model 13 reads them, rendered,
+    /// with [`SEP`] between: what the rest of its placement is compared
+    /// by.
+    place: Box<str>,
 }
 
 /// The PubMed record that names a DOI.
 #[derive(Debug, Clone, Copy)]
 struct Claimant {
-    pmid: Pmid,
-    /// Its journal, by its place in [`Survey::journals`].
-    journal: u32,
+    /// By its place in [`Survey::records`].
+    record: u32,
     /// Another PubMed record names the DOI too.
     shared: bool,
+}
+
+/// One field over a journal pair's pairs: where both records give it, the
+/// same but for notation or not.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct Compared {
+    same: u64,
+    differ: u64,
+}
+
+impl Compared {
+    /// `None` where either record gives none.
+    fn see(&mut self, pubmed: Option<&str>, crossref: Option<&str>) -> Option<bool> {
+        let same = match agree(pubmed, crossref) {
+            Agree::Same | Agree::Notation => true,
+            Agree::Differ => false,
+            Agree::Neither | Agree::OnlyPubmed | Agree::OnlyCrossref => return None,
+        };
+        if same {
+            self.same += 1;
+        } else {
+            self.differ += 1;
+        }
+        Some(same)
+    }
 }
 
 /// The pairs of one PubMed journal and one set of Crossref's ISSNs that
@@ -197,6 +295,15 @@ struct Apart {
     doi: Box<str>,
     /// Crossref's first `container-title` there.
     title: Option<Box<str>>,
+    /// The PubMed records' issue years, the first and the last.
+    years: (Year, Year),
+    volume: Compared,
+    first_page: Compared,
+    /// The pairs whose records both give a volume and both a first page.
+    given: u64,
+    /// Those of them with each the same: the rest of the placement
+    /// agreeing.
+    whole: u64,
 }
 
 #[derive(Debug, Default)]
@@ -223,6 +330,8 @@ struct Survey {
     by_nlm_id: HashMap<Box<str>, u32>,
     journals: Vec<Entry>,
     by_journal: HashMap<Journal, u32>,
+    /// The PubMed records naming a DOI.
+    records: Vec<Record>,
     by_doi: HashMap<Box<str>, Claimant>,
     /// Each set of ISSNs a Crossref record names, sorted, and the records
     /// naming exactly it.
@@ -291,36 +400,55 @@ impl Survey {
                 journal,
                 title: title.into(),
                 records: 0,
+                paired: 0,
             });
             self.by_journal.insert(journal, ix);
             ix
         };
         self.journals[ix as usize].records += 1;
-        let pmid = w.pmid;
-        let (by_doi, shared) = (&mut self.by_doi, &mut self.counts.shared_dois);
-        let mut named = false;
+        let mut dois: Vec<&str> = Vec::new();
         Pubmed::names(w, &mut |a| {
-            let Name::Doi(doi) = a.name else {
-                return;
-            };
-            named = true;
-            match by_doi.get_mut(doi) {
+            if let Name::Doi(doi) = a.name
+                && !dois.contains(&doi)
+            {
+                dois.push(doi);
+            }
+        });
+        if dois.is_empty() {
+            return Ok(());
+        }
+        self.counts.pubmed_doi += 1;
+        let record = index(self.records.len(), "PubMed records naming a DOI")?;
+        let volume = w.journal.volume.as_ref().map(ToString::to_string);
+        let first = w.journal.pages.as_ref().and_then(Pages::first);
+        self.records.push(Record {
+            pmid: w.pmid,
+            journal: ix,
+            year: issue_date(w).year,
+            place: format!(
+                "{}{SEP}{}",
+                volume.as_deref().unwrap_or(""),
+                first.unwrap_or("")
+            )
+            .into(),
+        });
+        for doi in dois {
+            match self.by_doi.get_mut(doi) {
                 None => {
                     let claimant = Claimant {
-                        pmid,
-                        journal: ix,
+                        record,
                         shared: false,
                     };
-                    by_doi.insert(doi.into(), claimant);
+                    self.by_doi.insert(doi.into(), claimant);
                 }
-                Some(c) if c.pmid != pmid && !c.shared => {
+                // Another record's: a record's own DOIs are met once each.
+                Some(c) if !c.shared => {
                     c.shared = true;
-                    *shared += 1;
+                    self.counts.shared_dois += 1;
                 }
                 Some(_) => {}
             }
-        });
-        self.counts.pubmed_doi += u64::from(named);
+        }
         Ok(())
     }
 
@@ -367,32 +495,64 @@ impl Survey {
             self.counts.shared += 1;
             return Ok(());
         }
-        let journal = self.journals[claimant.journal as usize].journal;
+        let record = &self.records[claimant.record as usize];
+        let entry = &mut self.journals[record.journal as usize];
+        let journal = entry.journal;
         let gives = journal.issn.is_some() || journal.linking.is_some();
-        match (gives, set) {
-            (false, None) => self.counts.neither += 1,
-            (false, Some(_)) => self.counts.crossref_only += 1,
-            (true, None) => self.counts.pubmed_only += 1,
-            (true, Some(_)) if issns.iter().any(|&i| journal.has(i)) => self.counts.same += 1,
-            (true, Some(set)) => {
-                self.counts.apart += 1;
-                if let Some(apart) = self.apart.get_mut(&(claimant.journal, set)) {
-                    apart.pairs += 1;
-                } else {
-                    let title = match w.container_titles.iter().next() {
-                        Some(title) => Some(text(title, table, "container_titles")?.into()),
-                        None => None,
-                    };
-                    let apart = Apart {
-                        pairs: 1,
-                        pmid: claimant.pmid,
-                        doi: w.doi.as_str().into(),
-                        title,
-                    };
-                    self.apart.insert((claimant.journal, set), apart);
-                }
+        let set = match (gives, set) {
+            (false, None) => {
+                self.counts.neither += 1;
+                return Ok(());
             }
+            (false, Some(_)) => {
+                self.counts.crossref_only += 1;
+                return Ok(());
+            }
+            (true, None) => {
+                self.counts.pubmed_only += 1;
+                return Ok(());
+            }
+            (true, Some(set)) => set,
+        };
+        entry.paired += 1;
+        if issns.iter().any(|&i| journal.has(i)) {
+            self.counts.same += 1;
+            return Ok(());
         }
+        self.counts.apart += 1;
+        let apart = match self.apart.entry((record.journal, set)) {
+            Slot::Occupied(slot) => slot.into_mut(),
+            Slot::Vacant(slot) => {
+                let title = match w.container_titles.iter().next() {
+                    Some(title) => Some(text(title, table, "container_titles")?.into()),
+                    None => None,
+                };
+                slot.insert(Apart {
+                    pairs: 0,
+                    pmid: record.pmid,
+                    doi: w.doi.as_str().into(),
+                    title,
+                    years: (record.year, record.year),
+                    volume: Compared::default(),
+                    first_page: Compared::default(),
+                    given: 0,
+                    whole: 0,
+                })
+            }
+        };
+        apart.pairs += 1;
+        apart.years = (
+            apart.years.0.min(record.year),
+            apart.years.1.max(record.year),
+        );
+        // The rest of the placement, as the placement survey compares it.
+        let (volume, first) = record.place.split_once(SEP).unwrap_or((&record.place, ""));
+        let theirs = w.volume.as_ref().map(ToString::to_string);
+        let their_first = w.pages.as_ref().and_then(Pages::first).or(w.article_number);
+        let volume = apart.volume.see(Some(volume), theirs.as_deref());
+        let first = apart.first_page.see(Some(first), their_first);
+        apart.given += u64::from(volume.is_some() && first.is_some());
+        apart.whole += u64::from(volume == Some(true) && first == Some(true));
         Ok(())
     }
 }
@@ -427,6 +587,18 @@ impl Class {
             Self::BesideApart => "Crossref pairs them elsewhere; NLM has another journal",
             Self::Other => "NLM has Crossref's ISSN as another journal's",
             Self::Unknown => "no PubMed record names Crossref's ISSN",
+        }
+    }
+
+    /// The class in `pairs.tsv`.
+    const fn code(self) -> &'static str {
+        match self {
+            Self::Linking => "nlm-issn-l",
+            Self::Id => "nlm-id",
+            Self::Beside => "crossref-pairs",
+            Self::BesideApart => "crossref-pairs-nlm-other",
+            Self::Other => "nlm-other",
+            Self::Unknown => "nlm-silent",
         }
     }
 
@@ -721,21 +893,54 @@ impl Survey {
         let nlm = e.journal.nlm.map_or("none", |id| self.nlm_id(id));
         let own = |i: Option<Issn>| i.map_or_else(|| "none".to_owned(), |i| i.to_string());
         format!(
-            "{:>9}  {:?} NLM id {nlm}, ISSN {}, ISSN-L {} / {} {:?}  pmid:{} doi:{}",
+            "{:>9}  {:?} NLM id {nlm}, ISSN {}, ISSN-L {} / {} {:?}  {} of the journal's, {}-{}, the rest the same in {} of {}  pmid:{} doi:{}",
             apart.pairs,
             e.title,
             own(e.journal.issn),
             own(e.journal.linking),
             issns(&self.sets[set as usize].0),
             apart.title.as_deref().unwrap_or(""),
+            percent(apart.pairs, e.paired),
+            apart.years.0.get(),
+            apart.years.1.get(),
+            apart.whole,
+            apart.given,
             apart.pmid,
             apart.doi
         )
     }
 
-    /// The pairs, and the list: every ISSN of Crossref's or of an unsettled
-    /// pair that NLM gives no ISSN-L, those in the most pairs first.
-    fn report_pairs(&self, tables: &Tables, out: &mut String) -> Result<Vec<Row>, fmt::Error> {
+    /// A journal pair's line of `pairs.tsv`, in the order of [`PAIRS`].
+    fn line(&self, class: Class, journal: u32, set: u32, apart: &Apart) -> String {
+        let e = &self.journals[journal as usize];
+        let own = |i: Option<Issn>| i.map_or_else(String::new, |i| i.to_string());
+        // A title is one cell.
+        let cell = |text: &str| text.replace(['\t', '\n', '\r'], " ");
+        [
+            apart.pairs.to_string(),
+            class.code().to_owned(),
+            e.paired.to_string(),
+            e.journal.nlm.map_or("", |id| self.nlm_id(id)).to_owned(),
+            cell(&e.title),
+            own(e.journal.issn),
+            own(e.journal.linking),
+            issns(&self.sets[set as usize].0),
+            cell(apart.title.as_deref().unwrap_or("")),
+            apart.years.0.get().to_string(),
+            apart.years.1.get().to_string(),
+            apart.volume.same.to_string(),
+            apart.volume.differ.to_string(),
+            apart.first_page.same.to_string(),
+            apart.first_page.differ.to_string(),
+            apart.given.to_string(),
+            apart.whole.to_string(),
+            apart.pmid.to_string(),
+            apart.doi.to_string(),
+        ]
+        .join("\t")
+    }
+
+    fn report_counts(&self, out: &mut String) -> fmt::Result {
         let c = &self.counts;
         let both = c.same + c.apart;
         writeln!(out)?;
@@ -765,7 +970,19 @@ impl Survey {
             c.apart,
             percent(c.apart, both),
             self.apart.len()
-        )?;
+        )
+    }
+
+    /// The pairs, and the two tables: the list, every ISSN of Crossref's or
+    /// of an unsettled pair that NLM gives no ISSN-L, and every journal
+    /// pair's line; each with those in the most pairs first.
+    fn report_pairs(
+        &self,
+        tables: &Tables,
+        out: &mut String,
+    ) -> Result<(Vec<Row>, Vec<String>), fmt::Error> {
+        let c = &self.counts;
+        self.report_counts(out)?;
         let mut classes: BTreeMap<Class, Vec<(u32, u32, &Apart)>> = BTreeMap::new();
         let mut unsettled: HashMap<Issn, u64> = HashMap::new();
         let mut asked: Vec<(u64, Vec<Issn>)> = Vec::new();
@@ -828,9 +1045,22 @@ impl Survey {
                 writeln!(out, "      {}", self.pair(journal, set, apart))?;
             }
         }
+        report_rest(&classes, out)?;
+        let mut lines: Vec<(u64, String)> = classes
+            .iter()
+            .flat_map(|(&class, found)| {
+                found
+                    .iter()
+                    .map(move |&(journal, set, apart)| (class, journal, set, apart))
+            })
+            .map(|(class, journal, set, apart)| {
+                (apart.pairs, self.line(class, journal, set, apart))
+            })
+            .collect();
+        lines.sort_unstable_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
         let rows = Self::rows(tables, &unsettled);
         report_list(&rows, &asked, c.apart - settled, out)?;
-        Ok(rows)
+        Ok((rows, lines.into_iter().map(|l| l.1).collect()))
     }
 
     fn rows(tables: &Tables, unsettled: &HashMap<Issn, u64>) -> Vec<Row> {
@@ -863,6 +1093,40 @@ impl Survey {
         });
         rows
     }
+}
+
+/// Whether the two records of a pair otherwise agree, by class: of the
+/// pairs giving a volume and a first page on both sides, those with each
+/// the same; and where either field is given on both, how often it
+/// differs.
+fn report_rest(
+    classes: &BTreeMap<Class, Vec<(u32, u32, &Apart)>>,
+    out: &mut String,
+) -> fmt::Result {
+    writeln!(
+        out,
+        "  the rest of the placement, the volume and the first page as model 13 reads them, by class:"
+    )?;
+    let show = |out: &mut String, name: &str, found: &[&Apart]| -> fmt::Result {
+        let sum = |of: &dyn Fn(&Apart) -> u64| -> u64 { found.iter().map(|a| of(a)).sum() };
+        let (given, whole) = (sum(&|a| a.given), sum(&|a| a.whole));
+        writeln!(
+            out,
+            "    {name:<56} both the same {whole:>7} of {given:>7} giving both ({}); the volume differs {:>6} of {:>7}; the first page {:>6} of {:>7}",
+            percent(whole, given),
+            sum(&|a| a.volume.differ),
+            sum(&|a| a.volume.same + a.volume.differ),
+            sum(&|a| a.first_page.differ),
+            sum(&|a| a.first_page.same + a.first_page.differ)
+        )
+    };
+    let mut all = Vec::new();
+    for (class, found) in classes {
+        let found: Vec<&Apart> = found.iter().map(|f| f.2).collect();
+        show(out, class.name(), &found)?;
+        all.extend(found);
+    }
+    show(out, "all of them", &all)
 }
 
 /// How far down the list the unsettled pairs' ISSNs reach: the pairs
@@ -958,6 +1222,7 @@ mod tests {
             },
             title: "".into(),
             records: 1,
+            paired: 0,
         }
     }
 
@@ -1117,6 +1382,59 @@ mod tests {
             (2, vec![issn("2045-2322"), issn("1474-547X")]),
         ];
         assert_eq!(reach(&rows, &asked), (5, [7, 9, 9, 9]));
+    }
+
+    #[test]
+    fn the_rest_of_a_placement_compared() {
+        let mut volume = Compared::default();
+        // The same, the same but for notation, different, and not given.
+        assert_eq!(volume.see(Some("12"), Some("12")), Some(true));
+        assert_eq!(volume.see(Some("012"), Some("12")), Some(true));
+        assert_eq!(volume.see(Some("12"), Some("13")), Some(false));
+        assert_eq!(volume.see(Some(""), Some("13")), None);
+        assert_eq!(volume.see(Some("12"), None), None);
+        assert_eq!(volume, Compared { same: 2, differ: 1 });
+    }
+
+    #[test]
+    fn a_journal_pairs_line_has_the_columns() {
+        let mut survey = Survey::default();
+        survey.nlm_ids.push("0372673".into());
+        survey.journals.push(Entry {
+            journal: Journal {
+                nlm: Some(0),
+                issn: Some(issn("0007-1447")),
+                linking: Some(issn("0007-1447")),
+            },
+            title: "Br Med J".into(),
+            records: 40,
+            paired: 30,
+        });
+        survey.sets.push(set(&["0959-8138", "1468-5833"]));
+        let apart = Apart {
+            pairs: 20,
+            pmid: Pmid::new(20_780_091).unwrap(),
+            doi: "10.1136/bmj.2.3949.528".into(),
+            title: Some("BMJ\tonline".into()),
+            years: (Year::new(1936).unwrap(), Year::new(1980).unwrap()),
+            volume: Compared {
+                same: 19,
+                differ: 1,
+            },
+            first_page: Compared {
+                same: 18,
+                differ: 0,
+            },
+            given: 18,
+            whole: 17,
+        };
+        let line = survey.line(Class::BesideApart, 0, 0, &apart);
+        assert_eq!(line.split('\t').count(), PAIRS.split('\t').count());
+        assert_eq!(
+            line,
+            "20\tcrossref-pairs-nlm-other\t30\t0372673\tBr Med J\t0007-1447\t0007-1447\t\
+0959-8138 1468-5833\tBMJ online\t1936\t1980\t19\t1\t18\t0\t18\t17\t20780091\t10.1136/bmj.2.3949.528"
+        );
     }
 
     #[test]

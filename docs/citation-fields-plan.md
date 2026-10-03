@@ -1051,6 +1051,45 @@ Nothing here closes a door the entity work needs:
    Crossref's ISSNs met on many DOIs, checked against what NLM's catalogue
    says continues what.
 
+   **The user's answers** (2026-10-03):
+   - On whether such records agree, not settled: "crossref data comes
+     directly from publishers, and is not edited much if at all by
+     crossref. pubmed has a clear editorial process, which is part of what
+     makes it so trustworthy and valuable, but also what makes me think
+     'maybe they're both right'", with the thought that the official
+     ISSN-L list would have been the evidence linking the two, and "it's
+     shaky, i'm not sure about my reasoning here." The numbers above say
+     the ISSN-L list is not that evidence, the two titles having one
+     ISSN-L each. What is that evidence is looked for in two places, below,
+     before the rule is decided.
+   - Where the line comes from: "discovery, yes. we can run an exhaustive
+     job on occasion to keep it updated, eventually."
+   - NLM's journal list: "fetch on the server."
+
+   **The evidence for a line, from the pairs themselves** (`survey
+   journals --out <dir>`, built 2026-10-03). For each pair of a PubMed
+   journal and a set of Crossref's ISSNs sharing none, `pairs.tsv` has the
+   DOIs it is met on, how much of the journal's paired records that is,
+   the years of the PubMed records, and whether the two records otherwise
+   agree: of the pairs giving a volume and a first page on both sides, how
+   many have each the same but for notation. Two records that name
+   different journals and the same volume and first page describe one
+   issue under two names. On the laptop, 130 of the 135 such pairs agree.
+
+   **The evidence from NLM's own editors** (found 2026-10-03, fetched by
+   `ol-rht-fetch-nlm-catalog-v1`, not read by anything yet). NLM's
+   catalogue of serials is public without a login
+   (`ftp.nlm.nih.gov/projects/serfilelease`, a yearly base file and
+   monthly ones, 915 MB for 2026, under the terms PubMed's records are).
+   Each title's record gives its NLM id, every ISSN it has with its kind,
+   its ISSN-L, its years, and the titles it is related to with the kind of
+   relation: preceding, succeeding, absorbed, merged, split, series. That
+   is the editorial statement of which journal continues which, where the
+   ISSN-L list was looked to for it; and, with every ISSN of each title,
+   it stands in for the journal list too, which a PubMed record's one ISSN
+   does not. The journal list (`J_Entrez.txt`) is fetched beside it, for
+   its ISO abbreviations (§10).
+
 Settled in draft 3 (2026-09-29): the journal as a level (D14), and
 Crossref records that give only `issued` (D4).
 
