@@ -852,7 +852,18 @@ Nothing here closes a door the entity work needs:
   model version), chapters and entries, and the book levels of the chain.
 - **The journal abbreviation from NLM's catalogue,** which maps ISSNs to
   abbreviations for every journal NLM indexes. It is a table, not a
-  source, and is not designed.
+  source, and is not designed. NLM publishes it without a login
+  (`ftp.ncbi.nlm.nih.gov/pubmed/J_Medline.txt`, and `J_Entrez.txt` for
+  every NCBI journal): print and online ISSNs, NLM id, MEDLINE and ISO
+  abbreviations.
+- **ISO 4 abbreviations from the LTWA,** the ISSN Centre's List of Title
+  Word Abbreviations (`portal.issn.org/ltwa`, 56,526 entries, a CSV
+  export; no licence stated but the CIEPS copyright, to check when it is
+  downloaded). Two uses (the user, 2026-09-30): an abbreviation built by
+  ISO 4's rules for a journal no source abbreviates, for CF3's
+  `venue_short` and the export's styles; and, in the citation lookup, a
+  pasted citation's abbreviated journal (`J Biol Chem`) compared with the
+  full title.
 - **The export plan:** the CSL-JSON mapping from the chain, RIS, BibTeX
   and the formatter (hayagriva in-process was the recommendation of
   2026-09-24).
@@ -909,6 +920,59 @@ Nothing here closes a door the entity work needs:
    217,933 with two of one kind (D14): which are a parent series and
    which a journal's former ISSN. Kept on the journal level meanwhile;
    not counted.
+3. **Which ISSNs name one journal** (`ol-rht-merge-survey-v11`,
+   2026-09-30). ISSNs that do not overlap are rule 4's disagreement on the
+   journal, and so a conflict: 993,260 of the 30,662,791 two-source works
+   whose records both give ISSNs (3.2%), the largest part of the corpus's
+   1,738,719 conflicts. Most are thought to be one journal written two
+   ways, PubMed's print ISSN against Crossref's electronic one. The user
+   chose the ISSN Centre's ISSN-L table (2026-09-30): having weighed
+   journal groups discovered from the records themselves, NLM's journal
+   list and Crossref's title list, "nothing else is gonna cut it". The
+   user signed up for it (`issnltables.zip`, updated daily) and the ISSN
+   Centre had not answered several days on (2026-10-03), so the table is
+   taken as out of reach for now.
+
+   Where else a current ISSN-L is written (looked up 2026-10-03):
+   - **NLM's `ISSNLinking`**, its copy of the ISSN-L, on every PubMed
+     record we hold, beside the journal's ISSN and NLM's own id for it.
+     The merge already counts it among PubMed's ISSNs, so the 993,260 are
+     pairs where Crossref names neither PubMed's ISSN nor its ISSN-L. What
+     it can still settle is through other records: Crossref's ISSN given
+     this ISSN-L, or this NLM id, on another PubMed record.
+   - **The ISSN portal's public record of one ISSN**
+     (`portal.issn.org/resource/ISSN/<issn>?format=json`), which gives the
+     ISSN-L without a login, one record at a time; bulk download is a
+     subscriber's service and no licence is stated. Its terms are to be
+     read, and the user's word had, before anything automated asks it.
+   - Stale or partial, and set aside: Fatcat's exports (the latest
+     2024-02-18), the issnlister harvest (2019, and without the ISSN-L),
+     Wikidata's P7363. OpenAlex is not leaned on yet (the user).
+
+   **The survey** (`ol-rht survey journals [--out <list.tsv>]`, built
+   2026-10-03, to run on the box): each PubMed record paired with the
+   Crossref record of a DOI it names, and each pair sharing no ISSN counted
+   by what else says the two are one journal, the first that holds: NLM
+   gives Crossref's ISSN this ISSN-L on another record; NLM gives it this
+   NLM id on another record; Crossref writes it beside an ISSN of this
+   journal's on another record, with NLM silent on it or having it as
+   another journal's; NLM has it as another journal's; no PubMed record
+   names it. It reports how consistent NLM's table is (an ISSN under two
+   ISSN-Ls, an NLM id with two), how many of Crossref's ISSNs NLM gives an
+   ISSN-L, and lists every ISSN NLM gives none, those in the most
+   unsettled pairs first: what another table would be asked. It pairs by
+   DOI alone, so its counts are near the merge's and not the merge's.
+
+   On the laptop (the two baseline files, the update files and the 49,620
+   Crossref records looked up by DOI): 34,570 pairs, 300 of the 34,529
+   giving ISSNs on both sides sharing none (0.9%). No PubMed record names
+   Crossref's ISSN in 283 of them, and Crossref pairs the two elsewhere in
+   the other 17; NLM's records settle none, in a sample of recent records
+   only. The largest are each one journal by their titles (`Clin Pract`,
+   2039-7275 in PubMed, against `Clinics and Practice`, 2039-7283 in
+   Crossref). A PubMed record gives one ISSN of its journal; NLM's journal
+   list (§10) gives a journal's print and online ISSNs together under its
+   NLM id, and whether it has these is not checked.
 
 Settled in draft 3 (2026-09-29): the journal as a level (D14), and
 Crossref records that give only `issued` (D4).
@@ -1055,3 +1119,12 @@ Crossref records that give only `issued` (D4).
   `237-239+` is a range and its `+`. Corrected in the same pass: three
   counts draft 3 took from a shape for its example (`UNKNOWN`, `None`,
   `Online first`).
+- **2026-10-03, the ISSN-L table out of reach.** The user took the ISSN
+  Centre's sign-up for its ISSN-L table and had no answer in several
+  days: "let's assume that they exist but they're structurally unable to
+  respond. where does the real up to date issn-l data exist besides
+  through them?" What was found is in §11, item 3: NLM's `ISSNLinking`
+  on the records we hold, and the ISSN portal's public record of one
+  ISSN at a time. The user asked for the survey that measures how many
+  of the journal conflicts NLM settles and how many ISSNs it leaves
+  (`survey journals`), before anything is asked of the portal.

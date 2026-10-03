@@ -28,9 +28,9 @@ use ingest::{Kind, Store};
 use merge::copies::{Copies, Fate, delivery_of, native_of};
 use merge::view::bound;
 use merge::{Contributor, Name, SourceId};
-use model::Pmid;
 use model::date::{Bound, Year};
 use model::pages::Pages;
+use model::{Pmid, Table};
 use source_crossref::Crossref;
 use source_crossref::normalize::Work as CrossrefWork;
 use source_crossref::vocab::{SerialKind, WorkType};
@@ -39,6 +39,10 @@ use source_pubmed::attr::PubModel;
 use source_pubmed::normalize::{Citation, Published};
 
 use super::{Options, Sets};
+
+mod journal;
+
+pub(crate) use journal::journals;
 
 /// Examples kept of each shape, kind or class.
 const EXAMPLES: usize = 3;
@@ -89,16 +93,18 @@ fn survey(store: &Store, limit: Option<usize>) -> Result<String, String> {
     super::phase(what, &format!("{} pairs read", pairs.found.len()), started);
     let mut one = PartOne::default();
     for (path, set) in &pubmed.works {
-        each::<Pubmed>(path, set, limit, &copies, |w| {
+        each::<Pubmed>(path, set, limit, &copies, |w, _| {
             one.pubmed(w);
             pairs.pubmed(w);
+            Ok(())
         })?;
     }
     super::phase(what, "PubMed read", started);
     for (path, set) in &crossref.works {
-        each::<Crossref>(path, set, limit, &copies, |w| {
+        each::<Crossref>(path, set, limit, &copies, |w, _| {
             one.crossref(w);
             pairs.crossref(w);
+            Ok(())
         })?;
     }
     super::phase(what, "Crossref read", started);
@@ -135,13 +141,14 @@ fn read_copies<S: Contributor>(
     Ok(())
 }
 
-/// Calls `f` with each record of one works set whose copy there speaks.
+/// Calls `f` with each record of one works set whose copy there speaks,
+/// and the set's table of symbols, if it has one.
 fn each<S: Contributor>(
     path: &Path,
     set: &str,
     limit: Option<usize>,
     copies: &Copies,
-    mut f: impl FnMut(&S::Work<'_>),
+    mut f: impl FnMut(&S::Work<'_>, Option<&Table>) -> Result<(), String>,
 ) -> Result<(), String> {
     let io = |e: io::Error| format!("{}: {e}", path.display());
     let reader = merge::sets::open::<S>(path, Kind::Works).map_err(io)?;
@@ -158,7 +165,8 @@ fn each<S: Contributor>(
             })?;
             let delivery = delivery_of::<S>(&work, set, ordinal);
             if copies.fate(S::SOURCE, native, &delivery) == Fate::Speaks {
-                f(&work);
+                f(&work, reader.table())
+                    .map_err(|e| format!("{}: record {ordinal}: {e}", path.display()))?;
             }
         }
         Ok(())

@@ -71,6 +71,12 @@
 //!   pages, article number, dates — and compares the two records of each
 //!   work the merged set pairs; it writes nothing (citation fields plan
 //!   §7, CF0; see [`survey`]).
+//! * `survey journals [--store <root>] [--limit N] [--out <list.tsv>]`
+//!   counts the pairs of a PubMed and a Crossref record whose ISSNs do not
+//!   overlap by what else says they are one journal: NLM's ISSN-L and its
+//!   id on other PubMed records, Crossref's ISSNs written together; with
+//!   `--out`, it lists the ISSNs NLM gives no ISSN-L (citation fields plan
+//!   §11, item 3).
 //!
 //! `--survey` (plan §6) keeps going past records this build cannot read
 //! and reports every distinct failure signature with counts and examples;
@@ -139,6 +145,7 @@ const USAGE: &str = "usage:
   ol-rht merge --batch <path>... [--store <root>] [--public-key <file>]
   ol-rht merge dump <set.zst>... [--limit N]
   ol-rht survey placement [--store <root>] [--limit N]
+  ol-rht survey journals [--store <root>] [--limit N] [--out <list.tsv>]
   ol-rht graph build [--store <root>] [--held]
   ol-rht graph query <#id|name> [--store <root>] [--held] [--limit N]
   ol-rht graph check [--store <root>] [--held]
@@ -237,6 +244,7 @@ fn main() -> ExitCode {
                 ("merge", "identity") => merge_identity(&opts),
                 ("merge", "dump") => merge_dump(&opts),
                 ("survey", "placement") => survey::placement(&opts),
+                ("survey", "journals") => survey::journals(&opts),
                 ("graph", "build") => graph_build(&opts, held),
                 ("graph", "query") => graph_query(&opts, held),
                 ("graph", "check") => graph_check(&opts, held),
