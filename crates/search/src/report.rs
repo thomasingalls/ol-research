@@ -8,7 +8,6 @@ use std::io::{self, Write};
 use merge::document::Stats;
 
 use crate::index::Opened;
-use crate::schema;
 
 /// Queries every build report runs, so two builds can be compared.
 pub const SAMPLE_QUERIES: [&str; 6] = [
@@ -87,7 +86,7 @@ pub fn print(out: &mut impl Write, opened: &Opened, stats: &Stats) -> Result<(),
         "  index: {} documents, {} segments, {mib:.1} MiB",
         m.documents, m.segments
     )?;
-    writeln!(out, "  mapping: {}", schema::DESCRIPTION)?;
+    writeln!(out, "  mapping: {}", m.mapping)?;
     writeln!(out, "  sample queries, top three by score")?;
     for query in SAMPLE_QUERIES {
         let asked = query_parser::parse(query).expect("a sample query is within the caps");

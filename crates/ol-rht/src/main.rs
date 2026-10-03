@@ -151,8 +151,8 @@ const USAGE: &str = "usage:
   ol-rht graph build [--store <root>] [--held]
   ol-rht graph query <#id|name> [--store <root>] [--held] [--limit N]
   ol-rht graph check [--store <root>] [--held]
-  ol-rht search build [--store <root>]
-  ol-rht search query <words>... [--store <root>] [--limit N]
+  ol-rht search build [--store <root>] [--out <dir> [--analyzer ol1-cap<none|N>-<whole|bigrams|words>-fold<0|1>-greek<0|1>-joins<0|1>]]
+  ol-rht search query <words>... [--store <root>] [--limit N] [--index <dir>]
   ol-rht names build [--store <root>]
   ol-rht works build [--store <root>]
   ol-rht epoch publish [--store <root>]
@@ -163,7 +163,7 @@ const USAGE: &str = "usage:
   ol-rht query related <name|#id> --by <cites-same|cited-alongside> [--store <root>] [--limit N]
   ol-rht query path <name|#id> <name|#id> [--store <root>] [--depth N] [--limit N]
   ol-rht evaluate load <trec-pm <topics.xml> <qrels> | relish <RELISH_v1.json.gz>> --out <suite> [--store <root>] [--held-out]
-  ol-rht evaluate run <suite | queries> --out <run> [--store <root>] [--limit depth] [--workers N] [--restricted]
+  ol-rht evaluate run <suite | queries> --out <run> [--store <root>] [--limit depth] [--workers N] [--restricted] [--index <dir>]
   ol-rht evaluate score <suite | key> <run> [--test]
   ol-rht evaluate compare <suite | key> <base run> <new run> [--test]
   ol-rht evaluate misses <suite> <run> [--store <root>]
@@ -220,6 +220,15 @@ fn main() -> ExitCode {
             if (opts.restricted && !evaluating("run"))
                 || (opts.held_out && !evaluating("load"))
                 || (opts.test && !(evaluating("score") || evaluating("compare")))
+            {
+                return usage();
+            }
+            // A treatment's index (tokenizer plan T1.2): built by `search
+            // build`, asked by `search query` and `evaluate run`, and named
+            // nowhere else.
+            let searching = |named: &str| *source == "search" && *action == named;
+            if (opts.analyzer.is_some() && !searching("build"))
+                || (opts.index.is_some() && !(searching("query") || evaluating("run")))
             {
                 return usage();
             }
@@ -306,6 +315,12 @@ struct Options {
     /// `evaluate score` and `compare`'s: read the test half, at a
     /// milestone (§7).
     test: bool,
+    /// `search build`'s: the switches a treatment's index is built with
+    /// (tokenizer plan T1.2), spelled as its reports name them.
+    analyzer: Option<search::analyzer::Switches>,
+    /// `search query` and `evaluate run`'s: a treatment's index to ask in
+    /// place of the epoch's.
+    index: Option<PathBuf>,
 }
 
 impl Options {
@@ -318,9 +333,25 @@ impl Options {
         let (mut limit, mut workers, mut out, mut store, mut mailto, mut seed, mut by) =
             (None, None, None, None, None, None, None);
         let (mut walk, mut depth, mut related) = (None, None, None);
+        let (mut analyzer, mut index) = (None, None);
         let (mut survey, mut restricted, mut held_out, mut test) = (false, false, false, false);
         loop {
             match rest {
+                [before @ .., "--analyzer", name] => {
+                    if analyzer
+                        .replace(search::analyzer::Switches::parse(name)?)
+                        .is_some()
+                    {
+                        return None;
+                    }
+                    rest = before;
+                }
+                [before @ .., "--index", p] => {
+                    if index.replace(PathBuf::from(p)).is_some() {
+                        return None;
+                    }
+                    rest = before;
+                }
                 [before @ .., "--survey"] => {
                     if survey {
                         return None;
@@ -448,6 +479,8 @@ impl Options {
             restricted,
             held_out,
             test,
+            analyzer,
+            index,
         })
     }
 
@@ -3169,12 +3202,15 @@ fn graph_names(
     Ok(Some((id, names)))
 }
 
-/// The options a search command takes: `--store`, and for `query` the
-/// words and `--limit`.
+/// The options a search command takes: `--store`, for `query` the words
+/// and `--limit`, and for `build` the `--out` a treatment's index is built
+/// into and the `--analyzer` it is built with — an analyzer never without
+/// an `--out`, so the store's own index is never built with one.
 fn search_options_ok(opts: &Options, query: bool) -> bool {
     (query != opts.paths.is_empty())
         && (query || opts.limit.is_none())
-        && opts.out.is_none()
+        && !(query && opts.out.is_some())
+        && (opts.analyzer.is_none() || opts.out.is_some())
         && opts.workers.is_none()
         && opts.mailto.is_none()
         && opts.seed.is_none()
@@ -3445,7 +3481,8 @@ fn publish_documents(
     let mut assembly = assemble(what, store, started)?;
     let mut lexical = if search_wanted {
         eprintln!("{what}: building the lexical index");
-        Some(search::index::Build::start(search_dir).map_err(|e| fail(e.to_string()))?)
+        // The published mapping: an epoch's index names no analyzer.
+        Some(search::index::Build::start(search_dir, None).map_err(|e| fail(e.to_string()))?)
     } else {
         None
     };
@@ -4062,7 +4099,11 @@ fn evaluate_asked(path: &Path) -> Result<Asked, String> {
 /// seed out of its results, and with `--restricted` every work published
 /// after the suite's year (§3.2). The queries are searched in parallel and
 /// written in the file's order, so the run never depends on which search
-/// finished first. A run is kept: an existing `--out` is refused.
+/// finished first. A run is kept: an existing `--out` is refused. With
+/// `--index` a treatment's index answers in place of the epoch's
+/// (tokenizer plan T1.2) — the same parser, translation and filters, the
+/// works still named and dated by the epoch — and the sidecar and the
+/// run's tag say which.
 // Read, search, stamp, write: one step after another, and long together.
 #[allow(clippy::too_many_lines)]
 fn evaluate_run(opts: &Options) -> ExitCode {
@@ -4126,9 +4167,29 @@ fn evaluate_run(opts: &Options) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    let treatment = match opts
+        .index
+        .as_deref()
+        .map(|dir| evaluate_treatment(&serving, dir))
+        .transpose()
+    {
+        Ok(treatment) => treatment,
+        Err(e) => {
+            eprintln!("{what}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let index = treatment.as_ref().unwrap_or_else(|| serving.search_index());
 
     let started = std::time::Instant::now();
-    let searched = evaluate_search(&serving, &jobs, depth, opts.restricted, opts.workers());
+    let searched = evaluate_search(
+        &serving,
+        index,
+        &jobs,
+        depth,
+        opts.restricted,
+        opts.workers(),
+    );
     let mut run = evaluation::trec::Run::default();
     let mut slowest: Option<(std::time::Duration, &str)> = None;
     let (mut returned, mut empty, mut short) = (0_usize, 0_usize, 0_usize);
@@ -4152,7 +4213,6 @@ fn evaluate_run(opts: &Options) -> ExitCode {
     let elapsed = started.elapsed();
 
     let epoch = serving.epoch();
-    let index = serving.search_index();
     let absorbed = match index.batch() {
         Ok(batch) => batch,
         Err(e) => {
@@ -4160,6 +4220,8 @@ fn evaluate_run(opts: &Options) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    // `index`: the treatment's directory, or null when the epoch's own
+    // index answered; `search` is the manifest of whichever did.
     let about = serde_json::json!({
         "asked": asked_path.display().to_string(),
         "asked_blake3": asked.digest,
@@ -4168,11 +4230,16 @@ fn evaluate_run(opts: &Options) -> ExitCode {
         "restricted": opts.restricted,
         "short_of_depth": short,
         "epoch": epoch,
+        "index": opts.index.as_ref().map(|dir| dir.display().to_string()),
         "search": index.manifest(),
         "search_absorbed_batch": absorbed,
         "ol_rht": env!("CARGO_PKG_VERSION"),
     });
-    let tag = format!("ol-rht-epoch{}", epoch.epoch);
+    let tag = match (&treatment, index.manifest().analyzer) {
+        (None, _) => format!("ol-rht-epoch{}", epoch.epoch),
+        (Some(_), Some(switches)) => format!("ol-rht-epoch{}-{}", epoch.epoch, switches.name()),
+        (Some(_), None) => format!("ol-rht-epoch{}-default", epoch.epoch),
+    };
     if let Err(e) = evaluate_write(out, &about_path, &run, &tag, &about) {
         eprintln!("{what}: {e}");
         return ExitCode::FAILURE;
@@ -4195,14 +4262,39 @@ fn evaluate_run(opts: &Options) -> ExitCode {
             took.as_secs_f64() * 1000.0
         );
     }
+    if let Some(dir) = &opts.index {
+        println!("  index: {} ({})", dir.display(), index.manifest().mapping);
+    }
     println!("  run: {}", out.display());
     ExitCode::SUCCESS
+}
+
+/// Opens a treatment's index for a run. Its hits are named and dated by
+/// the epoch — public ids, years — so it must hold the works the epoch's
+/// own index holds: one at another batch, where a work's id can be
+/// another work's, is refused.
+fn evaluate_treatment(serving: &serve::Serving, dir: &Path) -> Result<search::Opened, String> {
+    let opened = search::Opened::open(dir).map_err(|e| e.to_string())?;
+    let (treated, epochs) = (
+        opened.batch().map_err(|e| e.to_string())?,
+        serving.search_index().batch().map_err(|e| e.to_string())?,
+    );
+    if treated != epochs {
+        return Err(format!(
+            "{} is at batch {treated} and epoch {}'s index at batch {epochs}; \
+             a treatment's index is built from the merged sets the epoch was",
+            dir.display(),
+            serving.epoch().epoch
+        ));
+    }
+    Ok(opened)
 }
 
 /// Searches every query on `workers` threads, taking the next query as
 /// each finishes one, and returns the answers in the queries' order.
 fn evaluate_search(
     serving: &serve::Serving,
+    index: &search::Opened,
     jobs: &[(query_parser::Query, Option<evaluation::suite::Filter>)],
     depth: usize,
     restricted: bool,
@@ -4221,7 +4313,7 @@ fn evaluate_search(
                         };
                         mine.push((
                             i,
-                            evaluate_one(serving, query, filter.as_ref(), depth, restricted),
+                            evaluate_one(serving, index, query, filter.as_ref(), depth, restricted),
                         ));
                     }
                 })
@@ -4236,11 +4328,12 @@ fn evaluate_search(
     answered.into_iter().map(|(_, a)| a).collect()
 }
 
-/// One query's works, each named by its public id: its own seed left out,
-/// and in a restricted run every work published after its year, or of no
-/// known year, left out too.
+/// One query's works as `index` finds them, each named by its public id:
+/// its own seed left out, and in a restricted run every work published
+/// after its year, or of no known year, left out too.
 fn evaluate_one(
     serving: &serve::Serving,
+    index: &search::Opened,
     query: &query_parser::Query,
     filter: Option<&evaluation::suite::Filter>,
     depth: usize,
@@ -4255,8 +4348,8 @@ fn evaluate_one(
     }
     .saturating_add(usize::from(exclude.is_some()));
     let started = std::time::Instant::now();
-    let hits = serving
-        .search_facets(query, ask, 0, None)
+    let hits = index
+        .search(query, ask, 0, None)
         .map_err(|e| e.to_string())?;
     let took = started.elapsed();
     let rows = match until {
@@ -5090,14 +5183,52 @@ fn query_path(opts: &Options) -> ExitCode {
     }
 }
 
+/// Where a treatment's index is built (tokenizer plan T1.2): `out`, which
+/// is kept — an existing one is refused — and is never under the store's
+/// `search/`, where the published indexes are, so a treatment replaces
+/// none of them and no epoch names it.
+fn treatment_dir(store: &Store, out: &Path) -> Result<PathBuf, String> {
+    let absolute =
+        |path: &Path| std::path::absolute(path).map_err(|e| format!("{}: {e}", path.display()));
+    let published = absolute(&store.root().join("search"))?;
+    let dir = absolute(out)?;
+    if dir.starts_with(&published) {
+        return Err(format!(
+            "{} is under {}, where the published indexes are; a treatment's index is built elsewhere",
+            out.display(),
+            published.display()
+        ));
+    }
+    if dir.exists() {
+        return Err(format!(
+            "{} exists; a treatment's index is kept, so name a new one",
+            out.display()
+        ));
+    }
+    Ok(dir)
+}
+
 /// Assembles every held work's document from the merged and normalized
-/// sets, indexes them, and prints the report.
+/// sets, indexes them, and prints the report: the store's own index, or
+/// with `--out` an index built there for a treatment — its text split by
+/// `--analyzer`'s switches, or without one the published mapping, the
+/// control a treatment is measured against.
 fn search_build(opts: &Options) -> ExitCode {
     if !search_options_ok(opts, false) {
         return usage();
     }
     let what = "search build";
     let store = opts.store();
+    let dir = match &opts.out {
+        None => search::dir(&store),
+        Some(out) => match treatment_dir(&store, out) {
+            Ok(dir) => dir,
+            Err(e) => {
+                eprintln!("{what}: {e}");
+                return ExitCode::FAILURE;
+            }
+        },
+    };
     let started = std::time::Instant::now();
     let allocations = ingest::alloc::allocations();
     let mut assembly = match assemble(what, &store, started) {
@@ -5113,9 +5244,9 @@ fn search_build(opts: &Options) -> ExitCode {
         Ok(line) => line,
         Err(code) => return code,
     };
-    let dir = search::dir(&store);
     let built = (|| -> Result<search::index::Built, String> {
-        let mut build = search::index::Build::start(&dir).map_err(|e| e.to_string())?;
+        let mut build =
+            search::index::Build::start(&dir, opts.analyzer).map_err(|e| e.to_string())?;
         merge::document::Ranged::new(&mut assembly, |docs| {
             build
                 .add(docs)
@@ -5154,7 +5285,8 @@ fn search_build(opts: &Options) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// Prints the top hits for a query and the facet counts over its matches.
+/// Prints the top hits for a query and the facet counts over its matches:
+/// from the store's index, or with `--index` a treatment's.
 fn search_query(opts: &Options) -> ExitCode {
     if !search_options_ok(opts, true) {
         return usage();
@@ -5166,7 +5298,8 @@ fn search_query(opts: &Options) -> ExitCode {
     let limit = opts
         .limit
         .map_or(10, |n| usize::try_from(n).unwrap_or(usize::MAX));
-    let opened = match search::Opened::open(&search::dir(&store)) {
+    let dir = opts.index.clone().unwrap_or_else(|| search::dir(&store));
+    let opened = match search::Opened::open(&dir) {
         Ok(opened) => opened,
         Err(e) => {
             eprintln!("{what}: {e}");

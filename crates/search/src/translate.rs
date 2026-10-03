@@ -13,6 +13,12 @@
 //! 2026-09-25 — the flat list is its `simplify`, the word counted once
 //! its grammar's — so a query of plain words finds what it found and
 //! scores as it scored; the property test below holds the two to it.
+//!
+//! A treatment's index (tokenizer plan T1.2) writes a word's other
+//! spellings beside it; a word asked of it is split by the query side of
+//! its analyzer ([`crate::analyzer`]), one form a piece, each of which the
+//! index wrote at that place — so a phrase never asks for every spelling
+//! at once.
 
 use std::collections::HashSet;
 
@@ -20,8 +26,24 @@ use query_parser::Query as Asked;
 use tantivy::Index;
 use tantivy::query::{BooleanQuery, EmptyQuery, Occur, PhraseQuery, Query, TermQuery};
 use tantivy::schema::{Field, IndexRecordOption, Term};
+use tantivy::tokenizer::TextAnalyzer;
 
+use crate::analyzer::QUERY_SUFFIX;
 use crate::error::Error;
+use crate::schema;
+
+/// The analyzer a word is split by to be searched in `field`: the query
+/// side of the field's own when the index has one registered, or the
+/// field's own.
+fn analyzer(index: &Index, field: Field) -> Result<TextAnalyzer, Error> {
+    let schema = index.schema();
+    if let Some(name) = schema::analyzer_of(&schema, field)
+        && let Some(query_side) = index.tokenizers().get(&format!("{name}{QUERY_SUFFIX}"))
+    {
+        return Ok(query_side);
+    }
+    Ok(index.tokenizer_for_field(field)?)
+}
 
 /// `asked` as a query over `fields` — the search box's
 /// ([`crate::schema::Fields::searched`]) or a citation's
@@ -37,7 +59,7 @@ pub(crate) fn query(
 ) -> Result<Box<dyn Query>, Error> {
     let mut analyzers = fields
         .into_iter()
-        .map(|field| Ok((field, index.tokenizer_for_field(field)?)))
+        .map(|field| Ok((field, analyzer(index, field)?)))
         .collect::<Result<Vec<_>, Error>>()?;
     let mut seen = HashSet::new();
     let mut matches: Vec<Box<dyn Query>> = Vec::new();
@@ -81,6 +103,8 @@ mod tests {
     use tantivy::query::QueryParser;
     use tantivy::{DocAddress, Index, IndexWriter, Searcher};
 
+    use crate::analyzer::tests::switches;
+    use crate::analyzer::{Analyzer, Switches};
     use crate::schema::{self, Fields};
 
     /// Words the documents are written from, punctuation and all.
@@ -130,10 +154,19 @@ mod tests {
         }
     }
 
-    /// An index in memory holding `documents`.
+    /// An index in memory holding `documents`, as published.
     fn index(documents: &[Document]) -> (Index, Fields) {
-        let (schema, fields) = schema::provisional();
+        index_with(documents, None)
+    }
+
+    /// An index in memory holding `documents`: the published mapping, or a
+    /// treatment's under `analyzer`.
+    fn index_with(documents: &[Document], analyzer: Option<Switches>) -> (Index, Fields) {
+        let (schema, fields) = schema::provisional(analyzer);
         let index = Index::create_in_ram(schema);
+        if let Some(switches) = analyzer {
+            Analyzer::register(&index, switches);
+        }
         let mut writer: IndexWriter = index.writer_with_num_threads(1, 15_000_000).unwrap();
         for d in documents {
             writer
@@ -145,23 +178,32 @@ mod tests {
     }
 
     /// Forty documents from the vocabulary, the same forty every run.
+    fn documents() -> Vec<Document> {
+        let mut state: u32 = 7;
+        let mut next = move || {
+            state = state.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+            (state >> 16) as usize % VOCABULARY.len()
+        };
+        (1..=40)
+            .map(|id| {
+                let title: Vec<&str> = (0..4).map(|_| VOCABULARY[next()]).collect();
+                let text: Vec<&str> = (0..12).map(|_| VOCABULARY[next()]).collect();
+                document(id, &title.join(" "), &text.join(" "))
+            })
+            .collect()
+    }
+
+    /// The forty documents, indexed as published.
     fn corpus() -> &'static (Index, Fields) {
         static CORPUS: OnceLock<(Index, Fields)> = OnceLock::new();
-        CORPUS.get_or_init(|| {
-            let mut state: u32 = 7;
-            let mut next = move || {
-                state = state.wrapping_mul(1_103_515_245).wrapping_add(12_345);
-                (state >> 16) as usize % VOCABULARY.len()
-            };
-            let documents: Vec<Document> = (1..=40)
-                .map(|id| {
-                    let title: Vec<&str> = (0..4).map(|_| VOCABULARY[next()]).collect();
-                    let text: Vec<&str> = (0..12).map(|_| VOCABULARY[next()]).collect();
-                    document(id, &title.join(" "), &text.join(" "))
-                })
-                .collect();
-            index(&documents)
-        })
+        CORPUS.get_or_init(|| index(&documents()))
+    }
+
+    /// The forty documents, indexed through the analyzer with every switch
+    /// off.
+    fn corpus_all_off() -> &'static (Index, Fields) {
+        static CORPUS: OnceLock<(Index, Fields)> = OnceLock::new();
+        CORPUS.get_or_init(|| index_with(&documents(), Some(Switches::TODAY)))
     }
 
     /// Every hit and its score, by document.
@@ -233,6 +275,52 @@ mod tests {
             let searcher = index.reader().unwrap().searcher();
             let found = searcher.search(&*ours(&index, &fields, word), &Count).unwrap();
             prop_assert_eq!(found, 1, "{:?} in {:?}", word, text);
+        }
+
+        /// An index built through the analyzer with every switch off
+        /// answers as the published index does: the same documents with
+        /// the same scores, whatever is asked (tokenizer plan T1.4, on
+        /// forty documents).
+        #[test]
+        fn every_switch_off_answers_as_the_published_index(
+            words in prop::collection::vec(prop_oneof![plain_word(), "[^\\s]{1,12}"], 1..6),
+        ) {
+            let text = words.join(" ");
+            let ((published, fields), (all_off, fields_off)) = (corpus(), corpus_all_off());
+            let a = hits(&published.reader().unwrap().searcher(), &*ours(published, fields, &text));
+            let b = hits(&all_off.reader().unwrap().searcher(), &*ours(all_off, fields_off, &text));
+            prop_assert_eq!(a.keys().collect::<Vec<_>>(), b.keys().collect::<Vec<_>>());
+            for (address, score) in &a {
+                prop_assert!(score.to_bits() == b[address].to_bits(), "{text:?} {address:?}");
+            }
+        }
+
+        /// Under any switches, a word of a document's title that the query
+        /// side split into at least one piece finds that document: the
+        /// query is split as its text was (I2), through the index and the
+        /// translation and not the analyzer alone.
+        #[test]
+        fn a_word_from_a_title_finds_its_document_under_any_switches(
+            switches in switches(),
+            title in prop::collection::vec(
+                prop_oneof![
+                    "[^\\s]{1,12}",
+                    "[a-zA-Zé0-9α-ωΣµ肺癌基因がんカタ한국กาຢຸＤＮＡﬁ².,;:()\\-‐]{1,12}",
+                ],
+                1..8,
+            ),
+            pick in any::<prop::sample::Index>(),
+        ) {
+            let text = title.join(" ");
+            let (index, fields) = index_with(&[document(1, &text, "")], Some(switches));
+            let word = pick.get(&title);
+            let mut analyzer = super::analyzer(&index, fields.title).unwrap();
+            let mut pieces = 0;
+            analyzer.token_stream(word).process(&mut |_| pieces += 1);
+            prop_assume!(pieces > 0);
+            let searcher = index.reader().unwrap().searcher();
+            let found = searcher.search(&*ours(&index, &fields, word), &Count).unwrap();
+            prop_assert_eq!(found, 1, "{:?} in {:?} under {}", word, text, switches.name());
         }
     }
 

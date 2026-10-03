@@ -14,6 +14,7 @@ use tantivy::query::{AllQuery, Query};
 use tantivy::schema::{Facet, TantivyDocument, Value};
 use tantivy::{DocAddress, Index, IndexReader, IndexWriter, ReloadPolicy, Searcher, Term};
 
+use crate::analyzer::{Analyzer, Switches};
 use crate::error::Error;
 use crate::schema::{self, Fields};
 use crate::translate;
@@ -42,12 +43,19 @@ pub struct Manifest {
     pub batch: u64,
     /// Documents at build time.
     pub documents: u64,
-    /// [`schema::DESCRIPTION`] at build time.
+    /// [`schema::description`] at build time.
     pub mapping: String,
     #[allow(missing_docs)]
     pub segments: usize,
     /// The engine's files, in bytes.
     pub bytes: u64,
+    /// The analyzer a treatment's index was built with (tokenizer plan
+    /// T1.2), registered again whenever the index is opened, so a query is
+    /// split as its text was. The published index names none — its text
+    /// is through Tantivy's `default` — and its manifest reads and writes
+    /// as it did before there were treatments.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub analyzer: Option<Switches>,
 }
 
 impl Manifest {
@@ -138,14 +146,41 @@ fn commit(writer: &mut IndexWriter, batch: u64) -> Result<(), Error> {
     Ok(())
 }
 
+/// The engine's index under `dir`, opened as `manifest` says it was
+/// built: the analyzer it names registered, and every text field split by
+/// that analyzer and no other — refused here, not at the first query.
+fn engine(dir: &Path, manifest: &Manifest) -> Result<(Index, Fields), Error> {
+    let index = Index::open_in_dir(dir)?;
+    if let Some(switches) = manifest.analyzer {
+        Analyzer::register(&index, switches);
+    }
+    let schema = index.schema();
+    let fields = schema::fields(&schema)?;
+    let named = manifest
+        .analyzer
+        .map_or_else(|| "default".to_owned(), |switches| switches.name());
+    for field in fields.searched() {
+        let split_by = schema::analyzer_of(&schema, field);
+        if split_by != Some(named.as_str()) {
+            return Err(Error::Mismatch(format!(
+                "{}: the field {} is split by {}, and the manifest names {named}",
+                dir.display(),
+                schema.get_field_name(field),
+                split_by.unwrap_or("nothing")
+            )));
+        }
+    }
+    Ok((index, fields))
+}
+
 /// Indexes every document into `dir` as of `batch`, replacing what was
-/// there.
+/// there: the published mapping, with no analyzer named.
 ///
 /// # Errors
 ///
 /// I/O, the engine, or a facet path that is not one.
 pub fn build(dir: &Path, documents: &[Document], batch: u64) -> Result<Built, Error> {
-    let mut build = Build::start(dir)?;
+    let mut build = Build::start(dir, None)?;
     build.add(documents)?;
     build.finish(batch)
 }
@@ -159,6 +194,7 @@ pub struct Build {
     index: Index,
     writer: IndexWriter,
     fields: Fields,
+    analyzer: Option<Switches>,
     documents: u64,
 }
 
@@ -173,12 +209,13 @@ impl std::fmt::Debug for Build {
 
 impl Build {
     /// An empty index beside `dir`, which takes its place at
-    /// [`Build::finish`].
+    /// [`Build::finish`]: the published mapping, or with `analyzer` a
+    /// treatment's, its text split by those switches.
     ///
     /// # Errors
     ///
     /// I/O, or the engine.
-    pub fn start(dir: &Path) -> Result<Self, Error> {
+    pub fn start(dir: &Path, analyzer: Option<Switches>) -> Result<Self, Error> {
         let io = |path: &Path, e| Error::Io {
             path: path.to_path_buf(),
             source: e,
@@ -188,8 +225,11 @@ impl Build {
             fs::remove_dir_all(&part).map_err(|e| io(&part, e))?;
         }
         fs::create_dir_all(&part).map_err(|e| io(&part, e))?;
-        let (schema, fields) = schema::provisional();
+        let (schema, fields) = schema::provisional(analyzer);
         let index = Index::create_in_dir(&part, schema)?;
+        if let Some(switches) = analyzer {
+            Analyzer::register(&index, switches);
+        }
         let writer: IndexWriter = index.writer(256 << 20)?;
         Ok(Self {
             dir: dir.to_path_buf(),
@@ -197,6 +237,7 @@ impl Build {
             index,
             writer,
             fields,
+            analyzer,
             documents: 0,
         })
     }
@@ -237,9 +278,10 @@ impl Build {
             built_at: ingest::time::now(),
             batch,
             documents: self.documents,
-            mapping: schema::DESCRIPTION.to_owned(),
+            mapping: schema::description(self.analyzer),
             segments,
             bytes,
+            analyzer: self.analyzer,
         };
         manifest.write(&self.part)?;
         drop(self.index);
@@ -288,8 +330,7 @@ pub fn absorb(
 ) -> Result<Absorbed, Error> {
     let manifest = Manifest::read(dir)?;
     manifest.check()?;
-    let index = Index::open_in_dir(dir)?;
-    let fields = schema::fields(&index.schema())?;
+    let (index, fields) = engine(dir, &manifest)?;
     let mut writer: IndexWriter = index.writer(64 << 20)?;
     for id in removes.iter().chain(puts.iter().map(|d| &d.id)) {
         writer.delete_term(Term::from_field_u64(fields.id, u64::from(id.get())));
@@ -383,16 +424,16 @@ impl std::fmt::Debug for Opened {
 
 impl Opened {
     /// Opens the index under `dir`, checking the manifest's versions and
-    /// the schema's fields.
+    /// the schema's fields, with the analyzer the manifest names.
     ///
     /// # Errors
     ///
-    /// I/O, the engine, another version's index.
+    /// I/O, the engine, another version's index, or text fields split by
+    /// an analyzer the manifest does not name.
     pub fn open(dir: &Path) -> Result<Self, Error> {
         let manifest = Manifest::read(dir)?;
         manifest.check()?;
-        let index = Index::open_in_dir(dir)?;
-        let fields = schema::fields(&index.schema())?;
+        let (index, fields) = engine(dir, &manifest)?;
         let reader = index
             .reader_builder()
             .reload_policy(ReloadPolicy::Manual)
@@ -754,6 +795,126 @@ mod tests {
                 .len(),
             1
         );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// A treatment's index (tokenizer plan T1.2): built with switches,
+    /// opened with the analyzer its manifest names, and asked as its text
+    /// was split — the spellings the plan says must meet (I3), and scripts
+    /// written without spaces (I1), found; the published index beside it
+    /// finds none of them, and its manifest names no analyzer.
+    #[test]
+    fn a_treatments_index_is_asked_as_it_was_built() {
+        use crate::analyzer::{Switches, Unspaced};
+        let root = std::env::temp_dir().join(format!("ol-rht-search-treat-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let docs = vec![
+            document(1, "IL-6 and TNF-α in sepsis", "", 2020),
+            document(2, "Étude de l'efficacité", "", 2020),
+            document(3, "新型冠状病毒肺炎患者的临床特征分析", "", 2020),
+            document(4, "Dose of 5 µg of ＤＮＡ", "", 2020),
+        ];
+        let switches = Switches {
+            cap: None,
+            unspaced: Unspaced::Bigrams,
+            fold: true,
+            greek: true,
+            joins: true,
+        };
+        let treated = root.join("treated");
+        let mut treatment = super::Build::start(&treated, Some(switches)).unwrap();
+        treatment.add(&docs).unwrap();
+        let manifest = treatment.finish(3).unwrap().manifest;
+        assert_eq!(manifest.analyzer, Some(switches));
+        assert!(
+            manifest.mapping.contains(&switches.name()),
+            "{}",
+            manifest.mapping
+        );
+        let published = root.join("published");
+        let plain = build(&published, &docs, 3).unwrap();
+        assert_eq!(plain.manifest.analyzer, None);
+        assert_eq!(plain.manifest.mapping, crate::schema::DESCRIPTION);
+        let text = std::fs::read_to_string(published.join(super::MANIFEST)).unwrap();
+        assert!(!text.contains("analyzer"), "{text}");
+
+        let (treated, published) = (
+            Opened::open(&treated).unwrap(),
+            Opened::open(&published).unwrap(),
+        );
+        let found = |opened: &Opened, text: &str| {
+            let hits = opened.search(&asked(text), 10, 0, None).unwrap();
+            let mut ids: Vec<u32> = hits.hits.iter().map(|h| h.id.get()).collect();
+            ids.sort_unstable();
+            ids
+        };
+        for (text, work) in [
+            ("IL6", 1),
+            ("TNF-alpha", 1),
+            ("alpha", 1),
+            ("etude", 2),
+            ("ETUDE", 2),
+            ("肺炎", 3),
+            ("临床特征", 3),
+            ("ug", 4),
+            ("DNA", 4),
+        ] {
+            assert_eq!(found(&treated, text), [work], "{text:?}, treated");
+            assert!(
+                !found(&published, text).contains(&work),
+                "{text:?}, published"
+            );
+        }
+        // As written, both find them.
+        for (text, work) in [("IL-6", 1), ("Étude", 2), ("sepsis", 1)] {
+            assert_eq!(found(&treated, text), [work], "{text:?}, treated");
+            assert_eq!(found(&published, text), [work], "{text:?}, published");
+        }
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// An index whose manifest names another analyzer than its text was
+    /// split by is refused when it is opened, not at the first query; and
+    /// a manifest written before there were treatments still reads.
+    #[test]
+    fn an_index_is_opened_only_as_it_was_built() {
+        use crate::analyzer::{Switches, Unspaced};
+        let root = std::env::temp_dir().join(format!("ol-rht-search-named-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let docs = vec![document(1, "Randomized trial of aspirin", "", 2020)];
+        let rewrite = |dir: &std::path::Path, analyzer: Option<Switches>| {
+            let mut manifest = super::Manifest::read(dir).unwrap();
+            manifest.analyzer = analyzer;
+            manifest.write(dir).unwrap();
+        };
+        let other = Switches {
+            unspaced: Unspaced::Words,
+            ..Switches::TODAY
+        };
+
+        let treated = root.join("treated");
+        let mut treatment = super::Build::start(&treated, Some(Switches::TODAY)).unwrap();
+        treatment.add(&docs).unwrap();
+        treatment.finish(1).unwrap();
+        Opened::open(&treated).unwrap();
+        for wrong in [None, Some(other)] {
+            rewrite(&treated, wrong);
+            let refused = Opened::open(&treated).unwrap_err();
+            assert!(matches!(refused, Error::Mismatch(_)), "{refused}");
+        }
+
+        let published = root.join("published");
+        build(&published, &docs, 1).unwrap();
+        let before = std::fs::read_to_string(published.join(super::MANIFEST)).unwrap();
+        rewrite(&published, None);
+        let after = std::fs::read_to_string(published.join(super::MANIFEST)).unwrap();
+        assert_eq!(before, after, "a published manifest is written as it was");
+        Opened::open(&published).unwrap();
+        rewrite(&published, Some(other));
+        let refused = Opened::open(&published).unwrap_err();
+        assert!(matches!(refused, Error::Mismatch(_)), "{refused}");
         std::fs::remove_dir_all(&root).unwrap();
     }
 

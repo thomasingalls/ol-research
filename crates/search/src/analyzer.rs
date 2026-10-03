@@ -90,6 +90,40 @@ impl Switches {
             u8::from(self.joins)
         )
     }
+
+    /// The switches a name spells, so a command names them as a report
+    /// prints them; `None` for anything [`Switches::name`] does not write,
+    /// letter for letter.
+    #[must_use]
+    pub fn parse(name: &str) -> Option<Self> {
+        let mut parts = name.split('-');
+        if parts.next()? != "ol1" {
+            return None;
+        }
+        let cap = match parts.next()?.strip_prefix("cap")? {
+            "none" => None,
+            bytes => Some(bytes.parse().ok()?),
+        };
+        let unspaced = match parts.next()? {
+            "whole" => Unspaced::Whole,
+            "bigrams" => Unspaced::Bigrams,
+            "words" => Unspaced::Words,
+            _ => return None,
+        };
+        let mut flag = |named: &str| match parts.next()?.strip_prefix(named)? {
+            "0" => Some(false),
+            "1" => Some(true),
+            _ => None,
+        };
+        let switches = Self {
+            cap,
+            unspaced,
+            fold: flag("fold")?,
+            greek: flag("greek")?,
+            joins: flag("joins")?,
+        };
+        (switches.name() == name).then_some(switches)
+    }
 }
 
 /// Appended to [`Switches::name`] for the query side.
@@ -479,7 +513,7 @@ fn terms(analyzer: &mut TextAnalyzer, text: &str) -> Vec<(usize, String)> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::collections::{BTreeMap, BTreeSet};
 
     use proptest::prelude::*;
@@ -611,7 +645,8 @@ mod tests {
         ]
     }
 
-    fn switches() -> impl Strategy<Value = Switches> {
+    /// Any switches, a cap among them; the crate's other tests draw it too.
+    pub(crate) fn switches() -> impl Strategy<Value = Switches> {
         (
             prop::option::of(10usize..60),
             prop_oneof![
@@ -633,6 +668,16 @@ mod tests {
     }
 
     proptest! {
+        /// A name is read back as the switches it was written from, and
+        /// nothing else is a name.
+        #[test]
+        fn a_name_reads_back(switches in switches(), other in "[a-z0-9-]{0,40}") {
+            prop_assert_eq!(Switches::parse(&switches.name()), Some(switches));
+            if let Some(read) = Switches::parse(&other) {
+                prop_assert_eq!(read.name(), other);
+            }
+        }
+
         /// Every switch off is Tantivy's `default`, term for term and
         /// position for position.
         #[test]

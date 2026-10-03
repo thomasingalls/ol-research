@@ -486,16 +486,42 @@ user's (serving plan §11 item 11), and this plan is its analysis part.
     its own title (I2; §7 item 13).
   - **T1.2 An index with it.** The mapping takes the switches; an opened
     index registers the analyzer its manifest names, so a query is split
-    as its text was (I2); `search build` over the epoch's rows with given
-    switches into a directory of its own, never published; `evaluate
-    run --index` against it.
+    as its text was (I2); `search build` over the documents the epoch's
+    index was built from — the merged and normalized sets, assembled as
+    for the published index — with given switches into a directory of
+    its own, never published; `evaluate run --index` against it. Built
+    2026-10-03: `search build --out <dir>
+    [--analyzer <name>]` (the name as reports print it, read back letter
+    for letter; `--out` refused under the store's `search/` or where
+    anything exists; without an analyzer the published mapping is built
+    there, the control a treatment is measured against), the switches in
+    the index's manifest — a field the
+    published index's manifest does not carry, so it is written as it
+    was and the search version does not move; an index opened only as it
+    was built (text fields split by another analyzer than the manifest
+    names are refused); a query split by the analyzer's query side;
+    `evaluate run --index <dir>` and `search query --index <dir>`, the
+    run's works still named and dated by the epoch, an index at another
+    batch than the epoch's refused, the sidecar and the run's tag saying
+    which index answered. Held by properties through a real index: every
+    switch off answers as the published index does, score for score; and
+    under any switches a word of a title finds its document.
   - **T1.3 The screening pieces (evaluation plan §14, E6).** The
     screening set — every work a suite judged and a seeded random sample
     of the rest — drawn once and kept; each working half's seeded query
     sample; each build's switches in its manifest.
   - **T1.4 A check before any screen.** The all-off build of the
     screening set, run, must score as the epoch's index does on the same
-    works — the machinery changes nothing by itself.
+    works — the machinery changes nothing by itself. Not to the last
+    digit: two builds of one index differ in what the build's segments
+    decide (§7 item 15), so the check is no difference but those — a
+    comparison of two runs that counts them apart from real ones, to be
+    built here. Tried on the sample store, 2026-10-03, twelve queries to
+    depth 1,000: the all-off build against the epoch's index, 0 real
+    differences in 10,792 lines, 116 scores apart in their last digits
+    and 22 places holding another of tied works; one all-off build
+    against a second, the same kinds (112, 24); every switch on, 20,388
+    real differences.
   - **T1.5 D13 and D8 in the index.** GlotLID on every title and
     abstract at build time, answers cached by text hash on the claim; the
     English stemmed fields (title, abstract) with KStem, ported from
@@ -612,6 +638,30 @@ Made in measuring D13:
     *Lifted by* T2's census (D11): every word the analyzer finds in the
     corpus's titles in these scripts, and in Chinese and Japanese under
     `Words`, split again alone, the share that splits otherwise counted.
+14. **A word's other spellings count toward its field's length.** The
+    index side writes `il6` beside `il` and `alpha` beside `α`, and
+    Tantivy counts every term written as one more of the field's (its
+    `num_tokens`, read in 0.26.1's `postings_writer.rs`), where Lucene
+    leaves out terms that share a position. A title with hyphens, Greek
+    letters or letters beside digits is scored as a longer title, each of
+    its terms a little lower. *Costs* a second effect inside the joins
+    and Greek switches' measured effect, which T2's screen cannot tell
+    from the spellings meeting; none with every switch off. *Lifted by*
+    the engine counting positions, not terms — a change to Tantivy or
+    the next engine — or, short of that, by measuring it: the same
+    switch with the extra spellings in a field of their own.
+15. **Two builds of one index do not answer alike to the last digit.**
+    Tantivy's writer divides the documents among segments as its threads
+    take them; a document's score is its terms' scores added in an order
+    the segment decides, and works tied on a score come in the order they
+    lie in the index. Built twice from the same documents, an index gives
+    scores apart in the seventh digit, and another of the tied works at a
+    rank or at the depth (the sample store, 2026-10-03: 112 scores and 24
+    ranks in 10,792 lines). *Costs* a run's exact reproduction — the same
+    build must be kept, not rebuilt — and a little noise in every
+    comparison of two builds, in ranks among tied works. *Lifted by* a
+    build of one segment written by one thread, at the price of the
+    build's time, or by the next engine.
 
 ## 8. Open items
 
