@@ -11,6 +11,12 @@
 //!   a text, the index side made of it too, at the same positions (I2, I3).
 //!   A query never asks for every alternative at once.
 //!
+//! A run of letters and digits is split by its **stretches**: a stretch
+//! of a script written without spaces into pairs of characters or
+//! ICU4X's words, as [`Unspaced`] says, and any other stretch as a word —
+//! so `IL-6基因` is the word `IL-6`, with its joined form, and the pair
+//! `基因`, and each switch changes one thing only.
+//!
 //! With every switch off ([`Switches::TODAY`]) both sides are Tantivy's
 //! `default` analyzer, term for term and position for position: a run of
 //! letters and digits a term, lowercased a character at a time, a term of
@@ -26,14 +32,16 @@ use tantivy::tokenizer::{
 
 use crate::analysis::{self, Script};
 
-/// How a run of a script written without spaces is split (D2).
+/// How a stretch of a script written without spaces is split (D2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Unspaced {
-    /// As today: the whole run one term.
+    /// As today: not at all — the whole run one term.
     Whole,
-    /// Han, kana and Hangul into overlapping pairs of characters (a lone
-    /// character itself); Thai, Lao, Khmer and Burmese into ICU4X's words.
+    /// Han, kana and Hangul into overlapping pairs of characters, across
+    /// the three as a word of Han and kana is written (a lone character
+    /// itself), so that any two characters or more of a stretch find it;
+    /// Thai, Lao, Khmer and Burmese into ICU4X's words.
     Bigrams,
     /// All of them into ICU4X's words.
     Words,
@@ -204,30 +212,82 @@ impl Analyzer {
         } else {
             text
         };
-        let runs = analysis::runs(text);
         let mut position = 0;
-        for (i, &(at, run)) in runs.iter().enumerate() {
-            let taken = if self.unspaced(run) {
-                self.unspaced_run(at, run, position, out)
-            } else {
-                let taken = self.word(at, run, position, out);
-                if self.switches.joins && self.side == Side::Index && taken > 0 {
-                    self.hyphen_join(text, &runs, i, position, out);
-                }
-                taken
-            };
-            position += taken;
+        // The word the run before ended with, which this run's first word
+        // may join across a hyphen: where it starts, itself, its position.
+        let mut ended: Option<(usize, &str, usize)> = None;
+        for (at, run) in analysis::runs(text) {
+            let mut last = None;
+            for (k, (offset, stretch, split)) in self.stretches(run).into_iter().enumerate() {
+                let start = at + offset;
+                let taken = match split {
+                    Split::Word => {
+                        if k == 0
+                            && let Some(before) = ended
+                        {
+                            self.hyphen_join(text, before, (start, stretch), out);
+                        }
+                        last = Some((start, stretch, position));
+                        self.word(start, stretch, position, out)
+                    }
+                    Split::Pairs => {
+                        last = None;
+                        self.pieces(start, bigrams(stretch), position, out)
+                    }
+                    Split::Words => {
+                        last = None;
+                        self.pieces(start, words(stretch), position, out)
+                    }
+                };
+                position += taken;
+            }
+            ended = last;
+        }
+        in_order(out);
+    }
+
+    /// How a character's stretch of a run is split: scripts written
+    /// without spaces as [`Unspaced`] says, anything else — digits among
+    /// them — as a word.
+    fn split(&self, c: char) -> Split {
+        let script = analysis::script(c);
+        if self.switches.unspaced == Unspaced::Whole || c.is_numeric() || !split_script(script) {
+            Split::Word
+        } else if self.switches.unspaced == Unspaced::Bigrams && bigram_script(script) {
+            Split::Pairs
+        } else {
+            Split::Words
         }
     }
 
-    /// Whether a run is split as a script written without spaces.
-    fn unspaced(&self, run: &str) -> bool {
-        self.switches.unspaced != Unspaced::Whole
-            && run.chars().any(|c| split_script(analysis::script(c)))
+    /// A run's stretches — the longest pieces of it split one way — each
+    /// with its byte offset in the run. A word glued to a script written
+    /// without spaces (`IL6基因`) is a stretch of its own, and a word like
+    /// any other; Han beside kana (`新しい`) is one stretch, paired or
+    /// divided into words across the two.
+    fn stretches<'a>(&self, run: &'a str) -> Vec<(usize, &'a str, Split)> {
+        let mut out = Vec::new();
+        let mut from = 0;
+        let mut last = None;
+        for (at, c) in run.char_indices() {
+            let split = self.split(c);
+            if let Some(before) = last
+                && before != split
+            {
+                out.push((from, &run[from..at], before));
+                from = at;
+            }
+            last = Some(split);
+        }
+        if let Some(split) = last {
+            out.push((from, &run[from..], split));
+        }
+        out
     }
 
-    /// A run as one word: its main form, and on the index side its other
-    /// spellings; the positions it takes (its parts', when it is split).
+    /// A stretch as one word: its main form, and on the index side its
+    /// other spellings; the positions it takes (its parts', when it is
+    /// split).
     fn word(&mut self, at: usize, run: &str, position: usize, out: &mut Vec<Token>) -> usize {
         let parts = if self.switches.joins && analysis::is_split(run) {
             analysis::parts(run)
@@ -253,26 +313,26 @@ impl Analyzer {
         parts.len()
     }
 
-    /// Two runs joined across one hyphen, written at the first's position:
-    /// on the index side only, since the query side's pieces are the two
-    /// runs themselves.
+    /// Two words joined across one hyphen — the word a run ended with and
+    /// the word the next began with (`IL-6`, and `IL-6基因`) — written at
+    /// the first's position: on the index side only, since the query
+    /// side's pieces are the two words themselves.
     fn hyphen_join(
         &mut self,
         text: &str,
-        runs: &[(usize, &str)],
-        i: usize,
-        position: usize,
+        (a_at, a, position): (usize, &str, usize),
+        (b_at, b): (usize, &str),
         out: &mut Vec<Token>,
     ) {
         const HYPHENS: [char; 4] = ['-', '\u{2010}', '\u{2011}', '\u{2013}'];
-        let (Some(&(a_at, a)), Some(&(b_at, b))) = (runs.get(i), runs.get(i + 1)) else {
+        if !self.switches.joins || self.side != Side::Index {
             return;
-        };
+        }
         let mut gap = text[a_at + a.len()..b_at].chars();
         let (Some(c), None) = (gap.next(), gap.next()) else {
             return;
         };
-        if !HYPHENS.contains(&c) || self.unspaced(b) {
+        if !HYPHENS.contains(&c) {
             return;
         }
         let joined = format!("{a}{b}");
@@ -287,37 +347,25 @@ impl Analyzer {
         self.push(out, a_at, b_at + b.len(), position, main);
     }
 
-    /// A run of a script written without spaces: its pieces of other
-    /// scripts as words, and its unspaced pieces as pairs or as words.
-    fn unspaced_run(
+    /// A stretch of a script written without spaces, as its pieces — pairs
+    /// of characters, or words — each with its byte offset in the stretch:
+    /// a piece a position, one of the cap's length or more dropped where
+    /// it stood.
+    fn pieces(
         &mut self,
         at: usize,
-        run: &str,
+        pieces: Vec<(usize, &str)>,
         position: usize,
         out: &mut Vec<Token>,
     ) -> usize {
-        let mut taken = 0;
-        let mut from = at;
-        for part in analysis::parts(run) {
-            let script = part.chars().next().map_or(Script::Common, analysis::script);
-            let pieces: Vec<(usize, &str)> = if !split_script(script) {
-                vec![(0, part)]
-            } else if self.switches.unspaced == Unspaced::Bigrams && bigram_script(script) {
-                bigrams(part)
-            } else {
-                words(part)
-            };
-            for (offset, piece) in pieces {
-                if self.switches.cap.is_some_and(|cap| piece.len() >= cap) {
-                    taken += 1;
-                    continue;
-                }
-                let main = self.main(piece);
-                let start = from + offset;
-                self.push(out, start, start + piece.len(), position + taken, main);
-                taken += 1;
+        let taken = pieces.len();
+        for (k, (offset, piece)) in pieces.into_iter().enumerate() {
+            if self.switches.cap.is_some_and(|cap| piece.len() >= cap) {
+                continue;
             }
-            from += part.len();
+            let main = self.main(piece);
+            let start = at + offset;
+            self.push(out, start, start + piece.len(), position + k, main);
         }
         taken
     }
@@ -349,20 +397,13 @@ impl Analyzer {
             None
         };
         let mut write = |text: String| {
-            if !out
-                .iter()
-                .rev()
-                .take_while(|t| t.position == position)
-                .any(|t| t.text == text)
-            {
-                out.push(Token {
-                    offset_from: from,
-                    offset_to: to,
-                    position,
-                    text,
-                    position_length: 1,
-                });
-            }
+            out.push(Token {
+                offset_from: from,
+                offset_to: to,
+                position,
+                text,
+                position_length: 1,
+            });
         };
         match (self.side, greek) {
             (Side::Query, Some(named)) => write(named),
@@ -375,8 +416,38 @@ impl Analyzer {
     }
 }
 
-/// A script whose runs are split when [`Unspaced`] says so: those written
-/// without spaces, and Hangul, whose particles stay on their words.
+/// How a stretch of a run is split.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Split {
+    /// As a word: one term, and with joins its parts beside it.
+    Word,
+    /// Into overlapping pairs of characters.
+    Pairs,
+    /// Into ICU4X's words.
+    Words,
+}
+
+/// Puts a text's tokens as the engine takes them: in the order of their
+/// positions — a term's positions in a text must never go back, and a
+/// hyphen join is written at its first word's position after that word's
+/// parts — and a form written twice at one position, once.
+fn in_order(tokens: &mut Vec<Token>) {
+    tokens.sort_by_key(|token| token.position);
+    let (mut group, mut i) = (0, 0);
+    while i < tokens.len() {
+        if tokens[i].position != tokens[group].position {
+            group = i;
+        }
+        if tokens[group..i].iter().any(|t| t.text == tokens[i].text) {
+            tokens.remove(i);
+        } else {
+            i += 1;
+        }
+    }
+}
+
+/// A script whose stretches are split when [`Unspaced`] says so: those
+/// written without spaces, and Hangul, whose particles stay on their words.
 fn split_script(script: Script) -> bool {
     script.unspaced() || script == Script::Hangul
 }
@@ -407,18 +478,39 @@ fn bigrams(part: &str) -> Vec<(usize, &str)> {
 }
 
 /// ICU4X's words by its dictionary model, each with its byte offset in
-/// `part`; pieces without a letter or digit left out. Not its LSTM model,
-/// which reads a word by its neighbours: `เบาหวาน` (diabetes) is one word
-/// in a title and two typed alone, so a query would miss the title (I2).
-fn words(part: &str) -> Vec<(usize, &str)> {
+/// `stretch`; pieces without a letter or digit left out. Not its LSTM
+/// model, which reads a word by its neighbours: `เบาหวาน` (diabetes) is
+/// one word in a title and two typed alone, so a query would miss the
+/// title (I2). And every word divided again until it is a word alone —
+/// a dictionary's words depend on their neighbours too, if less — so
+/// that a word of a text, typed alone, is split as the text was.
+fn words(stretch: &str) -> Vec<(usize, &str)> {
+    let mut out = Vec::new();
+    divide(0, stretch, &mut out);
+    out
+}
+
+/// [`words`]: `piece`, which starts at `at`, as the words it is alone, and
+/// each of those as the words it is alone, until one is.
+fn divide<'a>(at: usize, piece: &'a str, out: &mut Vec<(usize, &'a str)>) {
     let breaks: Vec<usize> = WordSegmenter::new_dictionary(WordBreakInvariantOptions::default())
-        .segment_str(part)
+        .segment_str(piece)
         .collect();
-    breaks
+    let found: Vec<(usize, &str)> = breaks
         .windows(2)
-        .map(|w| (w[0], &part[w[0]..w[1]]))
-        .filter(|(_, piece)| piece.chars().any(char::is_alphanumeric))
-        .collect()
+        .map(|w| (w[0], &piece[w[0]..w[1]]))
+        .filter(|(_, word)| word.chars().any(char::is_alphanumeric))
+        .collect();
+    if let [(_, whole)] = found[..]
+        && whole.len() == piece.len()
+    {
+        out.push((at, piece));
+        return;
+    }
+    // Each is shorter than `piece`, so this ends.
+    for (offset, word) in found {
+        divide(at + offset, word, out);
+    }
 }
 
 /// A form's Greek spelling (D5), when it has one: a Greek letter alone or
@@ -567,6 +659,62 @@ pub(crate) mod tests {
         assert!(words.len() > 3, "{words:?}");
         // As today, the whole run one term, and over the cap, none.
         assert!(index_terms(Switches::TODAY, "新型冠状病毒肺炎患者的临床特征分析").is_empty());
+    }
+
+    /// Whether what the query side makes of `query` stands in what the
+    /// index side made of `text`: every piece at its place, counted from
+    /// one start — as a phrase is matched.
+    fn finds(switches: Switches, query: &str, text: &str) -> bool {
+        let asked = query_terms(switches, query);
+        let Some(&(first, _)) = asked.first() else {
+            return false;
+        };
+        let indexed: BTreeSet<(usize, String)> = index_terms(switches, text).into_iter().collect();
+        let last = indexed.iter().map(|(p, _)| *p).max().unwrap_or(0);
+        (0..=last).any(|start| {
+            asked
+                .iter()
+                .all(|(p, term)| indexed.contains(&(start + p - first, term.clone())))
+        })
+    }
+
+    /// A run is split by its stretches: a word glued to a script written
+    /// without spaces is still a word, with its joins; pairs run across
+    /// Han and kana, as a word of both is written.
+    #[test]
+    fn a_run_is_split_by_its_stretches() {
+        for title in [
+            "IL-6基因多态性",
+            "IL6基因多态性",
+            "血清IL-6水平",
+            "血清IL6水平",
+        ] {
+            for query in ["IL6", "IL-6", "il6", "基因", "水平", "血清"] {
+                let there = title.contains(query)
+                    || (query.to_lowercase().starts_with("il") && title.contains("IL"));
+                assert_eq!(finds(ALL, query, title), there, "{query:?} in {title:?}");
+            }
+        }
+        assert_eq!(
+            words_of(&index_terms(ALL, "新しい治療")),
+            vec!["新し", "しい", "い治", "治療"]
+        );
+        assert!(finds(ALL, "新しい", "新しい治療"));
+        assert!(finds(ALL, "しい治", "新しい治療"));
+        // Each switch its own change: pairs alone leave `IL6` one term.
+        let pairs_only = Switches {
+            unspaced: Unspaced::Bigrams,
+            ..Switches::TODAY
+        };
+        assert_eq!(
+            index_terms(pairs_only, "IL6基因"),
+            vec![(0, "il6".into()), (1, "基因".into())]
+        );
+        // A digit is a word beside the script: `2型糖尿病`, type 2 diabetes.
+        assert_eq!(
+            words_of(&index_terms(ALL, "2型糖尿病")),
+            vec!["2", "型糖", "糖尿", "尿病"]
+        );
     }
 
     #[test]
@@ -734,6 +882,69 @@ pub(crate) mod tests {
                 prop_assert!(!index_terms(switches, &text).is_empty());
                 prop_assert!(!query_terms(switches, &text).is_empty());
             }
+        }
+
+        /// The tokens of any text are as the engine takes them: in the
+        /// order of their positions, and no form twice at one position.
+        #[test]
+        fn tokens_are_as_the_engine_takes_them(switches in switches(), text in text()) {
+            for terms in [index_terms(switches, &text), query_terms(switches, &text)] {
+                prop_assert!(terms.windows(2).all(|w| w[0].0 <= w[1].0), "{:?}", terms);
+                let distinct: BTreeSet<&(usize, String)> = terms.iter().collect();
+                prop_assert_eq!(distinct.len(), terms.len(), "{:?}", terms);
+            }
+        }
+
+        /// Joined or hyphenated, written and asked, a word and its number
+        /// meet (I3) — alone, and glued to text of a script written
+        /// without spaces when those are split.
+        #[test]
+        fn a_joined_word_meets_its_hyphenated_one(
+            switches in switches(),
+            word in "[A-Za-z]{1,4}",
+            number in "[0-9]{1,3}",
+            before in "[肺癌基因がんカタ한국กา]{0,4}",
+            after in "[肺癌基因がんカタ한국กา]{0,4}",
+        ) {
+            let switches = Switches { cap: None, joins: true, ..switches };
+            let (before, after) = if switches.unspaced == Unspaced::Whole {
+                ("", "")
+            } else {
+                (before.as_str(), after.as_str())
+            };
+            let spellings = [format!("{word}{number}"), format!("{word}-{number}")];
+            for written in &spellings {
+                let text = format!("{before}{written}{after}");
+                for asked in &spellings {
+                    prop_assert!(
+                        finds(switches, asked, &text),
+                        "{:?} in {:?} under {}", asked, text, switches.name()
+                    );
+                }
+            }
+        }
+
+        /// Any two characters or more of a stretch split into pairs find
+        /// it, whatever stands beside it: what pairs are for.
+        #[test]
+        fn a_piece_of_a_paired_stretch_finds_it(
+            switches in switches(),
+            stretch in "[肺癌基因新日本がんしいカタ한국어]{2,10}",
+            from in any::<prop::sample::Index>(),
+            to in any::<prop::sample::Index>(),
+            before in "[a-z0-9 กา-]{0,4}",
+            after in "[a-z0-9 กา-]{0,4}",
+        ) {
+            let switches = Switches { cap: None, unspaced: Unspaced::Bigrams, ..switches };
+            let chars: Vec<char> = stretch.chars().collect();
+            let from = from.index(chars.len() - 1);
+            let to = from + 2 + to.index(chars.len() - from - 1);
+            let piece: String = chars[from..to].iter().collect();
+            let text = format!("{before}{stretch}{after}");
+            prop_assert!(
+                finds(switches, &piece, &text),
+                "{:?} in {:?} under {}", piece, text, switches.name()
+            );
         }
     }
 }

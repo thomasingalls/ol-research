@@ -483,7 +483,19 @@ user's (serving plan §11 item 11), and this plan is its analysis part.
     alternative at once. ICU4X's dictionary model, not its LSTM model:
     the LSTM reads a word by its neighbours, and `เบาหวาน` (diabetes),
     one word in a Thai title, is two typed alone — a query that misses
-    its own title (I2; §7 item 13).
+    its own title (I2; §7 item 13). Amended 2026-10-03, found writing
+    T1.2's properties: a run is split by its stretches, not whole — a
+    word glued to a script written without spaces (`IL-6基因多态性`,
+    `血清IL6水平`) is still a word, with its hyphen join and its parts,
+    where it had lost both and `IL6` missed the title; pairs run across
+    Han, kana and Hangul as Lucene's do (`新しい` is `新し` `しい`), so
+    any two characters or more of a stretch find it; ICU4X is given the
+    whole stretch, Han and kana together, and each word it finds is
+    divided again until it is a word alone; and each switch changes one
+    thing — pairs no longer split `IL6` beside Han, which is the joins
+    switch's to do. The tokens leave in the order of their positions, a
+    form once at a position, which the engine requires. Properties hold
+    each of these on generated text.
   - **T1.2 An index with it.** The mapping takes the switches; an opened
     index registers the analyzer its manifest names, so a query is split
     as its text was (I2); `search build` over the documents the epoch's
@@ -632,12 +644,21 @@ Made in measuring D13:
     alone, so the query misses the title (I2); the dictionary model split
     every word of seven such sentences, one or two per script, as it
     splits the word alone. A dictionary's longest match can still depend
-    on context, and those sentences are not the corpus's titles.
-    *Costs* the LSTM's reading of words its dictionary lacks, which the
-    dictionary splits wrongly (D2), and I2 unmeasured on real titles.
-    *Lifted by* T2's census (D11): every word the analyzer finds in the
-    corpus's titles in these scripts, and in Chinese and Japanese under
-    `Words`, split again alone, the share that splits otherwise counted.
+    on context — generated text found it, a mark of one script on a
+    letter of another — so each word found is divided again until it is a
+    word alone (2026-10-03): one word of a text, typed alone, is split as
+    the text was, by construction. What is left: several words typed
+    together, without the text around them, can be divided at other
+    places than in the text; and those sentences are not the corpus's
+    titles. *Costs* the LSTM's reading of words its dictionary lacks,
+    which the dictionary splits wrongly (D2); words finer than ICU4X
+    found them, where one divides alone; and I2 for phrases unmeasured
+    on real titles. *Lifted by* T2's census (D11): every two and three
+    adjacent words the analyzer finds in the corpus's titles in these
+    scripts, and in Chinese and Japanese under `Words`, split again
+    without the title, the share that splits otherwise counted; the LSTM
+    model, divided the same way, is then a treatment to try against the
+    dictionary.
 14. **A word's other spellings count toward its field's length.** The
     index side writes `il6` beside `il` and `alpha` beside `α`, and
     Tantivy counts every term written as one more of the field's (its
@@ -662,6 +683,18 @@ Made in measuring D13:
     comparison of two builds, in ranks among tied works. *Lifted by* a
     build of one segment written by one thread, at the price of the
     build's time, or by the next engine.
+16. **Under pairs, one character typed alone finds nothing.** `肺癌基因`
+    is the pairs `肺癌` `癌基` `基因`; `癌` (cancer) typed alone is the
+    term `癌`, which the index never wrote — nor `型` after a digit, in
+    `2型糖尿病` (type 2 diabetes), where `2型` asks for `2` and `型`. As
+    Lucene's CJK analyzer does by default. I1 says every word is
+    findable, and Chinese has words of one character. *Costs* those
+    words, alone or beside a digit or a Latin word, in Chinese, Japanese
+    and Korean text under pairs; not under ICU4X's words, where the
+    dictionary has them. *Lifted by* the index writing each character
+    beside its pairs (Lucene's `outputUnigrams`), the query still asking
+    pairs of anything longer — the user's call (§8 item 7); it adds a
+    term a character to those texts, and item 14's cost with it.
 
 ## 8. Open items
 
@@ -694,6 +727,13 @@ Made in measuring D13:
    languages, or even reliably be able to distinguish japanese from
    chinese writing". Not needed for English stemming (D13, decided).
    Before T3.
+7. **Single characters under pairs** (§7 item 16), the user's to decide:
+   whether the index writes each Han, kana and Hangul character beside
+   its pairs, so that `癌` and the `型` of `2型` are found. *Recommended:
+   yes, as part of pairs and not a switch of its own* — I1 is an
+   invariant, no judged set in those languages would measure the
+   switch, and the index's size and build time with it are measured on
+   the screening build either way. Before T2's screen.
 
 ## 9. Decision log
 
