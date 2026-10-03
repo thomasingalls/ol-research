@@ -19,7 +19,9 @@ pub const SAMPLE_QUERIES: [&str; 6] = [
     "prisma",
 ];
 
-/// Prints the build report.
+/// Prints the build report: with the assembly's counts for a build that
+/// assembled its documents, and for one built from saved documents
+/// (tokenizer plan T1.3), which has none, what it was built from.
 ///
 /// # Errors
 ///
@@ -28,45 +30,23 @@ pub const SAMPLE_QUERIES: [&str; 6] = [
 /// # Panics
 ///
 /// Never: every sample query is within the query parser's caps.
-pub fn print(out: &mut impl Write, opened: &Opened, stats: &Stats) -> Result<(), crate::Error> {
+pub fn print(
+    out: &mut impl Write,
+    opened: &Opened,
+    stats: Option<&Stats>,
+) -> Result<(), crate::Error> {
     let m = opened.manifest();
     writeln!(out, "search {} {}", m.engine, crate::version())?;
-    writeln!(
-        out,
-        "  documents: {} held works; {} stubs skipped",
-        stats.documents, stats.stubs
-    )?;
-    writeln!(
-        out,
-        "  text: title {}, abstract {} ({}), authors {} works with {} names, venue {}",
-        stats.with_title,
-        stats.abstract_from.values().sum::<u64>(),
-        stats
-            .abstract_from
-            .iter()
-            .map(|(s, n)| format!("{s} {n}"))
-            .collect::<Vec<_>>()
-            .join(", "),
-        stats.with_authors,
-        stats.author_names,
-        stats.with_venue
-    )?;
-    writeln!(
-        out,
-        "  records read: {}; supplied text: {}",
-        stats
-            .records
-            .iter()
-            .map(|(s, n)| format!("{s} {n}"))
-            .collect::<Vec<_>>()
-            .join(", "),
-        stats
-            .supplied
-            .iter()
-            .map(|(s, n)| format!("{s} {n}"))
-            .collect::<Vec<_>>()
-            .join(", ")
-    )?;
+    if let Some(stats) = stats {
+        assembled(out, stats)?;
+    }
+    if let Some(subset) = &m.subset {
+        writeln!(
+            out,
+            "  documents: the {} of {} (blake3 {}), the works {} names (blake3 {})",
+            subset.works, subset.documents, subset.blake3, subset.list, subset.list_blake3
+        )?;
+    }
     writeln!(out, "  facets, top values")?;
     for (root, values) in opened.facets_of_all(8)? {
         writeln!(
@@ -103,6 +83,46 @@ pub fn print(out: &mut impl Write, opened: &Opened, stats: &Stats) -> Result<(),
         }
     }
     Ok(())
+}
+
+/// What the assembly counted of the documents and their text.
+fn assembled(out: &mut impl Write, stats: &Stats) -> io::Result<()> {
+    writeln!(
+        out,
+        "  documents: {} held works; {} stubs skipped",
+        stats.documents, stats.stubs
+    )?;
+    writeln!(
+        out,
+        "  text: title {}, abstract {} ({}), authors {} works with {} names, venue {}",
+        stats.with_title,
+        stats.abstract_from.values().sum::<u64>(),
+        stats
+            .abstract_from
+            .iter()
+            .map(|(s, n)| format!("{s} {n}"))
+            .collect::<Vec<_>>()
+            .join(", "),
+        stats.with_authors,
+        stats.author_names,
+        stats.with_venue
+    )?;
+    writeln!(
+        out,
+        "  records read: {}; supplied text: {}",
+        stats
+            .records
+            .iter()
+            .map(|(s, n)| format!("{s} {n}"))
+            .collect::<Vec<_>>()
+            .join(", "),
+        stats
+            .supplied
+            .iter()
+            .map(|(s, n)| format!("{s} {n}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
 }
 
 impl From<io::Error> for crate::Error {

@@ -15,6 +15,9 @@ serde_json.workspace = true
 tantivy.workspace = true
 icu_segmenter.workspace = true
 icu_normalizer.workspace = true
+# A screening set's saved documents (tokenizer plan T1.3): one zstd
+# stream, as the store's own sets are.
+zstd.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true

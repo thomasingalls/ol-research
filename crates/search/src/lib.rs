@@ -16,6 +16,7 @@
 
 pub mod analysis;
 pub mod analyzer;
+pub mod documents;
 pub mod error;
 pub mod index;
 pub mod report;
@@ -24,7 +25,7 @@ pub(crate) mod translate;
 mod until;
 
 pub use error::Error;
-pub use index::{Absorbed, Built, Hit, Hits, Manifest, Opened};
+pub use index::{Absorbed, Built, Hit, Hits, Manifest, Opened, Subset};
 
 /// The index's own version, beside the model's and the merge's: any
 /// change to the mapping or the files bumps it, and an index under

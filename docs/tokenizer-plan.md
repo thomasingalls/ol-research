@@ -521,19 +521,54 @@ user's (serving plan §11 item 11), and this plan is its analysis part.
   - **T1.3 The screening pieces (evaluation plan §14, E6).** The
     screening set — every work a suite judged and a seeded random sample
     of the rest — drawn once and kept; each working half's seeded query
-    sample; each build's switches in its manifest.
+    sample; each build's switches in its manifest. Built 2026-10-03, each
+    piece drawn once and kept (its `--out` refused when it exists), with
+    an `about.json` of what it was drawn from:
+    - `evaluate sample <suite> --out <suite> --limit N`: N queries of
+      the working half as a suite of its own, kept whole, none of the
+      test half in it.
+    - `evaluate screening-set <suite>... --out <dir> --limit N`: every
+      work the suites judged, at any grade and in either half, or named
+      as a seed, that the epoch's index holds, and N of the other works
+      it holds; public ids, in `works.tsv`.
+    - Both draws keep the items whose seeded hash is smallest, as the
+      language key's does: a larger sample holds every smaller one, so a
+      set can grow without being redrawn, and nothing depends on the
+      order the items came in.
+    - `search documents --works <set> --out <file>`: the set's works'
+      documents, assembled once from the merged and normalized sets as
+      the published index's are, and saved — a zstd stream of JSON
+      lines. A build that assembled its own documents would read the
+      whole corpus for every variant, which is the cost a screening
+      index is for avoiding.
+    - `search build --out <dir> --documents <file> [--analyzer <name>]`:
+      an index of those documents and no others, with no assembly, its
+      manifest naming the file and the set by their digests, so a run's
+      sidecar names its screening set.
+    On the sample store (110,469 works; a set of 5,033): the documents
+    saved in 3.1 s, 2.8 MiB; an index built from them in under a second,
+    against 4 s when each build assembled. How many works the set should
+    sample is not chosen here (§8 item 8).
   - **T1.4 A check before any screen.** The all-off build of the
-    screening set, run, must score as the epoch's index does on the same
-    works — the machinery changes nothing by itself. Not to the last
+    screening set, run, must score as the published mapping's build of
+    the same documents does — the control every treatment is measured
+    against, since the epoch's own index holds other works and so scores
+    otherwise; the machinery changes nothing by itself. Not to the last
     digit: two builds of one index differ in what the build's segments
-    decide (§7 item 15), so the check is no difference but those — a
-    comparison of two runs that counts them apart from real ones, to be
-    built here. Tried on the sample store, 2026-10-03, twelve queries to
-    depth 1,000: the all-off build against the epoch's index, 0 real
-    differences in 10,792 lines, 116 scores apart in their last digits
-    and 22 places holding another of tied works; one all-off build
-    against a second, the same kinds (112, 24); every switch on, 20,388
-    real differences.
+    decide (§7 item 15), so the check is no difference but those. Built
+    2026-10-03: `evaluate same <run> <run>`, which counts scores apart
+    within 1e-5 of the score, ranks holding another of tied works, and
+    works tied with the last a run returned, apart from real differences,
+    and fails on any of those; two runs that asked other queries, or to
+    another depth, are refused. Tried on the sample store, 2026-10-03.
+    Twelve queries to depth 1,000 on every work: the all-off build
+    against the epoch's index, 0 real differences in 10,792 lines, 116
+    scores apart in their last digits and 22 places holding another of
+    tied works; one all-off build against a second, the same kinds (112,
+    24); every switch on, 20,388 real differences. Thirty queries on a
+    screening set of 5,033 works: the all-off build against the control,
+    0 real differences in 12,090 lines; every switch on, 19,431. The
+    box's run is the check itself, and is to come.
   - **T1.5 D13 and D8 in the index.** GlotLID on every title and
     abstract at build time, answers cached by text hash on the claim; the
     English stemmed fields (title, abstract) with KStem, ported from
@@ -734,6 +769,20 @@ Made in measuring D13:
    invariant, no judged set in those languages would measure the
    switch, and the index's size and build time with it are measured on
    the screening build either way. Before T2's screen.
+8. **How large the screening pieces are**, not chosen: how many of the
+   corpus's other works the screening set samples, and how many queries
+   a suite's sample holds. Neither is guessed here. What can be
+   measured on the box before any screen, since a larger draw holds
+   every smaller one: the set at several sizes, each one's documents
+   saved and its control built and run, for its build time, its index's
+   size, and how far its control's figures on the sampled queries stand
+   from the epoch's own on the same queries. *Recommended: measure at
+   about 1, 4 and 16 million sampled works (roughly 0.5%, 2% and 8% of
+   epoch 7's 188.7 million) with a quarter of RELISH's working half, the
+   evaluation plan's own example (§14.2), and take the smallest set
+   whose figures stand close to the next one's* — points to measure at,
+   not estimates of what is enough. The user's to set. Before T2's
+   screen.
 
 ## 9. Decision log
 

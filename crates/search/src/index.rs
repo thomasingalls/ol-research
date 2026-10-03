@@ -56,6 +56,29 @@ pub struct Manifest {
     /// as it did before there were treatments.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub analyzer: Option<Switches>,
+    /// The saved documents an index was built from when it was not every
+    /// held work, assembled then and there: a screening set's (tokenizer
+    /// plan T1.3; [`crate::documents`]). Absent from the published index's
+    /// manifest, as the analyzer is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subset: Option<Subset>,
+}
+
+/// The saved documents a build was given.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Subset {
+    /// The documents' file, as the build was told it.
+    pub documents: String,
+    /// That file's BLAKE3, in hex: which documents they were.
+    pub blake3: String,
+    /// The list of works they are, and its BLAKE3, as their file's header
+    /// says: the screening set.
+    pub list: String,
+    #[allow(missing_docs)]
+    pub list_blake3: String,
+    /// How many, every one of which the index holds.
+    pub works: u64,
 }
 
 impl Manifest {
@@ -195,6 +218,7 @@ pub struct Build {
     writer: IndexWriter,
     fields: Fields,
     analyzer: Option<Switches>,
+    subset: Option<Subset>,
     documents: u64,
 }
 
@@ -238,8 +262,16 @@ impl Build {
             writer,
             fields,
             analyzer,
+            subset: None,
             documents: 0,
         })
+    }
+
+    /// Says the build is of saved documents — a screening set's (tokenizer
+    /// plan T1.3) — and which: the manifest names them, and the build is
+    /// whole only when it was given as many as they are.
+    pub fn of(&mut self, subset: Subset) {
+        self.subset = Some(subset);
     }
 
     /// Indexes `documents`.
@@ -260,12 +292,22 @@ impl Build {
     ///
     /// # Errors
     ///
-    /// I/O, or the engine.
+    /// I/O, the engine, or a build of saved documents that was given
+    /// another number of them than their file holds.
     pub fn finish(mut self, batch: u64) -> Result<Built, Error> {
         let io = |path: &Path, e| Error::Io {
             path: path.to_path_buf(),
             source: e,
         };
+        let subset = self.subset.take();
+        if let Some(subset) = &subset
+            && subset.works != self.documents
+        {
+            return Err(Error::Mismatch(format!(
+                "{} holds {} documents, and the build was given {}",
+                subset.documents, subset.works, self.documents
+            )));
+        }
         commit(&mut self.writer, batch)?;
         self.writer.wait_merging_threads()?;
         let segments = self.index.searchable_segment_metas()?.len();
@@ -282,6 +324,7 @@ impl Build {
             segments,
             bytes,
             analyzer: self.analyzer,
+            subset,
         };
         manifest.write(&self.part)?;
         drop(self.index);
@@ -456,6 +499,27 @@ impl Opened {
     #[must_use]
     pub fn documents(&self) -> u64 {
         self.reader.searcher().num_docs()
+    }
+
+    /// Every work the index holds, given to `f` in the index's own order:
+    /// what a screening set is drawn from (tokenizer plan T1.3).
+    ///
+    /// # Errors
+    ///
+    /// The engine, or a document without an id.
+    pub fn each_id(&self, mut f: impl FnMut(WorkId)) -> Result<(), Error> {
+        for segment in self.reader.searcher().segment_readers() {
+            let ids = segment.fast_fields().u64("id")?;
+            for doc in segment.doc_ids_alive() {
+                let id = ids
+                    .first(doc)
+                    .and_then(|n| u32::try_from(n).ok())
+                    .and_then(WorkId::new)
+                    .ok_or_else(|| Error::Mismatch("a document without an id".to_owned()))?;
+                f(id);
+            }
+        }
+        Ok(())
     }
 
     /// The batch the index has absorbed: its last commit's payload.
@@ -871,6 +935,75 @@ mod tests {
             assert_eq!(found(&treated, text), [work], "{text:?}, treated");
             assert_eq!(found(&published, text), [work], "{text:?}, published");
         }
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// A screening set's documents (tokenizer plan T1.3), saved once and
+    /// built from: the index holds those works and no others, at the batch
+    /// they were assembled at, says in its manifest which documents it
+    /// was built from, and gives its works back; a build given other than
+    /// the documents their file holds stops.
+    #[test]
+    fn a_build_of_saved_documents_is_those_documents() {
+        let root = std::env::temp_dir().join(format!("ol-rht-search-kept-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let docs: Vec<Document> = (1..=9)
+            .map(|id| document(id, "Randomized trial of aspirin", "", 2020))
+            .collect();
+        let saved = root.join("documents.jsonl.zst");
+        let mut writer = crate::documents::Writer::create(
+            &saved,
+            "works.tsv".into(),
+            "abc".into(),
+            4,
+            [2, 5, 7].map(|id| WorkId::new(id).unwrap()).into(),
+        )
+        .unwrap();
+        // A range of ids at a time, as an assembly gives them.
+        for range in docs.chunks(4) {
+            writer.add(range).unwrap();
+        }
+        writer.finish().unwrap();
+        let subset = |works| super::Subset {
+            documents: saved.display().to_string(),
+            blake3: "def".into(),
+            list: "works.tsv".into(),
+            list_blake3: "abc".into(),
+            works,
+        };
+
+        let kept = root.join("kept");
+        let mut screening = super::Build::start(&kept, None).unwrap();
+        let header = crate::documents::read(&saved, |d| screening.add(&[d])).unwrap();
+        screening.of(subset(header.works));
+        let manifest = screening.finish(header.batch).unwrap().manifest;
+        assert_eq!((manifest.documents, manifest.batch), (3, 4));
+        assert_eq!(manifest.subset, Some(subset(3)));
+        let opened = Opened::open(&kept).unwrap();
+        assert_eq!(opened.batch().unwrap(), 4);
+        let mut held = Vec::new();
+        opened.each_id(|id| held.push(id.get())).unwrap();
+        held.sort_unstable();
+        assert_eq!(held, [2, 5, 7]);
+        assert_eq!(
+            opened.search(&asked("aspirin"), 10, 0, None).unwrap().total,
+            3
+        );
+
+        let short = root.join("short");
+        let mut screening = super::Build::start(&short, None).unwrap();
+        screening.of(subset(3));
+        screening.add(&docs[..2]).unwrap();
+        let refused = screening.finish(4).unwrap_err();
+        assert!(matches!(refused, Error::Mismatch(_)), "{refused}");
+        assert!(!short.exists(), "a build that stopped leaves no index");
+
+        // The published index is every document, and says nothing of a list.
+        let whole = build(&root.join("whole"), &docs, 1).unwrap();
+        assert_eq!(whole.manifest.subset, None);
+        let text = std::fs::read_to_string(root.join("whole").join(super::MANIFEST)).unwrap();
+        assert!(!text.contains("subset"), "{text}");
         std::fs::remove_dir_all(&root).unwrap();
     }
 

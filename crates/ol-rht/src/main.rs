@@ -126,6 +126,7 @@ use source_pubmed::normalize::{Citation, HistoryDate, HistoryTime, Published, Re
 mod analysis;
 mod language;
 mod macrolanguages;
+mod screening;
 mod survey;
 
 /// Allocations per record are part of every report (plan §5, rule 13).
@@ -151,7 +152,8 @@ const USAGE: &str = "usage:
   ol-rht graph build [--store <root>] [--held]
   ol-rht graph query <#id|name> [--store <root>] [--held] [--limit N]
   ol-rht graph check [--store <root>] [--held]
-  ol-rht search build [--store <root>] [--out <dir> [--analyzer ol1-cap<none|N>-<whole|bigrams|words>-fold<0|1>-greek<0|1>-joins<0|1>]]
+  ol-rht search build [--store <root>] [--out <dir> [--analyzer ol1-cap<none|N>-<whole|bigrams|words>-fold<0|1>-greek<0|1>-joins<0|1>] [--documents <file>]]
+  ol-rht search documents --works <screening set> --out <file> [--store <root>]
   ol-rht search query <words>... [--store <root>] [--limit N] [--index <dir>]
   ol-rht names build [--store <root>]
   ol-rht works build [--store <root>]
@@ -166,6 +168,9 @@ const USAGE: &str = "usage:
   ol-rht evaluate run <suite | queries> --out <run> [--store <root>] [--limit depth] [--workers N] [--restricted] [--index <dir>]
   ol-rht evaluate score <suite | key> <run> [--test]
   ol-rht evaluate compare <suite | key> <base run> <new run> [--test]
+  ol-rht evaluate same <run> <run>
+  ol-rht evaluate sample <suite> --out <suite> --limit <queries>
+  ol-rht evaluate screening-set <suite>... --out <dir> --limit <sampled works> [--store <root>]
   ol-rht evaluate misses <suite> <run> [--store <root>]
   ol-rht evaluate language-key --out <dir> [--store <root>] [--limit N]
   ol-rht evaluate language-score <key dir> <answers>... [--out <hand-check.tsv>]";
@@ -223,11 +228,13 @@ fn main() -> ExitCode {
             {
                 return usage();
             }
-            // A treatment's index (tokenizer plan T1.2): built by `search
-            // build`, asked by `search query` and `evaluate run`, and named
+            // A treatment's index (tokenizer plan T1.2, T1.3): built by
+            // `search build`, from documents `search documents` saved,
+            // asked by `search query` and `evaluate run`, and named
             // nowhere else.
             let searching = |named: &str| *source == "search" && *action == named;
-            if (opts.analyzer.is_some() && !searching("build"))
+            if ((opts.analyzer.is_some() || opts.documents.is_some()) && !searching("build"))
+                || (opts.works.is_some() && !searching("documents"))
                 || (opts.index.is_some() && !(searching("query") || evaluating("run")))
             {
                 return usage();
@@ -263,6 +270,7 @@ fn main() -> ExitCode {
                 ("graph", "query") => graph_query(&opts, held),
                 ("graph", "check") => graph_check(&opts, held),
                 ("search", "build") => search_build(&opts),
+                ("search", "documents") => screening::documents(&opts),
                 ("search", "query") => search_query(&opts),
                 ("names", "build") => names_build(&opts),
                 ("works", "build") => works_build(&opts),
@@ -277,6 +285,9 @@ fn main() -> ExitCode {
                 ("evaluate", "run") => evaluate_run(&opts),
                 ("evaluate", "score") => evaluate_score(&opts),
                 ("evaluate", "compare") => evaluate_compare(&opts),
+                ("evaluate", "same") => screening::same(&opts),
+                ("evaluate", "sample") => screening::sample(&opts),
+                ("evaluate", "screening-set") => screening::set(&opts),
                 ("evaluate", "misses") => analysis::misses(&opts),
                 ("evaluate", "language-key") => language::key(&opts),
                 ("evaluate", "language-score") => language::score(&opts),
@@ -321,6 +332,12 @@ struct Options {
     /// `search query` and `evaluate run`'s: a treatment's index to ask in
     /// place of the epoch's.
     index: Option<PathBuf>,
+    /// `search documents`'s: the screening set whose works' documents are
+    /// saved (tokenizer plan T1.3), its file or the directory it is in.
+    works: Option<PathBuf>,
+    /// `search build`'s: the saved documents a treatment's index is built
+    /// from, in place of an assembly.
+    documents: Option<PathBuf>,
 }
 
 impl Options {
@@ -333,10 +350,22 @@ impl Options {
         let (mut limit, mut workers, mut out, mut store, mut mailto, mut seed, mut by) =
             (None, None, None, None, None, None, None);
         let (mut walk, mut depth, mut related) = (None, None, None);
-        let (mut analyzer, mut index) = (None, None);
+        let (mut analyzer, mut index, mut works, mut documents) = (None, None, None, None);
         let (mut survey, mut restricted, mut held_out, mut test) = (false, false, false, false);
         loop {
             match rest {
+                [before @ .., "--documents", p] => {
+                    if documents.replace(PathBuf::from(p)).is_some() {
+                        return None;
+                    }
+                    rest = before;
+                }
+                [before @ .., "--works", p] => {
+                    if works.replace(PathBuf::from(p)).is_some() {
+                        return None;
+                    }
+                    rest = before;
+                }
                 [before @ .., "--analyzer", name] => {
                     if analyzer
                         .replace(search::analyzer::Switches::parse(name)?)
@@ -481,6 +510,8 @@ impl Options {
             test,
             analyzer,
             index,
+            works,
+            documents,
         })
     }
 
@@ -3204,13 +3235,14 @@ fn graph_names(
 
 /// The options a search command takes: `--store`, for `query` the words
 /// and `--limit`, and for `build` the `--out` a treatment's index is built
-/// into and the `--analyzer` it is built with — an analyzer never without
-/// an `--out`, so the store's own index is never built with one.
+/// into, the `--analyzer` it is built with and the saved `--documents` it
+/// is built from — neither without an `--out`, so the store's own index
+/// is every held work through the published mapping.
 fn search_options_ok(opts: &Options, query: bool) -> bool {
     (query != opts.paths.is_empty())
         && (query || opts.limit.is_none())
         && !(query && opts.out.is_some())
-        && (opts.analyzer.is_none() || opts.out.is_some())
+        && ((opts.analyzer.is_none() && opts.documents.is_none()) || opts.out.is_some())
         && opts.workers.is_none()
         && opts.mailto.is_none()
         && opts.seed.is_none()
@@ -5212,7 +5244,8 @@ fn treatment_dir(store: &Store, out: &Path) -> Result<PathBuf, String> {
 /// sets, indexes them, and prints the report: the store's own index, or
 /// with `--out` an index built there for a treatment — its text split by
 /// `--analyzer`'s switches, or without one the published mapping, the
-/// control a treatment is measured against.
+/// control a treatment is measured against; and with `--documents` built
+/// from a screening set's saved documents, with no assembly at all.
 fn search_build(opts: &Options) -> ExitCode {
     if !search_options_ok(opts, false) {
         return usage();
@@ -5231,39 +5264,20 @@ fn search_build(opts: &Options) -> ExitCode {
     };
     let started = std::time::Instant::now();
     let allocations = ingest::alloc::allocations();
-    let mut assembly = match assemble(what, &store, started) {
-        Ok(assembled) => assembled,
-        Err(code) => return code,
+    let built = match &opts.documents {
+        Some(saved) => screening::build_from(&dir, opts.analyzer, saved)
+            .map(|built| (built, None))
+            .map_err(|e| {
+                eprintln!("{what}: {e}");
+                ExitCode::FAILURE
+            }),
+        None => search_build_assembled(what, &store, &dir, opts.analyzer, started)
+            .map(|(built, stats)| (built, Some(stats))),
     };
-    eprintln!(
-        "{what}: {} documents assembled in {:.1} s",
-        assembly.stats().documents,
-        started.elapsed().as_secs_f64()
-    );
-    let batch = match current_batch(what, &store) {
-        Ok(line) => line,
-        Err(code) => return code,
-    };
-    let built = (|| -> Result<search::index::Built, String> {
-        let mut build =
-            search::index::Build::start(&dir, opts.analyzer).map_err(|e| e.to_string())?;
-        merge::document::Ranged::new(&mut assembly, |docs| {
-            build
-                .add(docs)
-                .map_err(|e| merge::document::Error::Consumer(e.to_string()))
-        })
-        .finish()
-        .map_err(|e| e.to_string())?;
-        build.finish(batch.batch).map_err(|e| e.to_string())
-    })();
-    let built = match built {
+    let (built, stats) = match built {
         Ok(built) => built,
-        Err(e) => {
-            eprintln!("{what}: {e}");
-            return ExitCode::FAILURE;
-        }
+        Err(code) => return code,
     };
-    let stats = assembly.stats().clone();
     eprintln!(
         "{what}: {} documents indexed in {:.1} s",
         built.manifest.documents,
@@ -5271,7 +5285,7 @@ fn search_build(opts: &Options) -> ExitCode {
     );
     let reported = search::Opened::open(&built.dir).and_then(|opened| {
         let mut out = io::stdout().lock();
-        search::report::print(&mut out, &opened, &stats)
+        search::report::print(&mut out, &opened, stats.as_ref())
     });
     if let Err(e) = reported {
         eprintln!("{what}: {e}");
@@ -5283,6 +5297,42 @@ fn search_build(opts: &Options) -> ExitCode {
         ingest::alloc::allocations() - allocations
     );
     ExitCode::SUCCESS
+}
+
+/// [`search_build`] from an assembly of every held work's document: the
+/// index, and what the assembly counted.
+fn search_build_assembled(
+    what: &str,
+    store: &Store,
+    dir: &Path,
+    analyzer: Option<search::analyzer::Switches>,
+    started: std::time::Instant,
+) -> Result<(search::index::Built, merge::document::Stats), ExitCode> {
+    let mut assembly = assemble(what, store, started)?;
+    eprintln!(
+        "{what}: {} documents assembled in {:.1} s",
+        assembly.stats().documents,
+        started.elapsed().as_secs_f64()
+    );
+    let batch = current_batch(what, store)?;
+    let built = (|| -> Result<search::index::Built, String> {
+        let mut build = search::index::Build::start(dir, analyzer).map_err(|e| e.to_string())?;
+        merge::document::Ranged::new(&mut assembly, |docs| {
+            build
+                .add(docs)
+                .map_err(|e| merge::document::Error::Consumer(e.to_string()))
+        })
+        .finish()
+        .map_err(|e| e.to_string())?;
+        build.finish(batch.batch).map_err(|e| e.to_string())
+    })();
+    match built {
+        Ok(built) => Ok((built, assembly.stats().clone())),
+        Err(e) => {
+            eprintln!("{what}: {e}");
+            Err(ExitCode::FAILURE)
+        }
+    }
 }
 
 /// Prints the top hits for a query and the facet counts over its matches:
